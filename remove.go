@@ -6,8 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-
-	"github.com/nicodes/ncicd"
 )
 
 // runRemove is the non-interactive counterpart to the TUI's remove. It refuses
@@ -60,7 +58,7 @@ func runRemove(args []string) error {
 		env["KEEP_DATA"] = "1"
 	}
 	c := exec.Command("ssh", tgt.sshArgs(envPrefix(env)+"sh -s")...)
-	c.Stdin = strings.NewReader(ncicd.AlpineRemoveScript)
+	c.Stdin = strings.NewReader(AlpineRemoveScript)
 	c.Stdout, c.Stderr = os.Stdout, os.Stderr
 	if err := c.Run(); err != nil {
 		return fmt.Errorf("removal failed -- see the output above")
@@ -76,9 +74,9 @@ func runScript(args []string) error {
 	}
 	switch which {
 	case "add":
-		fmt.Print(ncicd.AlpineScript)
+		fmt.Print(AlpineScript)
 	case "remove":
-		fmt.Print(ncicd.AlpineRemoveScript)
+		fmt.Print(AlpineRemoveScript)
 	default:
 		return fmt.Errorf("no such script %q -- try 'add' or 'remove'", which)
 	}

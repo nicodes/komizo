@@ -10,7 +10,6 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/nicodes/ncicd"
 )
 
 // Operations that touch the server run as tea.Cmds and stream their output
@@ -177,7 +176,7 @@ func (m model) startRemove(app string) tea.Cmd {
 	go func() {
 		env := map[string]string{"APP_NAME": app}
 		c := exec.Command("ssh", t.sshArgs(envPrefix(env)+"sh -s")...)
-		err := stream(ch, c, ncicd.AlpineRemoveScript)
+		err := stream(ch, c, AlpineRemoveScript)
 		ch <- runDoneMsg{err: err}
 	}()
 	return m.run.wait()
@@ -239,7 +238,7 @@ func doAdd(t target, app, config string, rotate bool, ch chan tea.Msg) (*addResu
 		"HARDEN_SSH":   "0",
 	}
 	c := exec.Command("ssh", t.sshArgs(envPrefix(env)+"sh -s")...)
-	if err := stream(ch, c, ncicd.AlpineScript); err != nil {
+	if err := stream(ch, c, AlpineScript); err != nil {
 		return nil, fmt.Errorf("the server-side script failed; nothing further was changed")
 	}
 

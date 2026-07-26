@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/nicodes/ncicd"
 )
 
 type addOpts struct {
@@ -199,7 +197,7 @@ func runAdd(args []string) error {
 	} else {
 		step("Setting up %s on %s", o.app, tgt.host)
 	}
-	if err := tgt.runScript(ncicd.AlpineScript, env); err != nil {
+	if err := tgt.runScript(AlpineScript, env); err != nil {
 		return fmt.Errorf("the server-side script failed -- see the output above.\n" +
 			"    Nothing further was changed.")
 	}
