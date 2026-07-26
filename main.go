@@ -11,8 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
-
-	"github.com/nicodes/ncicd"
+	"strings"
 )
 
 // errSilent means the failure has already been reported -- flag parsing prints
@@ -31,14 +30,28 @@ func main() {
 		err = runAdd(os.Args[2:])
 	case "list":
 		err = runList(os.Args[2:])
+	case "remove":
+		err = runRemove(os.Args[2:])
 	case "script":
-		fmt.Print(ncicd.AlpineScript)
+		err = runScript(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", os.Args[1])
-		usage()
-		os.Exit(2)
+		// Anything that is not a known command is treated as a host: the normal
+		// way to use this is `ncicd root@your-server`, which opens the interface
+		// and does everything from there. Requiring a subcommand for the common
+		// case would be one more thing to know for no benefit.
+		if strings.HasPrefix(os.Args[1], "-") {
+			fmt.Fprintf(os.Stderr, "unknown flag %q\n\n", os.Args[1])
+			usage()
+			os.Exit(2)
+		}
+		if len(os.Args) > 2 {
+			fmt.Fprintf(os.Stderr, "unexpected argument %q after a host\n\n", os.Args[2])
+			usage()
+			os.Exit(2)
+		}
+		err = runTUI(os.Args[1])
 	}
 
 	if err != nil {
@@ -52,20 +65,21 @@ func main() {
 func usage() {
 	fmt.Print(`ncicd - deploy to your own servers from GitHub Actions
 
-Runs on your machine and connects to the server itself.
+  ncicd root@your-server
 
-  ncicd add     --host root@HOST --config REF [--app NAME]
-                 Set an app up on a server, or update one. Generates a deploy
-                 key locally, prepares the box, and prints the two values to
-                 paste into GitHub. Safe to re-run.
+That opens the interface. Everything -- adding an app, rotating its deploy key,
+removing one -- is done from there. It runs on your machine and connects to the
+server itself; you never run anything on the box by hand.
 
+The same operations are available non-interactively, for scripting:
+
+  ncicd add     --host root@HOST --app NAME --config REF
   ncicd list    --host root@HOST
-                 What apps are on a box: account, directory, live version,
-                 running containers, config image.
+  ncicd remove  --host root@HOST --app NAME
+  ncicd script [remove]
 
-  nncicd script
-                 Print the server-side script this ships, so you can read what
-                 will run as root before it does.
+"ncicd script" prints the shell this ships to the server, so you can read what
+will run as root before it does.
 
 Run a command with --help for its flags.
 `)

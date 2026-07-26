@@ -51,10 +51,7 @@ func printNextSteps(o addOpts, t target, knownHosts string) {
 			" password login machine-wide, re-run with --harden-sshd.\n", o.user)
 	}
 
-	appLine := ""
-	if o.app != "app" {
-		appLine = fmt.Sprintf("\n          app: %s", o.app)
-	}
+	appLine := fmt.Sprintf("\n          app: %s", o.app)
 	portLine := ""
 	if t.port != 22 {
 		portLine = fmt.Sprintf("\n          port: \"%d\"", t.port)

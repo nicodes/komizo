@@ -27,7 +27,7 @@ type addOpts struct {
 
 func (o *addOpts) bind(fs *flag.FlagSet) {
 	fs.StringVar(&o.host, "host", "", "server to set up, [user@]HOST (user defaults to root)")
-	fs.StringVar(&o.app, "app", "app", "which app on this box; each gets its own account, paths and rules")
+	fs.StringVar(&o.app, "app", "", "which app on this box; each gets its own account, paths and rules")
 	fs.StringVar(&o.config, "config", "", "registry path (NO tag) the host pulls compose.yml from")
 	fs.StringVar(&o.user, "user", "", "deploy account (default cd-<app>, cd-user for the default app)")
 	fs.StringVar(&o.appDir, "app-dir", "", "root-owned app directory (default /srv/<app>)")
@@ -38,21 +38,15 @@ func (o *addOpts) bind(fs *flag.FlagSet) {
 	fs.BoolVar(&o.rotateKey, "rotate-key", false, "replace the deploy key and reprint the values; skip the rest")
 }
 
-// deriveUser mirrors what the server script does, so messages here name the
-// same account the box will actually create.
-func deriveUser(app string) string {
-	if app == "app" {
-		return "cd-user"
-	}
-	return "cd-" + app
-}
+// These mirror what the server script derives, so messages here name the same
+// account and paths the box will actually use. Every app is named -- there is
+// no unsuffixed special case, so a box set up for one app can host a second
+// later without renaming what already exists.
+func deriveUser(app string) string { return "cd-" + app }
 
-func deployBin(app string) string {
-	if app == "app" {
-		return "/usr/local/bin/deploy"
-	}
-	return "/usr/local/bin/deploy-" + app
-}
+func deployBin(app string) string { return "/usr/local/bin/deploy-" + app }
+
+func secretBin(app string) string { return "/usr/local/bin/set-secret-" + app }
 
 func runAdd(args []string) error {
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
