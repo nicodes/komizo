@@ -94,7 +94,7 @@ func runList(args []string) error {
 	}
 
 	if len(apps) == 0 {
-		fmt.Printf("No apps set up on %s yet. Add one with:\n\n    cicd add --host %s --app NAME --config REF\n\n",
+		fmt.Printf("No apps set up on %s yet. Add one with:\n\n    ncicd add --host %s --app NAME --config REF\n\n",
 			tgt.host, host)
 		return nil
 	}

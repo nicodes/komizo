@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nicodes/cicd"
+	"github.com/nicodes/ncicd"
 )
 
 type addOpts struct {
@@ -168,7 +168,7 @@ func runAdd(args []string) error {
 		if err := os.MkdirAll(filepath.Dir(o.keyPath), 0o700); err != nil {
 			return err
 		}
-		comment := fmt.Sprintf("cicd:%s@%s", o.user, tgt.host)
+		comment := fmt.Sprintf("ncicd:%s@%s", o.user, tgt.host)
 		gen := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-C", comment, "-f", o.keyPath, "-N", "")
 		gen.Stderr = os.Stderr
 		if err := gen.Run(); err != nil {
@@ -205,7 +205,7 @@ func runAdd(args []string) error {
 	} else {
 		step("Setting up %s on %s", o.app, tgt.host)
 	}
-	if err := tgt.runScript(cicd.AlpineScript, env); err != nil {
+	if err := tgt.runScript(ncicd.AlpineScript, env); err != nil {
 		return fmt.Errorf("the server-side script failed -- see the output above.\n" +
 			"    Nothing further was changed.")
 	}
