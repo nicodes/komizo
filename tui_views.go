@@ -76,6 +76,19 @@ func viewList(m model) string {
 			}})
 			idx++
 		}
+		// Served off disk, with nothing behind them. No status dot and no
+		// uptime, because there is no process to be up: a document root is
+		// either there or the route 404s, and the route is the only thing to
+		// show. Giving them a green dot would claim something is running.
+		for _, r := range a.statics {
+			kids = append(kids, child{idx: -1, cells: []string{
+				"",
+				dimStyle.Render(r.label()),
+				dimStyle.Render("static"),
+				dimStyle.Render(strings.Join(r.hostnames(), ", ")),
+			}})
+		}
+
 		for i, k := range kids {
 			join := "├ "
 			if i == len(kids)-1 {

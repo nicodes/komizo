@@ -2444,3 +2444,76 @@ func TestALoadingLogSpinsInTheMiddle(t *testing.T) {
 		t.Error("it should say so rather than spinning")
 	}
 }
+
+func TestStaticRoutesAppearWithoutPretendingToRun(t *testing.T) {
+	// A hostname served off disk has no container, so it has no state and no
+	// uptime -- but it does have a row. Without one, a hostname that works
+	// looks exactly like a hostname nothing serves.
+	m := testModel()
+	m.apps = []appRow{{
+		name: "ormos", dir: "/srv/ormos", running: "1",
+		containers: []containerRow{
+			{app: "ormos", service: "api", name: "ormos-api-1", state: "running",
+				startedAt: time.Now().Add(-time.Hour)},
+		},
+		statics: []staticRow{
+			{app: "ormos", sites: "ormos.dev,www.ormos.dev", root: "/srv/ormos/public/www"},
+		},
+	}}
+	v := stripANSI(m.View())
+
+	var line string
+	for _, ln := range strings.Split(v, "\n") {
+		if strings.Contains(ln, "ormos.dev") && strings.Contains(ln, "www") {
+			line = ln
+		}
+	}
+	if line == "" {
+		t.Fatalf("the static route should have a row:\n%s", v)
+	}
+	// Named for its document root, and marked as what it is.
+	if !strings.Contains(line, "www") || !strings.Contains(line, "static") {
+		t.Errorf("row should name the root and say it is static: %q", line)
+	}
+	// No status dot: there is no process for it to describe, and a green one
+	// would claim something is running.
+	if strings.Contains(line, "●") {
+		t.Errorf("a static row must not carry a status dot: %q", line)
+	}
+
+	// Not selectable either -- there is nothing to start, stop or read a log
+	// from, so stopping on it would mean pressing down twice for nothing.
+	before := len(m.focusItems())
+	m.apps[0].statics = append(m.apps[0].statics,
+		staticRow{app: "ormos", sites: "app.ormos.dev", root: "/srv/ormos/public/app"})
+	if after := len(m.focusItems()); after != before {
+		t.Errorf("static rows should not be focusable: %d -> %d", before, after)
+	}
+}
+
+func TestStaticHostnamesCountAsRoutes(t *testing.T) {
+	// They are published, and just as gone when the app is removed -- so they
+	// belong in the list of what an app serves, wherever that list is used.
+	a := appRow{
+		name:    "ormos",
+		routes:  []routeRow{{app: "ormos", sites: "api.ormos.dev", upstream: "ormos-api"}},
+		statics: []staticRow{{app: "ormos", sites: "ormos.dev,www.ormos.dev", root: "/srv/ormos/public/www"}},
+	}
+	got := a.allRoutes()
+	if len(got) != 3 {
+		t.Fatalf("allRoutes() = %q, want all three hostnames", got)
+	}
+}
+
+func TestAStaticRootIsNamedForItsLastSegment(t *testing.T) {
+	for _, c := range []struct{ root, want string }{
+		{"/srv/ormos/public/www", "www"},
+		{"/srv/ormos/public/app/", "app"},
+		{"/srv/site/public", "public"},
+		{"public", "public"},
+	} {
+		if got := (staticRow{root: c.root}).label(); got != c.want {
+			t.Errorf("label(%q) = %q, want %q", c.root, got, c.want)
+		}
+	}
+}

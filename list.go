@@ -127,6 +127,16 @@ for bin in /usr/local/bin/deploy-*; do
 				next
 			}
 			{
+				# A document root: this site block is served off disk, with no
+				# container behind it. Emitted so the app list can show it --
+				# "there is no container" and "there is nothing here" look
+				# identical otherwise, and one of them is fine.
+				if (line ~ /^[ \t]*root[ \t]+\*[ \t]/) {
+					r = line
+					sub(/^[ \t]*root[ \t]+\*[ \t]+/, "", r)
+					sub(/[ \t]+$/, "", r)
+					if (r != "") printf "static\t%s\t%s\t%s\n", app, sites, r
+				}
 				if (line ~ /reverse_proxy/) {
 					i = index(line, "reverse_proxy")
 					rest = substr(line, i + 13)
@@ -202,6 +212,30 @@ type appRow struct {
 	name, user, dir, version, running, image string
 	containers                               []containerRow
 	routes                                   []routeRow
+	statics                                  []staticRow
+}
+
+// staticRow is a site block served straight off disk: the hostnames it answers
+// on, and the directory they come from.
+//
+// It has no container, so it has no state and no uptime -- which is exactly why
+// it needs its own row. Without one, a hostname that works looks identical to a
+// hostname nothing serves.
+type staticRow struct {
+	app   string
+	sites string
+	root  string
+}
+
+func (r staticRow) hostnames() []string { return strings.Split(r.sites, ",") }
+
+// label is what to call this root on screen: the last path segment, which is
+// the name the app gave it -- public/www, public/app.
+func (r staticRow) label() string {
+	if i := strings.LastIndex(strings.TrimRight(r.root, "/"), "/"); i >= 0 {
+		return strings.TrimRight(r.root, "/")[i+1:]
+	}
+	return r.root
 }
 
 // routeRow is one site block in an app's caddy fragment: the hostnames it
@@ -267,13 +301,21 @@ func (a appRow) routesByContainer(n netRow) map[string][]string {
 func (a appRow) allRoutes() []string {
 	var out []string
 	seen := map[string]bool{}
-	for _, r := range a.routes {
-		for _, h := range r.hostnames() {
+	add := func(hosts []string) {
+		for _, h := range hosts {
 			if h != "" && !seen[h] {
 				seen[h] = true
 				out = append(out, h)
 			}
 		}
+	}
+	for _, r := range a.routes {
+		add(r.hostnames())
+	}
+	// Served off disk, but published just the same -- and just as gone if the
+	// app is removed.
+	for _, r := range a.statics {
+		add(r.hostnames())
 	}
 	return out
 }
@@ -548,6 +590,7 @@ func runList(args []string) error {
 func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, net netRow, orphans []string) {
 	var containers []containerRow
 	var routes []routeRow
+	var statics []staticRow
 	for _, ln := range strings.Split(out, "\n") {
 		f := strings.Split(ln, "\t")
 		switch {
@@ -567,6 +610,8 @@ func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, n
 			containers = append(containers, c)
 		case len(f) == 4 && f[0] == "route":
 			routes = append(routes, routeRow{app: f[1], sites: f[2], upstream: f[3]})
+		case len(f) == 4 && f[0] == "static":
+			statics = append(statics, staticRow{app: f[1], sites: f[2], root: f[3]})
 		case len(f) == 8 && f[0] == "proxy":
 			proxy = proxyRow{installed: true, state: f[1], network: f[2],
 				image: f[3], status: f[4]}
@@ -599,6 +644,11 @@ func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, n
 		for _, r := range routes {
 			if r.app == apps[i].name {
 				apps[i].routes = append(apps[i].routes, r)
+			}
+		}
+		for _, r := range statics {
+			if r.app == apps[i].name {
+				apps[i].statics = append(apps[i].statics, r)
 			}
 		}
 	}
