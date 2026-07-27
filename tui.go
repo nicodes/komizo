@@ -17,13 +17,16 @@ import (
 type screen int
 
 const (
-	screenLoading screen = iota
-	screenList           // the apps on this box
-	screenDetail         // one app
-	screenAddForm        // name + config image for a new app
-	screenConfirm        // destructive action, spelled out
-	screenRunning        // an operation is in flight, streaming output
-	screenResult         // it finished; show what came back
+	screenLoading   screen = iota
+	screenInit             // connected, but the server has nothing installed
+	screenList             // the apps on this box
+	screenDetail           // one app
+	screenAddForm          // name + config image for a new app
+	screenServer           // the box: docker, network, proxy, and what is wrong
+	screenProxyForm        // network and image for the shared reverse proxy
+	screenConfirm          // destructive action, spelled out
+	screenRunning          // an operation is in flight, streaming output
+	screenResult           // it finished; show what came back
 )
 
 type model struct {
@@ -33,17 +36,24 @@ type model struct {
 	status string // one-line note under the header
 
 	apps   []appRow
+	srv    serverRow
+	proxy  proxyRow
+	net    netRow
 	cursor int
 
-	form    addForm
-	confirm confirmPrompt
-	run     runState
+	form      addForm
+	proxyForm proxyFormModel
+	initForm  initForm
+	proxyLogs string
+	confirm   confirmPrompt
+	run       runState
 
 	width, height int
 }
 
 func newModel(t target) model {
-	return model{tgt: t, scr: screenLoading, form: newAddForm()}
+	return model{tgt: t, scr: screenLoading, form: newAddForm(),
+		proxyForm: newProxyForm(), initForm: newInitForm()}
 }
 
 func (m model) Init() tea.Cmd {
@@ -65,9 +75,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 
 	case appsMsg:
-		m.apps, m.err = msg.apps, msg.err
+		m.apps, m.srv, m.proxy, m.net, m.err = msg.apps, msg.srv, msg.proxy, msg.net, msg.err
 		if m.cursor >= len(m.apps) {
 			m.cursor = max(0, len(m.apps)-1)
+		}
+		// A box with nothing installed gets its own screen rather than an empty
+		// app list, which would look identical to a set-up server with no apps.
+		if m.err == nil && !m.srv.ready() {
+			m.initForm = newInitForm()
+			m.scr = screenInit
+			return m, nil
 		}
 		m.scr = screenList
 		return m, nil
@@ -75,6 +92,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case runOutputMsg:
 		m.run.append(string(msg))
 		return m, m.run.wait()
+
+	case proxyLogsMsg:
+		if msg.err != nil {
+			m.proxyLogs = msg.err.Error()
+		} else {
+			m.proxyLogs = msg.lines
+		}
+		return m, nil
 
 	case runDoneMsg:
 		m.run.done = true
@@ -96,8 +121,14 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.scr = screenList
 		}
 		return m, nil
+	case screenInit:
+		return m.handleInitKey(msg)
+	case screenServer:
+		return m.handleServerKey(msg)
 	case screenAddForm:
 		return m.handleFormKey(msg)
+	case screenProxyForm:
+		return m.handleProxyFormKey(msg)
 	case screenConfirm:
 		return m.handleConfirmKey(msg)
 	case screenResult:
@@ -167,6 +198,12 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			m.scr = screenConfirm
 		}
+	case "s":
+		// One key for the box itself. Docker, the network and the proxy were a
+		// key each, which is three things to remember for what is really one
+		// question: is this server healthy and can it reach my apps?
+		m.proxyLogs = ""
+		m.scr = screenServer
 	case "R":
 		m.scr = screenLoading
 		return m, fetchApps(m.tgt)
@@ -180,13 +217,19 @@ func (m model) View() string {
 
 	switch m.scr {
 	case screenLoading:
-		b.WriteString("\n  connecting…\n")
+		b.WriteString("\n" + gutter + barStyle.Render("▍") + dimStyle.Render(" connecting…") + "\n")
 	case screenList:
 		b.WriteString(viewList(m))
 	case screenDetail:
 		b.WriteString(viewDetail(m))
+	case screenInit:
+		b.WriteString(m.initForm.view(m.srv))
+	case screenServer:
+		b.WriteString(m.viewServer())
 	case screenAddForm:
 		b.WriteString(m.form.view())
+	case screenProxyForm:
+		b.WriteString(m.proxyForm.view(m.proxy))
 	case screenConfirm:
 		b.WriteString(m.confirm.view())
 	case screenRunning, screenResult:
@@ -194,12 +237,12 @@ func (m model) View() string {
 	}
 
 	if m.err != nil {
-		b.WriteString(errStyle.Render("\n  " + m.err.Error() + "\n"))
+		b.WriteString("\n" + gutter + dot("err") + " " + errStyle.Render(m.err.Error()) + "\n")
 	}
-	return b.String()
+	return trimTrailing(b.String())
 }
 
-func runTUI(hostArg string) error {
+func runTUI(hostArg string, port int, portExplicit bool) error {
 	tgt, err := parseTarget(hostArg)
 	if err != nil {
 		return err
@@ -207,6 +250,11 @@ func runTUI(hostArg string) error {
 	if err := validateHost(tgt.host); err != nil {
 		return err
 	}
+	if portExplicit {
+		tgt.port, tgt.portExplicit = port, true
+	}
+	// Without --port this reads the port out of the user's ssh config, so the
+	// known_hosts lines we print match the port CI will actually connect on.
 	tgt.resolvePort()
 
 	if !tgt.reachable() {

@@ -30,6 +30,13 @@ func validateApp(s string) error {
 	if s == "" || !onlyChars(s, appChars) {
 		return fmt.Errorf("--app must be letters, digits, underscore or hyphen; got %q", s)
 	}
+	// Reserved for ncicd's own directories under /srv -- /srv/_proxy today, and
+	// room for more without another round of renaming. Refusing the whole prefix
+	// rather than the single name means the inventory can tell an app from an
+	// internal directory by its name alone.
+	if strings.HasPrefix(s, "_") {
+		return fmt.Errorf("app names starting with %q are reserved for ncicd; got %q", "_", s)
+	}
 	return nil
 }
 

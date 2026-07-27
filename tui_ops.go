@@ -16,8 +16,11 @@ import (
 // back as messages, so an apk install does not freeze the interface.
 
 type appsMsg struct {
-	apps []appRow
-	err  error
+	apps  []appRow
+	srv   serverRow
+	proxy proxyRow
+	net   netRow
+	err   error
 }
 
 type runOutputMsg string
@@ -42,8 +45,8 @@ func fetchApps(t target) tea.Cmd {
 		if err != nil {
 			return appsMsg{err: fmt.Errorf("could not read the server's inventory: %w", err)}
 		}
-		apps, _ := parseInventory(out)
-		return appsMsg{apps: apps}
+		apps, srv, proxy, net, _ := parseInventory(out)
+		return appsMsg{apps: apps, srv: srv, proxy: proxy, net: net}
 	}
 }
 
@@ -75,7 +78,7 @@ func (r runState) wait() tea.Cmd {
 
 func (r runState) view(finished bool, height int) string {
 	var b strings.Builder
-	b.WriteString("\n  " + titleStyle.Render(r.title) + "\n\n")
+	b.WriteString("\n" + gutter + titleStyle.Render(r.title) + "\n\n")
 
 	// Show the tail; a bootstrap prints more than fits.
 	max := height - 12
@@ -87,16 +90,16 @@ func (r runState) view(finished bool, height int) string {
 		start = len(r.lines) - max
 	}
 	for _, l := range r.lines[start:] {
-		b.WriteString("  " + dimStyle.Render(l) + "\n")
+		b.WriteString(gutter + dimStyle.Render(l) + "\n")
 	}
 
 	if !finished {
-		b.WriteString("\n  working…\n")
+		b.WriteString("\n" + gutter + barStyle.Render("▍") + dimStyle.Render(" working…") + "\n")
 		return b.String()
 	}
 
 	if r.err != nil {
-		b.WriteString("\n  " + errStyle.Render(r.err.Error()) + "\n")
+		b.WriteString("\n" + gutter + dot("err") + " " + errStyle.Render(r.err.Error()) + "\n")
 		b.WriteString(help("enter", "back"))
 		return b.String()
 	}
@@ -104,7 +107,7 @@ func (r runState) view(finished bool, height int) string {
 	if r.result != nil {
 		b.WriteString("\n" + r.result.view())
 	} else {
-		b.WriteString("\n  " + titleStyle.Render("Done.") + "\n")
+		b.WriteString("\n" + gutter + dot("ok") + " " + titleStyle.Render("Done") + "\n")
 	}
 	b.WriteString(help("enter", "back"))
 	return b.String()
@@ -112,19 +115,25 @@ func (r runState) view(finished bool, height int) string {
 
 func (a addResult) view() string {
 	var b strings.Builder
-	b.WriteString("  " + titleStyle.Render("Add these to the repo for "+a.app) + "\n")
-	b.WriteString(dimStyle.Render("  Settings → Secrets and variables → Actions") + "\n\n")
-	b.WriteString("  " + keyStyle.Render("SSH_DEPLOY_KEY") + dimStyle.Render("  (secret)") + "\n")
-	b.WriteString(dimStyle.Render("    cat "+a.keyPath) + "\n\n")
-	b.WriteString("  " + keyStyle.Render("SSH_KNOWN_HOSTS") + dimStyle.Render("  (variable, not a secret)") + "\n")
+	b.WriteString(gutter + dot("ok") + " " + titleStyle.Render("Add these to the repo for "+a.app) + "\n")
+	b.WriteString(dimStyle.Render(gutter+"  Settings → Secrets and variables → Actions") + "\n")
+
+	b.WriteString(section("secret"))
+	b.WriteString(gutter + "  " + keyStyle.Render("SSH_DEPLOY_KEY") + "\n")
+	b.WriteString(dimStyle.Render(gutter+"  cat "+a.keyPath) + "\n")
+
+	b.WriteString(section("variable, not a secret"))
+	b.WriteString(gutter + "  " + keyStyle.Render("SSH_KNOWN_HOSTS") + "\n")
 	for _, l := range strings.Split(a.knownHosts, "\n") {
-		b.WriteString(dimStyle.Render("    "+l) + "\n")
+		b.WriteString(dimStyle.Render(gutter+"  "+l) + "\n")
 	}
+
 	if a.rotated {
-		b.WriteString(warnStyle.Render("\n  The previous key stopped working just now. Update the secret\n" +
-			"  before this app's next deploy.\n"))
+		b.WriteString("\n" + gutter + dot("warn") + " " + warnStyle.Render(
+			"the previous key stopped working just now") + "\n")
+		b.WriteString(para(gutter+"  ", "Update the secret before this app's next deploy."))
 	} else {
-		b.WriteString(dimStyle.Render("\n  Then add app: " + a.app + " to the deploy step in that repo's workflow.\n"))
+		b.WriteString("\n" + para(gutter, "Then add app: "+a.app+" to the deploy step in that repo's workflow."))
 	}
 	return b.String()
 }
@@ -166,6 +175,50 @@ func (m model) startRotate(app string) tea.Cmd {
 	go func() {
 		res, err := doAdd(t, app, "", true, ch)
 		ch <- runDoneMsg{err: err, result: res}
+	}()
+	return m.run.wait()
+}
+
+// startInit prepares the server, then optionally the proxy. Two scripts rather
+// than one, streamed to the same screen: the proxy is a choice, and a box whose
+// Docker install worked but whose proxy did not is still a usable server.
+func (m model) startInit(o initOpts) tea.Cmd {
+	ch := m.run.ch
+	t := m.tgt
+	go func() {
+		c := exec.Command("ssh", t.sshArgs(envPrefix(map[string]string{"SHARED_NETWORK": o.network})+"sh -s")...)
+		if err := stream(ch, c, AlpineInitScript); err != nil {
+			ch <- runDoneMsg{err: fmt.Errorf("could not set the server up -- see the output above")}
+			return
+		}
+		if !o.proxy {
+			ch <- runDoneMsg{}
+			return
+		}
+		ch <- runOutputMsg("")
+		ch <- runOutputMsg("installing the shared reverse proxy...")
+		pc := exec.Command("ssh", t.sshArgs(envPrefix(proxyEnv(proxyOpts{
+			network: o.network, image: o.image,
+		}))+"sh -s")...)
+		if err := stream(ch, pc, AlpineProxyScript); err != nil {
+			ch <- runDoneMsg{err: fmt.Errorf("the server is ready, but the proxy failed -- press s to retry it")}
+			return
+		}
+		ch <- runDoneMsg{}
+	}()
+	return m.run.wait()
+}
+
+// startProxy installs or updates the one shared reverse proxy. Not destructive
+// and not app-scoped, so it needs no confirmation step -- re-running it is how
+// you update Caddy or move it to another network.
+func (m model) startProxy(o proxyOpts) tea.Cmd {
+	ch := m.run.ch
+	t := m.tgt
+	go func() {
+		c := exec.Command("ssh", t.sshArgs(envPrefix(proxyEnv(o))+"sh -s")...)
+		err := stream(ch, c, AlpineProxyScript)
+		ch <- runDoneMsg{err: err}
 	}()
 	return m.run.wait()
 }

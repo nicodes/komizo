@@ -24,10 +24,14 @@
 #   CI_PUBKEY      deploy PUBLIC key                              (required)
 #   CONFIG_IMAGE   registry path, no tag, carrying compose.yml    (required)
 #   APP_NAME       which app on this box                          (default: app)
-#   CI_USER        deploy account            (default: cd-<app>, cd-user for app)
+#   CI_USER        deploy account            (default: cd-<app>)
 #   APP_DIR        root-owned app directory                (default: /srv/<app>)
 #   HARDEN_SSH     1 to also harden sshd machine-wide             (default: 0)
-#   SHARED_NETWORK docker network to create for a reverse proxy   (default: none)
+#
+# The server must already be initialised (alpine-init.sh) -- this script does
+# not install Docker. Setting a server up and adding an app to it are separate
+# things, so that a fresh box has a state you can name rather than becoming
+# half-configured as a side effect of the first app.
 
 set -eu
 
@@ -40,6 +44,10 @@ set -eu
 APP_NAME="${APP_NAME:-}"
 case "$APP_NAME" in
 	'') echo "error: APP_NAME is required" >&2; exit 1 ;;
+	# A leading underscore is reserved for ncicd's own directories under /srv,
+	# starting with /srv/_proxy. Refusing it here means an app can never collide
+	# with one, and the inventory can tell them apart by name alone.
+	_*) echo "error: APP_NAME must not start with '_' -- those names are reserved" >&2; exit 1 ;;
 	*[!A-Za-z0-9_-]*) echo "error: APP_NAME must be letters, digits, underscore or hyphen" >&2; exit 1 ;;
 esac
 
@@ -61,10 +69,12 @@ APP_DIR="${APP_DIR:-/srv/$APP_NAME}"
 # published under: matching all of them means an upgrade replaces the old block
 # instead of leaving one behind, while what we WRITE is always "ncicd".
 PROJECT_MARKERS='(ncicd|cicd|alpine-server-scripts|boot\.sh)'
+# Must match alpine-proxy.sh. Fixed rather than discovered so the generated
+# deploy script can address the proxy without searching for it.
+PROXY_CONTAINER=ncicd-caddy
 CI_PUBKEY="${CI_PUBKEY:-${1:-}}"
 CONFIG_IMAGE="${CONFIG_IMAGE:-}"
 HARDEN_SSH="${HARDEN_SSH:-0}"
-SHARED_NETWORK="${SHARED_NETWORK:-}"
 
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -93,28 +103,17 @@ case "${CONFIG_IMAGE##*/}" in
 	*:*) die "CONFIG_IMAGE must not include a tag (got '$CONFIG_IMAGE'); the deploy tag is appended per run" ;;
 esac
 
-# --- 1. Docker -------------------------------------------------------------
+# --- 1. Preconditions ------------------------------------------------------
+# The server half of the setup is its own step. Checking rather than installing
+# keeps that boundary honest: if this script quietly ran apk, "initialised"
+# would stop meaning anything.
 
-log "Installing Docker"
-apk update
-apk add --no-cache docker docker-cli-compose openssh doas
-
-log "Enabling Docker at boot"
-rc-update add docker default
-rc-service docker start || true   # already running on re-run
-
-# A network several apps can join, so a shared reverse proxy can reach them
-# without any app publishing a port. Declared `external: true` in each app's
-# compose.yml. Created here because it has to exist before the first app that
-# references it, and nothing else on the box owns it.
-if [ -n "$SHARED_NETWORK" ]; then
-	if docker network inspect "$SHARED_NETWORK" >/dev/null 2>&1; then
-		log "Shared network '$SHARED_NETWORK' already exists"
-	else
-		log "Creating shared network '$SHARED_NETWORK'"
-		docker network create "$SHARED_NETWORK" >/dev/null
-	fi
-fi
+command -v docker >/dev/null 2>&1 \
+	|| die "this server is not set up yet -- run 'ncicd init' first"
+command -v doas >/dev/null 2>&1 \
+	|| die "doas is missing -- run 'ncicd init' first to install it"
+docker info >/dev/null 2>&1 \
+	|| die "Docker is installed but not running -- try 'rc-service docker start'"
 
 # --- 2. CI user ------------------------------------------------------------
 
@@ -187,21 +186,33 @@ if [ ! -f "$APP_DIR/compose.yml" ]; then
 fi
 chown root:root "$APP_DIR/compose.yml"
 chmod 644 "$APP_DIR/compose.yml"
-# Three env files, split by who writes them and who may read them:
+# Two env files, split by who writes them and who may read them:
 #
 #   .env         APP_VERSION only. Compose reads this for ${APP_VERSION}
 #                substitution in compose.yml. Written by the deploy script.
-#   config.env   Non-secret service config, shipped in the config image and
-#                replaced on every deploy. Safe to read; it is in a registry.
 #   secrets.env  Production credentials, written only by set-secret. 600 so the
 #                CI user cannot read it back -- it may set values, never read
 #                them.
-for f in .env config.env secrets.env; do
+#
+# There is deliberately no third file for non-secret settings. It would ship in
+# the config image, be readable by anyone who can pull it, and be versioned per
+# commit -- all of which is equally true of an `environment:` block in
+# compose.yml, which additionally scopes per service. A second mechanism with
+# no distinct property is just something else to explain.
+for f in .env secrets.env; do
 	touch "$APP_DIR/$f"
 	chown root:root "$APP_DIR/$f"
 done
 chmod 600 "$APP_DIR/.env" "$APP_DIR/secrets.env"
-chmod 644 "$APP_DIR/config.env"
+
+# Where this app's reverse-proxy fragment lands, if it ships one. The shared
+# Caddy imports /srv/*/caddy/*.caddy, so a file appearing here is all it takes
+# for the app to be routable -- and nothing shared has to be edited to add it.
+# Created empty either way: the glob tolerates an empty directory, and having
+# the path exist means the deploy script never has to decide whether to make it.
+mkdir -p "$APP_DIR/caddy"
+chown root:root "$APP_DIR/caddy"
+chmod 755 "$APP_DIR/caddy"
 
 # --- 3. Deploy path --------------------------------------------------------
 # The only privileged thing the CI user may do, besides setting a secret.
@@ -212,7 +223,7 @@ chmod 644 "$APP_DIR/config.env"
 # an image tag and a path component, so a value containing a newline, a slash
 # or a shell metacharacter could otherwise do real damage.
 #
-# When CONFIG_IMAGE is set, compose.yml and config.env come OUT OF THE IMAGE
+# When CONFIG_IMAGE is set, compose.yml comes OUT OF THE IMAGE
 # for that tag rather than off the disk. That is what lets CI change the shape
 # of the stack without ever writing to this box: the file arrives as a registry
 # layer that root extracts, so altering it requires registry push, which
@@ -224,8 +235,11 @@ cat > "$DEPLOY_BIN" <<EOF
 set -eu
 
 CONFIG_IMAGE="$CONFIG_IMAGE"
+PROXY_CONTAINER="$PROXY_CONTAINER"
 
 version="\${1:-}"
+registry="\${2:-}"
+registry_user="\${3:-}"
 cd "$APP_DIR"
 
 # Tags and SHAs only: letters, digits, dot, underscore, hyphen. Required --
@@ -233,11 +247,41 @@ cd "$APP_DIR"
 # fetched before anything can run.
 case "\$version" in
 	*[!A-Za-z0-9._-]*|'')
-		echo "deploy: usage: deploy <tag>" >&2
+		echo "deploy: usage: deploy <tag> [<registry> <registry-user>]  (token on stdin)" >&2
 		echo "deploy: refusing version '\$version'" >&2
 		exit 1
 		;;
 esac
+
+# Registry authentication happens HERE, as root, and not over the deploy user's
+# SSH session. It has to: this script pulls as root, so it reads root's
+# ~/.docker/config.json. A 'docker login' run as the deploy user would write to
+# that user's home instead and the pull below would still be anonymous -- which
+# fails only on a private registry, and looks like a broken image reference.
+#
+# The token arrives on STDIN, never as an argument: arguments are visible in the
+# host's process list to every other user on the box.
+if [ -n "\$registry" ]; then
+	case "\$registry" in
+		*[!A-Za-z0-9.:_-]*)
+			echo "deploy: refusing registry '\$registry'" >&2
+			exit 1
+			;;
+	esac
+	case "\$registry_user" in
+		''|*[!A-Za-z0-9._@-]*)
+			echo "deploy: refusing registry user '\$registry_user'" >&2
+			exit 1
+			;;
+	esac
+	# Credentials must not outlive the deploy, so drop them however we exit.
+	trap 'docker logout "\$registry" >/dev/null 2>&1 || true' EXIT INT TERM
+	if ! docker login "\$registry" -u "\$registry_user" --password-stdin >/dev/null; then
+		echo "deploy: could not authenticate to \$registry as \$registry_user" >&2
+		exit 1
+	fi
+	echo "deploy: authenticated to \$registry as \$registry_user"
+fi
 
 # Reported because the CI user cannot read .env itself (600 root) and has no
 # other way to learn what it is replacing. Printed before anything changes, so
@@ -269,28 +313,103 @@ if [ ! -f "\$staging/compose.yml" ]; then
 	exit 1
 fi
 
-# Swap both files in, then validate what compose actually resolves. A
-# broken compose.yml must not be left behind on a box that was working, so
-# keep backups and put them back if the check fails.
+# Swap everything in, then validate. A broken config must not be left behind
+# on a box that was working, so keep backups and put them back if a check
+# fails -- including the reverse-proxy fragment, which is why this is a
+# function rather than three copies of the same three lines.
+revert() {
+	cat compose.yml.prev > compose.yml
+	rm -rf caddy
+	mv caddy.prev caddy
+	rm -f compose.yml.prev
+}
+
 cp compose.yml compose.yml.prev
-cp config.env config.env.prev
+# mkdir first: the setup script creates this, but a box bootstrapped before
+# fragments existed would not have it, and 'cp -a' of a missing directory would
+# abort the deploy under 'set -e'.
+mkdir -p caddy
+rm -rf caddy.prev
+cp -a caddy caddy.prev
+
 cat "\$staging/compose.yml" > compose.yml
-if [ -f "\$staging/config.env" ]; then
-	cat "\$staging/config.env" > config.env
+
+# The app's reverse-proxy fragment, if it ships one. Replaced wholesale rather
+# than merged: a route the app has stopped publishing must disappear, and the
+# config image is the whole truth about this version.
+#
+# An app with no caddy/ directory in its image is left with an empty one, which
+# is how a service that should not be routable stays unroutable.
+#
+# Everything is concatenated into ONE file, caddy/app.caddy, because Caddy
+# rejects an import glob containing more than one wildcard: the proxy imports
+# /srv/*/caddy/app.caddy, so the wildcard is spent on the app name and the
+# filename has to be fixed. Joining them here means an app can still ship
+# several .caddy files if that is how it wants to organise them.
+rm -rf caddy
+mkdir -p caddy
+if [ -d "\$staging/caddy" ]; then
+	# *.caddy only, so a stray README in the directory cannot break the import.
+	for f in "\$staging"/caddy/*.caddy; do
+		[ -f "\$f" ] || continue
+		cat "\$f"
+		# Guard against a fragment with no trailing newline running into the
+		# next one and silently merging two site blocks.
+		printf '\n'
+	done > caddy/app.caddy
+	[ -s caddy/app.caddy ] || rm -f caddy/app.caddy
 fi
+chown -R root:root caddy
+chmod 755 caddy
 rm -rf "\$staging"
 
 # APP_VERSION is passed in rather than read from .env: the file is only
 # updated once this check passes, so without it compose would validate the
 # new file against the previous version and warn about an unset variable.
 if ! APP_VERSION="\$version" docker compose config -q; then
-	cat compose.yml.prev > compose.yml
-	cat config.env.prev > config.env
-	rm -f compose.yml.prev config.env.prev
+	revert
 	echo "deploy: compose.yml from \$ref is not valid -- reverted, nothing restarted" >&2
 	exit 1
 fi
-rm -f compose.yml.prev config.env.prev
+
+# An app that publishes routes needs somewhere to publish them TO. Without this
+# the fragment would land on disk, nothing would read it, and the deploy would
+# report success -- a green pipeline and a dead domain, with nothing in the log
+# saying why. Every other silent failure this script guards against is treated
+# the same way.
+#
+# An app with no fragment is unaffected: a worker or a cron job is not meant to
+# be reachable, and a box with no proxy can still run one.
+proxy_up=0
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "\$PROXY_CONTAINER"; then
+	proxy_up=1
+fi
+
+if [ -f caddy/app.caddy ] && [ "\$proxy_up" = 0 ]; then
+	revert
+	echo "deploy: this app publishes routes, but the reverse proxy is not running." >&2
+	echo "deploy: nothing would serve them, so this is a failure rather than a no-op." >&2
+	echo "deploy: start it with 'ncicd proxy --host <this box>', or press s in the interface." >&2
+	echo "deploy: reverted, nothing restarted" >&2
+	exit 1
+fi
+
+# Validate the fragment BEFORE anything restarts, and validate it the way the
+# proxy will actually read it: inside the container, against the whole imported
+# config. A fragment that parses alone can still collide with another app's --
+# two site blocks for the same hostname, say -- and only the combined check
+# catches that.
+if [ "\$proxy_up" = 1 ]; then
+	if ! caddy_err="\$(docker exec "\$PROXY_CONTAINER" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1)"; then
+		revert
+		echo "deploy: the caddy fragment from \$ref is not valid -- reverted, nothing restarted" >&2
+		printf '%s\n' "\$caddy_err" | sed 's/^/  /' >&2
+		exit 1
+	fi
+fi
+
+rm -f compose.yml.prev
+rm -rf caddy.prev
 
 # Committed only once the config for this version is in place and valid, so a
 # deploy that fails earlier leaves the box claiming the version it is actually
@@ -305,6 +424,22 @@ fi
 docker compose pull
 docker compose up -d --remove-orphans
 docker image prune -f
+
+# Reload AFTER the containers are up, so the upstream the fragment names is
+# already resolvable when Caddy re-reads its config. Caddy does not watch the
+# imported files, so without this the fragment sits on disk doing nothing.
+#
+# Validated above, so a failure here is unexpected -- but Caddy keeps its
+# previous config when a reload fails, so the other apps on this box keep
+# serving either way. Reported rather than fatal: the containers for THIS app
+# are already running by now, and failing the deploy would misreport that.
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "\$PROXY_CONTAINER"; then
+	if docker exec "\$PROXY_CONTAINER" caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
+		echo "deploy: reverse proxy reloaded"
+	else
+		echo "deploy: WARNING -- the proxy would not reload; it is still serving its previous routes" >&2
+	fi
+fi
 
 # Show the resulting topology. Without this a compose.yml that silently drops
 # or renames a service looks identical in the log to one that changed nothing.
@@ -493,7 +628,7 @@ cat <<EOF
 EOF
 
 cat <<-EOF
-	compose.yml and config.env come from $CONFIG_IMAGE:<tag> on every deploy.
+	compose.yml comes from $CONFIG_IMAGE:<tag> on every deploy.
 	Nothing to install by hand. From CI:
 	  ssh $CI_USER@<host> doas $DEPLOY_BIN <tag>
 EOF

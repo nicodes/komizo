@@ -18,6 +18,10 @@ set -eu
 APP_NAME="${APP_NAME:-}"
 case "$APP_NAME" in
 	'') echo "error: APP_NAME is required" >&2; exit 1 ;;
+	# Reserved for ncicd's own directories, /srv/_proxy among them. Removing one
+	# through the app path would take the shared proxy down and leave every other
+	# app on the box unreachable.
+	_*) echo "error: APP_NAME must not start with '_' -- those names are reserved" >&2; exit 1 ;;
 	*[!A-Za-z0-9_-]*) echo "error: APP_NAME must be letters, digits, underscore or hyphen" >&2; exit 1 ;;
 esac
 
@@ -27,6 +31,7 @@ KEEP_DATA="${KEEP_DATA:-0}"
 DEPLOY_BIN="/usr/local/bin/deploy-$APP_NAME"
 SECRET_BIN="/usr/local/bin/set-secret-$APP_NAME"
 PROJECT_MARKERS='(ncicd|cicd|alpine-server-scripts|boot\.sh)'
+PROXY_CONTAINER=ncicd-caddy
 
 log() { printf '\n==> %s\n' "$*"; }
 
@@ -50,6 +55,26 @@ if [ -f "$APP_DIR/compose.yml" ] && command -v docker >/dev/null 2>&1; then
 	# earlier deploy does not survive the teardown.
 	docker compose -f "$APP_DIR/compose.yml" --project-directory "$APP_DIR" \
 		down --remove-orphans $volflag >/dev/null 2>&1 || true
+fi
+
+# --- 1b. the reverse-proxy route -------------------------------------------
+# Done here, immediately after the containers stop, and done even with
+# KEEP_DATA=1. The shared Caddy imports /srv/*/caddy/*.caddy, so a fragment left
+# behind keeps advertising a hostname whose containers are gone -- the domain
+# would answer with a 502 instead of going quiet, and Caddy would keep renewing
+# a certificate for it forever.
+
+if [ -d "$APP_DIR/caddy" ]; then
+	log "Removing the reverse-proxy route for '$APP_NAME'"
+	rm -rf "$APP_DIR/caddy"
+	if command -v docker >/dev/null 2>&1 &&
+		docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$PROXY_CONTAINER"; then
+		if docker exec "$PROXY_CONTAINER" caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
+			log "Reverse proxy reloaded"
+		else
+			echo "warning: the proxy would not reload; it may still be serving '$APP_NAME'" >&2
+		fi
+	fi
 fi
 
 # --- 2. the privileged commands and their doas rules -----------------------
@@ -107,6 +132,9 @@ else
 	# Guard against a mis-set APP_DIR taking something else with it.
 	case "$APP_DIR" in
 		/|/etc|/usr|/var|/home|/root|/srv) echo "error: refusing to remove $APP_DIR" >&2; exit 1 ;;
+		# The shared proxy lives under /srv too, and taking it out through the
+		# app path would make every other app on the box unreachable.
+		/srv/_*) echo "error: refusing to remove $APP_DIR -- it belongs to ncicd, not an app" >&2; exit 1 ;;
 	esac
 	rm -rf "$APP_DIR"
 fi

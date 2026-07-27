@@ -3,123 +3,120 @@ package main
 import (
 	"fmt"
 	"strings"
-
-	"github.com/charmbracelet/lipgloss"
 )
-
-var (
-	titleStyle = lipgloss.NewStyle().Bold(true)
-	dimStyle   = lipgloss.NewStyle().Faint(true)
-	keyStyle   = lipgloss.NewStyle().Bold(true)
-	selStyle   = lipgloss.NewStyle().Bold(true).Reverse(true)
-	errStyle   = lipgloss.NewStyle().Bold(true)
-	warnStyle  = lipgloss.NewStyle().Bold(true)
-)
-
-func header(t target, width int) string {
-	line := fmt.Sprintf(" ncicd  %s", t.addr())
-	if t.port != 22 {
-		line += fmt.Sprintf(":%d", t.port)
-	}
-	if width > lipgloss.Width(line) {
-		line += strings.Repeat(" ", width-lipgloss.Width(line))
-	}
-	return titleStyle.Render(line) + "\n"
-}
-
-// help renders the key hints as a single line, so the shortcuts are always
-// visible rather than something to remember.
-func help(pairs ...string) string {
-	var parts []string
-	for i := 0; i+1 < len(pairs); i += 2 {
-		parts = append(parts, keyStyle.Render(pairs[i])+" "+dimStyle.Render(pairs[i+1]))
-	}
-	return "\n  " + strings.Join(parts, dimStyle.Render("  ·  ")) + "\n"
-}
 
 func viewList(m model) string {
 	var b strings.Builder
 
 	if len(m.apps) == 0 {
-		b.WriteString("\n  No apps on this server yet.\n")
-		b.WriteString(dimStyle.Render("\n  An app is a compose stack with its own directory, deploy account\n" +
-			"  and privileged commands. Add one to get started.\n"))
-		b.WriteString(help("a", "add an app", "R", "refresh", "q", "quit"))
+		b.WriteString("\n" + gutter + titleStyle.Render("No apps yet") + "\n")
+		b.WriteString("\n" + para(gutter, "An app is a compose stack with its own directory, deploy account\nand privileged commands."))
+		b.WriteString("\n" + gutter + keyStyle.Render("a") + dimStyle.Render(" adds one.") + "\n")
+		b.WriteString(m.footer())
+		b.WriteString(help("a", "add an app", "s", "server", "R", "refresh", "q", "quit"))
 		return b.String()
 	}
 
-	b.WriteString("\n")
-	rows := [][]string{{"", "APP", "ACCOUNT", "VERSION", "UP", "CONFIG IMAGE"}}
-	for i, a := range m.apps {
-		marker := "  "
-		if i == m.cursor {
-			marker = "▸ "
-		}
-		rows = append(rows, []string{marker, a.name, a.user, short(a.version), a.running, a.image})
+	rows := [][]string{{"APP", "ACCOUNT", "VERSION", "UP", "ROUTES"}}
+	for _, a := range m.apps {
+		rows = append(rows, []string{
+			a.name,
+			dimStyle.Render(a.user),
+			short(a.version),
+			upCount(a.running),
+			routesOrNone(a.routes),
+		})
 	}
-	widths := make([]int, len(rows[0]))
-	for _, r := range rows {
-		for i, c := range r {
-			if len(c) > widths[i] {
-				widths[i] = len(c)
-			}
-		}
-	}
-	for ri, r := range rows {
-		var line strings.Builder
-		for i, c := range r {
-			line.WriteString(c)
-			if i < len(r)-1 {
-				line.WriteString(strings.Repeat(" ", widths[i]-len(c)+2))
-			}
-		}
-		switch {
-		case ri == 0:
-			b.WriteString("  " + dimStyle.Render(line.String()) + "\n")
-		case ri-1 == m.cursor:
-			b.WriteString("  " + selStyle.Render(line.String()) + "\n")
-		default:
-			b.WriteString("  " + line.String() + "\n")
-		}
-	}
+	b.WriteString("\n" + table(rows, m.cursor))
 
 	if m.status != "" {
-		b.WriteString("\n  " + warnStyle.Render(m.status) + "\n")
+		b.WriteString("\n" + gutter + warnStyle.Render(m.status) + "\n")
 	}
+	b.WriteString(m.footer())
 	b.WriteString(help(
-		"↑↓", "select", "enter", "details", "a", "add",
+		"↑↓", "select", "enter", "details", "a", "add", "s", "server",
 		"r", "rotate key", "x", "remove", "R", "refresh", "q", "quit"))
+	return b.String()
+}
+
+// footer is the standing state of the box under the app list: whether the thing
+// every app depends on is working. Always present, so its absence never has to
+// be interpreted.
+func (m model) footer() string {
+	var b strings.Builder
+	b.WriteString("\n" + gutter + listProxyLine(m.proxy) + "\n")
+	if d := m.net.duplicateAliases(); len(d) > 0 {
+		b.WriteString(gutter + dot("err") + " " + errStyle.Render(fmt.Sprintf(
+			"%d alias clash on %s", len(d), m.net.name)) +
+			dimStyle.Render(" — press s") + "\n")
+	}
 	return b.String()
 }
 
 func viewDetail(m model) string {
 	a := m.apps[m.cursor]
 	var b strings.Builder
-	b.WriteString("\n  " + titleStyle.Render(a.name) + "\n\n")
-	for _, kv := range [][2]string{
-		{"deploy account", a.user},
-		{"directory", a.dir},
-		{"live version", short(a.version)},
-		{"containers up", a.running},
-		{"config image", a.image},
-		{"deploy command", "doas /usr/local/bin/deploy-" + a.name},
-		{"secret command", "doas /usr/local/bin/set-secret-" + a.name},
-	} {
-		b.WriteString(fmt.Sprintf("  %-16s %s\n", dimStyle.Render(kv[0]), kv[1]))
-	}
-	b.WriteString(dimStyle.Render("\n  Deploys happen from CI. This account can only deploy a tag that\n" +
-		"  already exists in the registry, and set secrets it cannot read back.\n"))
-	b.WriteString(help("esc", "back", "q", "back"))
+	b.WriteString("\n" + gutter + titleStyle.Render(a.name) + "\n")
+
+	b.WriteString(section("where"))
+	b.WriteString(kv("account", dimStyle.Render(a.user)))
+	b.WriteString(kv("directory", dimStyle.Render(a.dir)))
+	b.WriteString(kv("config image", a.image))
+
+	b.WriteString(section("now"))
+	b.WriteString(kv("version", short(a.version)))
+	b.WriteString(kv("containers", upCount(a.running)))
+	b.WriteString(kv("routes", routesOrNone(a.routes)))
+
+	b.WriteString(section("what CI may run"))
+	b.WriteString(kv("deploy", dimStyle.Render("doas /usr/local/bin/deploy-"+a.name)))
+	b.WriteString(kv("secrets", dimStyle.Render("doas /usr/local/bin/set-secret-"+a.name)))
+
+	b.WriteString("\n" + para(gutter, "That is the whole grant. This account can deploy a tag that already\nexists in your registry, and set secrets it cannot read back."))
+	b.WriteString(help("esc", "back", "r", "rotate key", "x", "remove"))
 	return b.String()
 }
 
 // short trims a commit SHA to something readable without losing which it is.
 func short(v string) string {
 	if v == "" || v == "none" {
-		return dimStyle.Render("none")
+		return dimStyle.Render("never deployed")
 	}
 	if len(v) > 12 {
 		return v[:12]
 	}
 	return v
+}
+
+// upCount colours the container count, because zero is the number that matters
+// and it is otherwise indistinguishable from any other digit at a glance.
+func upCount(n string) string {
+	if n == "0" || n == "" {
+		return errStyle.Render("0")
+	}
+	return okStyle.Render(n)
+}
+
+// listProxyLine is the one-line summary under the app list. Always shown,
+// including when there is no proxy: "apps publish their own ports" is
+// information, not an absence of it.
+func listProxyLine(p proxyRow) string {
+	switch {
+	case !p.installed:
+		return dot("") + dimStyle.Render(" no shared proxy — apps publish their own ports · press s")
+	case !p.running():
+		return dot("err") + " " + errStyle.Render("proxy is NOT running") +
+			dimStyle.Render(" — nothing is being served · press s")
+	default:
+		return dot("ok") + dimStyle.Render(" proxy running on "+p.network)
+	}
+}
+
+// routesOrNone keeps the column readable when an app publishes nothing through
+// the proxy, which is normal for a worker or a cron job.
+func routesOrNone(routes string) string {
+	if routes == "" {
+		return dimStyle.Render("—")
+	}
+	return routes
 }

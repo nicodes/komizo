@@ -25,3 +25,20 @@ var AlpineScript string
 //
 //go:embed scripts/alpine-remove.sh
 var AlpineRemoveScript string
+
+// AlpineInitScript prepares the server itself: the container runtime and the
+// network apps share. Separate from AlpineScript because setting a server up
+// and putting an app on it are different things -- a fresh box is either
+// initialised or it is not, rather than becoming half-configured as a side
+// effect of whichever app was added first.
+//
+//go:embed scripts/alpine-init.sh
+var AlpineInitScript string
+
+// AlpineProxyScript installs the one shared reverse proxy. Separate again
+// because it is per-SERVER, not per-app: it takes no app name, creates no
+// account, and re-running it is how you update Caddy or move it to another
+// network.
+//
+//go:embed scripts/alpine-proxy.sh
+var AlpineProxyScript string

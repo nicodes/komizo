@@ -1,0 +1,105 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+)
+
+// Setting a server up is its own command, not something that happens to a box
+// as a side effect of adding the first app. That split is what lets the
+// interface say "connected, not set up yet" rather than presenting an empty
+// list that looks the same as a server with no apps on it.
+
+type initOpts struct {
+	host    string
+	network string
+	proxy   bool
+	image   string
+	port    int
+}
+
+func runInit(args []string) error {
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	fs.Usage = func() { usageInit(fs) }
+	var o initOpts
+	fs.StringVar(&o.host, "host", "", "server to set up, [user@]HOST (user defaults to root)")
+	fs.StringVar(&o.network, "network", defaultNetwork, "docker network apps join to be reachable")
+	fs.BoolVar(&o.proxy, "proxy", true, "also install the shared reverse proxy")
+	fs.StringVar(&o.image, "proxy-image", defaultProxy, "caddy image to run")
+	fs.IntVar(&o.port, "port", 22, "SSH port")
+	if err := fs.Parse(args); err != nil {
+		return errSilent
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))
+	}
+	if o.host == "" {
+		return fmt.Errorf("--host is required, e.g. --host root@myapp.example.com")
+	}
+	if err := validateNetworkName(o.network); err != nil {
+		return err
+	}
+	if !onlyChars(o.image, imageChars) {
+		return fmt.Errorf("--proxy-image contains characters that are not valid in an image reference: %q", o.image)
+	}
+
+	tgt, err := parseTarget(o.host)
+	if err != nil {
+		return err
+	}
+	tgt.port = o.port
+	tgt.portExplicit = portWasSet(fs)
+	tgt.resolvePort()
+	if err := validateHost(tgt.host); err != nil {
+		return err
+	}
+
+	step("Checking %s:%d", tgt.addr(), tgt.port)
+	if !tgt.reachable() {
+		return fmt.Errorf("cannot SSH in as %s without a password.\n"+
+			"    This needs an existing login to work from. If you normally type a\n"+
+			"    password, run 'ssh-copy-id %s' first.", tgt.user, tgt.addr())
+	}
+	note("reachable.")
+
+	step("Setting up %s", tgt.host)
+	if err := tgt.runScript(AlpineInitScript, map[string]string{"SHARED_NETWORK": o.network}); err != nil {
+		return fmt.Errorf("the server-side script failed -- see the output above")
+	}
+
+	if !o.proxy {
+		note("skipping the reverse proxy (--proxy=false). Apps must publish their own ports.")
+		return nil
+	}
+	step("Installing the shared reverse proxy")
+	if err := tgt.runScript(AlpineProxyScript, proxyEnv(proxyOpts{
+		network: o.network,
+		image:   o.image,
+	})); err != nil {
+		return fmt.Errorf("Docker is installed, but the proxy failed -- see the output above.\n" +
+			"    Re-run 'ncicd proxy' once you have fixed it; the server itself is ready.")
+	}
+	return nil
+}
+
+func usageInit(fs *flag.FlagSet) {
+	fmt.Print(`ncicd init - prepare a fresh server
+
+  ncicd init --host root@myhost
+
+Installs Docker, enables it at boot, creates the network apps share, and starts
+the one reverse proxy that terminates TLS for all of them. Nothing app-specific:
+no accounts, nothing under /srv.
+
+Certificates need no configuration -- Caddy obtains and renews them on its own,
+for whatever hostnames your apps publish.
+
+Pass --proxy=false for a box where an app publishes its own ports.
+
+Safe to re-run. Then add apps with 'ncicd add', or just 'ncicd root@myhost'.
+
+Flags:
+`)
+	fs.PrintDefaults()
+	fmt.Println()
+}

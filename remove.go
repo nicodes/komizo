@@ -73,12 +73,16 @@ func runScript(args []string) error {
 		which = args[0]
 	}
 	switch which {
+	case "init":
+		fmt.Print(AlpineInitScript)
 	case "add":
 		fmt.Print(AlpineScript)
 	case "remove":
 		fmt.Print(AlpineRemoveScript)
+	case "proxy":
+		fmt.Print(AlpineProxyScript)
 	default:
-		return fmt.Errorf("no such script %q -- try 'add' or 'remove'", which)
+		return fmt.Errorf("no such script %q -- try 'init', 'add', 'remove' or 'proxy'", which)
 	}
 	return nil
 }

@@ -26,12 +26,16 @@ func main() {
 
 	var err error
 	switch os.Args[1] {
+	case "init":
+		err = runInit(os.Args[2:])
 	case "add":
 		err = runAdd(os.Args[2:])
 	case "list":
 		err = runList(os.Args[2:])
 	case "remove":
 		err = runRemove(os.Args[2:])
+	case "proxy":
+		err = runProxy(os.Args[2:])
 	case "script":
 		err = runScript(os.Args[2:])
 	case "-h", "--help", "help":
@@ -46,12 +50,20 @@ func main() {
 			usage()
 			os.Exit(2)
 		}
-		if len(os.Args) > 2 {
-			fmt.Fprintf(os.Stderr, "unexpected argument %q after a host\n\n", os.Args[2])
+		// --port is the one flag the interactive path takes. Without it we read
+		// the port from the user's ssh config instead of assuming 22.
+		fs := flag.NewFlagSet("ncicd", flag.ContinueOnError)
+		fs.Usage = usage
+		port := fs.Int("port", 22, "SSH port")
+		if perr := fs.Parse(os.Args[2:]); perr != nil {
+			os.Exit(2)
+		}
+		if fs.NArg() > 0 {
+			fmt.Fprintf(os.Stderr, "unexpected argument %q after a host\n\n", fs.Arg(0))
 			usage()
 			os.Exit(2)
 		}
-		err = runTUI(os.Args[1])
+		err = runTUI(os.Args[1], *port, portWasSet(fs))
 	}
 
 	if err != nil {
@@ -66,6 +78,7 @@ func usage() {
 	fmt.Print(`ncicd - deploy to your own servers from GitHub Actions
 
   ncicd root@your-server
+  ncicd root@your-server --port 2222
 
 That opens the interface. Everything -- adding an app, rotating its deploy key,
 removing one -- is done from there. It runs on your machine and connects to the
@@ -73,10 +86,16 @@ server itself; you never run anything on the box by hand.
 
 The same operations are available non-interactively, for scripting:
 
+  ncicd init    --host root@HOST
   ncicd add     --host root@HOST --app NAME --config REF
   ncicd list    --host root@HOST
   ncicd remove  --host root@HOST --app NAME
-  ncicd script [remove]
+  ncicd proxy   --host root@HOST
+  ncicd script [init|add|remove|proxy]
+
+"ncicd init" prepares a fresh server: Docker, the shared network, and the one
+Caddy that terminates TLS for every app on the box. It is a separate step from
+adding an app, so a server is either set up or it is not.
 
 "ncicd script" prints the shell this ships to the server, so you can read what
 will run as root before it does.
