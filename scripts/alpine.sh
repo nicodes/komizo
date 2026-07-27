@@ -214,6 +214,19 @@ mkdir -p "$APP_DIR/caddy"
 chown root:root "$APP_DIR/caddy"
 chmod 755 "$APP_DIR/caddy"
 
+# Where an app's static files land, if it ships any.
+#
+# The shared proxy already mounts /srv read-only, so anything here is a
+# directory it can serve directly -- which means an app that is only files needs
+# no container at all. A marketing site, a docs site, a built SPA: config image,
+# a caddy fragment pointing at this path, and nothing running.
+#
+# Created empty either way, for the same reason caddy/ is: the deploy script
+# never has to decide whether to make it.
+mkdir -p "$APP_DIR/public"
+chown root:root "$APP_DIR/public"
+chmod 755 "$APP_DIR/public"
+
 # --- 3. Deploy path --------------------------------------------------------
 # The only privileged thing the CI user may do, besides setting a secret.
 #
@@ -321,16 +334,19 @@ revert() {
 	cat compose.yml.prev > compose.yml
 	rm -rf caddy
 	mv caddy.prev caddy
+	rm -rf public
+	mv public.prev public
 	rm -f compose.yml.prev
 }
 
 cp compose.yml compose.yml.prev
-# mkdir first: the setup script creates this, but a box bootstrapped before
-# fragments existed would not have it, and 'cp -a' of a missing directory would
+# mkdir first: the setup script creates these, but a box bootstrapped before
+# they existed would not have them, and 'cp -a' of a missing directory would
 # abort the deploy under 'set -e'.
-mkdir -p caddy
-rm -rf caddy.prev
+mkdir -p caddy public
+rm -rf caddy.prev public.prev
 cp -a caddy caddy.prev
+cp -a public public.prev
 
 cat "\$staging/compose.yml" > compose.yml
 
@@ -370,6 +386,29 @@ if [ -d "\$staging/caddy" ]; then
 fi
 chown -R root:root caddy
 chmod 755 caddy
+
+# The app's static files, if it ships any. Replaced wholesale like the caddy
+# fragment and for the same reason: the config image is the whole truth about
+# this version, so a file the app has stopped shipping must stop being served.
+#
+# This is what lets an app be nothing but files. The proxy mounts /srv read
+# only, so a fragment can point root at this directory and serve it with no
+# container behind it -- and the files still arrive the way everything else
+# does, as a registry layer root extracts, versioned by the same tag.
+rm -rf public
+mkdir -p public
+if [ -d "\$staging/public" ]; then
+	# The trailing /. copies the CONTENTS, so public/ is the document root
+	# rather than containing one.
+	cp -a "\$staging/public/." public/
+fi
+chown -R root:root public
+# a+rX, not 755: directories need traversing and files only need reading, and X
+# leaves an executable bit off anything that is not already a directory. The
+# proxy reads these as root in its own container either way; the point is that
+# nothing here is accidentally runnable.
+chmod -R a+rX public
+
 rm -rf "\$staging"
 
 # APP_VERSION is passed in rather than read from .env: the file is only
