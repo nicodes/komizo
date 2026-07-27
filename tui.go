@@ -43,7 +43,6 @@ type model struct {
 
 	form      addForm
 	proxyForm proxyFormModel
-	initForm  initForm
 	proxyLogs string
 	confirm   confirmPrompt
 	run       runState
@@ -52,8 +51,7 @@ type model struct {
 }
 
 func newModel(t target) model {
-	return model{tgt: t, scr: screenLoading, form: newAddForm(),
-		proxyForm: newProxyForm(), initForm: newInitForm()}
+	return model{tgt: t, scr: screenLoading, form: newAddForm(), proxyForm: newProxyForm()}
 }
 
 func (m model) Init() tea.Cmd {
@@ -82,7 +80,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A box with nothing installed gets its own screen rather than an empty
 		// app list, which would look identical to a set-up server with no apps.
 		if m.err == nil && !m.srv.ready() {
-			m.initForm = newInitForm()
 			m.scr = screenInit
 			return m, nil
 		}
@@ -133,6 +130,17 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleConfirmKey(msg)
 	case screenResult:
 		switch msg.String() {
+		case "c":
+			// Only meaningful when there is a key on screen to copy.
+			if m.run.result == nil {
+				return m, nil
+			}
+			if err := copyToClipboard(m.run.result.keyPath); err != nil {
+				m.run.result.copyErr = err.Error()
+			} else {
+				m.run.result.copied, m.run.result.copyErr = true, ""
+			}
+			return m, nil
 		case "esc", "q", "enter":
 			m.scr = screenLoading
 			m.status = ""
@@ -223,7 +231,7 @@ func (m model) View() string {
 	case screenDetail:
 		b.WriteString(viewDetail(m))
 	case screenInit:
-		b.WriteString(m.initForm.view(m.srv))
+		b.WriteString(viewInit(m.srv))
 	case screenServer:
 		b.WriteString(m.viewServer())
 	case screenAddForm:
@@ -242,7 +250,7 @@ func (m model) View() string {
 	return trimTrailing(b.String())
 }
 
-func runTUI(hostArg string, port int, portExplicit bool) error {
+func runTUI(hostArg string, port int, portExplicit bool, assumeYes bool) error {
 	tgt, err := parseTarget(hostArg)
 	if err != nil {
 		return err
@@ -257,10 +265,20 @@ func runTUI(hostArg string, port int, portExplicit bool) error {
 	// known_hosts lines we print match the port CI will actually connect on.
 	tgt.resolvePort()
 
-	if !tgt.reachable() {
-		return fmt.Errorf("cannot SSH in as %s without a password.\n"+
-			"    This needs an existing login to work from. If you normally type a\n"+
-			"    password, run 'ssh-copy-id %s' first.", tgt.user, tgt.addr())
+	if r := tgt.probe(); !r.ok() {
+		// A host nobody has met before is the normal state of a server you
+		// just created, so deal with it here rather than sending someone away
+		// to run ssh by hand and come back. It always asks first unless
+		// --accept-host-key said not to.
+		if r.kind == reachUnknownHost {
+			if err := acceptHostKey(tgt, assumeYes); err != nil {
+				return err
+			}
+			r = tgt.probe()
+		}
+		if !r.ok() {
+			return r.explain(tgt)
+		}
 	}
 
 	p := tea.NewProgram(newModel(tgt), tea.WithAltScreen())

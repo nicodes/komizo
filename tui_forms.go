@@ -20,39 +20,10 @@ type field struct {
 	help  string
 	value string
 	check func(string) error
-	// choices, when set, makes this a pick-one field: left/right and space
-	// cycle it and typing does nothing. A yes/no answer should not be a text
-	// box you can misspell.
-	choices []string
-}
-
-// cycle advances a choice field, wrapping. No-op on a text field.
-func (f *field) cycle(by int) {
-	if len(f.choices) == 0 {
-		return
-	}
-	at := 0
-	for i, c := range f.choices {
-		if c == f.value {
-			at = i
-		}
-	}
-	f.value = f.choices[(at+by+len(f.choices))%len(f.choices)]
 }
 
 // render shows the value, with a caret only where one can be typed.
 func (f field) render(focused bool) string {
-	if len(f.choices) > 0 {
-		var parts []string
-		for _, c := range f.choices {
-			if c == f.value {
-				parts = append(parts, keyStyle.Render("["+c+"]"))
-			} else {
-				parts = append(parts, dimStyle.Render(" "+c+" "))
-			}
-		}
-		return strings.Join(parts, " ")
-	}
 	if focused {
 		return f.value + barStyle.Render("▏")
 	}
@@ -344,100 +315,46 @@ func (f proxyFormModel) view(p proxyRow) string {
 
 // --- setting the server up -------------------------------------------------
 
-// initForm is what a fresh box gets instead of an empty app list. Docker used
-// to arrive as a side effect of adding the first app, which meant a server had
-// no state you could name and `proxy` failed on an untouched machine.
-type initForm struct {
-	fields  []field
-	focus   int
-	problem string
-}
-
-// One question, deliberately. The network name used to be asked here too, but
-// it is the worst possible moment to ask: on a fresh box you cannot know
-// whether the default collides, and changing it later means editing every app's
-// compose.yml, since each names the network in its own config image. It is
-// settable from the proxy screen and the --network flag for the rare case.
-func newInitForm() initForm {
-	return initForm{fields: []field{
-		{
-			label:   "reverse proxy",
-			value:   "yes",
-			choices: []string{"yes", "no"},
-			help:    "one Caddy for the whole box, so no app publishes a port. Say no only if an app needs :80 itself.",
-			check:   func(string) error { return nil },
-		},
-	}}
-}
-
-func (f initForm) opts() initOpts {
-	return initOpts{
-		proxy:   f.fields[0].value == "yes",
-		network: defaultNetwork,
-		image:   defaultProxy,
-	}
-}
+// A fresh box gets a statement and one decision, not a form.
+//
+// It asked two questions once -- the network name, then whether to install the
+// proxy. Both are gone. The network is the worst possible thing to decide on a
+// server with nothing on it, and the proxy is what every app on the box is
+// reached through, so "no" only meant finding out later. It is always
+// installed; stopping it afterwards is one keypress on the server screen.
 
 func (m model) handleInitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	f := &m.initForm
 	switch msg.String() {
-	case "q", "ctrl+c":
+	case "q", "esc", "ctrl+c":
 		return m, tea.Quit
-	case "tab", "down":
-		f.focus = (f.focus + 1) % len(f.fields)
-	case "shift+tab", "up":
-		f.focus = (f.focus - 1 + len(f.fields)) % len(f.fields)
-	case "left":
-		f.fields[f.focus].cycle(-1)
-	case "right", " ":
-		f.fields[f.focus].cycle(1)
 	case "enter":
-		if f.focus < len(f.fields)-1 {
-			f.focus++
-			return m, nil
-		}
-		for i := range f.fields {
-			if err := f.fields[i].check(strings.TrimSpace(f.fields[i].value)); err != nil {
-				f.problem = err.Error()
-				f.focus = i
-				return m, nil
-			}
-		}
 		m.scr = screenRunning
 		m.run = newRunState("Setting up " + m.tgt.host)
-		return m, m.startInit(f.opts())
-	case "backspace":
-		if len(f.fields[f.focus].choices) == 0 {
-			v := f.fields[f.focus].value
-			if v != "" {
-				f.fields[f.focus].value = v[:len(v)-1]
-			}
-		}
-		f.problem = ""
-	default:
-		if s := msg.String(); len(s) == 1 && len(f.fields[f.focus].choices) == 0 {
-			f.fields[f.focus].value += s
-			f.problem = ""
-		}
+		return m, m.startInit(initOpts{network: defaultNetwork, image: defaultProxy})
 	}
 	return m, nil
 }
 
-func (f initForm) view(srv serverRow) string {
+func viewInit(srv serverRow) string {
 	var b strings.Builder
 	b.WriteString("\n" + gutter + titleStyle.Render("Connected") +
 		dimStyle.Render(" — this server is not set up yet") + "\n\n")
+
 	if srv.state == "docker-stopped" {
 		b.WriteString(gutter + dot("warn") + " " + warnStyle.Render(
 			"Docker is installed but not running. Continuing will try to start it.") + "\n\n")
-	} else {
-		b.WriteString(para(gutter, "Nothing is installed on it yet. This adds Docker, enables it at boot,\nand creates the '"+defaultNetwork+"' network apps share. No accounts, nothing\nunder /srv — that comes later, when you add an app.") + "\n")
 	}
-	b.WriteString(renderFields(f.fields, f.focus))
-	if f.problem != "" {
-		b.WriteString("\n" + gutter + dot("err") + " " + errStyle.Render(f.problem) + "\n")
+
+	b.WriteString(para(gutter, "Setting it up installs:"))
+	b.WriteString("\n")
+	for _, l := range [][2]string{
+		{"docker", "the container runtime, enabled at boot"},
+		{defaultNetwork, "the network apps share to reach each other"},
+		{"caddy", "one reverse proxy, terminating HTTPS for every app"},
+	} {
+		b.WriteString(gutter + "  " + dimStyle.Render(pad(l[0], 10)) + " " + dimStyle.Render(l[1]) + "\n")
 	}
-	b.WriteString("\n" + para(gutter, "Safe to re-run later; this is also how you update Docker."))
-	b.WriteString(help("←→", "choose", "tab", "next field", "enter", "set up", "q", "quit"))
+	b.WriteString("\n" + para(gutter, "No accounts, and nothing under /srv — that comes later, when you\nadd an app. Safe to re-run; it is also how you update Docker."))
+	b.WriteString(help("enter", "set it up", "q", "quit"))
 	return b.String()
 }

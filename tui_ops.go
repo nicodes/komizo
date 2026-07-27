@@ -37,6 +37,8 @@ type addResult struct {
 	keyPath    string
 	knownHosts string
 	rotated    bool
+	copied     bool
+	copyErr    string
 }
 
 func fetchApps(t target) tea.Cmd {
@@ -106,6 +108,10 @@ func (r runState) view(finished bool, height int) string {
 
 	if r.result != nil {
 		b.WriteString("\n" + r.result.view())
+		if clipboardAvailable() && !r.result.copied {
+			b.WriteString(help("c", "copy the key", "enter", "back"))
+			return b.String()
+		}
 	} else {
 		b.WriteString("\n" + gutter + dot("ok") + " " + titleStyle.Render("Done") + "\n")
 	}
@@ -118,10 +124,31 @@ func (a addResult) view() string {
 	b.WriteString(gutter + dot("ok") + " " + titleStyle.Render("Add these to the repo for "+a.app) + "\n")
 	b.WriteString(dimStyle.Render(gutter+"  Settings → Secrets and variables → Actions") + "\n")
 
+	// The value is NOT shown. This screen ends up in screenshots and scrollback;
+	// the private key must not. Labelled explicitly, because "cat <path>" on its
+	// own line looked enough like a value that it invited pasting the literal
+	// string "cat /home/..." into the secret.
 	b.WriteString(section("secret"))
 	b.WriteString(gutter + "  " + keyStyle.Render("SSH_DEPLOY_KEY") + "\n")
-	b.WriteString(dimStyle.Render(gutter+"  cat "+a.keyPath) + "\n")
+	b.WriteString(gutter + "  " + dimStyle.Render("the private key in this file, contents not shown:") + "\n")
+	b.WriteString(gutter + "    " + a.keyPath + "\n")
+	switch {
+	case a.copied:
+		b.WriteString(gutter + "  " + okStyle.Render("copied to the clipboard") +
+			dimStyle.Render(" — paste it straight in") + "\n")
+	case a.copyErr != "":
+		b.WriteString(gutter + "  " + warnStyle.Render(a.copyErr) + "\n")
+		b.WriteString(gutter + "  " + dimStyle.Render("cat "+a.keyPath) + "\n")
+	case clipboardAvailable():
+		b.WriteString(gutter + "  " + keyStyle.Render("c") +
+			dimStyle.Render(" copies it to the clipboard") + "\n")
+	default:
+		b.WriteString(gutter + "  " + dimStyle.Render("cat "+a.keyPath) + "\n")
+	}
 
+	// Shown in full, unlike the key above: a host key is not confidential --
+	// what it needs is integrity -- and leaving it readable keeps a mismatch
+	// legible in a CI log instead of "***".
 	b.WriteString(section("variable, not a secret"))
 	b.WriteString(gutter + "  " + keyStyle.Render("SSH_KNOWN_HOSTS") + "\n")
 	for _, l := range strings.Split(a.knownHosts, "\n") {
@@ -189,10 +216,6 @@ func (m model) startInit(o initOpts) tea.Cmd {
 		c := exec.Command("ssh", t.sshArgs(envPrefix(map[string]string{"SHARED_NETWORK": o.network})+"sh -s")...)
 		if err := stream(ch, c, AlpineInitScript); err != nil {
 			ch <- runDoneMsg{err: fmt.Errorf("could not set the server up -- see the output above")}
-			return
-		}
-		if !o.proxy {
-			ch <- runDoneMsg{}
 			return
 		}
 		ch <- runOutputMsg("")

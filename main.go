@@ -55,6 +55,9 @@ func main() {
 		fs := flag.NewFlagSet("komizo", flag.ContinueOnError)
 		fs.Usage = usage
 		port := fs.Int("port", 22, "SSH port")
+		// Interactive, so this only skips the confirmation -- without it komizo
+		// still offers to accept an unseen host key, it just asks first.
+		yes := fs.Bool("accept-host-key", false, "accept an unseen host key without asking")
 		if perr := fs.Parse(os.Args[2:]); perr != nil {
 			os.Exit(2)
 		}
@@ -63,7 +66,7 @@ func main() {
 			usage()
 			os.Exit(2)
 		}
-		err = runTUI(os.Args[1], *port, portWasSet(fs))
+		err = runTUI(os.Args[1], *port, portWasSet(fs), *yes)
 	}
 
 	if err != nil {
