@@ -100,10 +100,11 @@ func (t target) quiet(cmd string) (string, error) {
 }
 
 // reachable reports whether we can open a session without a password.
-func (t target) reachable() bool {
-	_, err := t.quiet("true")
-	return err == nil
-}
+//
+// Kept only for callers that genuinely need a yes/no. Anything that reports a
+// failure to a person should use probe() and explain(): the reason matters, and
+// "cannot log in" is the wrong answer for three of the four ways this fails.
+func (t target) reachable() bool { return t.probe().ok() }
 
 // runScript pipes a script to the far end and runs it there, with its output
 // streamed straight through so a long bootstrap shows progress as it happens.

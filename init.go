@@ -13,9 +13,10 @@ import (
 type initOpts struct {
 	host    string
 	network string
-	proxy   bool
 	image   string
 	port    int
+	// See addOpts.acceptHostKey.
+	acceptHostKey bool
 }
 
 func runInit(args []string) error {
@@ -24,8 +25,8 @@ func runInit(args []string) error {
 	var o initOpts
 	fs.StringVar(&o.host, "host", "", "server to set up, [user@]HOST (user defaults to root)")
 	fs.StringVar(&o.network, "network", defaultNetwork, "docker network apps join to be reachable")
-	fs.BoolVar(&o.proxy, "proxy", true, "also install the shared reverse proxy")
 	fs.StringVar(&o.image, "proxy-image", defaultProxy, "caddy image to run")
+	fs.BoolVar(&o.acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
 	fs.IntVar(&o.port, "port", 22, "SSH port")
 	if err := fs.Parse(args); err != nil {
 		return errSilent
@@ -55,10 +56,16 @@ func runInit(args []string) error {
 	}
 
 	step("Checking %s:%d", tgt.addr(), tgt.port)
-	if !tgt.reachable() {
-		return fmt.Errorf("cannot SSH in as %s without a password.\n"+
-			"    This needs an existing login to work from. If you normally type a\n"+
-			"    password, run 'ssh-copy-id %s' first.", tgt.user, tgt.addr())
+	if r := tgt.probe(); !r.ok() {
+		if r.kind == reachUnknownHost && o.acceptHostKey {
+			if err := acceptHostKey(tgt, true); err != nil {
+				return err
+			}
+			r = tgt.probe()
+		}
+		if !r.ok() {
+			return r.explain(tgt)
+		}
 	}
 	note("reachable.")
 
@@ -67,10 +74,6 @@ func runInit(args []string) error {
 		return fmt.Errorf("the server-side script failed -- see the output above")
 	}
 
-	if !o.proxy {
-		note("skipping the reverse proxy (--proxy=false). Apps must publish their own ports.")
-		return nil
-	}
 	step("Installing the shared reverse proxy")
 	if err := tgt.runScript(AlpineProxyScript, proxyEnv(proxyOpts{
 		network: o.network,
@@ -94,7 +97,9 @@ no accounts, nothing under /srv.
 Certificates need no configuration -- Caddy obtains and renews them on its own,
 for whatever hostnames your apps publish.
 
-Pass --proxy=false for a box where an app publishes its own ports.
+The proxy is always installed. On a box that serves no HTTP, stop it afterwards
+-- 't' on the server screen -- rather than deciding here, on a machine with
+nothing on it yet.
 
 Safe to re-run. Then add apps with 'komizo add', or just 'komizo root@myhost'.
 

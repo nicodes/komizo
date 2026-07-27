@@ -20,6 +20,10 @@ type addOpts struct {
 	port       int
 	hardenSSHD bool
 	rotateKey  bool
+	// acceptHostKey records an unseen server's key instead of refusing. Only
+	// ever trust-on-first-use, which is why it is opt-in rather than the
+	// default: it is the one moment nothing can verify the box for you.
+	acceptHostKey bool
 }
 
 func (o *addOpts) bind(fs *flag.FlagSet) {
@@ -31,6 +35,7 @@ func (o *addOpts) bind(fs *flag.FlagSet) {
 	fs.StringVar(&o.keyPath, "key", "", "where to write the keypair (default ~/.ssh/deploy_<app>_<host>)")
 	fs.IntVar(&o.port, "port", 22, "SSH port")
 	fs.BoolVar(&o.hardenSSHD, "harden-sshd", false, "also disable password auth and root password login for EVERY user")
+	fs.BoolVar(&o.acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
 	fs.BoolVar(&o.rotateKey, "rotate-key", false, "replace the deploy key and reprint the values; skip the rest")
 }
 
@@ -111,10 +116,16 @@ func runAdd(args []string) error {
 	// --- preflight ---------------------------------------------------------
 
 	step("Checking %s:%d", tgt.addr(), tgt.port)
-	if !tgt.reachable() {
-		return fmt.Errorf("cannot SSH in as %s without a password.\n"+
-			"    This needs an existing login to work from. If you normally type a\n"+
-			"    password, run 'ssh-copy-id -p %d %s' first.", tgt.user, tgt.port, tgt.addr())
+	if r := tgt.probe(); !r.ok() {
+		if r.kind == reachUnknownHost && o.acceptHostKey {
+			if err := acceptHostKey(tgt, true); err != nil {
+				return err
+			}
+			r = tgt.probe()
+		}
+		if !r.ok() {
+			return r.explain(tgt)
+		}
 	}
 	note("reachable.")
 

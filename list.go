@@ -178,8 +178,8 @@ func runList(args []string) error {
 	if err := validateHost(tgt.host); err != nil {
 		return err
 	}
-	if !tgt.reachable() {
-		return fmt.Errorf("cannot SSH in as %s without a password", tgt.user)
+	if r := tgt.probe(); !r.ok() {
+		return r.explain(tgt)
 	}
 
 	res, err := tgt.runCapture(inventoryScript)

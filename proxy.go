@@ -58,8 +58,8 @@ func runProxy(args []string) error {
 	}
 
 	step("Checking %s:%d", tgt.addr(), tgt.port)
-	if !tgt.reachable() {
-		return fmt.Errorf("cannot SSH in as %s without a password", tgt.user)
+	if r := tgt.probe(); !r.ok() {
+		return r.explain(tgt)
 	}
 	note("reachable.")
 
