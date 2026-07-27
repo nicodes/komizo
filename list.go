@@ -47,7 +47,7 @@ allc=""
 starts=""
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
 	allc="$(docker ps -a --no-trunc \
-		--format '{{.ID}}	{{.Names}}	{{.State}}	{{.Status}}	{{.Label "com.docker.compose.service"}}' \
+		--format '{{.ID}}	{{.Names}}	{{.State}}	{{.Status}}	{{.Label "com.docker.compose.service"}}	{{.Image}}' \
 		2>/dev/null || true)"
 	# When each container last started and last stopped, and why -- as
 	# timestamps and a number rather than docker's prose.
@@ -93,7 +93,7 @@ for bin in /usr/local/bin/deploy-*; do
 		for cid in $(docker compose -f "$dir/compose.yml" --project-directory "$dir" ps -aq 2>/dev/null); do
 			ts="$(printf '%s\n' "$starts" | awk -F'\t' -v id="$cid" '$1 == id { printf "%s\t%s\t%s", $2, $3, $4; exit }')"
 			printf '%s\n' "$allc" | awk -F'\t' -v id="$cid" -v app="$app" -v ts="$ts" '
-				$1 == id { printf "container\t%s\t%s\t%s\t%s\t%s\t%s\n", app, $5, $2, $3, $4, ts }'
+				$1 == id { printf "container\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", app, $5, $2, $3, $4, ts, $6 }'
 		done
 	fi
 	printf 'app\t%s\t%s\t%s\t%s\t%s\t%s\n' "$app" "${usr:-?}" "$dir" "${ver:-none}" "$running" "$img"
@@ -331,12 +331,31 @@ type containerRow struct {
 	name    string
 	state   string // running | exited | created ... docker's machine-readable word
 	status  string // docker's own prose, e.g. "Up 3 hours", "Exited (1) 2 minutes ago"
+	image   string // the reference this container was created from
 	// When it last started and last stopped, and the code it stopped with.
 	// Timestamps rather than prose, so several of them can be compared and all
 	// of them rendered the same way.
 	startedAt  time.Time
 	finishedAt time.Time
 	exitCode   int
+}
+
+// imageText is the container's image, with the tag dropped when it is simply
+// this app's deployed version.
+//
+// Every service in a komizo app is pinned to ${APP_VERSION}, so the tag is the
+// commit SHA already shown on the app's row -- sixty characters of column
+// saying what the row above it said. A tag that is NOT the version is the
+// interesting case, and that one is shown in full: a service left on :latest,
+// or an upstream image like caddy:2, is a fact you want to notice.
+func (c containerRow) imageText(version string) string {
+	if version == "" || version == "none" {
+		return c.image
+	}
+	if s, ok := strings.CutSuffix(c.image, ":"+version); ok {
+		return s
+	}
+	return c.image
 }
 
 // stateText is how long a container has been in the state it is in.
@@ -603,10 +622,11 @@ func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, n
 				name: f[1], user: f[2], dir: f[3], version: f[4],
 				running: f[5], image: f[6],
 			})
-		case len(f) == 9 && f[0] == "container":
+		case len(f) == 10 && f[0] == "container":
 			c := containerRow{app: f[1], service: f[2], name: f[3], state: f[4], status: f[5]}
 			c.startedAt, c.finishedAt = parseStamp(f[6]), parseStamp(f[7])
 			fmt.Sscanf(f[8], "%d", &c.exitCode)
+			c.image = f[9]
 			containers = append(containers, c)
 		case len(f) == 4 && f[0] == "route":
 			routes = append(routes, routeRow{app: f[1], sites: f[2], upstream: f[3]})

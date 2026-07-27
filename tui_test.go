@@ -1260,8 +1260,8 @@ func TestInventoryAttachesContainersToTheirApp(t *testing.T) {
 	out := strings.Join([]string{
 		"server\tready\tDocker version 26.1.3",
 		"app\tblog\tkomizo-blog\t/srv/blog\ta1b2c3d\t2\tghcr.io/you/blog-config",
-		"container\tblog\tweb\tblog-web-1\trunning\tUp 3 hours\t2026-07-27T09:00:00.123456789Z\t0001-01-01T00:00:00Z\t0",
-		"container\tblog\tdb\tblog-db-1\texited\tExited (1) 2 minutes ago\t2026-07-27T08:00:00Z\t2026-07-27T09:30:00Z\t1",
+		"container\tblog\tweb\tblog-web-1\trunning\tUp 3 hours\t2026-07-27T09:00:00.123456789Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-web:a1b2c3d",
+		"container\tblog\tdb\tblog-db-1\texited\tExited (1) 2 minutes ago\t2026-07-27T08:00:00Z\t2026-07-27T09:30:00Z\t1\tghcr.io/you/blog-db:a1b2c3d",
 		"route\tblog\tblog.example.com,www.blog.example.com\tblog-web",
 		"app\tshop\tkomizo-shop\t/srv/shop\tnone\t0\tghcr.io/you/shop-config",
 	}, "\n")
@@ -2515,5 +2515,27 @@ func TestAStaticRootIsNamedForItsLastSegment(t *testing.T) {
 		if got := (staticRow{root: c.root}).label(); got != c.want {
 			t.Errorf("label(%q) = %q, want %q", c.root, got, c.want)
 		}
+	}
+}
+
+func TestTheImageColumnDropsTheVersionItRepeats(t *testing.T) {
+	// Every service is pinned to ${APP_VERSION}, so the tag is the commit SHA
+	// already shown on the app's row -- sixty characters of column saying what
+	// the row above said.
+	c := containerRow{image: "ghcr.io/you/blog-api:a1b2c3d4e5f6"}
+	if got := c.imageText("a1b2c3d4e5f6"); got != "ghcr.io/you/blog-api" {
+		t.Errorf("imageText = %q, want the repo alone", got)
+	}
+	// A tag that is NOT the version is the interesting case: a service left on
+	// :latest, or an upstream image. Shown in full.
+	if got := c.imageText("deadbeef"); got != "ghcr.io/you/blog-api:a1b2c3d4e5f6" {
+		t.Errorf("a tag that is not the version should survive, got %q", got)
+	}
+	if got := (containerRow{image: "caddy:2"}).imageText("a1b2c3d"); got != "caddy:2" {
+		t.Errorf("an upstream image should be shown as it is, got %q", got)
+	}
+	// An app that has never deployed has no version to compare against.
+	if got := c.imageText("none"); got != "ghcr.io/you/blog-api:a1b2c3d4e5f6" {
+		t.Errorf("with no version the image is shown whole, got %q", got)
 	}
 }

@@ -72,6 +72,7 @@ func viewList(m model) string {
 				// placeholder to keep them apart would only be an empty column
 				// down the middle of the block.
 				dimStyle.Render(c.stateText()),
+				dimStyle.Render(c.imageText(a.version)),
 				m.routesCell(c, byContainer[c.name]),
 			}})
 			idx++
@@ -85,6 +86,7 @@ func viewList(m model) string {
 				"",
 				dimStyle.Render(r.label()),
 				dimStyle.Render("static"),
+				dimStyle.Render("—"), // no image: there is nothing running
 				dimStyle.Render(strings.Join(r.hostnames(), ", ")),
 			}})
 		}
