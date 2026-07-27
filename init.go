@@ -77,15 +77,15 @@ func runInit(args []string) error {
 		image:   o.image,
 	})); err != nil {
 		return fmt.Errorf("Docker is installed, but the proxy failed -- see the output above.\n" +
-			"    Re-run 'ncicd proxy' once you have fixed it; the server itself is ready.")
+			"    Re-run 'komizo proxy' once you have fixed it; the server itself is ready.")
 	}
 	return nil
 }
 
 func usageInit(fs *flag.FlagSet) {
-	fmt.Print(`ncicd init - prepare a fresh server
+	fmt.Print(`komizo init - prepare a fresh server
 
-  ncicd init --host root@myhost
+  komizo init --host root@myhost
 
 Installs Docker, enables it at boot, creates the network apps share, and starts
 the one reverse proxy that terminates TLS for all of them. Nothing app-specific:
@@ -96,7 +96,7 @@ for whatever hostnames your apps publish.
 
 Pass --proxy=false for a box where an app publishes its own ports.
 
-Safe to re-run. Then add apps with 'ncicd add', or just 'ncicd root@myhost'.
+Safe to re-run. Then add apps with 'komizo add', or just 'komizo root@myhost'.
 
 Flags:
 `)

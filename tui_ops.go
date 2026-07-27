@@ -235,7 +235,7 @@ func (m model) startRemove(app string) tea.Cmd {
 	return m.run.wait()
 }
 
-// doAdd performs the same sequence as `ncicd add`, reporting progress through
+// doAdd performs the same sequence as `komizo add`, reporting progress through
 // ch instead of stdout.
 func doAdd(t target, app, config string, rotate bool, ch chan tea.Msg) (*addResult, error) {
 	user := deriveUser(app)
@@ -269,7 +269,7 @@ func doAdd(t target, app, config string, rotate bool, ch chan tea.Msg) (*addResu
 			return nil, err
 		}
 		gen := exec.Command("ssh-keygen", "-q", "-t", "ed25519",
-			"-C", fmt.Sprintf("ncicd:%s@%s", user, t.host), "-f", keyPath, "-N", "")
+			"-C", fmt.Sprintf("komizo:%s@%s", user, t.host), "-f", keyPath, "-N", "")
 		if out, err := gen.CombinedOutput(); err != nil {
 			return nil, fmt.Errorf("ssh-keygen failed: %s", strings.TrimSpace(string(out)))
 		}

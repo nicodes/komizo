@@ -54,13 +54,13 @@ done
 # no config image, nothing from CI ever touches it.
 if [ -d /srv/_proxy ]; then
 	pstate=stopped
-	if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx ncicd-caddy; then
+	if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx komizo-caddy; then
 		pstate=running
 	fi
 	pnet="$(sed -n 's/^    name: //p' /srv/_proxy/compose.yml 2>/dev/null | head -n 1)"
 	pimg="$(sed -n 's/^    image: //p' /srv/_proxy/compose.yml 2>/dev/null | head -n 1)"
 	# Docker's own words for how long it has been up, or why it is not.
-	pstatus="$(docker ps -a --filter name=^ncicd-caddy$ --format '{{.Status}}' 2>/dev/null | head -n 1)"
+	pstatus="$(docker ps -a --filter name=^komizo-caddy$ --format '{{.Status}}' 2>/dev/null | head -n 1)"
 	printf 'proxy\t%s\t%s\t%s\t%s\n' "$pstate" "${pnet:-?}" "${pimg:-?}" "${pstatus:-not created}"
 fi
 
@@ -85,7 +85,7 @@ if docker network inspect "$net" >/dev/null 2>&1; then
 fi
 
 # Directories with no deploy script behind them -- usually a removal that did
-# not finish. Names starting with "_" are ncicd's own and are skipped: they
+# not finish. Names starting with "_" are komizo's own and are skipped: they
 # never have a deploy script, so they would otherwise always look orphaned.
 for d in /srv/*/; do
 	[ -d "$d" ] || continue
@@ -192,14 +192,14 @@ func runList(args []string) error {
 	if !srv.ready() {
 		if srv.state == "docker-stopped" {
 			return fmt.Errorf("Docker is installed on %s but not running.\n"+
-				"    Try 'rc-service docker start' there, or re-run 'ncicd init --host %s'.", tgt.host, host)
+				"    Try 'rc-service docker start' there, or re-run 'komizo init --host %s'.", tgt.host, host)
 		}
-		return fmt.Errorf("%s is not set up yet.\n\n    ncicd init --host %s\n\n"+
+		return fmt.Errorf("%s is not set up yet.\n\n    komizo init --host %s\n\n"+
 			"    That installs Docker and the shared network. Nothing app-specific.", tgt.host, host)
 	}
 
 	if len(apps) == 0 {
-		fmt.Printf("No apps set up on %s yet. Add one with:\n\n    ncicd add --host %s --app NAME --config REF\n\n",
+		fmt.Printf("No apps set up on %s yet. Add one with:\n\n    komizo add --host %s --app NAME --config REF\n\n",
 			tgt.host, host)
 		return nil
 	}
@@ -220,7 +220,7 @@ func runList(args []string) error {
 	switch {
 	case !proxy.installed:
 		note("No shared reverse proxy. Apps must publish their own ports.\n" +
-			"    Install one with: ncicd proxy --host " + host)
+			"    Install one with: komizo proxy --host " + host)
 	case !proxy.running():
 		warn("the reverse proxy is installed but not running -- nothing is being served")
 	default:
@@ -240,7 +240,7 @@ func runList(args []string) error {
 }
 
 // parseInventory turns the server's tab-separated records into rows. Shared by
-// `ncicd list` and the TUI so both see the same view of a box.
+// `komizo list` and the TUI so both see the same view of a box.
 func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, net netRow, orphans []string) {
 	for _, ln := range strings.Split(out, "\n") {
 		f := strings.Split(ln, "\t")

@@ -1,4 +1,4 @@
-module github.com/nicodes/ncicd/cli
+module github.com/nicodes/komizo-be/cli
 
 go 1.26
 

@@ -11,7 +11,7 @@ import _ "embed"
 //
 // They stay TEXT rather than being generated or compiled in: what runs as root
 // on someone's server should be readable before it does, which is what
-// `ncicd script` is for.
+// `komizo script` is for.
 
 // AlpineScript sets an app up: Docker, the deploy account, its two privileged
 // commands, the doas rules and the sshd restrictions.

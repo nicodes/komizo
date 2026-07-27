@@ -1,7 +1,7 @@
 #!/bin/sh
 # cli/scripts/alpine-proxy.sh - installs the one shared reverse proxy, as root.
 #
-# ncicd embeds this and pipes it over SSH. To read it: `ncicd script proxy`.
+# komizo embeds this and pipes it over SSH. To read it: `komizo script proxy`.
 #
 # One Caddy container per server terminates TLS and owns ports 80 and 443.
 # It holds NO per-app configuration of its own. Its Caddyfile is three lines
@@ -40,14 +40,14 @@ PROXY_IMAGE="${PROXY_IMAGE:-caddy:2}"
 # two. (An import glob matching nothing is not an error, so this is for
 # consistency, not to keep Caddy happy.)
 #
-# The leading underscore is reserved: ncicd refuses to create an app whose name
+# The leading underscore is reserved: komizo refuses to create an app whose name
 # starts with one, so this can never collide with /srv/<app>.
 PROXY_DIR=/srv/_proxy
 # Compose project names must start with a letter or digit, so the project cannot
 # simply be named after the directory. Fixed rather than derived so the deploy
 # and remove scripts can address the container without discovering it.
-PROXY_PROJECT=ncicd-proxy
-PROXY_CONTAINER=ncicd-caddy
+PROXY_PROJECT=komizo-proxy
+PROXY_CONTAINER=komizo-caddy
 
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -60,7 +60,7 @@ esac
 case "$PROXY_IMAGE" in
 	*[!A-Za-z0-9.:/_-]*) die "PROXY_IMAGE contains characters that are not valid in an image reference" ;;
 esac
-command -v docker >/dev/null 2>&1 || die "this server is not set up yet -- run 'ncicd init' first"
+command -v docker >/dev/null 2>&1 || die "this server is not set up yet -- run 'komizo init' first"
 
 # --- 1. the shared network -------------------------------------------------
 # Created here rather than by compose so it outlives any single project, and so
@@ -101,7 +101,7 @@ chmod 644 "$PROXY_DIR/Caddyfile"
 # most specific site address regardless of file order, so a bare ":80" here
 # never shadows a real app's hostname.
 cat > "$PROXY_DIR/caddy/app.caddy" <<'EOF'
-# Written by ncicd. Requests for a hostname with no app behind it land here.
+# Written by komizo. Requests for a hostname with no app behind it land here.
 :80 {
 	respond "no app is configured for this hostname" 404
 }
@@ -113,7 +113,7 @@ chmod 644 "$PROXY_DIR/caddy/app.caddy"
 
 log "Writing $PROXY_DIR/compose.yml"
 cat > "$PROXY_DIR/compose.yml" <<EOF
-# Written by ncicd. Re-run 'ncicd proxy' to change it; edits here are lost.
+# Written by komizo. Re-run 'komizo proxy' to change it; edits here are lost.
 services:
   caddy:
     image: $PROXY_IMAGE

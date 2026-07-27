@@ -1,7 +1,7 @@
 #!/bin/sh
 # cli/scripts/alpine-init.sh - prepares a fresh server, run as root on the box.
 #
-# ncicd embeds this and pipes it over SSH. To read it: `ncicd script init`.
+# komizo embeds this and pipes it over SSH. To read it: `komizo script init`.
 #
 # This is everything that belongs to the SERVER rather than to any one app:
 # the container runtime and the network apps share. It creates no accounts,
@@ -9,7 +9,7 @@
 #
 # It is a separate step, and separate on purpose. Installing Docker as a side
 # effect of adding the first app meant a fresh box had no state you could name:
-# `ncicd proxy` would fail on it, and there was nothing to look at that said
+# `komizo proxy` would fail on it, and there was nothing to look at that said
 # what was and was not set up. Now a server is either initialised or it is not,
 # and the interface can say which.
 #

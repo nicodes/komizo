@@ -224,7 +224,7 @@ func TestInventoryParsing(t *testing.T) {
 		"app\tworker\tcd-worker\t/srv/worker\tnone\t0\tghcr.io/you/worker-config\t",
 		"proxy\trunning\tedge\tcaddy:2\tUp 3 hours",
 		"net\tedge\tbridge\t172.18.0.0/16",
-		"netmember\tncicd-caddy\tcaddy,ncicd-caddy",
+		"netmember\tkomizo-caddy\tcaddy,komizo-caddy",
 		"netmember\tblog-web-1\tweb,blog-web",
 		"orphan\tghost",
 		"", // trailing blank, as the server emits
@@ -276,7 +276,7 @@ func TestInventoryWithoutAProxy(t *testing.T) {
 }
 
 func TestReservedAppNames(t *testing.T) {
-	// /srv/_proxy is ncicd's own; an app taking that name would collide with it
+	// /srv/_proxy is komizo's own; an app taking that name would collide with it
 	// and the inventory could no longer tell them apart.
 	for _, bad := range []string{"_proxy", "_", "_anything"} {
 		if err := validateApp(bad); err == nil {
@@ -553,7 +553,7 @@ func TestProxyComposeCommandTargetsTheProject(t *testing.T) {
 	// A compose project cannot be named after /srv/_proxy, so the project name
 	// is pinned separately. If these drift, start/stop silently act on nothing.
 	got := proxyCompose("restart")
-	for _, want := range []string{"/srv/_proxy/compose.yml", "-p ncicd-proxy", "restart"} {
+	for _, want := range []string{"/srv/_proxy/compose.yml", "-p komizo-proxy", "restart"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("compose command %q is missing %q", got, want)
 		}
@@ -565,7 +565,7 @@ func netModel() model {
 	m.net = netRow{
 		name: "edge", driver: "bridge", subnet: "172.18.0.0/16",
 		members: []netMember{
-			{container: "ncicd-caddy", aliases: []string{"caddy"}},
+			{container: "komizo-caddy", aliases: []string{"caddy"}},
 			{container: "blog-web-1", aliases: []string{"blog-web"}},
 			{container: "shop-web-1", aliases: []string{"shop-web"}},
 		},
@@ -575,7 +575,7 @@ func netModel() model {
 
 func TestServerScreenListsWhatIsAttached(t *testing.T) {
 	v := send(netModel(), "s").View()
-	for _, want := range []string{"edge", "bridge", "172.18.0.0/16", "ncicd-caddy", "blog-web"} {
+	for _, want := range []string{"edge", "bridge", "172.18.0.0/16", "komizo-caddy", "blog-web"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("server screen is missing %q", want)
 		}
@@ -626,7 +626,7 @@ func TestClashIsShownOnTheNetworkScreenAndTheList(t *testing.T) {
 func TestAppPublishingRoutesButNotAttachedIsFlagged(t *testing.T) {
 	// The other cause of the same 502, with the opposite fix.
 	m := netModel()
-	m.net.members = []netMember{{container: "ncicd-caddy", aliases: []string{"caddy"}}}
+	m.net.members = []netMember{{container: "komizo-caddy", aliases: []string{"caddy"}}}
 	v := send(m, "s").View()
 	if !strings.Contains(v, "not on this network") {
 		t.Error("an app with routes but no network attachment should be called out")
@@ -657,12 +657,12 @@ func TestParsesRealDockerOutput(t *testing.T) {
 	// a live daemon, with two containers deliberately sharing an alias. Pinned
 	// as a fixture because the whole clash check rests on this exact shape.
 	out := strings.Join([]string{
-		"net\tncicd-test-edge\tbridge\t172.22.0.0/16",
-		"netmember\tncicd-t-blog\tweb,blog-web",
-		"netmember\tncicd-t-shop\tweb,shop-web",
+		"net\tkomizo-test-edge\tbridge\t172.22.0.0/16",
+		"netmember\tkomizo-t-blog\tweb,blog-web",
+		"netmember\tkomizo-t-shop\tweb,shop-web",
 	}, "\n")
 	_, _, _, n, _ := parseInventory(out)
-	if n.name != "ncicd-test-edge" || n.driver != "bridge" || n.subnet != "172.22.0.0/16" {
+	if n.name != "komizo-test-edge" || n.driver != "bridge" || n.subnet != "172.22.0.0/16" {
 		t.Fatalf("network meta parsed wrong: %+v", n)
 	}
 	if len(n.members) != 2 {

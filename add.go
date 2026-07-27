@@ -155,7 +155,7 @@ func runAdd(args []string) error {
 		if err := os.MkdirAll(filepath.Dir(o.keyPath), 0o700); err != nil {
 			return err
 		}
-		comment := fmt.Sprintf("ncicd:%s@%s", o.user, tgt.host)
+		comment := fmt.Sprintf("komizo:%s@%s", o.user, tgt.host)
 		gen := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-C", comment, "-f", o.keyPath, "-N", "")
 		gen.Stderr = os.Stderr
 		if err := gen.Run(); err != nil {

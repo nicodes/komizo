@@ -1,10 +1,10 @@
 #!/bin/sh
 # cli/scripts/alpine.sh - sets one app up on a server, run as root on the box.
 #
-# ncicd embeds this file and pipes it over SSH; you do not normally run it
+# komizo embeds this file and pipes it over SSH; you do not normally run it
 # yourself. To read what will run as root on your server:
 #
-#   ncicd script           # prints this file
+#   komizo script           # prints this file
 #
 # To run it by hand from the server's own console:
 #
@@ -44,7 +44,7 @@ set -eu
 APP_NAME="${APP_NAME:-}"
 case "$APP_NAME" in
 	'') echo "error: APP_NAME is required" >&2; exit 1 ;;
-	# A leading underscore is reserved for ncicd's own directories under /srv,
+	# A leading underscore is reserved for komizo's own directories under /srv,
 	# starting with /srv/_proxy. Refusing it here means an app can never collide
 	# with one, and the inventory can tell them apart by name alone.
 	_*) echo "error: APP_NAME must not start with '_' -- those names are reserved" >&2; exit 1 ;;
@@ -67,11 +67,11 @@ APP_DIR="${APP_DIR:-/srv/$APP_NAME}"
 # Config we write into /etc is tagged with a marker so a re-run can find and
 # replace its own block. This alternation is every name this project has been
 # published under: matching all of them means an upgrade replaces the old block
-# instead of leaving one behind, while what we WRITE is always "ncicd".
-PROJECT_MARKERS='(ncicd|cicd|alpine-server-scripts|boot\.sh)'
+# instead of leaving one behind, while what we WRITE is always "komizo".
+PROJECT_MARKERS='(komizo|ncicd|cicd|alpine-server-scripts|boot\.sh)'
 # Must match alpine-proxy.sh. Fixed rather than discovered so the generated
 # deploy script can address the proxy without searching for it.
-PROXY_CONTAINER=ncicd-caddy
+PROXY_CONTAINER=komizo-caddy
 CI_PUBKEY="${CI_PUBKEY:-${1:-}}"
 CONFIG_IMAGE="${CONFIG_IMAGE:-}"
 HARDEN_SSH="${HARDEN_SSH:-0}"
@@ -109,9 +109,9 @@ esac
 # would stop meaning anything.
 
 command -v docker >/dev/null 2>&1 \
-	|| die "this server is not set up yet -- run 'ncicd init' first"
+	|| die "this server is not set up yet -- run 'komizo init' first"
 command -v doas >/dev/null 2>&1 \
-	|| die "doas is missing -- run 'ncicd init' first to install it"
+	|| die "doas is missing -- run 'komizo init' first to install it"
 docker info >/dev/null 2>&1 \
 	|| die "Docker is installed but not running -- try 'rc-service docker start'"
 
@@ -389,7 +389,7 @@ if [ -f caddy/app.caddy ] && [ "\$proxy_up" = 0 ]; then
 	revert
 	echo "deploy: this app publishes routes, but the reverse proxy is not running." >&2
 	echo "deploy: nothing would serve them, so this is a failure rather than a no-op." >&2
-	echo "deploy: start it with 'ncicd proxy --host <this box>', or press s in the interface." >&2
+	echo "deploy: start it with 'komizo proxy --host <this box>', or press s in the interface." >&2
 	echo "deploy: reverted, nothing restarted" >&2
 	exit 1
 fi
@@ -516,10 +516,10 @@ sed -i -E "/^# $PROJECT_MARKERS: $CI_USER BEGIN\$/,/^# $PROJECT_MARKERS: $CI_USE
 # Older still: a single unmarked rule, before the block form existed.
 sed -i "/# boot.sh: $CI_USER deploy/,+1d" /etc/doas.conf
 cat >> /etc/doas.conf <<-EOF
-	# ncicd: $CI_USER BEGIN
+	# komizo: $CI_USER BEGIN
 	permit nopass $CI_USER as root cmd $DEPLOY_BIN
 	permit nopass $CI_USER as root cmd $SECRET_BIN
-	# ncicd: $CI_USER END
+	# komizo: $CI_USER END
 EOF
 chown root:root /etc/doas.conf
 chmod 600 /etc/doas.conf
@@ -575,10 +575,10 @@ if [ "$HARDEN_SSH" = "1" ]; then
 	# At the top it wins outright and sits before every Match.
 	tmp_conf="$conf.cicd.$$"
 	{
-		printf '%s\n' "# ncicd: global BEGIN"
+		printf '%s\n' "# komizo: global BEGIN"
 		printf '%s\n' "PermitRootLogin prohibit-password"
 		printf '%s\n' "PasswordAuthentication no"
-		printf '%s\n' "# ncicd: global END"
+		printf '%s\n' "# komizo: global END"
 		cat "$conf"
 	} > "$tmp_conf"
 	cat "$tmp_conf" > "$conf"
@@ -592,7 +592,7 @@ fi
 # become $CI_USER-scoped rather than global.
 log "Restricting '$CI_USER' in sshd"
 cat >> "$conf" <<-EOF
-	# ncicd: sshd $CI_USER BEGIN
+	# komizo: sshd $CI_USER BEGIN
 	# Applies to $CI_USER only; no other account is affected.
 	# NOTE: everything below this line is inside the Match block. Put global
 	# settings ABOVE it.
@@ -604,7 +604,7 @@ cat >> "$conf" <<-EOF
 	    PermitTunnel no
 	    GatewayPorts no
 	    X11Forwarding no
-	# ncicd: sshd $CI_USER END
+	# komizo: sshd $CI_USER END
 EOF
 
 if sshd -t; then

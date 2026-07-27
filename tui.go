@@ -7,7 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// The TUI is the primary interface: `ncicd root@host` connects and everything
+// The TUI is the primary interface: `komizo root@host` connects and everything
 // is done from there. The flag-driven subcommands remain for scripting, but a
 // person setting up a box should not have to learn them.
 //

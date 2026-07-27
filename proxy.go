@@ -10,7 +10,7 @@ import (
 // image: nothing from CI ever touches it.
 const (
 	proxyDir       = "/srv/_proxy"
-	proxyContainer = "ncicd-caddy"
+	proxyContainer = "komizo-caddy"
 	defaultNetwork = "edge"
 	defaultProxy   = "caddy:2"
 )
@@ -87,9 +87,9 @@ func validateNetworkName(s string) error {
 }
 
 func usageProxy(fs *flag.FlagSet) {
-	fmt.Print(`ncicd proxy - install the one shared reverse proxy on a server
+	fmt.Print(`komizo proxy - install the one shared reverse proxy on a server
 
-  ncicd proxy --host root@myhost
+  komizo proxy --host root@myhost
 
 One Caddy container per server terminates TLS and owns ports 80 and 443, so no
 app has to publish one. It holds no per-app configuration: each app ships its

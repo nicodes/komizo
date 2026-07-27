@@ -17,7 +17,7 @@ import (
 // the network, or on it under an alias another app already answers to. Split
 // across screens, nobody correlates them.
 
-const proxyProject = "ncicd-proxy"
+const proxyProject = "komizo-proxy"
 
 // proxyCompose is the prefix for acting on the proxy stack. Pinned to the
 // project name rather than the directory, because a compose project cannot be

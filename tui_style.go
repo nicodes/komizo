@@ -60,7 +60,7 @@ func header(t target, width int) string {
 	if t.port != 22 {
 		addr = fmt.Sprintf("%s:%d", addr, t.port)
 	}
-	line := gutter + brandStyle.Render("ncicd") + dimStyle.Render("  "+addr)
+	line := gutter + brandStyle.Render("komizo") + dimStyle.Render("  "+addr)
 	rule := width - 4
 	if rule < 8 {
 		rule = 8

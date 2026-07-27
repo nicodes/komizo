@@ -1,7 +1,7 @@
 #!/bin/sh
 # cli/scripts/alpine-remove.sh - tears one app off a server, run as root.
 #
-# The CLI embeds this and pipes it over SSH. To read it: `ncicd script remove`.
+# The CLI embeds this and pipes it over SSH. To read it: `komizo script remove`.
 #
 # It undoes exactly what alpine.sh set up for one app and nothing else.
 # Every step targets that app's own name or marker block, so an app sharing the
@@ -18,7 +18,7 @@ set -eu
 APP_NAME="${APP_NAME:-}"
 case "$APP_NAME" in
 	'') echo "error: APP_NAME is required" >&2; exit 1 ;;
-	# Reserved for ncicd's own directories, /srv/_proxy among them. Removing one
+	# Reserved for komizo's own directories, /srv/_proxy among them. Removing one
 	# through the app path would take the shared proxy down and leave every other
 	# app on the box unreachable.
 	_*) echo "error: APP_NAME must not start with '_' -- those names are reserved" >&2; exit 1 ;;
@@ -30,8 +30,8 @@ APP_DIR="${APP_DIR:-/srv/$APP_NAME}"
 KEEP_DATA="${KEEP_DATA:-0}"
 DEPLOY_BIN="/usr/local/bin/deploy-$APP_NAME"
 SECRET_BIN="/usr/local/bin/set-secret-$APP_NAME"
-PROJECT_MARKERS='(ncicd|cicd|alpine-server-scripts|boot\.sh)'
-PROXY_CONTAINER=ncicd-caddy
+PROJECT_MARKERS='(komizo|ncicd|cicd|alpine-server-scripts|boot\.sh)'
+PROXY_CONTAINER=komizo-caddy
 
 log() { printf '\n==> %s\n' "$*"; }
 
@@ -134,7 +134,7 @@ else
 		/|/etc|/usr|/var|/home|/root|/srv) echo "error: refusing to remove $APP_DIR" >&2; exit 1 ;;
 		# The shared proxy lives under /srv too, and taking it out through the
 		# app path would make every other app on the box unreachable.
-		/srv/_*) echo "error: refusing to remove $APP_DIR -- it belongs to ncicd, not an app" >&2; exit 1 ;;
+		/srv/_*) echo "error: refusing to remove $APP_DIR -- it belongs to komizo, not an app" >&2; exit 1 ;;
 	esac
 	rm -rf "$APP_DIR"
 fi

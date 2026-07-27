@@ -1,8 +1,8 @@
-// Command ncicd sets up and inspects servers that deploy from GitHub Actions.
+// Command komizo sets up and inspects servers that deploy from GitHub Actions.
 //
 // It runs on YOUR machine. Every command opens an SSH connection itself; you do
 // not run anything on the server by hand. The server-side work is a shell
-// script embedded in this binary, printable with `ncicd script`, so what runs as
+// script embedded in this binary, printable with `komizo script`, so what runs as
 // root on your box stays readable.
 package main
 
@@ -42,7 +42,7 @@ func main() {
 		usage()
 	default:
 		// Anything that is not a known command is treated as a host: the normal
-		// way to use this is `ncicd root@your-server`, which opens the interface
+		// way to use this is `komizo root@your-server`, which opens the interface
 		// and does everything from there. Requiring a subcommand for the common
 		// case would be one more thing to know for no benefit.
 		if strings.HasPrefix(os.Args[1], "-") {
@@ -52,7 +52,7 @@ func main() {
 		}
 		// --port is the one flag the interactive path takes. Without it we read
 		// the port from the user's ssh config instead of assuming 22.
-		fs := flag.NewFlagSet("ncicd", flag.ContinueOnError)
+		fs := flag.NewFlagSet("komizo", flag.ContinueOnError)
 		fs.Usage = usage
 		port := fs.Int("port", 22, "SSH port")
 		if perr := fs.Parse(os.Args[2:]); perr != nil {
@@ -75,10 +75,10 @@ func main() {
 }
 
 func usage() {
-	fmt.Print(`ncicd - deploy to your own servers from GitHub Actions
+	fmt.Print(`komizo - deploy to your own servers from GitHub Actions
 
-  ncicd root@your-server
-  ncicd root@your-server --port 2222
+  komizo root@your-server
+  komizo root@your-server --port 2222
 
 That opens the interface. Everything -- adding an app, rotating its deploy key,
 removing one -- is done from there. It runs on your machine and connects to the
@@ -86,18 +86,18 @@ server itself; you never run anything on the box by hand.
 
 The same operations are available non-interactively, for scripting:
 
-  ncicd init    --host root@HOST
-  ncicd add     --host root@HOST --app NAME --config REF
-  ncicd list    --host root@HOST
-  ncicd remove  --host root@HOST --app NAME
-  ncicd proxy   --host root@HOST
-  ncicd script [init|add|remove|proxy]
+  komizo init    --host root@HOST
+  komizo add     --host root@HOST --app NAME --config REF
+  komizo list    --host root@HOST
+  komizo remove  --host root@HOST --app NAME
+  komizo proxy   --host root@HOST
+  komizo script [init|add|remove|proxy]
 
-"ncicd init" prepares a fresh server: Docker, the shared network, and the one
+"komizo init" prepares a fresh server: Docker, the shared network, and the one
 Caddy that terminates TLS for every app on the box. It is a separate step from
 adding an app, so a server is either set up or it is not.
 
-"ncicd script" prints the shell this ships to the server, so you can read what
+"komizo script" prints the shell this ships to the server, so you can read what
 will run as root before it does.
 
 Run a command with --help for its flags.
@@ -105,9 +105,9 @@ Run a command with --help for its flags.
 }
 
 func usageAdd(fs *flag.FlagSet) {
-	fmt.Print(`ncicd add - set an app up on a server, or update one
+	fmt.Print(`komizo add - set an app up on a server, or update one
 
-  ncicd add --host root@myapp.example.com --config ghcr.io/you/myapp-config
+  komizo add --host root@myapp.example.com --config ghcr.io/you/myapp-config
 
 Re-running is safe: it is how you change the config image, repair permissions,
 or pick up a newer version of this tool.
@@ -123,9 +123,9 @@ Flags:
 }
 
 func usageList(fs *flag.FlagSet) {
-	fmt.Print(`ncicd list - what apps are on a server
+	fmt.Print(`komizo list - what apps are on a server
 
-  ncicd list --host root@myapp.example.com
+  komizo list --host root@myapp.example.com
 
 Reads the generated deploy scripts, which are what actually define an app.
 A directory under /srv with no script behind it is reported as an orphan.

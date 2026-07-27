@@ -61,7 +61,7 @@ func printNextSteps(o addOpts, t target, knownHosts string) {
  Then in your app repo: put compose.yml in a directory of its own
  (deploy/ by convention) and add a workflow. Your deploy step:
 
-   - uses: nicodes/ncicd/actions/deploy@v1
+   - uses: nicodes/komizo-be/actions/deploy@v1
      with:
           version: ${{ github.sha }}%s
           host: %s%s

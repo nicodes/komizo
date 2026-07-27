@@ -46,7 +46,7 @@ func runRemove(args []string) error {
 		return fmt.Errorf("this deletes %s, its volumes, its deploy account and its rules.\n"+
 			"    Other apps on the box are untouched, and images stay in your registry.\n"+
 			"    Re-run with --yes if that is what you want, or use the interface:\n"+
-			"        ncicd %s", "/srv/"+app, host)
+			"        komizo %s", "/srv/"+app, host)
 	}
 
 	if !tgt.reachable() {
@@ -88,9 +88,9 @@ func runScript(args []string) error {
 }
 
 func usageRemove(fs *flag.FlagSet) {
-	fmt.Print(`ncicd remove - tear one app off a server
+	fmt.Print(`komizo remove - tear one app off a server
 
-  ncicd remove --host root@myhost --app blog --yes
+  komizo remove --host root@myhost --app blog --yes
 
 Stops its containers and deletes its directory and volumes, its deploy
 account, its doas rules, its sshd restrictions and its privileged commands.
