@@ -37,8 +37,33 @@ type addResult struct {
 	keyPath    string
 	knownHosts string
 	rotated    bool
-	copied     bool
-	copyErr    string
+
+	// Both values have to reach GitHub, so both are selectable and both are
+	// copyable.
+	//
+	// onClipboard is which one is there NOW, not which have ever been copied.
+	// There is one clipboard: ticking every value that had been copied at some
+	// point claimed two things were on it at once, and read as the mark being
+	// stuck to the first row.
+	cursor      int
+	onClipboard int // index, or -1 for nothing
+	copyErr     string
+}
+
+// The two things this screen exists to hand over, in the order you paste them.
+const (
+	resultKey = iota
+	resultHosts
+	resultItems
+)
+
+// value returns what the cursor is pointing at. The key is a path, because its
+// contents must not be held anywhere that might later be rendered.
+func (a addResult) copySelected() error {
+	if a.cursor == resultKey {
+		return copyFileToClipboard(a.keyPath)
+	}
+	return copyToClipboard(a.knownHosts + "\n")
 }
 
 func fetchApps(t target) tea.Cmd {
@@ -108,8 +133,8 @@ func (r runState) view(finished bool, height int) string {
 
 	if r.result != nil {
 		b.WriteString("\n" + r.result.view())
-		if clipboardAvailable() && !r.result.copied {
-			b.WriteString(help("c", "copy the key", "enter", "back"))
+		if clipboardAvailable() {
+			b.WriteString(help("↑↓", "select", "c", "copy", "enter", "back"))
 			return b.String()
 		}
 	} else {
@@ -124,35 +149,25 @@ func (a addResult) view() string {
 	b.WriteString(gutter + dot("ok") + " " + titleStyle.Render("Add these to the repo for "+a.app) + "\n")
 	b.WriteString(dimStyle.Render(gutter+"  Settings → Secrets and variables → Actions") + "\n")
 
-	// The value is NOT shown. This screen ends up in screenshots and scrollback;
-	// the private key must not. Labelled explicitly, because "cat <path>" on its
-	// own line looked enough like a value that it invited pasting the literal
-	// string "cat /home/..." into the secret.
-	b.WriteString(section("secret"))
-	b.WriteString(gutter + "  " + keyStyle.Render("SSH_DEPLOY_KEY") + "\n")
-	b.WriteString(gutter + "  " + dimStyle.Render("the private key in this file, contents not shown:") + "\n")
-	b.WriteString(gutter + "    " + a.keyPath + "\n")
-	switch {
-	case a.copied:
-		b.WriteString(gutter + "  " + okStyle.Render("copied to the clipboard") +
-			dimStyle.Render(" — paste it straight in") + "\n")
-	case a.copyErr != "":
-		b.WriteString(gutter + "  " + warnStyle.Render(a.copyErr) + "\n")
-		b.WriteString(gutter + "  " + dimStyle.Render("cat "+a.keyPath) + "\n")
-	case clipboardAvailable():
-		b.WriteString(gutter + "  " + keyStyle.Render("c") +
-			dimStyle.Render(" copies it to the clipboard") + "\n")
-	default:
-		b.WriteString(gutter + "  " + dimStyle.Render("cat "+a.keyPath) + "\n")
+	// --- 1. the deploy key ---------------------------------------------------
+	// The VALUE is the file's contents, and they are deliberately not shown:
+	// this screen ends up in screenshots and scrollback. Spelled out because a
+	// bare path under the name reads like a value.
+	b.WriteString(a.row(resultKey, "SSH_DEPLOY_KEY", dimStyle.Render("secret")))
+	b.WriteString(gutter + "      " + dimStyle.Render("the private key in this file, contents not shown:") + "\n")
+	b.WriteString(gutter + "      " + a.keyPath + "\n")
+
+	// --- 2. the host keys ----------------------------------------------------
+	// Shown in full, unlike the key: a host key needs integrity, not secrecy,
+	// and masking it makes a mismatch unreadable in a CI log.
+	b.WriteString(a.row(resultHosts, "SSH_KNOWN_HOSTS", dimStyle.Render("variable, not a secret")))
+	for _, l := range strings.Split(a.knownHosts, "\n") {
+		b.WriteString(gutter + "      " + dimStyle.Render(l) + "\n")
 	}
 
-	// Shown in full, unlike the key above: a host key is not confidential --
-	// what it needs is integrity -- and leaving it readable keeps a mismatch
-	// legible in a CI log instead of "***".
-	b.WriteString(section("variable, not a secret"))
-	b.WriteString(gutter + "  " + keyStyle.Render("SSH_KNOWN_HOSTS") + "\n")
-	for _, l := range strings.Split(a.knownHosts, "\n") {
-		b.WriteString(dimStyle.Render(gutter+"  "+l) + "\n")
+	if a.copyErr != "" {
+		b.WriteString("\n" + gutter + dot("warn") + " " + warnStyle.Render(a.copyErr) + "\n")
+		b.WriteString(para(gutter+"  ", "cat "+a.keyPath))
 	}
 
 	if a.rotated {
@@ -163,6 +178,21 @@ func (a addResult) view() string {
 		b.WriteString("\n" + para(gutter, "Then add app: "+a.app+" to the deploy step in that repo's workflow."))
 	}
 	return b.String()
+}
+
+// row renders one selectable value, marked the same way the app list marks its
+// selection, with a tick once it has been copied.
+func (a addResult) row(i int, name, kind string) string {
+	caret, label := "  ", keyStyle.Render(name)
+	if a.cursor == i {
+		caret = barStyle.Render("▍") + " "
+		label = keyStyle.Render(name)
+	}
+	mark := ""
+	if a.onClipboard == i {
+		mark = "  " + okStyle.Render("← on the clipboard")
+	}
+	return "\n" + gutter + caret + label + "  " + kind + mark + "\n"
 }
 
 // stream runs a command, feeding each line back as a message.
@@ -322,7 +352,8 @@ func doAdd(t target, app, config string, rotate bool, ch chan tea.Msg) (*addResu
 	if err != nil {
 		return nil, err
 	}
-	return &addResult{app: app, keyPath: keyPath, knownHosts: kh, rotated: rotate}, nil
+	return &addResult{app: app, keyPath: keyPath, knownHosts: kh, rotated: rotate,
+		onClipboard: -1}, nil
 }
 
 func envPrefix(env map[string]string) string {

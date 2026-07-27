@@ -130,15 +130,29 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleConfirmKey(msg)
 	case screenResult:
 		switch msg.String() {
+		case "up", "k":
+			if m.run.result != nil && m.run.result.cursor > 0 {
+				m.run.result.cursor--
+			}
+			return m, nil
+		case "down", "j":
+			if m.run.result != nil && m.run.result.cursor < resultItems-1 {
+				m.run.result.cursor++
+			}
+			return m, nil
 		case "c":
-			// Only meaningful when there is a key on screen to copy.
+			// Both values have to reach GitHub, so both are copyable. Copying
+			// one does not finish the job, which is why each keeps its own tick.
 			if m.run.result == nil {
 				return m, nil
 			}
-			if err := copyToClipboard(m.run.result.keyPath); err != nil {
+			if err := m.run.result.copySelected(); err != nil {
 				m.run.result.copyErr = err.Error()
+				m.run.result.onClipboard = -1
 			} else {
-				m.run.result.copied, m.run.result.copyErr = true, ""
+				// Replaces, never accumulates: whatever was there is gone.
+				m.run.result.onClipboard = m.run.result.cursor
+				m.run.result.copyErr = ""
 			}
 			return m, nil
 		case "esc", "q", "enter":

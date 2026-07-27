@@ -879,7 +879,7 @@ func TestResultNeverPrintsTheKeyItself(t *testing.T) {
 		knownHosts: "1.2.3.4 ssh-ed25519 AAAAC3Nza"}
 	for _, r := range []addResult{
 		base,
-		{app: base.app, keyPath: base.keyPath, knownHosts: base.knownHosts, copied: true},
+		{app: base.app, keyPath: base.keyPath, knownHosts: base.knownHosts, onClipboard: resultKey},
 		{app: base.app, keyPath: base.keyPath, knownHosts: base.knownHosts, copyErr: "no clipboard tool found"},
 		{app: base.app, keyPath: base.keyPath, knownHosts: base.knownHosts, rotated: true},
 	} {
@@ -909,24 +909,118 @@ func TestResultDoesNotLookLikeTheValueIsACatCommand(t *testing.T) {
 	}
 }
 
-func TestCopyKeyIsOfferedOnlyWhenPossible(t *testing.T) {
-	if clipboardAvailable() {
-		v := addResult{app: "a", keyPath: "/k", knownHosts: "h k b"}.view()
-		if !strings.Contains(v, "copies it to the clipboard") {
-			t.Error("with a clipboard tool present, offer to copy")
+func TestBothValuesAreSelectableAndCopyable(t *testing.T) {
+	// Both have to reach GitHub. Copying one does not finish the job, so each
+	// keeps its own state and the screen must not claim otherwise.
+	r := &addResult{app: "ormos", keyPath: "/k", knownHosts: "h k b"}
+	if r.cursor != resultKey {
+		t.Error("the key should be selected first; it is the one you paste first")
+	}
+
+	m := testModel()
+	m.scr = screenResult
+	m.run = newRunState("x")
+	m.run.done, m.run.result = true, r
+
+	m = send(m, "down")
+	if m.run.result.cursor != resultHosts {
+		t.Fatalf("down should select the host keys, got %d", m.run.result.cursor)
+	}
+	m = send(m, "down", "down")
+	if m.run.result.cursor != resultItems-1 {
+		t.Error("the cursor must not run past the last value")
+	}
+	m = send(m, "up", "up", "up")
+	if m.run.result.cursor != 0 {
+		t.Error("the cursor must not run above the first value")
+	}
+}
+
+func TestKnownHostsCopiesItsValueNotAPath(t *testing.T) {
+	// The key is copied from its file so its contents are never held here.
+	// known_hosts is already in hand and is not confidential, so it copies
+	// directly -- and must end with a newline, or appending to the variable in
+	// GitHub joins two entries into one unusable line.
+	if !clipboardAvailable() {
+		t.Skip("no clipboard tool")
+	}
+	r := addResult{keyPath: "/nonexistent", knownHosts: "1.2.3.4 ssh-ed25519 AAAA", cursor: resultHosts}
+	if err := r.copySelected(); err != nil {
+		t.Fatalf("copying the host keys should not touch the filesystem: %v", err)
+	}
+}
+
+func TestOnlyOneValueIsEverMarked(t *testing.T) {
+	// There is one clipboard. Marking every value that has ever been copied
+	// claims two things are on it at once, and reads as the mark being stuck to
+	// the first row.
+	mark := func(r addResult) (onKey, onHosts bool) {
+		for _, ln := range strings.Split(r.view(), "\n") {
+			if strings.Contains(ln, "clipboard") && strings.Contains(ln, "SSH_DEPLOY_KEY") {
+				onKey = true
+			}
+			if strings.Contains(ln, "clipboard") && strings.Contains(ln, "SSH_KNOWN_HOSTS") {
+				onHosts = true
+			}
 		}
+		return
 	}
-	// Once copied, it says so rather than repeating the offer.
-	v := addResult{app: "a", keyPath: "/k", knownHosts: "h k b", copied: true}.view()
-	if !strings.Contains(v, "copied to the clipboard") {
-		t.Error("a completed copy should be confirmed")
+	base := addResult{app: "a", keyPath: "/k", knownHosts: "h k b", onClipboard: -1}
+
+	if k, h := mark(base); k || h {
+		t.Error("nothing has been copied yet, so nothing should be marked")
 	}
-	if strings.Contains(v, "copies it to the clipboard") {
-		t.Error("do not keep offering after it has been copied")
+	k, h := mark(addResult{app: "a", keyPath: "/k", knownHosts: "h k b", onClipboard: resultKey})
+	if !k || h {
+		t.Errorf("only the key should be marked, got key=%v hosts=%v", k, h)
 	}
-	// A failure falls back to the manual route rather than leaving you stuck.
-	v = addResult{app: "a", keyPath: "/k", knownHosts: "h k b", copyErr: "boom"}.view()
-	if !strings.Contains(v, "boom") || !strings.Contains(v, "cat /k") {
-		t.Error("a failed copy should say so and fall back to cat")
+	k, h = mark(addResult{app: "a", keyPath: "/k", knownHosts: "h k b", onClipboard: resultHosts})
+	if k || !h {
+		t.Errorf("the mark must MOVE, not accumulate: key=%v hosts=%v", k, h)
+	}
+}
+
+func TestCopyingTheSecondReplacesTheFirst(t *testing.T) {
+	m := testModel()
+	m.scr = screenResult
+	m.run = newRunState("x")
+	m.run.done = true
+	m.run.result = &addResult{app: "a", keyPath: "/nonexistent-so-copy-fails",
+		knownHosts: "h k b", onClipboard: -1}
+
+	// Copy the host keys (works: no file involved).
+	m = send(m, "down", "c")
+	if m.run.result.onClipboard != resultHosts {
+		t.Fatalf("host keys should be on the clipboard, got %d", m.run.result.onClipboard)
+	}
+	// Now a failing copy must not leave the previous value claimed.
+	m = send(m, "up", "c")
+	if m.run.result.copyErr == "" {
+		t.Fatal("copying a missing key file should report an error")
+	}
+	if m.run.result.onClipboard != -1 {
+		t.Error("a failed copy must not leave the previous value marked as current")
+	}
+}
+
+func TestWaylandCopyForcesPlainText(t *testing.T) {
+	// wl-copy sniffs its input and advertises a matching type. Given a private
+	// key it offers ONLY application/x-pem-file, so every text field asks for
+	// text/plain, finds nothing, and pastes nothing -- while the copy itself
+	// reports success. Forcing the type is what makes the key pasteable.
+	//
+	// Asserted on the argv rather than the clipboard so it holds on machines
+	// with no compositor, e.g. CI.
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	argv := clipboardCmd()
+	if argv == nil {
+		t.Skip("no clipboard tool installed")
+	}
+	if !strings.Contains(argv[0], "wl-copy") {
+		t.Skip("wl-copy not the chosen tool here")
+	}
+	joined := strings.Join(argv, " ")
+	if !strings.Contains(joined, "--type text/plain") {
+		t.Errorf("wl-copy must be told the type, got %q", joined)
 	}
 }

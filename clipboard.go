@@ -24,15 +24,26 @@ func clipboardCmd() []string {
 		bin  string
 		args []string
 	}
+	// --type text/plain on wl-copy is load-bearing, not tidiness. wl-copy sniffs
+	// the content and advertises a type to match, and it recognises a private
+	// key: it offers ONLY application/x-pem-file. Every text field asks for
+	// text/plain, finds no such offer, and pastes nothing -- silently, because
+	// the copy itself succeeded. The host keys are plain text and were never
+	// affected, which is what made this look like a bug in one value and not
+	// the other.
+	//
+	// The X11 tools do not sniff: they offer STRING/UTF8_STRING regardless, so
+	// they are left alone.
+	wlArgs := []string{"--type", "text/plain"}
 	var order []candidate
 	if os.Getenv("WAYLAND_DISPLAY") != "" {
-		order = append(order, candidate{"wl-copy", nil})
+		order = append(order, candidate{"wl-copy", wlArgs})
 	}
 	order = append(order,
 		candidate{"pbcopy", nil},                                // macOS
 		candidate{"xclip", []string{"-selection", "clipboard"}}, // X11
 		candidate{"xsel", []string{"--clipboard", "--input"}},   // X11
-		candidate{"wl-copy", nil},                               // Wayland, if the env var was unset
+		candidate{"wl-copy", wlArgs},                            // Wayland, if the env var was unset
 		candidate{"clip.exe", nil},                              // WSL
 	)
 	for _, c := range order {
@@ -45,19 +56,28 @@ func clipboardCmd() []string {
 
 func clipboardAvailable() bool { return clipboardCmd() != nil }
 
-// copyToClipboard sends the file's contents to the clipboard without them
-// passing through this process's output.
-func copyToClipboard(path string) error {
-	argv := clipboardCmd()
-	if argv == nil {
-		return fmt.Errorf("no clipboard tool found (looked for wl-copy, pbcopy, xclip, xsel, clip.exe)")
-	}
+// copyFileToClipboard sends a file's contents to the clipboard without them
+// passing through this process's output. Used for the private key, which must
+// not be read into anything that might later be printed.
+func copyFileToClipboard(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("could not read %s: %w", path, err)
 	}
+	return copyToClipboard(string(data))
+}
+
+// copyToClipboard puts text on the clipboard.
+func copyToClipboard(text string) error {
+	argv := clipboardCmd()
+	if argv == nil {
+		return fmt.Errorf("no clipboard tool found (looked for wl-copy, pbcopy, xclip, xsel, clip.exe)")
+	}
 	c := exec.Command(argv[0], argv[1:]...)
-	c.Stdin = strings.NewReader(string(data))
+	c.Stdin = strings.NewReader(text)
+	// The helper forks a child that serves the selection; without this it dies
+	// with us and the paste comes back empty.
+	detach(c)
 	// Never surface the tool's own output: wl-copy is silent, but xclip has been
 	// known to echo, and this is the one buffer that must not reach the screen.
 	c.Stdout, c.Stderr = nil, nil
