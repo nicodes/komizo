@@ -9,7 +9,7 @@
 #
 # Inputs:
 #   APP_NAME   which app to remove                            (required)
-#   CI_USER    its deploy account            (default: cd-<app>)
+#   CI_USER    its deploy account        (default: komizo-<app>)
 #   APP_DIR    its directory                 (default: /srv/<app>)
 #   KEEP_DATA  1 to leave the directory and its volumes alone (default: 0)
 
@@ -25,7 +25,7 @@ case "$APP_NAME" in
 	*[!A-Za-z0-9_-]*) echo "error: APP_NAME must be letters, digits, underscore or hyphen" >&2; exit 1 ;;
 esac
 
-CI_USER="${CI_USER:-cd-$APP_NAME}"
+CI_USER="${CI_USER:-komizo-$APP_NAME}"
 APP_DIR="${APP_DIR:-/srv/$APP_NAME}"
 KEEP_DATA="${KEEP_DATA:-0}"
 DEPLOY_BIN="/usr/local/bin/deploy-$APP_NAME"

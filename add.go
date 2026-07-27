@@ -31,7 +31,7 @@ func (o *addOpts) bind(fs *flag.FlagSet) {
 	fs.StringVar(&o.host, "host", "", "server to set up, [user@]HOST (user defaults to root)")
 	fs.StringVar(&o.app, "app", "", "which app on this box; each gets its own account, paths and rules")
 	fs.StringVar(&o.config, "config", "", "registry path (NO tag) the host pulls compose.yml from")
-	fs.StringVar(&o.user, "user", "", "deploy account (default cd-<app>)")
+	fs.StringVar(&o.user, "user", "", "deploy account (default komizo-<app>)")
 	fs.StringVar(&o.appDir, "app-dir", "", "root-owned app directory (default /srv/<app>)")
 	fs.StringVar(&o.keyPath, "key", "", "where to write the keypair (default ~/.ssh/deploy_<app>_<host>)")
 	fs.StringVar(&o.knownAs, "known-as", "", "other hostname(s) CI connects by, comma-separated (host keys are pinned per name)")
@@ -45,7 +45,15 @@ func (o *addOpts) bind(fs *flag.FlagSet) {
 // account and paths the box will actually use. Every app is named -- there is
 // no unsuffixed special case, so a box set up for one app can host a second
 // later without renaming what already exists.
-func deriveUser(app string) string { return "cd-" + app }
+// deriveUser is the deploy account for an app.
+//
+// The hyphen is load-bearing. komizo's own accounts use an underscore --
+// komizo_monitor, and anything added later -- so the two namespaces cannot
+// collide for ANY app name: character seven is always "-" here and always "_"
+// there. A reserved-word list would have grown with every account komizo
+// gained, and adding one would have retroactively broken whoever already had an
+// app by that name.
+func deriveUser(app string) string { return "komizo-" + app }
 
 func deployBin(app string) string { return "/usr/local/bin/deploy-" + app }
 

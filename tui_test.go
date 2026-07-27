@@ -13,8 +13,8 @@ func testModel() model {
 	m.width, m.height = 100, 40
 	m.scr = screenList
 	m.apps = []appRow{
-		{name: "blog", user: "cd-blog", dir: "/srv/blog", version: "a1b2c3d4e5f6a7b8", running: "3", image: "ghcr.io/you/blog-config", routes: "blog.example.com"},
-		{name: "shop", user: "cd-shop", dir: "/srv/shop", version: "none", running: "0", image: "ghcr.io/you/shop-config"},
+		{name: "blog", user: "komizo-blog", dir: "/srv/blog", version: "a1b2c3d4e5f6a7b8", running: "3", image: "ghcr.io/you/blog-config", routes: "blog.example.com"},
+		{name: "shop", user: "komizo-shop", dir: "/srv/shop", version: "none", running: "0", image: "ghcr.io/you/shop-config"},
 	}
 	m.proxy = proxyRow{installed: true, state: "running", network: "edge",
 		image: "caddy:2", status: "Up 3 hours"}
@@ -50,7 +50,7 @@ func send(m model, keys ...string) model {
 
 func TestListShowsEveryApp(t *testing.T) {
 	v := testModel().View()
-	for _, want := range []string{"blog", "cd-blog", "blog.example.com", "shop"} {
+	for _, want := range []string{"blog", "komizo-blog", "blog.example.com", "shop"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("list view is missing %q", want)
 		}
@@ -102,7 +102,7 @@ func TestDetailShowsTheSelectedApp(t *testing.T) {
 		t.Fatalf("enter did not open the detail screen, got %v", m.scr)
 	}
 	v := m.View()
-	for _, want := range []string{"shop", "/srv/shop", "cd-shop", "deploy-shop", "set-secret-shop", "ghcr.io/you/shop-config"} {
+	for _, want := range []string{"shop", "/srv/shop", "komizo-shop", "deploy-shop", "set-secret-shop", "ghcr.io/you/shop-config"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("detail view is missing %q", want)
 		}
@@ -154,7 +154,7 @@ func TestRemoveRequiresTypingTheAppName(t *testing.T) {
 		t.Fatalf("'x' did not open a confirmation, got %v", m.scr)
 	}
 	v := m.View()
-	for _, want := range []string{"/srv/blog", "cd-blog", "cannot be undone"} {
+	for _, want := range []string{"/srv/blog", "komizo-blog", "cannot be undone"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("the confirmation should spell out %q", want)
 		}

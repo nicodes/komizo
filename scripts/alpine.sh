@@ -24,7 +24,7 @@
 #   CI_PUBKEY      deploy PUBLIC key                              (required)
 #   CONFIG_IMAGE   registry path, no tag, carrying compose.yml    (required)
 #   APP_NAME       which app on this box                          (default: app)
-#   CI_USER        deploy account            (default: cd-<app>)
+#   CI_USER        deploy account        (default: komizo-<app>)
 #   APP_DIR        root-owned app directory                (default: /srv/<app>)
 #   HARDEN_SSH     1 to also harden sshd machine-wide             (default: 0)
 #
@@ -58,7 +58,7 @@ esac
 # One account per app, so a key that leaks reaches only its own app. Sharing one
 # account across apps is possible with an explicit CI_USER, but then its doas
 # block covers all of them.
-CI_USER="${CI_USER:-cd-$APP_NAME}"
+CI_USER="${CI_USER:-komizo-$APP_NAME}"
 DEPLOY_BIN="/usr/local/bin/deploy-$APP_NAME"
 SECRET_BIN="/usr/local/bin/set-secret-$APP_NAME"
 
@@ -128,7 +128,7 @@ fi
 # every authentication method -- including publickey. The deploy user could not
 # log in at all:
 #
-#   User cd-app not allowed because account is locked
+#   User komizo-app not allowed because account is locked
 #
 # "*" is the value we want: it is not a valid password hash, so no password can
 # ever match it, but it does not mark the account locked, so key auth works.
