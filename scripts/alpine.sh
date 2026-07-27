@@ -349,9 +349,18 @@ cat "\$staging/compose.yml" > compose.yml
 rm -rf caddy
 mkdir -p caddy
 if [ -d "\$staging/caddy" ]; then
+	# global.caddy is kept apart rather than concatenated: it carries a Caddy
+	# global options block, which the adapter only accepts as the very first
+	# thing in the config, so the proxy imports it from its own glob ahead of
+	# every site block. Folded in with the rest it would land in the middle and
+	# fail the whole config.
+	if [ -f "\$staging/caddy/global.caddy" ]; then
+		cat "\$staging/caddy/global.caddy" > caddy/global.caddy
+	fi
 	# *.caddy only, so a stray README in the directory cannot break the import.
 	for f in "\$staging"/caddy/*.caddy; do
 		[ -f "\$f" ] || continue
+		case "\$f" in */global.caddy) continue ;; esac
 		cat "\$f"
 		# Guard against a fragment with no trailing newline running into the
 		# next one and silently merging two site blocks.
@@ -385,7 +394,7 @@ if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "\$PROXY_CONTAINER"; t
 	proxy_up=1
 fi
 
-if [ -f caddy/app.caddy ] && [ "\$proxy_up" = 0 ]; then
+if { [ -f caddy/app.caddy ] || [ -f caddy/global.caddy ]; } && [ "\$proxy_up" = 0 ]; then
 	revert
 	echo "deploy: this app publishes routes, but the reverse proxy is not running." >&2
 	echo "deploy: nothing would serve them, so this is a failure rather than a no-op." >&2

@@ -81,6 +81,16 @@ chown root:root "$PROXY_DIR" "$PROXY_DIR/caddy"
 chmod 755 "$PROXY_DIR" "$PROXY_DIR/caddy"
 
 {
+	printf '# Global options an app may contribute -- on_demand_tls and the like.\n'
+	printf '# Imported FIRST because Caddy only accepts a global options block as\n'
+	printf '# the very first thing in the adapted config. At most ONE app per\n'
+	printf '# server may ship one; a second fails loudly rather than silently\n'
+	printf '# losing one of them, and the deploy validates before it applies.\n'
+	printf '#\n'
+	printf '# It lives in that app config image, not here, so the values stay\n'
+	printf '# versioned with the app that needs them rather than leaking into\n'
+	printf '# server config shared by everything.\n'
+	printf 'import /srv/*/caddy/global.caddy\n\n'
 	printf '# Every app writes its own fragment here. Nothing in this file names\n'
 	printf '# an app, so adding or removing one never edits shared config.\n'
 	printf '#\n'
