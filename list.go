@@ -21,6 +21,14 @@ set -u
 # rest -- an uninitialised box is a state to show, not an error.
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
 	printf 'server\tready\t%s\n' "$(docker --version 2>/dev/null | head -n 1)"
+	# The host's own public keys, for the known_hosts value CI pins. Read here
+	# rather than only when adding an app: they belong to the SERVER, every app
+	# on the box shares them, and needing them again should not mean re-running
+	# setup. Public by definition -- what they need is integrity, not secrecy.
+	for f in /etc/ssh/ssh_host_*_key.pub; do
+		[ -f "$f" ] || continue
+		awk '{ if ($1 ~ /^(ssh-|ecdsa-)/) printf "hostkey\t%s\t%s\n", $1, $2 }' "$f"
+	done
 elif command -v docker >/dev/null 2>&1; then
 	printf 'server\tdocker-stopped\t\n'
 else
@@ -102,8 +110,9 @@ type appRow struct {
 
 // serverRow is the box itself, before any app is considered.
 type serverRow struct {
-	state  string // ready | docker-stopped | bare
-	docker string
+	state    string // ready | docker-stopped | bare
+	docker   string
+	hostKeys [][2]string // {type, base64}
 }
 
 func (s serverRow) ready() bool { return s.state == "ready" }
@@ -246,7 +255,9 @@ func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, n
 		f := strings.Split(ln, "\t")
 		switch {
 		case len(f) == 3 && f[0] == "server":
-			srv = serverRow{state: f[1], docker: f[2]}
+			srv.state, srv.docker = f[1], f[2]
+		case len(f) == 3 && f[0] == "hostkey":
+			srv.hostKeys = append(srv.hostKeys, [2]string{f[1], f[2]})
 		case len(f) == 8 && f[0] == "app":
 			apps = append(apps, appRow{f[1], f[2], f[3], f[4], f[5], f[6], f[7]})
 		case len(f) == 5 && f[0] == "proxy":

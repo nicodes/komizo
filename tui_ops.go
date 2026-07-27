@@ -64,6 +64,16 @@ const (
 
 // value returns what the cursor is pointing at. The key is a path, because its
 // contents must not be held anywhere that might later be rendered.
+// items is how many rows this result offers. A rotation offers one: the host
+// keys did not change, so presenting them as something to copy would imply
+// otherwise.
+func (a addResult) items() int {
+	if a.rotated {
+		return 1
+	}
+	return resultItems
+}
+
 func (a addResult) copySelected() error {
 	if a.cursor == resultKey {
 		return copyFileToClipboard(a.keyPath)
@@ -170,11 +180,20 @@ func (a addResult) view() string {
 	b.WriteString(gutter + "      " + a.keyPath + "\n")
 
 	// --- 2. the host keys ----------------------------------------------------
-	// Shown in full, unlike the key: a host key needs integrity, not secrecy,
-	// and masking it makes a mismatch unreadable in a CI log.
-	b.WriteString(a.row(resultHosts, "SSH_KNOWN_HOSTS", dimStyle.Render("variable, not a secret")))
-	for _, l := range strings.Split(a.knownHosts, "\n") {
-		b.WriteString(gutter + "      " + dimStyle.Render(l) + "\n")
+	// Rotating replaces the deploy KEYPAIR. The server's host keys are its own
+	// and are untouched, so offering them here would say that something else
+	// needs updating in GitHub when nothing does. They stay one keypress away
+	// on the server screen.
+	if a.rotated {
+		b.WriteString(para("\n"+gutter, "SSH_KNOWN_HOSTS is unchanged — the server's own keys did not\n"+
+			"move. Press k on the server screen if you need it again."))
+	} else {
+		// Shown in full, unlike the key: a host key needs integrity, not
+		// secrecy, and masking it makes a mismatch unreadable in a CI log.
+		b.WriteString(a.row(resultHosts, "SSH_KNOWN_HOSTS", dimStyle.Render("variable, not a secret")))
+		for _, l := range strings.Split(a.knownHosts, "\n") {
+			b.WriteString(gutter + "      " + dimStyle.Render(l) + "\n")
+		}
 	}
 
 	if a.copyErr != "" {

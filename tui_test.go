@@ -1159,3 +1159,63 @@ func TestIsIPDistinguishesNamesFromAddresses(t *testing.T) {
 		}
 	}
 }
+
+func TestRotationDoesNotOfferHostKeys(t *testing.T) {
+	// Rotating replaces the deploy keypair. The server's own host keys do not
+	// move, so presenting SSH_KNOWN_HOSTS as something to copy would say
+	// something else needs updating in GitHub when nothing does.
+	rot := addResult{app: "blog", keyPath: "/k", knownHosts: "h ssh-ed25519 AAAA",
+		rotated: true, onClipboard: -1}
+	v := rot.view()
+	if strings.Contains(v, "variable, not a secret") {
+		t.Error("a rotation should not present the host keys as a value to paste")
+	}
+	if !strings.Contains(v, "unchanged") {
+		t.Error("it should say the host keys did not change")
+	}
+	if rot.items() != 1 {
+		t.Errorf("a rotation has one copyable row, got %d", rot.items())
+	}
+
+	// A fresh setup still offers both.
+	fresh := addResult{app: "blog", keyPath: "/k", knownHosts: "h ssh-ed25519 AAAA", onClipboard: -1}
+	if fresh.items() != resultItems {
+		t.Errorf("a fresh setup offers %d rows, got %d", resultItems, fresh.items())
+	}
+	if !strings.Contains(fresh.view(), "SSH_KNOWN_HOSTS") {
+		t.Error("a fresh setup should still show the host keys")
+	}
+}
+
+func TestServerScreenShowsKnownHosts(t *testing.T) {
+	// The keys belong to the server, not an app: every app on the box pins the
+	// same ones. Showing them only in the output of adding an app meant wanting
+	// them again meant re-running setup.
+	m := netModel()
+	m.srv.hostKeys = [][2]string{
+		{"ssh-ed25519", "AAAAC3NzaC1lZDI1NTE5AAAAI"},
+		{"ssh-rsa", "AAAAB3NzaC1yc2EAAAADAQABA"},
+	}
+	v := send(m, "s").View()
+	if !strings.Contains(v, "SSH_KNOWN_HOSTS") {
+		t.Error("the server screen should show the value CI pins")
+	}
+	if !strings.Contains(v, "not a secret") {
+		t.Error("it should say it is a variable, so nobody masks it")
+	}
+	if !strings.Contains(v, "copy known_hosts") {
+		t.Error("it should offer to copy it")
+	}
+}
+
+func TestKnownHostsFormattingIsSharedWithWhatIsCopied(t *testing.T) {
+	// The screen and the clipboard must not drift: both go through
+	// formatKnownHosts, so one format change cannot update only one of them.
+	tgt := target{user: "root", host: "1.2.3.4", port: 22, aliases: []string{"ormos.dev"}}
+	keys := [][2]string{{"ssh-ed25519", "AAAA"}}
+	got := formatKnownHosts(tgt, keys)
+	want := "1.2.3.4 ssh-ed25519 AAAA\normos.dev ssh-ed25519 AAAA"
+	if got != want {
+		t.Errorf("formatKnownHosts =\n%q\nwant\n%q", got, want)
+	}
+}

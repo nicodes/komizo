@@ -156,7 +156,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "down", "j":
-			if m.run.result != nil && m.run.result.cursor < resultItems-1 {
+			if m.run.result != nil && m.run.result.cursor < m.run.result.items()-1 {
 				m.run.result.cursor++
 			}
 			return m, nil

@@ -154,11 +154,49 @@ func (m model) handleServerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.scr = screenConfirm
 		return m, nil
 
+	case "k":
+		// The value CI pins. Not a secret -- it needs integrity, not secrecy --
+		// so it is shown in full and copied like any other text.
+		if len(m.srv.hostKeys) == 0 {
+			return m, nil
+		}
+		if err := copyToClipboard(formatKnownHosts(m.tgt, m.srv.hostKeys) + "\n"); err != nil {
+			m.status = err.Error()
+		} else {
+			m.status = "known_hosts copied"
+		}
+		return m, nil
+
 	case "R":
 		m.scr = screenLoading
+		m.status = ""
 		return m, fetchApps(m.tgt)
 	}
 	return m, nil
+}
+
+// knownHostsSection shows the SSH_KNOWN_HOSTS value in full.
+//
+// It belongs here rather than on an app: the keys are the SERVER's, and every
+// app on the box pins the same ones. It used to appear only in the output of
+// adding an app, which meant wanting it again meant re-running setup.
+func (m model) knownHostsSection() string {
+	if len(m.srv.hostKeys) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(section("SSH_KNOWN_HOSTS  " + dimStyle.Render("(a variable, not a secret)")))
+	for _, ln := range strings.Split(formatKnownHosts(m.tgt, m.srv.hostKeys), "\n") {
+		if len(ln) > 74 {
+			ln = ln[:74] + "…"
+		}
+		b.WriteString(gutter + "  " + dimStyle.Render(ln) + "\n")
+	}
+	if m.tgt.isIP() {
+		b.WriteString(gutter + "  " + dimStyle.Render(
+			"CI usually connects by name — add one with 'a' if these do not match") + "\n")
+	}
+	return b.String()
 }
 
 func (m model) viewServer() string {
@@ -171,8 +209,12 @@ func (m model) viewServer() string {
 	b.WriteString(kv("proxy", m.proxyLine()))
 	b.WriteString(kv("certs", dimStyle.Render(proxyProject+"_caddy_data (volume)")))
 
+	b.WriteString(m.knownHostsSection())
 	b.WriteString(m.attachedSection())
 	b.WriteString(m.problemsSection())
+	if m.status != "" {
+		b.WriteString("\n" + gutter + okStyle.Render(m.status) + "\n")
+	}
 
 	if m.proxyLogs != "" {
 		b.WriteString(section("proxy log"))
@@ -186,14 +228,15 @@ func (m model) viewServer() string {
 	}
 
 	if !m.proxy.installed {
-		b.WriteString(help("s", "install a proxy", "u", "update server", "R", "refresh", "esc", "back"))
+		b.WriteString(help("s", "install a proxy", "k", "copy known_hosts",
+			"u", "update server", "R", "refresh", "esc", "back"))
 		return b.String()
 	}
 	toggle := "stop proxy"
 	if !m.proxy.running() {
 		toggle = "start proxy"
 	}
-	b.WriteString(help("t", toggle, "r", "restart", "l", "logs",
+	b.WriteString(help("t", toggle, "r", "restart", "l", "logs", "k", "copy known_hosts",
 		"s", "settings", "u", "update server", "esc", "back"))
 	return b.String()
 }

@@ -43,14 +43,19 @@ func readKnownHosts(t target) (string, error) {
 		keys = append(keys, [2]string{f[0], f[1]})
 	}
 
+	if len(keys) == 0 {
+		return "", fmt.Errorf("the server reported no host keys -- is /etc/ssh readable as %s?", t.user)
+	}
+	return formatKnownHosts(t, keys), nil
+}
+
+// formatKnownHosts renders the value CI pins: one line per name per key.
+func formatKnownHosts(t target, keys [][2]string) string {
 	var lines []string
 	for _, name := range t.knownHostsNames() {
 		for _, k := range keys {
 			lines = append(lines, fmt.Sprintf("%s %s %s", name, k[0], k[1]))
 		}
 	}
-	if len(lines) == 0 {
-		return "", fmt.Errorf("the server reported no host keys -- is /etc/ssh readable as %s?", t.user)
-	}
-	return strings.Join(lines, "\n"), nil
+	return strings.Join(lines, "\n")
 }
