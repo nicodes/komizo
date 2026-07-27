@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -369,8 +370,8 @@ func TestFreshServerGetsTheInitScreen(t *testing.T) {
 		t.Fatalf("a bare server should open the init screen, got %v", m.scr)
 	}
 	v := m.View()
-	for _, want := range []string{"not set up yet", "Docker", "reverse proxy"} {
-		if !strings.Contains(v, want) {
+	for _, want := range []string{"not set up yet", "docker", "caddy", "edge"} {
+		if !strings.Contains(strings.ToLower(v), strings.ToLower(want)) {
 			t.Errorf("init screen is missing %q", want)
 		}
 	}
@@ -382,46 +383,6 @@ func TestReadyServerGoesStraightToTheList(t *testing.T) {
 	next, _ := m.Update(appsMsg{srv: serverRow{state: "ready"}})
 	if next.(model).scr != screenList {
 		t.Error("a ready server should go straight to the app list")
-	}
-}
-
-func TestInitScreenDefaultsToInstallingTheProxy(t *testing.T) {
-	o := newInitForm().opts()
-	if !o.proxy {
-		t.Error("the proxy should be on by default; it is what makes HTTPS work")
-	}
-	if o.network != defaultNetwork {
-		t.Errorf("network default is wrong: %q", o.network)
-	}
-}
-
-func TestProxyCanBeTurnedOffWithoutTyping(t *testing.T) {
-	// A yes/no answer is a choice field, not a text box -- typing "no" into a
-	// text box is a way to get "n" or "No" wrong.
-	f := newInitForm()
-	if len(f.fields[0].choices) == 0 {
-		t.Fatal("the proxy field should be a choice, not free text")
-	}
-	f.fields[0].cycle(1)
-	if f.opts().proxy {
-		t.Error("cycling the choice should have turned the proxy off")
-	}
-	f.fields[0].cycle(1) // wraps back
-	if !f.opts().proxy {
-		t.Error("cycling should wrap round to yes")
-	}
-}
-
-func TestInitAsksExactlyOneQuestion(t *testing.T) {
-	// The network name used to be asked here. A fresh box is the worst moment
-	// to ask: you cannot know whether the default collides, and changing it
-	// later means editing every app's compose.yml.
-	f := newInitForm()
-	if len(f.fields) != 1 {
-		t.Errorf("init should ask one question, got %d: %+v", len(f.fields), f.fields)
-	}
-	if o := f.opts(); o.network != defaultNetwork || o.image != defaultProxy {
-		t.Errorf("init must still supply the defaults it stopped asking for: %+v", o)
 	}
 }
 
@@ -447,11 +408,6 @@ func TestNothingAsksForAnAcmeEmail(t *testing.T) {
 	// Let's Encrypt stopped sending expiry notices in June 2025, so the address
 	// bought nothing but a field to fill in. If one comes back, it should be a
 	// deliberate decision rather than a copied form field.
-	for _, f := range newInitForm().fields {
-		if strings.Contains(strings.ToLower(f.label), "email") {
-			t.Errorf("init form still asks for %q", f.label)
-		}
-	}
 	for _, f := range newProxyForm().fields {
 		if strings.Contains(strings.ToLower(f.label), "email") {
 			t.Errorf("proxy form still asks for %q", f.label)
@@ -810,4 +766,167 @@ func stripANSI(s string) string {
 		b.WriteByte(s[i])
 	}
 	return b.String()
+}
+
+// --- why a connection failed ----------------------------------------------
+
+func TestSSHFailuresAreToldApart(t *testing.T) {
+	// Every one of these exits 255, so the stderr text is the only signal.
+	// Captured verbatim from OpenSSH against a real sshd.
+	for _, c := range []struct {
+		raw  string
+		want reachKind
+		why  string
+	}{
+		{"Host key verification failed.", reachUnknownHost,
+			"a server you just created is the normal case, not an auth problem"},
+		{"root@1.2.3.4: Permission denied (publickey,password,keyboard-interactive).", reachAuth,
+			"the key really was refused"},
+		{"ssh: connect to host 1.2.3.4 port 22: Connection refused", reachNetwork, "nothing listening"},
+		{"ssh: connect to host 1.2.3.4 port 22: Connection timed out", reachNetwork, "firewalled"},
+		{"ssh: Could not resolve hostname nope.invalid: Name or service not known", reachNetwork, "bad name"},
+		{"@@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@@\nHost key verification failed.",
+			reachChangedHost,
+			"a changed key ALSO prints 'verification failed' -- it must not be mistaken for a first meeting"},
+		{"Connection closed by 1.2.3.4 port 22", reachOther, "unknown, so pass ssh's own words through"},
+	} {
+		if got := classify(c.raw); got != c.want {
+			t.Errorf("classify(%q) = %v, want %v -- %s", c.raw, got, c.want, c.why)
+		}
+	}
+}
+
+func TestUnknownHostDoesNotBlameTheKey(t *testing.T) {
+	// The bug this replaced: a fresh server produced "cannot SSH in as root
+	// without a password" and sent people to ssh-copy-id, which is not the fix.
+	tgt := target{user: "root", host: "1.2.3.4", port: 22}
+	msg := reachResult{kind: reachUnknownHost}.explain(tgt).Error()
+	if strings.Contains(msg, "ssh-copy-id") {
+		t.Error("an unknown host key is not a credentials problem; do not suggest ssh-copy-id")
+	}
+	for _, want := range []string{"never connected", "known_hosts", "ssh root@1.2.3.4", "--accept-host-key"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message is missing %q:\n%s", want, msg)
+		}
+	}
+}
+
+func TestChangedHostKeyIsNotOfferedAsRoutine(t *testing.T) {
+	// The one case that might be an attack. It must not read like the others.
+	msg := reachResult{kind: reachChangedHost}.explain(target{user: "root", host: "h", port: 22}).Error()
+	if !strings.Contains(msg, "CHANGED") || !strings.Contains(msg, "impersonating") {
+		t.Errorf("a changed host key must be called out, got:\n%s", msg)
+	}
+	if strings.Contains(msg, "--accept-host-key") {
+		t.Error("komizo must never offer to auto-accept a key that CHANGED")
+	}
+}
+
+func TestAuthFailureStillSuggestsSshCopyId(t *testing.T) {
+	msg := reachResult{kind: reachAuth}.explain(target{user: "root", host: "h", port: 22}).Error()
+	if !strings.Contains(msg, "ssh-copy-id root@h") {
+		t.Errorf("a real auth failure should still point at ssh-copy-id, got:\n%s", msg)
+	}
+}
+
+func TestInitAsksOneThingOnly(t *testing.T) {
+	// It asked for a network name, then whether to install the proxy. Both are
+	// gone: the network is the worst thing to decide on an empty box, and the
+	// proxy is what every app is reached through, so "no" only meant finding
+	// out later. Now it is a statement and one decision.
+	m := newModel(target{user: "root", host: "box", port: 22})
+	m.width, m.height = 100, 40
+	next, _ := m.Update(appsMsg{srv: serverRow{state: "bare"}})
+	m = next.(model)
+	if m.scr != screenInit {
+		t.Fatalf("a bare server should open the init screen, got %v", m.scr)
+	}
+	v := m.View()
+	if !strings.Contains(v, "enter") || !strings.Contains(v, "set it up") {
+		t.Error("the init screen should offer exactly one action")
+	}
+	// No question about the proxy survives anywhere on it.
+	for _, gone := range []string{"[yes]", "reverse proxy?", "tab"} {
+		if strings.Contains(v, gone) {
+			t.Errorf("init screen still contains %q -- it should ask nothing", gone)
+		}
+	}
+	// And enter goes straight to work.
+	m = send(m, "enter")
+	if m.scr != screenRunning {
+		t.Errorf("enter should start the setup, got %v", m.scr)
+	}
+}
+
+func TestInitAlwaysInstallsTheProxy(t *testing.T) {
+	// There is no longer a path through init that leaves a box without one.
+	if o := (initOpts{network: defaultNetwork, image: defaultProxy}); o.network == "" || o.image == "" {
+		t.Error("init must still supply the defaults it stopped asking for")
+	}
+	src, err := os.ReadFile("init.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(src), `"proxy", true`) || strings.Contains(string(src), "o.proxy") {
+		t.Error("the --proxy opt-out is back; init is meant to always install it")
+	}
+}
+
+func TestResultNeverPrintsTheKeyItself(t *testing.T) {
+	// This screen ends up in screenshots and scrollback. The path may appear;
+	// the contents may not, on any code path.
+	base := addResult{app: "ormos", keyPath: "/home/you/.ssh/deploy_ormos_1.2.3.4",
+		knownHosts: "1.2.3.4 ssh-ed25519 AAAAC3Nza"}
+	for _, r := range []addResult{
+		base,
+		{app: base.app, keyPath: base.keyPath, knownHosts: base.knownHosts, copied: true},
+		{app: base.app, keyPath: base.keyPath, knownHosts: base.knownHosts, copyErr: "no clipboard tool found"},
+		{app: base.app, keyPath: base.keyPath, knownHosts: base.knownHosts, rotated: true},
+	} {
+		v := r.view()
+		for _, forbidden := range []string{"PRIVATE KEY", "BEGIN OPENSSH"} {
+			if strings.Contains(v, forbidden) {
+				t.Errorf("the result screen must never render key material (%q)", forbidden)
+			}
+		}
+		if !strings.Contains(v, base.keyPath) {
+			t.Error("the path should be shown, so you can find the key")
+		}
+	}
+}
+
+func TestResultDoesNotLookLikeTheValueIsACatCommand(t *testing.T) {
+	// "cat /home/..." sat alone under SSH_DEPLOY_KEY, which reads like a value
+	// and invited pasting that literal string into the secret.
+	v := addResult{app: "ormos", keyPath: "/k", knownHosts: "h k b"}.view()
+	if !strings.Contains(v, "contents not shown") {
+		t.Error("the screen must say the value is the file's contents, not the line shown")
+	}
+	// The host key IS shown in full -- it is not confidential, and hiding it
+	// would make a CI mismatch unreadable.
+	if !strings.Contains(v, "h k b") {
+		t.Error("known_hosts should be shown in full, ready to paste")
+	}
+}
+
+func TestCopyKeyIsOfferedOnlyWhenPossible(t *testing.T) {
+	if clipboardAvailable() {
+		v := addResult{app: "a", keyPath: "/k", knownHosts: "h k b"}.view()
+		if !strings.Contains(v, "copies it to the clipboard") {
+			t.Error("with a clipboard tool present, offer to copy")
+		}
+	}
+	// Once copied, it says so rather than repeating the offer.
+	v := addResult{app: "a", keyPath: "/k", knownHosts: "h k b", copied: true}.view()
+	if !strings.Contains(v, "copied to the clipboard") {
+		t.Error("a completed copy should be confirmed")
+	}
+	if strings.Contains(v, "copies it to the clipboard") {
+		t.Error("do not keep offering after it has been copied")
+	}
+	// A failure falls back to the manual route rather than leaving you stuck.
+	v = addResult{app: "a", keyPath: "/k", knownHosts: "h k b", copyErr: "boom"}.view()
+	if !strings.Contains(v, "boom") || !strings.Contains(v, "cat /k") {
+		t.Error("a failed copy should say so and fall back to cat")
+	}
 }
