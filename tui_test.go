@@ -124,7 +124,9 @@ func TestAddFormValidatesBeforeRunning(t *testing.T) {
 	for _, r := range "ghcr.io/you/blog-config:v1" {
 		m = send(m, string(r))
 	}
-	m = send(m, "enter")
+	// Enter advances while there is a field below, and submits on the last one.
+	// "known as" is now always present, so reaching the submit takes one more.
+	m = send(m, "enter", "enter")
 	if m.scr != screenAddForm {
 		t.Error("form should stay open when a field is invalid")
 	}
@@ -142,7 +144,7 @@ func TestAddFormRejectsABadAppName(t *testing.T) {
 	for _, r := range "ghcr.io/you/x-config" {
 		m = send(m, string(r))
 	}
-	m = send(m, "enter")
+	m = send(m, "enter", "enter")
 	if m.scr != screenAddForm || m.form.problem == "" {
 		t.Error("a space in the app name should be rejected")
 	}
@@ -1119,28 +1121,75 @@ func TestKnownHostsDeduplicatesAndKeepsPort(t *testing.T) {
 	}
 }
 
-func TestAddFormAsksForADomainOnlyWhenConnectedByIP(t *testing.T) {
-	// Host keys are pinned per name and CI connects by name, so setting up over
-	// an IP is precisely when the entries will not match. Asking then is cheap;
-	// asking always is noise.
-	byIP := newAddForm(target{user: "root", host: "64.177.120.111", port: 22})
-	if len(byIP.fields) != 3 {
-		t.Fatalf("connected by IP: expected the domain field, got %d fields", len(byIP.fields))
+func TestAddFormAlwaysAsksForOtherNames(t *testing.T) {
+	// Host keys are pinned per name, so a name CI dials that is missing from
+	// the value fails the deploy with "no entry for <name>". This was once
+	// asked only when connected by IP, which silently excluded the case that
+	// prompted the fix: an admin name for the box (komizo.example.com) that is
+	// not the name CI deploys to (app.example.com).
+	for _, host := range []string{"64.177.120.111", "komizo.example.com"} {
+		f := newAddForm(target{user: "root", host: host, port: 22})
+		if len(f.fields) != 3 {
+			t.Fatalf("%s: expected the extra-names field, got %d fields", host, len(f.fields))
+		}
+		// Optional either way: most boxes are reached by one name.
+		if err := f.fields[2].check(""); err != nil {
+			t.Errorf("%s: the field must be optional, got %v", host, err)
+		}
+		if err := f.fields[2].check("not a hostname!"); err == nil {
+			t.Errorf("%s: expected a bad hostname to be rejected", host)
+		}
 	}
-	if !strings.Contains(byIP.fields[2].label, "domain") {
-		t.Errorf("third field should be the domain name, got %q", byIP.fields[2].label)
+}
+
+func TestKnownAsSplitsAndTrims(t *testing.T) {
+	f := newAddForm(target{user: "root", host: "komizo.example.com", port: 22})
+	f.fields[2].value = " app.example.com ,, www.example.com,"
+	got := f.knownAs()
+	want := []string{"app.example.com", "www.example.com"}
+	if len(got) != len(want) {
+		t.Fatalf("knownAs() = %q, want %q", got, want)
 	}
-	// Optional: an empty value must be accepted.
-	if err := byIP.fields[2].check(""); err != nil {
-		t.Errorf("the domain field must be optional, got %v", err)
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("knownAs()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	// A form left blank must not produce a phantom empty name, which would
+	// emit a known_hosts line beginning with a space.
+	f.fields[2].value = "  "
+	if n := len(f.knownAs()); n != 0 {
+		t.Errorf("blank field produced %d names, want 0", n)
+	}
+}
+
+func TestAliasesSurviveOntoTheServerScreen(t *testing.T) {
+	// The value shown by the server screen is built from the target, so an
+	// alias given at add time has to be recorded there. Passing it only to the
+	// add meant the screen meant to be the durable home for SSH_KNOWN_HOSTS
+	// gave a shorter answer than the add had just printed.
+	tgt := target{user: "root", host: "komizo.example.com", port: 22}
+	tgt.aliases = mergeNames(tgt.aliases, []string{"app.example.com"})
+	tgt.aliases = mergeNames(tgt.aliases, []string{"app.example.com", "shop.example.com"})
+
+	names := tgt.knownHostsNames()
+	want := []string{"komizo.example.com", "app.example.com", "shop.example.com"}
+	if len(names) != len(want) {
+		t.Fatalf("knownHostsNames() = %q, want %q", names, want)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Errorf("name %d = %q, want %q", i, names[i], want[i])
+		}
 	}
 
-	byName := newAddForm(target{user: "root", host: "ormos.dev", port: 22})
-	if len(byName.fields) != 2 {
-		t.Errorf("connected by name: nothing to ask, got %d fields", len(byName.fields))
-	}
-	if byName.knownAs() != "" {
-		t.Error("knownAs should be empty when the form did not ask")
+	// And the rendered value carries a line per name, which is what CI matches.
+	keys := [][2]string{{"ssh-ed25519", "AAAAC3Nz"}}
+	got := formatKnownHosts(tgt, keys)
+	for _, n := range want {
+		if !strings.Contains(got, n+" ssh-ed25519 AAAAC3Nz") {
+			t.Errorf("known_hosts is missing a line for %q:\n%s", n, got)
+		}
 	}
 }
 

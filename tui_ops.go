@@ -247,12 +247,11 @@ func stream(ch chan tea.Msg, c *exec.Cmd, stdin string) error {
 
 // These need the run channel, which lives in the model, so they are methods
 // rather than free functions returning a Cmd.
-func (m model) startAdd(app, config, knownAs string) tea.Cmd {
+// The target already carries any extra names -- the form records them on it
+// before starting, so every later screen sees the same set.
+func (m model) startAdd(app, config string) tea.Cmd {
 	ch := m.run.ch
 	t := m.tgt
-	if knownAs != "" {
-		t.aliases = append(t.aliases, knownAs)
-	}
 	go func() {
 		res, err := doAdd(t, app, config, false, ch)
 		ch <- runDoneMsg{err: err, result: res}

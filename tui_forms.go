@@ -55,15 +55,28 @@ func renderFields(fields []field, focus int) string {
 	return b.String()
 }
 
-// The third field appears only when connected by IP address.
+// The third field is always asked, and that is the fix for a real trap.
 //
-// Host keys are pinned per name, and CI almost always connects by hostname --
-// so an app set up over an IP produces entries that match nothing, and the
-// deploy stops with "no entry for <name>" while the correct keys sit in the
-// variable. Asking here is the one moment the answer is known and cheap. On a
-// box reached by name there is nothing to ask, so the field is absent.
+// Host keys are pinned per NAME: known_hosts is matched on the exact string the
+// client dialled, so entries written for one name match nothing when CI dials
+// another, and the deploy stops with "no entry for <name>" while the correct
+// keys sit in the variable.
+//
+// This used to be asked only when connected by IP, on the reasoning that a box
+// reached by name is already being reached by the name CI uses. That is true of
+// exactly one arrangement -- one app, one domain, and you administer it over
+// that same domain. It is false the moment a box has an admin name of its own:
+// connect as komizo.example.com to set up an app CI deploys to app.example.com,
+// and the interface offered no way to say so at all.
+//
+// So it is always here, blank means "no others", and either kind of address
+// works on both sides.
 func newAddForm(t target) addForm {
-	fields := []field{
+	help := "optional. Other names CI connects by, comma-separated — host keys are pinned per name, so a name missing here fails the deploy."
+	if t.isIP() {
+		help = "the domain CI connects by, if it is not this address — host keys are pinned per name. Comma-separated for more than one."
+	}
+	return addForm{fields: []field{
 		{
 			label: "app name",
 			help:  "letters, digits, underscore, hyphen. Names its directory, account and commands.",
@@ -74,29 +87,55 @@ func newAddForm(t target) addForm {
 			help:  "registry path with NO tag, e.g. ghcr.io/you/blog-config. Where the host reads compose.yml from.",
 			check: validateConfigImage,
 		},
-	}
-	if t.isIP() {
-		fields = append(fields, field{
-			label: "domain name",
-			help:  "optional. The name CI connects by, if it is not this address — host keys are pinned per name.",
-			check: func(s string) error {
-				if s == "" {
-					return nil
-				}
-				return validateHost(s)
-			},
-		})
-	}
-	return addForm{fields: fields}
+		{
+			label: "known as",
+			help:  help,
+			check: validateKnownAs,
+		},
+	}}
 }
 
-// knownAs is the extra hostname, when the form asked for one.
-func (f addForm) knownAs() string {
-	if len(f.fields) < 3 {
-		return ""
+// validateKnownAs checks a comma-separated list of extra hostnames. Empty is
+// fine: most boxes are reached by one name.
+func validateKnownAs(s string) error {
+	for _, h := range splitNames(s) {
+		if err := validateHost(h); err != nil {
+			return err
+		}
 	}
-	return strings.TrimSpace(f.fields[2].value)
+	return nil
 }
+
+// mergeNames adds names not already present, preserving order. Adding a second
+// app on the same box should not repeat the first one's aliases.
+func mergeNames(have, add []string) []string {
+	seen := map[string]bool{}
+	for _, h := range have {
+		seen[h] = true
+	}
+	for _, h := range add {
+		if !seen[h] {
+			seen[h] = true
+			have = append(have, h)
+		}
+	}
+	return have
+}
+
+// splitNames turns "a.example.com, b.example.com" into its parts, dropping
+// blanks so a trailing comma is not an error.
+func splitNames(s string) []string {
+	var out []string
+	for _, h := range strings.Split(s, ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// knownAs is the extra hostnames, if any were given.
+func (f addForm) knownAs() []string { return splitNames(f.fields[2].value) }
 
 func (f addForm) app() string    { return strings.TrimSpace(f.fields[0].value) }
 func (f addForm) config() string { return strings.TrimSpace(f.fields[1].value) }
@@ -123,11 +162,17 @@ func (m model) handleFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		// Recorded on the target, not just passed to the operation, so the
+		// server screen keeps showing the complete SSH_KNOWN_HOSTS afterwards.
+		// It used to be handed to the add alone, which meant the one screen
+		// meant to be the durable home for that value silently gave a shorter
+		// answer than the add had just printed.
+		m.tgt.aliases = mergeNames(m.tgt.aliases, f.knownAs())
 		// Adding an app is not destructive, so it runs without a confirmation
 		// step -- re-running it on an existing app is how you repair one.
 		m.scr = screenRunning
 		m.run = newRunState(fmt.Sprintf("Setting up %q", f.app()))
-		return m, m.startAdd(f.app(), f.config(), f.knownAs())
+		return m, m.startAdd(f.app(), f.config())
 	case "backspace":
 		v := f.fields[f.focus].value
 		if v != "" {
