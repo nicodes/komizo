@@ -358,3 +358,120 @@ func viewInit(srv serverRow) string {
 	b.WriteString(help("enter", "set it up", "q", "quit"))
 	return b.String()
 }
+
+// --- the prompts, shared -----------------------------------------------------
+//
+// Both the list and the detail screen offer rotate and remove. They were
+// written out at the call site once, which is how the detail screen came to
+// advertise two keys it did not handle: the help line was copied, the handler
+// was not.
+
+func (m model) rotatePrompt(a appRow) confirmPrompt {
+	return confirmPrompt{
+		title: fmt.Sprintf("Rotate the deploy key for %q?", a.name),
+		body: []string{
+			"A new keypair is generated on this machine and installed on the server.",
+			"",
+			"The current key stops working immediately. Update SSH_DEPLOY_KEY in",
+			"the repo's secrets before its next deploy, or that deploy will fail.",
+		},
+		action: func(m *model) tea.Cmd { return m.startRotate(a.name) },
+	}
+}
+
+func (m model) removePrompt(a appRow) confirmPrompt {
+	return confirmPrompt{
+		title: fmt.Sprintf("Remove %q from this server?", a.name),
+		body: []string{
+			"This stops its containers and deletes:",
+			"  " + a.dir + " and its volumes",
+			"  the account " + a.user + ", its doas rules and sshd restrictions",
+			"  /usr/local/bin/deploy-" + a.name + " and set-secret-" + a.name,
+			"",
+			"Other apps on this box are untouched. Images stay in your registry.",
+			"",
+			"This cannot be undone.",
+		},
+		confirmWord: a.name,
+		action:      func(m *model) tea.Cmd { return m.startRemove(a.name) },
+	}
+}
+
+// --- changing which config image an app trusts -------------------------------
+//
+// The pin is the trust anchor: root decides where the host will accept config
+// from, and CI cannot override it. That is exactly why it needs an obvious way
+// to be changed -- a wrong value fails at deploy time as "not found" from the
+// registry, which reads like a build problem rather than a setting on the box.
+
+type configForm struct {
+	app     string
+	current string
+	field   field
+	problem string
+}
+
+func newConfigForm(a appRow) configForm {
+	return configForm{
+		app:     a.name,
+		current: a.image,
+		field: field{
+			label: "config image",
+			value: a.image,
+			help:  "registry path with NO tag. The deploy supplies the tag.",
+			check: validateConfigImage,
+		},
+	}
+}
+
+func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	f := &m.configForm
+	switch msg.String() {
+	case "esc":
+		m.scr = screenDetail
+		return m, nil
+	case "enter":
+		v := strings.TrimSpace(f.field.value)
+		if err := f.field.check(v); err != nil {
+			f.problem = err.Error()
+			return m, nil
+		}
+		if v == f.current {
+			m.scr = screenDetail
+			return m, nil
+		}
+		m.scr = screenRunning
+		m.run = newRunState(fmt.Sprintf("Pointing %q at %s", f.app, v))
+		return m, m.startConfigChange(f.app, v)
+	case "backspace":
+		if f.field.value != "" {
+			f.field.value = f.field.value[:len(f.field.value)-1]
+		}
+		f.problem = ""
+	default:
+		if s := msg.String(); len(s) == 1 {
+			f.field.value += s
+			f.problem = ""
+		}
+	}
+	return m, nil
+}
+
+func (f configForm) view() string {
+	var b strings.Builder
+	b.WriteString("\n" + gutter + titleStyle.Render("Config image for "+f.app) + "\n\n")
+	b.WriteString(para(gutter, "Where the host pulls this app's compose.yml and routes from. Root\n"+
+		"pins it, so CI cannot point the host somewhere else -- which is why\n"+
+		"a wrong value here fails at deploy time and not before."))
+	b.WriteString("\n")
+	b.WriteString(renderFields([]field{f.field}, 0))
+	if f.problem != "" {
+		b.WriteString("\n" + gutter + dot("err") + " " + errStyle.Render(f.problem) + "\n")
+	}
+	if strings.TrimSpace(f.field.value) != f.current {
+		b.WriteString("\n" + gutter + dimStyle.Render("was  "+f.current) + "\n")
+	}
+	b.WriteString(para("\n"+gutter, "The deploy key is untouched; nothing in GitHub needs changing."))
+	b.WriteString(help("enter", "apply", "esc", "cancel"))
+	return b.String()
+}

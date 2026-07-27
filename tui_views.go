@@ -73,7 +73,7 @@ func viewDetail(m model) string {
 	b.WriteString(kv("secrets", dimStyle.Render("doas /usr/local/bin/set-secret-"+a.name)))
 
 	b.WriteString("\n" + para(gutter, "That is the whole grant. This account can deploy a tag that already\nexists in your registry, and set secrets it cannot read back."))
-	b.WriteString(help("esc", "back", "r", "rotate key", "x", "remove"))
+	b.WriteString(help("c", "config image", "r", "rotate key", "x", "remove", "esc", "back"))
 	return b.String()
 }
 

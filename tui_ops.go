@@ -48,6 +48,11 @@ type addResult struct {
 	cursor      int
 	onClipboard int // index, or -1 for nothing
 	copyErr     string
+
+	// Set when this was a config-image change rather than a fresh setup: the
+	// GitHub values are unchanged, so telling someone to paste them again
+	// would be wrong.
+	changedConfig string
 }
 
 // The two things this screen exists to hand over, in the order you paste them.
@@ -146,6 +151,13 @@ func (r runState) view(finished bool, height int) string {
 
 func (a addResult) view() string {
 	var b strings.Builder
+	if a.changedConfig != "" {
+		b.WriteString(gutter + dot("ok") + " " + titleStyle.Render(a.app+" now reads its config from") + "\n")
+		b.WriteString(gutter + "  " + a.changedConfig + "\n")
+		b.WriteString(para("\n"+gutter, "Nothing in GitHub changed -- the deploy key and host keys are the\n"+
+			"same. The next deploy pulls config from here."))
+		return b.String()
+	}
 	b.WriteString(gutter + dot("ok") + " " + titleStyle.Render("Add these to the repo for "+a.app) + "\n")
 	b.WriteString(dimStyle.Render(gutter+"  Settings → Secrets and variables → Actions") + "\n")
 
@@ -272,6 +284,23 @@ func (m model) startProxy(o proxyOpts) tea.Cmd {
 		c := exec.Command("ssh", t.sshArgs(envPrefix(proxyEnv(o))+"sh -s")...)
 		err := stream(ch, c, AlpineProxyScript)
 		ch <- runDoneMsg{err: err}
+	}()
+	return m.run.wait()
+}
+
+// startConfigChange re-points an app at a different config image. Re-running
+// the setup script is what applies it -- the same operation as adding, which is
+// why the key is reused rather than replaced: doAdd only generates one when the
+// file is absent.
+func (m model) startConfigChange(app, config string) tea.Cmd {
+	ch := m.run.ch
+	t := m.tgt
+	go func() {
+		res, err := doAdd(t, app, config, false, ch)
+		if res != nil {
+			res.changedConfig = config
+		}
+		ch <- runDoneMsg{err: err, result: res}
 	}()
 	return m.run.wait()
 }

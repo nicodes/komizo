@@ -1024,3 +1024,62 @@ func TestWaylandCopyForcesPlainText(t *testing.T) {
 		t.Errorf("wl-copy must be told the type, got %q", joined)
 	}
 }
+
+func TestDetailScreenHandlesEveryKeyItAdvertises(t *testing.T) {
+	// The help line was copied from the list; the handler was not, so the
+	// detail screen offered rotate and remove and did nothing for either.
+	for _, k := range []string{"c", "r", "x"} {
+		m := send(testModel(), "enter", k)
+		if m.scr == screenDetail {
+			t.Errorf("%q is advertised on the detail screen but does nothing", k)
+		}
+	}
+}
+
+func TestConfigImageIsEditable(t *testing.T) {
+	// The pin is the trust anchor, so a wrong value fails at deploy time with a
+	// registry "not found" -- which reads like a build problem, not a setting.
+	m := send(testModel(), "enter", "c")
+	if m.scr != screenConfigForm {
+		t.Fatalf("'c' should open the config image form, got %v", m.scr)
+	}
+	v := m.View()
+	if !strings.Contains(v, "ghcr.io/you/blog-config") {
+		t.Error("the form should be pre-filled with the current value")
+	}
+	if !strings.Contains(v, "deploy key is untouched") {
+		t.Error("it should say the GitHub values do not change")
+	}
+
+	// A tag is the mistake worth catching, same as when adding.
+	for _, r := range ":v1" {
+		m = send(m, string(r))
+	}
+	m = send(m, "enter")
+	if m.scr != screenConfigForm || !strings.Contains(m.configForm.problem, "tag") {
+		t.Errorf("a tag should be rejected, got problem=%q scr=%v", m.configForm.problem, m.scr)
+	}
+}
+
+func TestUnchangedConfigImageDoesNothing(t *testing.T) {
+	// Pressing enter without editing should not re-run setup on the server.
+	m := send(testModel(), "enter", "c", "enter")
+	if m.scr != screenDetail {
+		t.Errorf("an unchanged value should just go back, got %v", m.scr)
+	}
+}
+
+func TestConfigChangeResultDoesNotAskForAPaste(t *testing.T) {
+	// Nothing in GitHub changed, so the usual "add these to the repo" screen
+	// would be actively misleading.
+	v := addResult{app: "ormos", keyPath: "/k", knownHosts: "h k b",
+		changedConfig: "ghcr.io/nicodes/ormos-config", onClipboard: -1}.view()
+	if strings.Contains(v, "Add these to the repo") {
+		t.Error("a config change must not tell you to paste values into GitHub")
+	}
+	for _, want := range []string{"ghcr.io/nicodes/ormos-config", "Nothing in GitHub changed"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("result is missing %q", want)
+		}
+	}
+}

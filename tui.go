@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -17,16 +16,17 @@ import (
 type screen int
 
 const (
-	screenLoading   screen = iota
-	screenInit             // connected, but the server has nothing installed
-	screenList             // the apps on this box
-	screenDetail           // one app
-	screenAddForm          // name + config image for a new app
-	screenServer           // the box: docker, network, proxy, and what is wrong
-	screenProxyForm        // network and image for the shared reverse proxy
-	screenConfirm          // destructive action, spelled out
-	screenRunning          // an operation is in flight, streaming output
-	screenResult           // it finished; show what came back
+	screenLoading    screen = iota
+	screenInit              // connected, but the server has nothing installed
+	screenList              // the apps on this box
+	screenDetail            // one app
+	screenAddForm           // name + config image for a new app
+	screenConfigForm        // change which config image an app trusts
+	screenServer            // the box: docker, network, proxy, and what is wrong
+	screenProxyForm         // network and image for the shared reverse proxy
+	screenConfirm           // destructive action, spelled out
+	screenRunning           // an operation is in flight, streaming output
+	screenResult            // it finished; show what came back
 )
 
 type model struct {
@@ -41,11 +41,12 @@ type model struct {
 	net    netRow
 	cursor int
 
-	form      addForm
-	proxyForm proxyFormModel
-	proxyLogs string
-	confirm   confirmPrompt
-	run       runState
+	form       addForm
+	configForm configForm
+	proxyForm  proxyFormModel
+	proxyLogs  string
+	confirm    confirmPrompt
+	run        runState
 
 	width, height int
 }
@@ -113,11 +114,30 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case screenList:
 		return m.handleListKey(msg)
 	case screenDetail:
+		if len(m.apps) == 0 {
+			m.scr = screenList
+			return m, nil
+		}
+		a := m.apps[m.cursor]
 		switch msg.String() {
 		case "esc", "q", "left", "h":
 			m.scr = screenList
+		case "c":
+			// Changing which image the host trusts for its config. Re-running
+			// setup is what applies it; this is the same operation, named after
+			// what you are actually doing rather than hidden behind "add".
+			m.configForm = newConfigForm(a)
+			m.scr = screenConfigForm
+		case "r":
+			m.confirm = m.rotatePrompt(a)
+			m.scr = screenConfirm
+		case "x":
+			m.confirm = m.removePrompt(a)
+			m.scr = screenConfirm
 		}
 		return m, nil
+	case screenConfigForm:
+		return m.handleConfigFormKey(msg)
 	case screenInit:
 		return m.handleInitKey(msg)
 	case screenServer:
@@ -186,38 +206,12 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.scr = screenAddForm
 	case "r":
 		if len(m.apps) > 0 {
-			app := m.apps[m.cursor].name
-			m.confirm = confirmPrompt{
-				title: fmt.Sprintf("Rotate the deploy key for %q?", app),
-				body: []string{
-					"A new keypair is generated on this machine and installed on the server.",
-					"",
-					"The current key stops working immediately. Update SSH_DEPLOY_KEY in",
-					"the repo's secrets before its next deploy, or that deploy will fail.",
-				},
-				confirmWord: "",
-				action:      func(m *model) tea.Cmd { return m.startRotate(app) },
-			}
+			m.confirm = m.rotatePrompt(m.apps[m.cursor])
 			m.scr = screenConfirm
 		}
 	case "x":
 		if len(m.apps) > 0 {
-			a := m.apps[m.cursor]
-			m.confirm = confirmPrompt{
-				title: fmt.Sprintf("Remove %q from this server?", a.name),
-				body: []string{
-					"This stops its containers and deletes:",
-					"  " + a.dir + " and its volumes",
-					"  the account " + a.user + ", its doas rules and sshd restrictions",
-					"  /usr/local/bin/deploy-" + a.name + " and set-secret-" + a.name,
-					"",
-					"Other apps on this box are untouched. Images stay in your registry.",
-					"",
-					"This cannot be undone.",
-				},
-				confirmWord: a.name,
-				action:      func(m *model) tea.Cmd { return m.startRemove(a.name) },
-			}
+			m.confirm = m.removePrompt(m.apps[m.cursor])
 			m.scr = screenConfirm
 		}
 	case "s":
@@ -250,6 +244,8 @@ func (m model) View() string {
 		b.WriteString(m.viewServer())
 	case screenAddForm:
 		b.WriteString(m.form.view())
+	case screenConfigForm:
+		b.WriteString(m.configForm.view())
 	case screenProxyForm:
 		b.WriteString(m.proxyForm.view(m.proxy))
 	case screenConfirm:
