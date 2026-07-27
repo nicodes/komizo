@@ -56,16 +56,8 @@ func runInit(args []string) error {
 	}
 
 	step("Checking %s:%d", tgt.addr(), tgt.port)
-	if r := tgt.probe(); !r.ok() {
-		if r.kind == reachUnknownHost && o.acceptHostKey {
-			if err := acceptHostKey(tgt, true); err != nil {
-				return err
-			}
-			r = tgt.probe()
-		}
-		if !r.ok() {
-			return r.explain(tgt)
-		}
+	if err := ensureReachable(tgt, o.acceptHostKey); err != nil {
+		return err
 	}
 	note("reachable.")
 

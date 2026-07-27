@@ -432,7 +432,19 @@ fi
 
 docker compose pull
 docker compose up -d --remove-orphans
-docker image prune -f
+
+# Deliberately NOT pruning images here. 'docker image prune' is machine-wide,
+# and this script is per-app: every other step targets this app's own name, so
+# one command that reaches across every app on the box does not belong in it.
+#
+# It also would not do the job. Images are tagged by commit, so the version we
+# just replaced is still TAGGED and never dangling -- almost nothing a komizo
+# deploy leaves behind is what a bare prune collects. What actually fills the
+# disk is old tagged images, and reclaiming those needs '-a --filter until=...',
+# which is far too blunt to run unattended in the middle of a deploy.
+#
+# Disk is a SERVER concern. It belongs wherever server-wide upkeep ends up
+# living, not in the one path a leaked deploy key is allowed to invoke.
 
 # Reload AFTER the containers are up, so the upstream the fragment names is
 # already resolvable when Caddy re-reads its config. Caddy does not watch the
@@ -550,7 +562,8 @@ doas -C /etc/doas.conf || die "generated doas.conf is invalid"
 #            HARDEN_SSH=1 asks for it.
 
 conf=/etc/ssh/sshd_config
-cp "$conf" "$conf.bak.boot"
+conf_bak="$conf.komizo.bak"
+cp "$conf" "$conf_bak"
 
 # The deploy-user block is always removed, because it is always re-added
 # below. The global block is only removed when we are about to rewrite it --
@@ -569,7 +582,7 @@ if [ "$HARDEN_SSH" = "1" ]; then
 	# Refuse to disable password auth unless root can still get in by key,
 	# otherwise a box with no console access becomes unreachable.
 	if [ ! -s /root/.ssh/authorized_keys ]; then
-		mv "$conf.bak.boot" "$conf"
+		mv "$conf_bak" "$conf"
 		die "/root/.ssh/authorized_keys is empty -- install your own key first, or drop the hardening flag"
 	fi
 	sed -i -E \
@@ -582,7 +595,7 @@ if [ "$HARDEN_SSH" = "1" ]; then
 	# block written at the end would land inside whichever Match block happens
 	# to precede it, silently scoping machine-wide settings to one account.
 	# At the top it wins outright and sits before every Match.
-	tmp_conf="$conf.cicd.$$"
+	tmp_conf="$conf.komizo.$$"
 	{
 		printf '%s\n' "# komizo: global BEGIN"
 		printf '%s\n' "PermitRootLogin prohibit-password"
@@ -619,7 +632,7 @@ EOF
 if sshd -t; then
 	rc-service sshd reload || rc-service sshd restart
 else
-	mv "$conf.bak.boot" "$conf"
+	mv "$conf_bak" "$conf"
 	die "sshd config test failed, reverted -- nothing was restarted"
 fi
 

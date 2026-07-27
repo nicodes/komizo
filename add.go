@@ -41,11 +41,8 @@ func (o *addOpts) bind(fs *flag.FlagSet) {
 	fs.BoolVar(&o.rotateKey, "rotate-key", false, "replace the deploy key and reprint the values; skip the rest")
 }
 
-// These mirror what the server script derives, so messages here name the same
-// account and paths the box will actually use. Every app is named -- there is
-// no unsuffixed special case, so a box set up for one app can host a second
-// later without renaming what already exists.
-// deriveUser is the deploy account for an app.
+// deriveUser is the deploy account for an app. It mirrors what the server
+// script derives, so messages here name the account the box will actually use.
 //
 // The hyphen is load-bearing. komizo's own accounts use an underscore --
 // komizo_monitor, and anything added later -- so the two namespaces cannot
@@ -89,13 +86,10 @@ func runAdd(args []string) error {
 	if o.port < 1 || o.port > 65535 {
 		return fmt.Errorf("--port must be 1-65535, got %d", o.port)
 	}
-	// On a rotation the config image is read back off the box, so it is only
-	// required when setting an app up.
-	if !o.rotateKey {
-		if err := validateConfigImage(o.config); err != nil {
-			return err
-		}
-	} else if o.config != "" {
+	// On a rotation the config image is read back off the box, so an empty value
+	// is only an error when setting an app up. A value that IS given is checked
+	// either way.
+	if !o.rotateKey || o.config != "" {
 		if err := validateConfigImage(o.config); err != nil {
 			return err
 		}
@@ -122,30 +116,11 @@ func runAdd(args []string) error {
 		tgt.aliases = append(tgt.aliases, a)
 	}
 
-	if o.keyPath == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("cannot find your home directory: %w", err)
-		}
-		// Includes the app: two apps on one host have separate accounts, and
-		// reusing one keypair for both would hand a single key access to all.
-		o.keyPath = filepath.Join(home, ".ssh",
-			fmt.Sprintf("deploy_%s_%s", o.app, sanitize(tgt.host)))
-	}
-
 	// --- preflight ---------------------------------------------------------
 
 	step("Checking %s:%d", tgt.addr(), tgt.port)
-	if r := tgt.probe(); !r.ok() {
-		if r.kind == reachUnknownHost && o.acceptHostKey {
-			if err := acceptHostKey(tgt, true); err != nil {
-				return err
-			}
-			r = tgt.probe()
-		}
-		if !r.ok() {
-			return r.explain(tgt)
-		}
+	if err := ensureReachable(tgt, o.acceptHostKey); err != nil {
+		return err
 	}
 	note("reachable.")
 
@@ -158,84 +133,145 @@ func runAdd(args []string) error {
 		note("root can log in by key; safe to harden sshd.")
 	}
 
-	if o.rotateKey && o.config == "" {
+	res, err := performAdd(addPlan{
+		tgt:     tgt,
+		app:     o.app,
+		user:    o.user,
+		config:  o.config,
+		appDir:  o.appDir,
+		keyPath: o.keyPath,
+		rotate:  o.rotateKey,
+		harden:  o.hardenSSHD && !o.rotateKey,
+	}, cliProgress{}, tgt.runScript)
+	if err != nil {
+		return err
+	}
+	// Both may have been resolved inside: the config read back off the box on a
+	// rotation, the key path defaulted. printNextSteps prints them.
+	o.config, o.keyPath = res.config, res.keyPath
+
+	printNextSteps(o, tgt, res.knownHosts)
+	return nil
+}
+
+// addPlan is one app setup, fully resolved except for the values performAdd
+// works out itself.
+type addPlan struct {
+	tgt     target
+	app     string
+	user    string // deploy account; deriveUser(app) unless --user overrode it
+	config  string // may be empty on a rotation, then read back off the box
+	appDir  string // empty means the server script's own default
+	keyPath string // empty means the default under ~/.ssh
+	rotate  bool
+	harden  bool
+}
+
+// performAdd is everything `komizo add` does once the connection is known to
+// work: settle the config image, produce the keypair, run the server script,
+// and read the host keys back.
+//
+// Shared by the CLI and the interface rather than written twice. They differ
+// only in where progress goes and how the script is piped over, so those are
+// the two parameters -- everything that actually changes the box is one copy.
+// The earlier arrangement had the interface skipping validation the CLI did,
+// which is the kind of drift that only shows up on someone else's server.
+func performAdd(p addPlan, out progress, runner func(script string, env map[string]string) error) (*addResult, error) {
+	if p.rotate && p.config == "" {
 		// Rotating a key must not change what config the host trusts, so carry
 		// the existing value forward.
-		out, err := tgt.quiet(fmt.Sprintf(
-			`sed -n 's/^CONFIG_IMAGE="\(.*\)"$/\1/p' %s 2>/dev/null`, deployBin(o.app)))
-		if err != nil || strings.TrimSpace(out) == "" {
-			return fmt.Errorf("could not read the current config image from the server.\n"+
-				"    Is %q set up there? Pass --config explicitly.", o.app)
+		got, err := p.tgt.quiet(fmt.Sprintf(
+			`sed -n 's/^CONFIG_IMAGE="\(.*\)"$/\1/p' %s 2>/dev/null`, deployBin(p.app)))
+		if err != nil || strings.TrimSpace(got) == "" {
+			return nil, fmt.Errorf("could not read the current config image for %q off the\n"+
+				"    server -- is that app set up on this box?", p.app)
 		}
-		o.config = strings.TrimSpace(out)
-		note("keeping the configured image: %s", o.config)
+		p.config = strings.TrimSpace(got)
+		out.note("keeping the configured image: %s", p.config)
+	}
+
+	if p.keyPath == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("cannot find your home directory: %w", err)
+		}
+		// Includes the app: two apps on one host have separate accounts, and
+		// reusing one keypair for both would hand a single key access to all.
+		p.keyPath = filepath.Join(home, ".ssh",
+			fmt.Sprintf("deploy_%s_%s", p.app, sanitize(p.tgt.host)))
 	}
 
 	// --- keypair, generated here -------------------------------------------
 
-	step("Deploy keypair")
-	if o.rotateKey || !fileExists(o.keyPath) {
-		if fileExists(o.keyPath) {
-			backup := fmt.Sprintf("%s.replaced.%s", o.keyPath, time.Now().Format("20060102150405"))
-			if err := os.Rename(o.keyPath, backup); err != nil {
-				return err
+	out.step("Deploy keypair")
+	if p.rotate || !fileExists(p.keyPath) {
+		if fileExists(p.keyPath) {
+			backup := fmt.Sprintf("%s.replaced.%s", p.keyPath, time.Now().Format("20060102150405"))
+			if err := os.Rename(p.keyPath, backup); err != nil {
+				return nil, err
 			}
-			_ = os.Rename(o.keyPath+".pub", backup+".pub")
-			note("previous key kept at %s", backup)
+			_ = os.Rename(p.keyPath+".pub", backup+".pub")
+			out.note("previous key kept at %s", backup)
 		}
-		if err := os.MkdirAll(filepath.Dir(o.keyPath), 0o700); err != nil {
-			return err
+		if err := os.MkdirAll(filepath.Dir(p.keyPath), 0o700); err != nil {
+			return nil, err
 		}
-		comment := fmt.Sprintf("komizo:%s@%s", o.user, tgt.host)
-		gen := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-C", comment, "-f", o.keyPath, "-N", "")
-		gen.Stderr = os.Stderr
-		if err := gen.Run(); err != nil {
-			return fmt.Errorf("ssh-keygen failed: %w", err)
+		comment := fmt.Sprintf("komizo:%s@%s", p.user, p.tgt.host)
+		gen := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-C", comment, "-f", p.keyPath, "-N", "")
+		if msg, err := gen.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("ssh-keygen failed: %s", strings.TrimSpace(string(msg)))
 		}
-		note("generated %s", o.keyPath)
+		out.note("generated %s", p.keyPath)
 	} else {
-		note("reusing %s (pass --rotate-key to replace it)", o.keyPath)
+		out.note("reusing %s (rotate the key to replace it)", p.keyPath)
 	}
-	pub, err := os.ReadFile(o.keyPath + ".pub")
+	pub, err := os.ReadFile(p.keyPath + ".pub")
 	if err != nil {
-		return fmt.Errorf("cannot read the public key: %w", err)
+		return nil, fmt.Errorf("cannot read the public key: %w", err)
 	}
-	pubkey := strings.TrimSpace(string(pub))
 
 	// --- run the server half -----------------------------------------------
 
 	env := map[string]string{
-		"CI_PUBKEY":    pubkey,
-		"CI_USER":      o.user,
-		"APP_NAME":     o.app,
-		"CONFIG_IMAGE": o.config,
-		"HARDEN_SSH":   boolEnv(o.hardenSSHD && !o.rotateKey),
+		"CI_PUBKEY":    strings.TrimSpace(string(pub)),
+		"CI_USER":      p.user,
+		"APP_NAME":     p.app,
+		"CONFIG_IMAGE": p.config,
+		"HARDEN_SSH":   boolEnv(p.harden),
 	}
-	if o.appDir != "" {
-		env["APP_DIR"] = o.appDir
+	if p.appDir != "" {
+		env["APP_DIR"] = p.appDir
 	}
 
-	if o.rotateKey {
-		step("Installing the rotated key")
+	if p.rotate {
+		out.step("Installing the rotated key")
 	} else {
-		step("Setting up %s on %s", o.app, tgt.host)
+		out.step("Setting up %s on %s", p.app, p.tgt.host)
 	}
-	if err := tgt.runScript(AlpineScript, env); err != nil {
-		return fmt.Errorf("the server-side script failed -- see the output above.\n" +
+	if err := runner(AlpineScript, env); err != nil {
+		return nil, fmt.Errorf("the server-side script failed -- see the output above.\n" +
 			"    Nothing further was changed.")
 	}
 
 	// --- host key, straight from the box -----------------------------------
 
-	step("Reading the server's host keys")
-	kh, err := readKnownHosts(tgt)
+	out.step("Reading the server's host keys")
+	kh, err := readKnownHosts(p.tgt)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	note("%d key(s) captured", len(strings.Split(kh, "\n")))
+	// Lines, not keys: a server answering to more than one name gets one line
+	// per name per key, so counting keys here would under-report the value.
+	out.note("%d known_hosts line(s) captured", len(strings.Split(kh, "\n")))
 
-	printNextSteps(o, tgt, kh)
-	return nil
+	return &addResult{
+		app:         p.app,
+		keyPath:     p.keyPath,
+		knownHosts:  kh,
+		config:      p.config,
+		rotated:     p.rotate,
+		onClipboard: -1,
+	}, nil
 }
 
 func boolEnv(b bool) string {

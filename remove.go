@@ -3,9 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"os"
-	"os/exec"
-	"strings"
 )
 
 // runRemove is the non-interactive counterpart to the TUI's remove. It refuses
@@ -15,11 +12,12 @@ func runRemove(args []string) error {
 	fs.Usage = func() { usageRemove(fs) }
 	var host, app string
 	var port int
-	var yes, keepData bool
+	var yes, keepData, acceptHostKey bool
 	fs.StringVar(&host, "host", "", "server, [user@]HOST")
 	fs.StringVar(&app, "app", "", "which app to remove")
 	fs.IntVar(&port, "port", 22, "SSH port")
 	fs.BoolVar(&yes, "yes", false, "required: confirms you mean it")
+	fs.BoolVar(&acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
 	fs.BoolVar(&keepData, "keep-data", false, "leave the app directory and its volumes in place")
 	if err := fs.Parse(args); err != nil {
 		return errSilent
@@ -49,18 +47,15 @@ func runRemove(args []string) error {
 			"        komizo %s", "/srv/"+app, host)
 	}
 
-	if r := tgt.probe(); !r.ok() {
-		return r.explain(tgt)
+	if err := ensureReachable(tgt, acceptHostKey); err != nil {
+		return err
 	}
 
 	env := map[string]string{"APP_NAME": app}
 	if keepData {
 		env["KEEP_DATA"] = "1"
 	}
-	c := exec.Command("ssh", tgt.sshArgs(envPrefix(env)+"sh -s")...)
-	c.Stdin = strings.NewReader(AlpineRemoveScript)
-	c.Stdout, c.Stderr = os.Stdout, os.Stderr
-	if err := c.Run(); err != nil {
+	if err := tgt.runScript(AlpineRemoveScript, env); err != nil {
 		return fmt.Errorf("removal failed -- see the output above")
 	}
 	return nil

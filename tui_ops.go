@@ -3,11 +3,8 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -36,7 +33,10 @@ type addResult struct {
 	app        string
 	keyPath    string
 	knownHosts string
-	rotated    bool
+	// config is what the box ended up pinned to -- given on a setup, read back
+	// off the server on a rotation.
+	config  string
+	rotated bool
 
 	// Both values have to reach GitHub, so both are selectable and both are
 	// copyable.
@@ -339,78 +339,32 @@ func (m model) startRemove(app string) tea.Cmd {
 	return m.run.wait()
 }
 
-// doAdd performs the same sequence as `komizo add`, reporting progress through
-// ch instead of stdout.
-func doAdd(t target, app, config string, rotate bool, ch chan tea.Msg) (*addResult, error) {
-	user := deriveUser(app)
+// chanProgress reports a shared operation's progress into the run pane.
+type chanProgress struct{ ch chan tea.Msg }
 
-	if rotate {
-		out, err := t.quiet(fmt.Sprintf(
-			`sed -n 's/^CONFIG_IMAGE="\(.*\)"$/\1/p' %s 2>/dev/null`, deployBin(app)))
-		if err != nil || strings.TrimSpace(out) == "" {
-			return nil, fmt.Errorf("could not read the config image for %q off the server", app)
-		}
-		config = strings.TrimSpace(out)
-		ch <- runOutputMsg("keeping the configured image: " + config)
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-	keyPath := filepath.Join(home, ".ssh", fmt.Sprintf("deploy_%s_%s", app, sanitize(t.host)))
-
-	if rotate || !fileExists(keyPath) {
-		if fileExists(keyPath) {
-			backup := fmt.Sprintf("%s.replaced.%s", keyPath, time.Now().Format("20060102150405"))
-			if err := os.Rename(keyPath, backup); err != nil {
-				return nil, err
-			}
-			_ = os.Rename(keyPath+".pub", backup+".pub")
-			ch <- runOutputMsg("previous key kept at " + backup)
-		}
-		if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
-			return nil, err
-		}
-		gen := exec.Command("ssh-keygen", "-q", "-t", "ed25519",
-			"-C", fmt.Sprintf("komizo:%s@%s", user, t.host), "-f", keyPath, "-N", "")
-		if out, err := gen.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("ssh-keygen failed: %s", strings.TrimSpace(string(out)))
-		}
-		ch <- runOutputMsg("generated " + keyPath)
-	} else {
-		ch <- runOutputMsg("reusing " + keyPath)
-	}
-
-	pub, err := os.ReadFile(keyPath + ".pub")
-	if err != nil {
-		return nil, err
-	}
-
-	env := map[string]string{
-		"CI_PUBKEY":    strings.TrimSpace(string(pub)),
-		"CI_USER":      user,
-		"APP_NAME":     app,
-		"CONFIG_IMAGE": config,
-		"HARDEN_SSH":   "0",
-	}
-	c := exec.Command("ssh", t.sshArgs(envPrefix(env)+"sh -s")...)
-	if err := stream(ch, c, AlpineScript); err != nil {
-		return nil, fmt.Errorf("the server-side script failed; nothing further was changed")
-	}
-
-	kh, err := readKnownHosts(t)
-	if err != nil {
-		return nil, err
-	}
-	return &addResult{app: app, keyPath: keyPath, knownHosts: kh, rotated: rotate,
-		onClipboard: -1}, nil
+func (p chanProgress) step(format string, a ...any) {
+	// A blank line before each heading, so the pane reads the way the CLI's
+	// "==>" markers do without borrowing punctuation the pane does not use.
+	p.ch <- runOutputMsg("")
+	p.ch <- runOutputMsg(fmt.Sprintf(format, a...))
 }
 
-func envPrefix(env map[string]string) string {
-	var b strings.Builder
-	for _, k := range sortedKeys(env) {
-		fmt.Fprintf(&b, "%s='%s' ", k, env[k])
-	}
-	return b.String()
+func (p chanProgress) note(format string, a ...any) {
+	p.ch <- runOutputMsg("  " + fmt.Sprintf(format, a...))
+}
+
+// doAdd performs the same sequence as `komizo add`, reporting progress through
+// ch instead of stdout. The sequence itself lives in performAdd -- this only
+// says where the output goes and how the script is piped over.
+func doAdd(t target, app, config string, rotate bool, ch chan tea.Msg) (*addResult, error) {
+	return performAdd(addPlan{
+		tgt:    t,
+		app:    app,
+		user:   deriveUser(app),
+		config: config,
+		rotate: rotate,
+	}, chanProgress{ch}, func(script string, env map[string]string) error {
+		c := exec.Command("ssh", t.sshArgs(envPrefix(env)+"sh -s")...)
+		return stream(ch, c, script)
+	})
 }

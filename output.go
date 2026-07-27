@@ -18,6 +18,20 @@ func warn(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "warning: "+format+"\n", a...)
 }
 
+// progress is where a shared operation reports what it is doing. The CLI writes
+// to the terminal; the interface streams into its run pane. Having the two
+// differ only here is what lets `komizo add` and the interface's add be one
+// implementation instead of two that drift.
+type progress interface {
+	step(format string, a ...any)
+	note(format string, a ...any)
+}
+
+type cliProgress struct{}
+
+func (cliProgress) step(format string, a ...any) { step(format, a...) }
+func (cliProgress) note(format string, a ...any) { note(format, a...) }
+
 const rule = "---------------------------------------------------------------------------"
 
 // printNextSteps ends `add` with the two values GitHub needs and a workflow
@@ -73,7 +87,7 @@ func printNextSteps(o addOpts, t target, knownHosts string) {
  Then in your app repo: put compose.yml in a directory of its own
  (deploy/ by convention) and add a workflow. Your deploy step:
 
-   - uses: nicodes/komizo-be/actions/deploy@v1
+   - uses: nicodes/komizo-actions/deploy@v0
      with:
           version: ${{ github.sha }}%s
           host: %s%s

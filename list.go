@@ -168,8 +168,10 @@ func runList(args []string) error {
 	fs.Usage = func() { usageList(fs) }
 	var host string
 	var port int
+	var acceptHostKey bool
 	fs.StringVar(&host, "host", "", "server to inspect, [user@]HOST")
 	fs.IntVar(&port, "port", 22, "SSH port")
+	fs.BoolVar(&acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
 	if err := fs.Parse(args); err != nil {
 		return errSilent
 	}
@@ -187,8 +189,8 @@ func runList(args []string) error {
 	if err := validateHost(tgt.host); err != nil {
 		return err
 	}
-	if r := tgt.probe(); !r.ok() {
-		return r.explain(tgt)
+	if err := ensureReachable(tgt, acceptHostKey); err != nil {
+		return err
 	}
 
 	res, err := tgt.runCapture(inventoryScript)

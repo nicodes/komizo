@@ -92,7 +92,7 @@ The same operations are available non-interactively, for scripting:
   komizo init    --host root@HOST
   komizo add     --host root@HOST --app NAME --config REF
   komizo list    --host root@HOST
-  komizo remove  --host root@HOST --app NAME
+  komizo remove  --host root@HOST --app NAME --yes
   komizo proxy   --host root@HOST
   komizo script [init|add|remove|proxy]
 
@@ -110,14 +110,15 @@ Run a command with --help for its flags.
 func usageAdd(fs *flag.FlagSet) {
 	fmt.Print(`komizo add - set an app up on a server, or update one
 
-  komizo add --host root@myapp.example.com --config ghcr.io/you/myapp-config
+  komizo add --host root@myapp.example.com --app myapp \
+    --config ghcr.io/you/myapp-config
 
 Re-running is safe: it is how you change the config image, repair permissions,
 or pick up a newer version of this tool.
 
-To host several apps on one box, pass --app once per app. Each gets its own
-directory, deploy scripts, doas rules and deploy account, so a key that leaks
-from one repo reaches only that app.
+Every app is named, including the first. To host several on one box, run this
+once per app: each gets its own directory, deploy scripts, doas rules and
+deploy account, so a key that leaks from one repo reaches only that app.
 
 Flags:
 `)

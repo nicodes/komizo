@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -137,34 +138,31 @@ func (t target) reachable() bool { return t.probe().ok() }
 
 // runScript pipes a script to the far end and runs it there, with its output
 // streamed straight through so a long bootstrap shows progress as it happens.
-// env is prepended as VAR='value' assignments; values must already be safe to
-// single-quote, which every caller validates first.
 func (t target) runScript(script string, env map[string]string) error {
-	var b strings.Builder
-	for _, k := range sortedKeys(env) {
-		fmt.Fprintf(&b, "%s='%s' ", k, env[k])
-	}
-	b.WriteString("sh -s")
-
-	c := exec.Command("ssh", t.sshArgs(b.String())...)
+	c := exec.Command("ssh", t.sshArgs(envPrefix(env)+"sh -s")...)
 	c.Stdin = strings.NewReader(script)
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
 	return c.Run()
 }
 
-func sortedKeys(m map[string]string) []string {
-	ks := make([]string, 0, len(m))
-	for k := range m {
+// envPrefix renders the environment as VAR='value' assignments in front of the
+// remote command. Values must already be safe to single-quote, which every
+// caller validates before connecting -- see validate.go.
+//
+// Sorted so the command line is reproducible between runs, which matters when
+// the thing you are comparing is two transcripts of the same operation.
+func envPrefix(env map[string]string) string {
+	ks := make([]string, 0, len(env))
+	for k := range env {
 		ks = append(ks, k)
 	}
-	// stable order so the command line is reproducible between runs
-	for i := 1; i < len(ks); i++ {
-		for j := i; j > 0 && ks[j] < ks[j-1]; j-- {
-			ks[j], ks[j-1] = ks[j-1], ks[j]
-		}
+	sort.Strings(ks)
+	var b strings.Builder
+	for _, k := range ks {
+		fmt.Fprintf(&b, "%s='%s' ", k, env[k])
 	}
-	return ks
+	return b.String()
 }
 
 // runCapture pipes a script to the far end, runs it there, and returns its

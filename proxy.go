@@ -20,6 +20,8 @@ type proxyOpts struct {
 	network string
 	image   string
 	port    int
+	// See addOpts.acceptHostKey.
+	acceptHostKey bool
 }
 
 func runProxy(args []string) error {
@@ -30,6 +32,7 @@ func runProxy(args []string) error {
 	fs.StringVar(&o.network, "network", defaultNetwork, "docker network apps join to be reachable")
 	fs.StringVar(&o.image, "image", defaultProxy, "caddy image to run")
 	fs.IntVar(&o.port, "port", 22, "SSH port")
+	fs.BoolVar(&o.acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
 	if err := fs.Parse(args); err != nil {
 		return errSilent
 	}
@@ -58,8 +61,8 @@ func runProxy(args []string) error {
 	}
 
 	step("Checking %s:%d", tgt.addr(), tgt.port)
-	if r := tgt.probe(); !r.ok() {
-		return r.explain(tgt)
+	if err := ensureReachable(tgt, o.acceptHostKey); err != nil {
+		return err
 	}
 	note("reachable.")
 

@@ -76,6 +76,25 @@ func classify(raw string) reachKind {
 	return reachOther
 }
 
+// ensureReachable is the preflight every command runs: probe, optionally accept
+// an unseen host key, and explain the failure if there still is one.
+//
+// Shared because the error text offers --accept-host-key, and a command that
+// printed that advice without accepting the flag sent people to a dead end.
+func ensureReachable(t target, acceptUnknown bool) error {
+	r := t.probe()
+	if !r.ok() && r.kind == reachUnknownHost && acceptUnknown {
+		if err := acceptHostKey(t, true); err != nil {
+			return err
+		}
+		r = t.probe()
+	}
+	if !r.ok() {
+		return r.explain(t)
+	}
+	return nil
+}
+
 // explain turns a failure into something with a next step in it.
 func (r reachResult) explain(t target) error {
 	switch r.kind {
