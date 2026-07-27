@@ -55,8 +55,15 @@ func renderFields(fields []field, focus int) string {
 	return b.String()
 }
 
-func newAddForm() addForm {
-	return addForm{fields: []field{
+// The third field appears only when connected by IP address.
+//
+// Host keys are pinned per name, and CI almost always connects by hostname --
+// so an app set up over an IP produces entries that match nothing, and the
+// deploy stops with "no entry for <name>" while the correct keys sit in the
+// variable. Asking here is the one moment the answer is known and cheap. On a
+// box reached by name there is nothing to ask, so the field is absent.
+func newAddForm(t target) addForm {
+	fields := []field{
 		{
 			label: "app name",
 			help:  "letters, digits, underscore, hyphen. Names its directory, account and commands.",
@@ -67,7 +74,28 @@ func newAddForm() addForm {
 			help:  "registry path with NO tag, e.g. ghcr.io/you/blog-config. Where the host reads compose.yml from.",
 			check: validateConfigImage,
 		},
-	}}
+	}
+	if t.isIP() {
+		fields = append(fields, field{
+			label: "domain name",
+			help:  "optional. The name CI connects by, if it is not this address — host keys are pinned per name.",
+			check: func(s string) error {
+				if s == "" {
+					return nil
+				}
+				return validateHost(s)
+			},
+		})
+	}
+	return addForm{fields: fields}
+}
+
+// knownAs is the extra hostname, when the form asked for one.
+func (f addForm) knownAs() string {
+	if len(f.fields) < 3 {
+		return ""
+	}
+	return strings.TrimSpace(f.fields[2].value)
 }
 
 func (f addForm) app() string    { return strings.TrimSpace(f.fields[0].value) }
@@ -99,7 +127,7 @@ func (m model) handleFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// step -- re-running it on an existing app is how you repair one.
 		m.scr = screenRunning
 		m.run = newRunState(fmt.Sprintf("Setting up %q", f.app()))
-		return m, m.startAdd(f.app(), f.config())
+		return m, m.startAdd(f.app(), f.config(), f.knownAs())
 	case "backspace":
 		v := f.fields[f.focus].value
 		if v != "" {

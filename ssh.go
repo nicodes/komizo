@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -23,6 +24,12 @@ type target struct {
 	// portExplicit records whether the user passed --port. When they did not,
 	// we defer to their ssh config rather than forcing a value.
 	portExplicit bool
+
+	// aliases are additional names this same server answers to. known_hosts is
+	// matched on the exact name the client dialled, so a box set up by IP and
+	// deployed to by hostname matches nothing -- CI stops with "no entry for
+	// <name>" even though the keys are right there.
+	aliases []string
 }
 
 func parseTarget(s string) (target, error) {
@@ -41,12 +48,34 @@ func (t target) addr() string { return t.user + "@" + t.host }
 
 // knownHostsField is how a host appears in a known_hosts line: bare for port
 // 22, bracketed otherwise.
-func (t target) knownHostsField() string {
+func (t target) knownHostsField() string { return t.knownHostsName(t.host) }
+
+func (t target) knownHostsName(host string) string {
 	if t.port == 22 {
-		return t.host
+		return host
 	}
-	return "[" + t.host + "]:" + strconv.Itoa(t.port)
+	return "[" + host + "]:" + strconv.Itoa(t.port)
 }
+
+// knownHostsNames is every name to write an entry for: the one we connected by,
+// plus any aliases, de-duplicated and in a stable order.
+func (t target) knownHostsNames() []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, h := range append([]string{t.host}, t.aliases...) {
+		if h == "" || seen[h] {
+			continue
+		}
+		seen[h] = true
+		out = append(out, t.knownHostsName(h))
+	}
+	return out
+}
+
+// isIP reports whether we connected to a literal address rather than a name.
+// Worth knowing because CI almost always connects by name, so this is exactly
+// when the entries we are about to write will not match.
+func (t target) isIP() bool { return net.ParseIP(t.host) != nil }
 
 func (t target) sshArgs(extra ...string) []string {
 	args := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=10"}

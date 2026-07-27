@@ -52,7 +52,7 @@ type model struct {
 }
 
 func newModel(t target) model {
-	return model{tgt: t, scr: screenLoading, form: newAddForm(), proxyForm: newProxyForm()}
+	return model{tgt: t, scr: screenLoading, form: newAddForm(t), proxyForm: newProxyForm()}
 }
 
 func (m model) Init() tea.Cmd {
@@ -202,7 +202,7 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.scr = screenDetail
 		}
 	case "a":
-		m.form = newAddForm()
+		m.form = newAddForm(m.tgt)
 		m.scr = screenAddForm
 	case "r":
 		if len(m.apps) > 0 {

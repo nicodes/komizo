@@ -17,6 +17,7 @@ type addOpts struct {
 	user       string
 	appDir     string
 	keyPath    string
+	knownAs    string
 	port       int
 	hardenSSHD bool
 	rotateKey  bool
@@ -33,6 +34,7 @@ func (o *addOpts) bind(fs *flag.FlagSet) {
 	fs.StringVar(&o.user, "user", "", "deploy account (default cd-<app>)")
 	fs.StringVar(&o.appDir, "app-dir", "", "root-owned app directory (default /srv/<app>)")
 	fs.StringVar(&o.keyPath, "key", "", "where to write the keypair (default ~/.ssh/deploy_<app>_<host>)")
+	fs.StringVar(&o.knownAs, "known-as", "", "other hostname(s) CI connects by, comma-separated (host keys are pinned per name)")
 	fs.IntVar(&o.port, "port", 22, "SSH port")
 	fs.BoolVar(&o.hardenSSHD, "harden-sshd", false, "also disable password auth and root password login for EVERY user")
 	fs.BoolVar(&o.acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
@@ -100,6 +102,16 @@ func runAdd(args []string) error {
 	tgt.resolvePort()
 	if err := validateHost(tgt.host); err != nil {
 		return err
+	}
+	for _, a := range strings.Split(o.knownAs, ",") {
+		a = strings.TrimSpace(a)
+		if a == "" {
+			continue
+		}
+		if err := validateHost(a); err != nil {
+			return fmt.Errorf("--known-as: %w", err)
+		}
+		tgt.aliases = append(tgt.aliases, a)
 	}
 
 	if o.keyPath == "" {

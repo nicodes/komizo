@@ -1083,3 +1083,79 @@ func TestConfigChangeResultDoesNotAskForAPaste(t *testing.T) {
 		}
 	}
 }
+
+// --- known_hosts -------------------------------------------------------------
+
+func TestKnownHostsIsOneLinePerNamePerKey(t *testing.T) {
+	// The ordinary shape of ~/.ssh/known_hosts. Comma-joining names into one
+	// pattern matches identically and is legal, but nobody has that in their
+	// file, so it reads as something unusual exactly when someone is deciding
+	// whether to trust it.
+	tgt := target{user: "root", host: "1.2.3.4", port: 22,
+		aliases: []string{"ormos.dev"}}
+	names := tgt.knownHostsNames()
+	if len(names) != 2 || names[0] != "1.2.3.4" || names[1] != "ormos.dev" {
+		t.Fatalf("names wrong: %v", names)
+	}
+	for _, n := range names {
+		if strings.Contains(n, ",") {
+			t.Errorf("%q comma-joins names; each should be its own line", n)
+		}
+	}
+}
+
+func TestKnownHostsDeduplicatesAndKeepsPort(t *testing.T) {
+	tgt := target{user: "root", host: "h", port: 2222,
+		aliases: []string{"h", "other"}}
+	names := tgt.knownHostsNames()
+	if len(names) != 2 {
+		t.Fatalf("a repeated name should appear once, got %v", names)
+	}
+	for _, n := range names {
+		// A non-default port is bracketed, per name, or nothing matches.
+		if !strings.HasPrefix(n, "[") || !strings.HasSuffix(n, "]:2222") {
+			t.Errorf("%q is not in the [host]:port form a non-default port needs", n)
+		}
+	}
+}
+
+func TestAddFormAsksForADomainOnlyWhenConnectedByIP(t *testing.T) {
+	// Host keys are pinned per name and CI connects by name, so setting up over
+	// an IP is precisely when the entries will not match. Asking then is cheap;
+	// asking always is noise.
+	byIP := newAddForm(target{user: "root", host: "64.177.120.111", port: 22})
+	if len(byIP.fields) != 3 {
+		t.Fatalf("connected by IP: expected the domain field, got %d fields", len(byIP.fields))
+	}
+	if !strings.Contains(byIP.fields[2].label, "domain") {
+		t.Errorf("third field should be the domain name, got %q", byIP.fields[2].label)
+	}
+	// Optional: an empty value must be accepted.
+	if err := byIP.fields[2].check(""); err != nil {
+		t.Errorf("the domain field must be optional, got %v", err)
+	}
+
+	byName := newAddForm(target{user: "root", host: "ormos.dev", port: 22})
+	if len(byName.fields) != 2 {
+		t.Errorf("connected by name: nothing to ask, got %d fields", len(byName.fields))
+	}
+	if byName.knownAs() != "" {
+		t.Error("knownAs should be empty when the form did not ask")
+	}
+}
+
+func TestIsIPDistinguishesNamesFromAddresses(t *testing.T) {
+	for _, c := range []struct {
+		host string
+		ip   bool
+	}{
+		{"64.177.120.111", true},
+		{"::1", true},
+		{"ormos.dev", false},
+		{"1.2.3.4.example.com", false},
+	} {
+		if got := (target{host: c.host}).isIP(); got != c.ip {
+			t.Errorf("isIP(%q) = %v, want %v", c.host, got, c.ip)
+		}
+	}
+}
