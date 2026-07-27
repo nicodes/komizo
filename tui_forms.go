@@ -200,191 +200,7 @@ func (f addForm) view() string {
 	return b.String()
 }
 
-// --- confirming something destructive --------------------------------------
-
-type confirmPrompt struct {
-	title string
-	body  []string
-	// confirmWord, when set, must be typed out in full. Reserved for actions
-	// that delete data -- a single keypress is too easy to hit by accident.
-	confirmWord string
-	typed       string
-	action      func(*model) tea.Cmd
-}
-
-func (m model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	c := &m.confirm
-	switch msg.String() {
-	case "esc":
-		m.scr = screenList
-		return m, nil
-	case "enter":
-		if c.confirmWord != "" && c.typed != c.confirmWord {
-			return m, nil
-		}
-		m.scr = screenRunning
-		m.run = newRunState(c.title)
-		return m, c.action(&m)
-	case "backspace":
-		if c.typed != "" {
-			c.typed = c.typed[:len(c.typed)-1]
-		}
-	default:
-		if c.confirmWord != "" {
-			if s := msg.String(); len(s) == 1 {
-				c.typed += s
-			}
-		}
-	}
-	return m, nil
-}
-
-func (c confirmPrompt) view() string {
-	var b strings.Builder
-	mark := dot("warn")
-	style := warnStyle
-	if c.confirmWord != "" {
-		mark, style = dot("err"), errStyle
-	}
-	b.WriteString("\n" + gutter + mark + " " + style.Render(c.title) + "\n\n")
-	for _, l := range c.body {
-		b.WriteString(gutter + "  " + dimStyle.Render(l) + "\n")
-	}
-	if c.confirmWord != "" {
-		typed := c.typed
-		if typed == c.confirmWord {
-			typed = okStyle.Render(typed)
-		}
-		b.WriteString(fmt.Sprintf("\n"+gutter+"type %s to confirm  %s%s\n",
-			keyStyle.Render(c.confirmWord), typed, barStyle.Render("▏")))
-		if c.typed == c.confirmWord {
-			b.WriteString(help("enter", "do it", "esc", "cancel"))
-		} else {
-			b.WriteString(help("esc", "cancel"))
-		}
-	} else {
-		b.WriteString(help("enter", "confirm", "esc", "cancel"))
-	}
-	return b.String()
-}
-
 // --- the shared reverse proxy ----------------------------------------------
-
-// proxyFormModel is deliberately separate from addForm: the proxy is per-server
-// rather than per-app, so it shares no fields with adding an app, and folding
-// them together would mean a form where half the inputs are always ignored.
-type proxyFormModel struct {
-	fields  []field
-	focus   int
-	problem string
-}
-
-func newProxyForm() proxyFormModel {
-	return proxyFormModel{fields: []field{
-		{
-			label: "network",
-			value: defaultNetwork,
-			help:  "CHANGING THIS BREAKS EVERY APP until each one's compose.yml names the new network too.",
-			check: validateNetworkName,
-		},
-		{
-			label: "caddy image",
-			value: defaultProxy,
-			help:  "pin a digest or minor version here if you do not want :2 moving under you.",
-			check: func(s string) error {
-				if s == "" || !onlyChars(s, imageChars) {
-					return fmt.Errorf("that is not a valid image reference: %q", s)
-				}
-				return nil
-			},
-		},
-	}}
-}
-
-// set pre-fills from what is already on the server, so re-running to change one
-// value does not reset the rest.
-func (f *proxyFormModel) set(p proxyRow) {
-	if p.network != "" && p.network != "?" {
-		f.fields[0].value = p.network
-	}
-	if p.image != "" && p.image != "?" {
-		f.fields[1].value = p.image
-	}
-}
-
-func (f proxyFormModel) opts() proxyOpts {
-	return proxyOpts{
-		network: strings.TrimSpace(f.fields[0].value),
-		image:   strings.TrimSpace(f.fields[1].value),
-	}
-}
-
-func (m model) handleProxyFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	f := &m.proxyForm
-	switch msg.String() {
-	case "esc":
-		m.scr = screenList
-		return m, nil
-	case "tab", "down":
-		f.focus = (f.focus + 1) % len(f.fields)
-	case "shift+tab", "up":
-		f.focus = (f.focus - 1 + len(f.fields)) % len(f.fields)
-	case "enter":
-		if f.focus < len(f.fields)-1 {
-			f.focus++
-			return m, nil
-		}
-		for i := range f.fields {
-			if err := f.fields[i].check(strings.TrimSpace(f.fields[i].value)); err != nil {
-				f.problem = err.Error()
-				f.focus = i
-				return m, nil
-			}
-		}
-		m.scr = screenRunning
-		title := "Installing the shared reverse proxy"
-		if m.proxy.installed {
-			title = "Updating the shared reverse proxy"
-		}
-		m.run = newRunState(title)
-		return m, m.startProxy(f.opts())
-	case "backspace":
-		v := f.fields[f.focus].value
-		if v != "" {
-			f.fields[f.focus].value = v[:len(v)-1]
-		}
-		f.problem = ""
-	default:
-		if s := msg.String(); len(s) == 1 {
-			f.fields[f.focus].value += s
-			f.problem = ""
-		}
-	}
-	return m, nil
-}
-
-func (f proxyFormModel) view(p proxyRow) string {
-	var b strings.Builder
-	if p.installed {
-		b.WriteString("\n" + gutter + titleStyle.Render("Proxy settings") + "\n")
-		b.WriteString(dimStyle.Render(gutter+"Currently "+p.state+" on network "+p.network) + "\n\n")
-	} else {
-		b.WriteString("\n" + gutter + titleStyle.Render("Install the reverse proxy") + "\n")
-		b.WriteString(para(gutter, "One Caddy for the whole box. It takes ports 80 and 443, so no\napp has to publish one, and it holds no per-app config.") + "\n")
-	}
-	b.WriteString(renderFields(f.fields, f.focus))
-	if f.problem != "" {
-		b.WriteString("\n" + gutter + dot("err") + " " + errStyle.Render(f.problem) + "\n")
-	}
-	if f.fields[0].value != p.network && p.network != "" && p.network != "?" {
-		b.WriteString("\n" + gutter + dot("warn") + " " + warnStyle.Render(
-			fmt.Sprintf("moving off %q strands every app still on it", p.network)) + "\n")
-		b.WriteString(para(gutter+"  ", "Each app's compose.yml names the network, so all of them need\nediting and redeploying — until then the proxy cannot reach them."))
-	}
-	b.WriteString("\n" + para(gutter, "Certificates need no setup — Caddy obtains and renews them for\nwhatever hostnames your apps publish. Safe to re-run."))
-	b.WriteString(help("tab", "next field", "enter", "confirm", "esc", "cancel"))
-	return b.String()
-}
 
 // --- setting the server up -------------------------------------------------
 
@@ -439,34 +255,36 @@ func viewInit(srv serverRow) string {
 // advertise two keys it did not handle: the help line was copied, the handler
 // was not.
 
-func (m model) rotatePrompt(a appRow) confirmPrompt {
-	return confirmPrompt{
-		title: fmt.Sprintf("Rotate the deploy key for %q?", a.name),
-		body: []string{
-			"A new keypair is generated on this machine and installed on the server.",
-			"",
-			"The current key stops working immediately. Update SSH_DEPLOY_KEY in",
-			"the repo's secrets before its next deploy, or that deploy will fail.",
+func (m model) rotatePrompt(a appRow) prompt {
+	q := fmt.Sprintf("Rotate the deploy key for %q?", a.name)
+	return prompt{
+		question: q,
+		detail: "The current key stops working immediately — update SSH_DEPLOY_KEY " +
+			"before this app's next deploy.",
+		action: func(m *model, _ string) tea.Cmd {
+			m.scr = screenRunning
+			m.run = newRunState(q)
+			return m.startRotate(a.name)
 		},
-		action: func(m *model) tea.Cmd { return m.startRotate(a.name) },
 	}
 }
 
-func (m model) removePrompt(a appRow) confirmPrompt {
-	return confirmPrompt{
-		title: fmt.Sprintf("Remove %q from this server?", a.name),
-		body: []string{
-			"This stops its containers and deletes:",
-			"  " + a.dir + " and its volumes",
-			"  the account " + a.user + ", its doas rules and sshd restrictions",
-			"  /usr/local/bin/deploy-" + a.name + " and set-secret-" + a.name,
-			"",
-			"Other apps on this box are untouched. Images stay in your registry.",
-			"",
-			"This cannot be undone.",
+func (m model) removePrompt(a appRow) prompt {
+	// Names the host. The header used to carry it on every screen; now that it
+	// does not, the most destructive prompt has to say which box it means
+	// rather than "this server".
+	q := fmt.Sprintf("Remove %q from %s?", a.name, m.tgt.host)
+	return prompt{
+		kind:     promptTypeWord,
+		word:     a.name,
+		question: q,
+		detail: "Deletes " + a.dir + ", its volumes, the account " + a.user +
+			" and its rules. Images stay in your registry. Cannot be undone.",
+		action: func(m *model, _ string) tea.Cmd {
+			m.scr = screenRunning
+			m.run = newRunState(q)
+			return m.startRemove(a.name)
 		},
-		confirmWord: a.name,
-		action:      func(m *model) tea.Cmd { return m.startRemove(a.name) },
 	}
 }
 
@@ -476,75 +294,26 @@ func (m model) removePrompt(a appRow) confirmPrompt {
 // from, and CI cannot override it. That is exactly why it needs an obvious way
 // to be changed -- a wrong value fails at deploy time as "not found" from the
 // registry, which reads like a build problem rather than a setting on the box.
-
-type configForm struct {
-	app     string
-	current string
-	field   field
-	problem string
-}
-
-func newConfigForm(a appRow) configForm {
-	return configForm{
-		app:     a.name,
-		current: a.image,
-		field: field{
-			label: "config image",
-			value: a.image,
-			help:  "registry path with NO tag. The deploy supplies the tag.",
-			check: validateConfigImage,
+//
+// An input in the footer rather than a form of its own. It is one value, it is
+// already on the app's row two lines above, and editing it in place means you
+// can see what you are changing it from.
+func (m model) configPrompt(a appRow) prompt {
+	return prompt{
+		kind:     promptInput,
+		question: "Config image for " + a.name,
+		detail:   "Registry path with NO tag — the deploy supplies that.",
+		typed:    a.image,
+		check:    validateConfigImage,
+		action: func(m *model, v string) tea.Cmd {
+			// Unchanged is not a no-op worth running: re-running setup would
+			// reinstall everything to arrive back where it started.
+			if v == a.image {
+				return nil
+			}
+			m.scr = screenRunning
+			m.run = newRunState("Pointing " + a.name + " at " + v)
+			return m.startConfigChange(a.name, v)
 		},
 	}
-}
-
-func (m model) handleConfigFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	f := &m.configForm
-	switch msg.String() {
-	case "esc":
-		m.scr = screenDetail
-		return m, nil
-	case "enter":
-		v := strings.TrimSpace(f.field.value)
-		if err := f.field.check(v); err != nil {
-			f.problem = err.Error()
-			return m, nil
-		}
-		if v == f.current {
-			m.scr = screenDetail
-			return m, nil
-		}
-		m.scr = screenRunning
-		m.run = newRunState(fmt.Sprintf("Pointing %q at %s", f.app, v))
-		return m, m.startConfigChange(f.app, v)
-	case "backspace":
-		if f.field.value != "" {
-			f.field.value = f.field.value[:len(f.field.value)-1]
-		}
-		f.problem = ""
-	default:
-		if s := msg.String(); len(s) == 1 {
-			f.field.value += s
-			f.problem = ""
-		}
-	}
-	return m, nil
-}
-
-func (f configForm) view() string {
-	var b strings.Builder
-	b.WriteString("\n" + gutter + titleStyle.Render("Config image for "+f.app) + "\n\n")
-	b.WriteString(para(gutter, "Where the host pulls this app's compose.yml and routes from. Root\n"+
-		"pins it, so CI cannot point the host somewhere else -- which is why\n"+
-		"a wrong value here fails at deploy time and not before."))
-	b.WriteString("\n")
-	b.WriteString(renderFields([]field{f.field}, 0))
-	if f.problem != "" {
-		b.WriteString("\n" + gutter + dot("err") + " " + errStyle.Render(f.problem) + "\n")
-	}
-	if strings.TrimSpace(f.field.value) != f.current {
-		b.WriteString("\n" + gutter + dimStyle.Render("was  "+f.current) + "\n")
-	}
-	b.WriteString(para("\n"+gutter, "The deploy key is untouched; nothing in GitHub needs changing."))
-	b.WriteString(help("enter", "apply", "esc", "cancel"))
-	return b.String()
 }

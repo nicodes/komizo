@@ -3,19 +3,18 @@ package main
 import (
 	"fmt"
 	"os/exec"
-	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// One page for the box itself: Docker, the shared network, and the proxy.
+// The box itself: Docker, the shared network, the proxy, and what is wrong.
 //
-// They were three screens once, which was three keys to remember for what is
-// really one question -- is this server healthy, and can it reach my apps? The
-// answer is spread across all three: the proxy can be up while an app is not on
-// the network, or on it under an alias another app already answers to. Split
-// across screens, nobody correlates them.
+// These were once three screens, then one, and are now the block at the top of
+// the app list. Each collapse was the same realisation: the answer to "is this
+// server healthy and can it reach my apps" is spread across all of them, and
+// anything you have to navigate to is something you find out late.
 
 const proxyProject = "komizo-proxy"
 
@@ -26,40 +25,127 @@ func proxyCompose(verb string) string {
 	return fmt.Sprintf("docker compose -f %s/compose.yml -p %s %s", proxyDir, proxyProject, verb)
 }
 
-type proxyLogsMsg struct {
-	lines string
-	err   error
+type logsMsg struct {
+	container string
+	lines     string
+	err       error
 }
 
-// fetchProxyLogs pulls the tail of the proxy's own log. Caddy records its
-// certificate work there, so it is usually the answer to "why is my domain not
-// serving".
-func fetchProxyLogs(t target) tea.Cmd {
+// fetchLogs pulls the tail of a log -- one container's, or a whole app's.
+//
+// Not just the proxy's: the proxy's is where Caddy records its certificate
+// work, and an app's is where the app says why it will not start. Both are the
+// answer to "it is running but not working", which is the failure this
+// interface is least able to diagnose on its own.
+//
+// key identifies what is being shown, so the pane can be toggled shut by the
+// same row that opened it and a slow fetch cannot overwrite a newer one.
+func fetchLogs(t target, key, cmd string) tea.Cmd {
 	return func() tea.Msg {
-		out, err := t.quiet("docker logs --tail 40 " + proxyContainer + " 2>&1")
+		out, err := t.quiet(cmd + " 2>&1")
 		if err != nil && strings.TrimSpace(out) == "" {
-			return proxyLogsMsg{err: fmt.Errorf("could not read the proxy's log -- is it created yet?")}
+			return logsMsg{container: key,
+				err: fmt.Errorf("could not read that log -- is it created yet?")}
 		}
-		return proxyLogsMsg{lines: out}
+		return logsMsg{container: key, lines: out}
 	}
 }
 
-// startProxyAction runs one lifecycle command against the proxy stack.
-func (m model) startProxyAction(verb, title string) tea.Cmd {
+// containerLogCmd reads one container's log. The name came from the inventory,
+// which read it out of docker, so it is docker's own string.
+func containerLogCmd(name string) string {
+	return "docker logs --tail 40 '" + name + "'"
+}
+
+// stackLogCmd reads every service in an app at once, interleaved.
+func stackLogCmd(a appRow) string {
+	return stackCmd(a, "logs --tail 40 --no-color")
+}
+
+// opDoneMsg is a lifecycle action finishing. key identifies the row that was
+// busy, so the spinner stops on the right one.
+type opDoneMsg struct {
+	key string
+	err error
+}
+
+// spinMsg drives the spinner. Only scheduled while something is in flight.
+type spinMsg struct{}
+
+func spinTick() tea.Cmd {
+	return tea.Tick(110*time.Millisecond, func(time.Time) tea.Msg { return spinMsg{} })
+}
+
+// runOp performs one lifecycle command without taking over the screen.
+//
+// Start and stop are inline for a reason: they are quick, they are reversible
+// by pressing the same key again, and routing them through a confirmation and a
+// full-page output stream made "restart this thing" a four-keystroke errand.
+// What replaced both is the spinner on the row itself -- the feedback is where
+// you are already looking.
+//
+// The output is captured rather than streamed, and surfaced only if it fails.
+// A successful `docker stop` has nothing to say that the refreshed list will
+// not show better.
+func runOp(t target, key, cmd string) tea.Cmd {
+	return func() tea.Msg {
+		c := exec.Command("ssh", t.sshArgs("sh -s")...)
+		c.Stdin = strings.NewReader("set -e\n" + cmd + "\n")
+		out, err := c.CombinedOutput()
+		if err != nil {
+			msg := strings.TrimSpace(string(out))
+			if i := strings.LastIndex(msg, "\n"); i >= 0 {
+				msg = msg[i+1:] // the last line is the one that says why
+			}
+			if msg == "" {
+				msg = err.Error()
+			}
+			return opDoneMsg{key: key, err: fmt.Errorf("%s", msg)}
+		}
+		return opDoneMsg{key: key}
+	}
+}
+
+// startShell runs one command on the box, streaming its output to the run pane.
+// Kept for the long operations -- setup, install, removal -- where the output
+// is the point and a spinner would hide it.
+func (m model) startShell(cmd, title string) tea.Cmd {
 	ch := m.run.ch
 	t := m.tgt
 	go func() {
 		c := exec.Command("ssh", t.sshArgs("sh -s")...)
-		// `up -d` rather than `start` for the start case: start fails on a
-		// container that was removed rather than stopped, and recreating it is
-		// what someone pressing "start" means either way.
-		if err := stream(ch, c, "set -e\ncd "+proxyDir+"\n"+proxyCompose(verb)+"\n"); err != nil {
-			ch <- runDoneMsg{err: fmt.Errorf("could not %s the proxy -- see the output above", title)}
+		if err := stream(ch, c, "set -e\n"+cmd+"\n"); err != nil {
+			ch <- runDoneMsg{err: fmt.Errorf("could not %s -- see the output above", title)}
 			return
 		}
 		ch <- runDoneMsg{}
 	}()
 	return m.run.wait()
+}
+
+// startProxyAction runs one lifecycle command against the proxy stack.
+//
+// `up -d` rather than `start` for the start case: start fails on a container
+// that was removed rather than stopped, and recreating it is what someone
+// pressing "start" means either way.
+func (m model) startProxyAction(verb, title string) tea.Cmd {
+	return m.startShell("cd "+proxyDir+"\n"+proxyCompose(verb), title+" the proxy")
+}
+
+// stackCmd is one lifecycle verb against an app's whole compose project.
+//
+// Quoting is single-quote only, and that is sufficient here rather than lucky:
+// the directory comes from the app's own deploy script, which root wrote, and
+// the paths komizo generates are constrained to [A-Za-z0-9._/-] by validate.go
+// before they ever reach the box.
+func stackCmd(a appRow, verb string) string {
+	return fmt.Sprintf("docker compose -f '%s/compose.yml' --project-directory '%s' %s",
+		a.dir, a.dir, verb)
+}
+
+// containerCmd acts on one container by the name docker itself reported.
+func containerCmd(name, verb string) string {
+	return fmt.Sprintf("docker %s '%s'", verb, name)
 }
 
 // startServerUpdate re-runs the server half only. Deliberately not the proxy:
@@ -83,288 +169,70 @@ func (m model) startServerUpdate() tea.Cmd {
 	return m.run.wait()
 }
 
-func (m model) handleServerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc", "q", "left", "h":
-		m.scr = screenList
-		m.proxyLogs = ""
-		return m, nil
-
-	case "s":
-		// Settings are the proxy's network and image; there is nothing else on
-		// the box that is a setting rather than a fact.
-		m.proxyForm = newProxyForm()
-		if m.proxy.installed {
-			m.proxyForm.set(m.proxy)
-		}
-		m.scr = screenProxyForm
-		return m, nil
-
-	case "l":
-		if !m.proxy.installed {
-			return m, nil
-		}
-		m.proxyLogs = "loading…"
-		return m, fetchProxyLogs(m.tgt)
-
-	case "t":
-		if !m.proxy.installed {
-			return m, nil
-		}
-		// One key for both directions: the label says which it will do, and
-		// separate start/stop keys means hitting the wrong one.
-		if m.proxy.running() {
-			m.confirm = confirmPrompt{
-				title: "Stop the reverse proxy?",
-				body: []string{
-					"EVERY app on this box stops being reachable — this is the one",
-					"container they all depend on. Containers keep running; nothing",
-					"is deleted, and certificates are untouched.",
-					"",
-					"Press t again on this screen to bring it back.",
-				},
-				action: func(m *model) tea.Cmd { return m.startProxyAction("stop", "stop") },
-			}
-			m.scr = screenConfirm
-			return m, nil
-		}
-		m.scr = screenRunning
-		m.run = newRunState("Starting the reverse proxy")
-		return m, m.startProxyAction("up -d", "start")
-
-	case "r":
-		if !m.proxy.installed {
-			return m, nil
-		}
-		m.scr = screenRunning
-		m.run = newRunState("Restarting the reverse proxy")
-		return m, m.startProxyAction("restart", "restart")
-
-	case "u":
-		m.confirm = confirmPrompt{
-			title: "Re-run server setup on " + m.tgt.host + "?",
-			body: []string{
-				"Installs any Docker updates and makes sure the '" + defaultNetwork + "' network exists.",
-				"",
-				"Your apps keep running, and the reverse proxy is not touched —",
-				"press t or r for that. Nothing is deleted.",
-			},
-			action: func(m *model) tea.Cmd { return m.startServerUpdate() },
-		}
-		m.scr = screenConfirm
-		return m, nil
-
-	case "k":
-		// The value CI pins. Not a secret -- it needs integrity, not secrecy --
-		// so it is shown in full and copied like any other text.
-		if len(m.srv.hostKeys) == 0 {
-			return m, nil
-		}
-		if err := copyToClipboard(formatKnownHosts(m.tgt, m.srv.hostKeys) + "\n"); err != nil {
-			m.status = err.Error()
-		} else {
-			m.status = "known_hosts copied"
-		}
-		return m, nil
-
-	case "R":
-		m.scr = screenLoading
-		m.status = ""
-		return m, fetchApps(m.tgt)
-	}
-	return m, nil
-}
-
-// knownHostsSection shows the SSH_KNOWN_HOSTS value in full.
+// knownHostsLine summarises the SSH_KNOWN_HOSTS value in one line.
 //
-// It belongs here rather than on an app: the keys are the SERVER's, and every
-// app on the box pins the same ones. It used to appear only in the output of
-// adding an app, which meant wanting it again meant re-running setup.
-func (m model) knownHostsSection() string {
+// It belongs on the server rather than on an app: the keys are the BOX's, and
+// every app pins the same ones. It used to appear only in the output of adding
+// an app, which meant wanting it again meant re-running setup.
+//
+// Summarised rather than printed in full. It is one line per name per key --
+// six for a box with two names -- and this now sits above the app list, which
+// is the thing people actually came to look at. What you need at a glance is
+// that it exists and which names it covers; the value itself is one keypress
+// away and goes to the clipboard, which is where it was always headed.
+func (m model) knownHostsLine() (string, string) {
 	if len(m.srv.hostKeys) == 0 {
-		return ""
+		return "", "—"
 	}
-	var b strings.Builder
-	b.WriteString(section("SSH_KNOWN_HOSTS  " + dimStyle.Render("(a variable, not a secret)")))
-	for _, ln := range strings.Split(formatKnownHosts(m.tgt, m.srv.hostKeys), "\n") {
-		if len(ln) > 74 {
-			ln = ln[:74] + "…"
-		}
-		b.WriteString(gutter + "  " + dimStyle.Render(ln) + "\n")
+	names := m.tgt.knownHostsNames()
+	n := len(names) * len(m.srv.hostKeys)
+	unit := "lines"
+	if n == 1 {
+		unit = "line"
 	}
-	if m.tgt.isIP() {
-		b.WriteString(gutter + "  " + dimStyle.Render(
-			"CI usually connects by name — add one with 'a' if these do not match") + "\n")
-	}
-	return b.String()
+	// No status glyph, deliberately. Connecting by address once carried a
+	// warning here, on the reasoning that CI probably dials a name that is not
+	// in the value -- but that is a guess, not a fact, and the row already
+	// lists exactly which names are covered for anyone who wants to check.
+	//
+	// The real signal is unambiguous and arrives where it matters: a deploy to
+	// a name that is not pinned fails with "no entry for <name>". A coloured
+	// dot that might mean that is worth less than the failure that says it.
+	return "", fmt.Sprintf("%d %s for %s", n, unit, strings.Join(names, ", "))
 }
 
-func (m model) viewServer() string {
-	var b strings.Builder
-	b.WriteString("\n" + gutter + titleStyle.Render("Server") + "\n")
-
-	b.WriteString(section("the box"))
-	b.WriteString(kv("docker", orDash(m.srv.docker)))
-	b.WriteString(kv("network", m.networkLine()))
-	b.WriteString(kv("proxy", m.proxyLine()))
-	b.WriteString(kv("certs", dimStyle.Render(proxyProject+"_caddy_data (volume)")))
-
-	b.WriteString(m.knownHostsSection())
-	b.WriteString(m.attachedSection())
-	b.WriteString(m.problemsSection())
-	if m.status != "" {
-		b.WriteString("\n" + gutter + okStyle.Render(m.status) + "\n")
-	}
-
-	if m.proxyLogs != "" {
-		b.WriteString(section("proxy log"))
-		lines := strings.Split(strings.TrimRight(m.proxyLogs, "\n"), "\n")
-		if max := m.height - 28; max > 3 && len(lines) > max {
-			lines = lines[len(lines)-max:]
-		}
-		for _, l := range lines {
-			b.WriteString(gutter + "  " + dimStyle.Render(l) + "\n")
-		}
-	}
-
-	if !m.proxy.installed {
-		b.WriteString(help("s", "install a proxy", "k", "copy known_hosts",
-			"u", "update server", "R", "refresh", "esc", "back"))
-		return b.String()
-	}
-	toggle := "stop proxy"
-	if !m.proxy.running() {
-		toggle = "start proxy"
-	}
-	b.WriteString(help("t", toggle, "r", "restart", "l", "logs", "k", "copy known_hosts",
-		"s", "settings", "u", "update server", "esc", "back"))
-	return b.String()
-}
-
-func (m model) networkLine() string {
+func (m model) networkLine() (string, string) {
 	n := m.net
 	if n.name == "" {
-		return dot("err") + " " + errStyle.Render("none") +
-			dimStyle.Render(" — apps cannot reach each other · press u")
+		// The fix is re-running setup, which lives on the docker row -- named
+		// here because "u" used to do it and no longer exists.
+		return dot("err"), "none — apps cannot reach each other; re-run setup on the docker row"
 	}
 	meta := n.driver
 	if n.subnet != "" {
 		meta += ", " + n.subnet
 	}
-	return dot("ok") + " " + n.name + dimStyle.Render("  "+meta)
+	return dot("ok"), n.name + "  " + meta
 }
 
-func (m model) proxyLine() string {
+func (m model) proxyLine() (string, string) {
 	p := m.proxy
+	if m.busy[proxyContainer] || m.settling[proxyContainer] {
+		return spinner(m.spin), "working…"
+	}
 	switch {
 	case !p.installed:
-		return dot("") + dimStyle.Render(" not installed — apps publish their own ports · press s")
+		return dot(""), "not installed — apps publish their own ports"
+	// The word stays here, unlike on a container row. This row is LABELLED
+	// "status", and a bare duration under that label answers a question nobody
+	// asked -- five minutes of what? On a container the dot and the columns
+	// around it already say, which is why the word is redundant there and not
+	// here.
 	case !p.running():
-		return dot("err") + " " + errStyle.Render("stopped") +
-			dimStyle.Render("  "+p.status+" · "+p.image)
+		return dot("err"), "stopped  " + since(p.finishedAt)
 	default:
-		return dot("ok") + " running" + dimStyle.Render("  "+p.status+" · "+p.image)
+		return dot("ok"), "running  " + since(p.startedAt)
 	}
-}
-
-// attachedSection is the part that is invisible everywhere else: which
-// containers are actually on the shared network, and under what name the proxy
-// would reach them by.
-func (m model) attachedSection() string {
-	var b strings.Builder
-	if m.net.name == "" {
-		return ""
-	}
-	dupes := m.net.duplicateAliases()
-
-	b.WriteString(section("on " + m.net.name))
-	if len(m.net.members) == 0 {
-		b.WriteString(gutter + "  " + dimStyle.Render("nothing is attached yet") + "\n")
-		return b.String()
-	}
-	members := append([]netMember(nil), m.net.members...)
-	sort.Slice(members, func(i, j int) bool { return members[i].container < members[j].container })
-
-	rows := [][]string{{"CONTAINER", "REACHABLE AS", ""}}
-	for _, mem := range members {
-		var shown []string
-		clash := false
-		for _, a := range mem.aliases {
-			if _, dup := dupes[a]; dup {
-				shown = append(shown, errStyle.Render(a))
-				clash = true
-			} else {
-				shown = append(shown, a)
-			}
-		}
-		flag := ""
-		if clash {
-			flag = errStyle.Render("clash")
-		}
-		rows = append(rows, []string{
-			dimStyle.Render(mem.container),
-			strings.Join(shown, dimStyle.Render(", ")),
-			flag,
-		})
-	}
-	b.WriteString(table(rows, -1))
-	return b.String()
-}
-
-// problemsSection collects everything that would produce a 502 while every
-// other indicator on the box looks healthy.
-func (m model) problemsSection() string {
-	var b strings.Builder
-	dupes := m.net.duplicateAliases()
-
-	var missing []string
-	for _, a := range m.apps {
-		if a.routes == "" {
-			continue
-		}
-		found := false
-		for _, mem := range m.net.members {
-			if strings.HasPrefix(mem.container, a.name) {
-				found = true
-			}
-			for _, al := range mem.aliases {
-				if strings.HasPrefix(al, a.name) {
-					found = true
-				}
-			}
-		}
-		if !found {
-			missing = append(missing, a.name)
-		}
-	}
-
-	if len(dupes) > 0 {
-		var names []string
-		for a := range dupes {
-			names = append(names, a)
-		}
-		sort.Strings(names)
-		b.WriteString("\n" + gutter + dot("err") + " " + errStyle.Render("alias clash: "+strings.Join(names, ", ")) + "\n")
-		b.WriteString(para(gutter+"  ", "More than one container answers to that name, so traffic to it\nis split between them at random. Compose gives every service an\nalias equal to its service name — give each app a unique one:"))
-		b.WriteString(para(gutter+"    ", "\nnetworks:\n  shared:\n    aliases: [myapp-web]"))
-	}
-
-	if len(missing) > 0 {
-		b.WriteString("\n" + gutter + dot("warn") + " " + warnStyle.Render(
-			"publishing routes but not on this network: "+strings.Join(missing, ", ")) + "\n")
-		b.WriteString(para(gutter+"  ", "The proxy has nothing to forward to, so those hostnames 502.\nAdd the network to each app's compose.yml and redeploy."))
-	}
-
-	if m.proxy.installed && !m.proxy.running() {
-		b.WriteString("\n" + gutter + dot("err") + " " + errStyle.Render(
-			"every app on this box is unreachable while the proxy is stopped") + "\n")
-	}
-
-	if len(dupes) == 0 && len(missing) == 0 && m.proxy.running() && len(m.net.members) > 0 {
-		b.WriteString("\n" + gutter + dot("ok") + dimStyle.Render(" no problems") + "\n")
-		b.WriteString(para(gutter+"  ", "The proxy is up, and every app publishing routes is attached\nunder a unique alias."))
-	}
-	return b.String()
 }
 
 func orDash(s string) string {

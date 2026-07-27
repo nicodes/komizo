@@ -47,6 +47,15 @@ func parseTarget(s string) (target, error) {
 
 func (t target) addr() string { return t.user + "@" + t.host }
 
+// display is the address as a person should read it: the port only when it is
+// not the one everybody assumes.
+func (t target) display() string {
+	if t.port == 22 {
+		return t.addr()
+	}
+	return fmt.Sprintf("%s:%d", t.addr(), t.port)
+}
+
 // knownHostsField is how a host appears in a known_hosts line: bare for port
 // 22, bracketed otherwise.
 func (t target) knownHostsField() string { return t.knownHostsName(t.host) }

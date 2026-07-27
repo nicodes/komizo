@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -43,6 +44,9 @@ var (
 
 const gutter = "  "
 
+// lipglossWidth is the visible width of a styled string, in columns.
+func lipglossWidth(s string) int { return lipgloss.Width(s) }
+
 // pad right-pads to a visible width. lipgloss.Width, never len: a styled cell
 // carries escape bytes that len counts and the terminal does not, which is what
 // used to knock every column out of line as soon as a value was dimmed.
@@ -53,19 +57,39 @@ func pad(s string, w int) string {
 	return s
 }
 
-// header is the one persistent line: who you are talking to, always visible so
-// there is no doubt which box a destructive key applies to.
-func header(t target, width int) string {
-	addr := t.addr()
-	if t.port != 22 {
-		addr = fmt.Sprintf("%s:%d", addr, t.port)
+// header is the page title, and nothing else.
+//
+// No rule under it. There is one at the bottom, above the footer, and that one
+// earns its place by separating the part you read from the part you type at.
+// A second rule six lines above it separated the title from the content, which
+// were never in danger of being confused.
+//
+// The address used to sit here. It moved to a row in the Server section, where
+// it is one fact among the others rather than a permanent banner -- but that
+// removed it from the confirmation screens, so anything destructive now names
+// the host itself. See removePrompt.
+func header() string {
+	return "\n" + gutter + brandStyle.Render("komizo") + "\n"
+}
+
+// title capitalises the first letter. The key hints want "stop" lowercase and
+// the question wants it capitalised, and they are the same word.
+func title(s string) string {
+	if s == "" {
+		return s
 	}
-	line := gutter + brandStyle.Render("komizo") + dimStyle.Render("  "+addr)
-	rule := width - 4
-	if rule < 8 {
-		rule = 8
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// ruleWidth is how wide a horizontal rule should be. Shared so the line under
+// the header and the one above the footer are the same length -- two rules of
+// different widths read as two unrelated things rather than the top and bottom
+// of one page.
+func ruleWidth(width int) int {
+	if w := width - 4; w > 8 {
+		return w
 	}
-	return "\n" + line + "\n" + gutter + dimStyle.Render(strings.Repeat("─", rule)) + "\n"
+	return 8
 }
 
 // help renders the key hints as one line, so the shortcuts are always on screen
@@ -78,10 +102,13 @@ func help(pairs ...string) string {
 	return "\n" + gutter + strings.Join(parts, dimStyle.Render(" · ")) + "\n"
 }
 
-// section is a quiet label above a group of rows. Lowercase and muted, so it
-// separates without competing with the content under it.
+// section is the heading above a group of rows -- Server, Proxy, Apps.
+//
+// Bold rather than coloured. The title above is the one blue thing on the page,
+// and a heading in the same colour would compete with it; weight is enough to
+// mark a break when the rows under it are all plain.
 func section(name string) string {
-	return "\n" + gutter + dimStyle.Render(name) + "\n"
+	return "\n" + gutter + titleStyle.Render(name) + "\n"
 }
 
 // kv is the standard label/value row, used by every detail screen so they line
@@ -90,16 +117,96 @@ func kv(label, value string) string {
 	return gutter + dimStyle.Render(pad(label, 14)) + " " + value + "\n"
 }
 
-// dot is a status indicator. Shape as well as colour, so it still reads on a
-// terminal without colour and for anyone who cannot distinguish red from green.
+// kvSel is kv with a cursor. Same row, marked with the accent bar the tree
+// uses, so a selection reads the same wherever it is on the page.
+func kvSel(label, value string, selected bool) string {
+	if !selected {
+		return kv(label, value)
+	}
+	return barStyle.Render("▍") + " " + selStyle.Render(pad(label, 14)) +
+		" " + brighten(value) + "\n"
+}
+
+// kvDot is a label/value row whose value leads with a status glyph.
+//
+// The glyph is passed separately so it survives selection with its colour --
+// see brighten. Every value on this page that has a status is built this way,
+// which is also what keeps the text after it uniformly muted.
+func kvDot(label, glyph, text string, selected bool) string {
+	// A row with no status is a row with no glyph, not a row with a blank where
+	// one would go -- otherwise its value starts one column right of every
+	// other value on the page.
+	if glyph != "" {
+		glyph += " "
+	}
+	if selected {
+		return barStyle.Render("▍") + " " + selStyle.Render(pad(label, 14)) +
+			" " + glyph + brighten(text) + "\n"
+	}
+	return gutter + dimStyle.Render(pad(label, 14)) + " " +
+		glyph + dimStyle.Render(text) + "\n"
+}
+
+// stripStyles removes ANSI sequences, so a composed value can be re-styled
+// rather than layered on top of what it already carries.
+func stripStyles(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == 0x1b {
+			for i < len(s) && s[i] != 'm' {
+				i++
+			}
+			continue
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// brighten re-renders text at full strength for the cursor.
+//
+// Everything on the page is muted until it is selected, and then all of it goes
+// bright -- label and value alike, rather than the label alone. Layering a
+// style on top would not do it: a dimmed segment stays dim inside a bold
+// wrapper, so it has to be stripped back to text first.
+//
+// Status glyphs are never passed through here. They are kept out by the callers
+// rather than recognised and restored, which was how this worked until every
+// status became the same filled circle and the shape stopped saying which one
+// it was. Colour cannot be recovered from stripped text; it can only be kept.
+func brighten(s string) string { return selStyle.Render(stripStyles(s)) }
+
+// spinFrames is the busy indicator, sized to one column so it can stand in for
+// a status dot without the row shifting under it.
+var spinFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// Amber, not the accent colour. It stands in for a status dot, and the other
+// three states are all status colours -- a blue one read as a fourth kind of
+// healthy rather than as "ask again in a moment". Amber is already the page's
+// word for in-between.
+func spinner(n int) string {
+	return warnStyle.Render(spinFrames[n%len(spinFrames)])
+}
+
+// dot is a status indicator: one filled circle, three colours.
+//
+// It used to vary the shape too -- a hollow circle for a fault, a half-filled
+// one for a warning -- so that it read without colour. That is a real property
+// to give up, and it was given up on purpose: three different glyphs down a
+// column of otherwise identical rows drew the eye to the SHAPE, and the shape
+// is the part carrying no information anyone is scanning for. Colour is what
+// people actually read here, and the words beside it say the same thing.
+//
+// The absent state keeps its own mark. "No proxy installed" is not a status the
+// thing is in; it is the absence of the thing.
 func dot(state string) string {
 	switch state {
 	case "ok":
 		return okStyle.Render("●")
 	case "warn":
-		return warnStyle.Render("◐")
+		return warnStyle.Render("●")
 	case "err":
-		return errStyle.Render("○")
+		return errStyle.Render("●")
 	default:
 		return dimStyle.Render("·")
 	}
@@ -152,45 +259,114 @@ func trimTrailing(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-// table lays out rows in aligned columns. header is row 0; selected is an index
-// into the data rows, or -1.
+// treeRow is one line of the app list.
+type treeRow struct {
+	cells []string
+	// idx is this row's position in the model's focus list, or -1 for a row the
+	// cursor cannot land on (the header, and the diagnostic rows). Set
+	// explicitly rather than counted here, so the highlight is driven by the
+	// same list the keys act on.
+	idx int
+}
+
+// tree lays the app list out in one set of columns, every row aligned.
+//
+// It used to keep two sets and draw the branch glyphs itself, on the reasoning
+// that an app's account and a container's name are unrelated and should not be
+// forced to the same width. True of the meanings, wrong about the reading: a
+// table whose second column starts in two different places is one your eye has
+// to re-find on every row, and the branch glyph pushed every child three
+// columns further right again. Nesting is now a prefix inside the name cell, so
+// it indents without moving anything after it.
+//
+// selected is an index into the model's focus list; a row is highlighted when
+// its idx matches. Rows carrying -1 are skipped, which is how the diagnostic
+// lines stay unreachable.
 //
 // The selected row is marked with an accent bar rather than reverse video: a
-// reversed line inverts every colour inside it, so a red warning in the selected
-// row would come out looking fine.
-func table(rows [][]string, selected int) string {
+// reversed line inverts every colour inside it, so a red warning in the
+// selected row would come out looking fine.
+func tree(rows []treeRow, selected int) string {
 	if len(rows) == 0 {
 		return ""
 	}
-	widths := make([]int, len(rows[0]))
+	var w []int
 	for _, r := range rows {
-		for i, c := range r {
-			if i < len(widths) && lipgloss.Width(c) > widths[i] {
-				widths[i] = lipgloss.Width(c)
+		for i, c := range r.cells {
+			for len(w) <= i {
+				w = append(w, 0)
+			}
+			if lipgloss.Width(c) > w[i] {
+				w[i] = lipgloss.Width(c)
 			}
 		}
 	}
 
 	var b strings.Builder
-	for ri, r := range rows {
+	for _, r := range rows {
 		var cells []string
-		for i, c := range r {
-			if i == len(r)-1 {
+		for i, c := range r.cells {
+			if i == len(r.cells)-1 {
 				cells = append(cells, c) // no trailing pad on the last column
 			} else {
-				cells = append(cells, pad(c, widths[i]))
+				cells = append(cells, pad(c, w[i]))
 			}
 		}
 		line := strings.TrimRight(strings.Join(cells, "  "), " ")
 
-		switch {
-		case ri == 0:
-			b.WriteString(gutter + "  " + dimStyle.Render(line) + "\n")
-		case ri-1 == selected:
-			b.WriteString(gutter + barStyle.Render("▍") + " " + selStyle.Render(line) + "\n")
-		default:
-			b.WriteString(gutter + "  " + line + "\n")
+		// The same indent kvSel uses, so the cursor bar sits in one column all
+		// the way down the page. It used to be nested a further two in here,
+		// which made the selection appear to step sideways the moment it
+		// reached the app list.
+		if r.idx >= 0 && r.idx == selected {
+			// The first cell is the status glyph and is left exactly as it is;
+			// everything after it goes bright. Brightening the glyph too would
+			// mean stripping its colour, and there is no way to put back which
+			// colour it was once every state is the same circle.
+			glyph, rest := cells[0], strings.Join(cells[1:], "  ")
+			b.WriteString(barStyle.Render("▍") + " " + glyph + "  " +
+				brighten(strings.TrimRight(rest, " ")) + "\n")
+			continue
 		}
+		b.WriteString(gutter + line + "\n")
 	}
 	return b.String()
+}
+
+// since is how long ago something happened, in the one format this page uses
+// for every duration on it: largest unit first, zero units left out.
+//
+//	1d 12h 4m    4m    2h 30m    1d 5m    now
+//
+// Truncated rather than rounded, because a row that says "3h" and a row that
+// says "2h 59m" should not be able to describe the same moment.
+//
+// No seconds. Minutes is the finest resolution anything here is worth watching
+// at, and a number ticking every second draws the eye to the row that changed
+// rather than to the row that is wrong.
+func since(t time.Time) string {
+	if t.IsZero() {
+		return "—"
+	}
+	d := time.Since(t)
+	if d < time.Minute {
+		// Covers a clock ahead of ours as well; a skew between here and the box
+		// is not worth reporting as a negative age.
+		return "now"
+	}
+
+	days, hours, mins := int(d.Hours())/24, int(d.Hours())%24, int(d.Minutes())%60
+	var parts []string
+	if days > 0 {
+		parts = append(parts, fmt.Sprintf("%dd", days))
+	}
+	if hours > 0 {
+		parts = append(parts, fmt.Sprintf("%dh", hours))
+	}
+	// Minutes are shown unless they are zero AND something larger was, so a
+	// duration is never an empty string.
+	if mins > 0 || len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("%dm", mins))
+	}
+	return strings.Join(parts, " ")
 }
