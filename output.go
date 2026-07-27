@@ -29,7 +29,19 @@ const rule = "------------------------------------------------------------------
 func printNextSteps(o addOpts, t target, knownHosts string) {
 	fmt.Printf("\n%s\n Add these under Settings -> Secrets and variables -> Actions\n%s\n", rule, rule)
 
-	fmt.Printf("\n 1. SECRET    SSH_DEPLOY_KEY\n\n        cat %s\n", o.keyPath)
+	// The VALUE is the file's contents. Spelled out because "cat <path>" on a
+	// line of its own reads like a value, and pasting that literal string into
+	// the secret produces a deploy that fails much later with an unhelpful
+	// authentication error.
+	fmt.Printf("\n 1. SECRET    SSH_DEPLOY_KEY\n\n"+
+		"        the private key in this file (contents not shown here):\n"+
+		"        %s\n", o.keyPath)
+	if clipboardAvailable() {
+		fmt.Printf("\n        To put it on the clipboard without printing it:\n"+
+			"        %s < %s\n", strings.Join(clipboardCmd(), " "), o.keyPath)
+	} else {
+		fmt.Printf("\n        cat %s\n", o.keyPath)
+	}
 	fmt.Printf("\n 2. VARIABLE  SSH_KNOWN_HOSTS\n\n")
 	for _, ln := range strings.Split(knownHosts, "\n") {
 		fmt.Printf("        %s\n", ln)
