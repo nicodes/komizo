@@ -210,14 +210,18 @@ func (m model) viewCharts() string {
 	// for a precision nobody acts on.
 	b.WriteString(section(fmt.Sprintf(
 		"Requests   \u00b7   how unusual  (\u00b1%d\u03c3, flat line is normal)", devLimit)))
-	b.WriteString(m.combinedChart(s.total, base, s.from, s.to, w, chartHeight, keyStyle))
+	b.WriteString(m.combinedChart(s.total, base, s.from, s.to, w, chartHeight, keyStyle, bandBothWays))
 
 	// Failures get the same overlay, against a baseline of their own. See
 	// trailingPoisson: a median has no scale on a series of zeros, so the line
 	// would never draw at all.
 	b.WriteString(section(fmt.Sprintf(
 		"Failures (5xx)   \u00b7   how unusual  (\u00b1%d\u03c3, flat line is normal)", devLimit)))
-	b.WriteString(m.combinedChart(s.errors, trailingPoisson(s.errors), s.from, s.to, w, panelHeight, errStyle))
+	// The failure count itself is drawn in the accent, not in red. Red on this
+	// screen means "past two deviations" and is the how-unusual line's to
+	// spend -- a permanently red series would say "wrong" about every minute
+	// including the ordinary ones.
+	b.WriteString(m.combinedChart(s.errors, trailingPoisson(s.errors), s.from, s.to, w, panelHeight, keyStyle, bandUpOnly))
 
 	rate, errs := s.rate()
 	b.WriteString(section("Now"))
@@ -244,12 +248,50 @@ func (m model) chartBlock(vals []float64, from, to int64, w, h int, style lipglo
 	return b.String()
 }
 
+// The bands the how-unusual line is coloured by. Within one deviation is
+// ordinary variation; past two is the thing you opened this screen to find.
+const (
+	bandOK   = "unusual-ok"
+	bandWarn = "unusual-warn"
+	bandErr  = "unusual-err"
+)
+
+// bandBothWays grades on SIZE, ignoring direction. For request volume either
+// direction is worth seeing: a flood is an event and so is a sudden silence,
+// which is usually the same incident seen from the other side -- nothing is
+// reaching you because something in front of it is broken.
+func bandBothWays(d float64) string {
+	switch a := math.Abs(d); {
+	case a <= 1:
+		return bandOK
+	case a <= 2:
+		return bandWarn
+	default:
+		return bandErr
+	}
+}
+
+// bandUpOnly grades on the UP side only. For failures the two directions are
+// not symmetric: unusually many is the thing you are looking for, and unusually
+// few is the system working better than it normally does. Colouring that amber
+// would be an interface calling good news a warning.
+func bandUpOnly(d float64) string {
+	switch {
+	case d <= 1:
+		return bandOK
+	case d <= 2:
+		return bandWarn
+	default:
+		return bandErr
+	}
+}
+
 // combinedChart draws requests and, over them, how unusual each minute was.
 //
 // The deviation is mapped onto the chart's range so both share one canvas: -4
 // sits on the floor, 0 halfway up, +4 at the ceiling. The two series are not
 // comparable in value and were never meant to be -- only in shape and in x.
-func (m model) combinedChart(vals []float64, base baseline, from, to int64, w, h int, style lipgloss.Style) string {
+func (m model) combinedChart(vals []float64, base baseline, from, to int64, w, h int, style lipgloss.Style, band func(float64) string) string {
 	yMax := 0.0
 	for _, v := range vals {
 		if v > yMax {
@@ -261,12 +303,21 @@ func (m model) combinedChart(vals []float64, base baseline, from, to int64, w, h
 	}
 	place := func(d float64) float64 { return (d + devLimit) / (2 * devLimit) * yMax }
 
+	var prev *timeserieslinechart.TimePoint
+	prevBand := ""
+
 	c := m.newChart(from, to, w, h)
 	c.SetYRange(0, yMax)
 	c.SetViewYRange(0, yMax)
 	c.SetDataSetStyle("normal", dimStyle)
 	c.SetDataSetStyle("series", style)
-	c.SetDataSetStyle("unusual", warnStyle)
+	// The how-unusual line is coloured by how unusual it is, in the three
+	// states this interface already uses for everything else: fine, worth a
+	// look, wrong. Colour carries meaning here and nothing else, so a line that
+	// changes colour is saying something rather than decorating itself.
+	c.SetDataSetStyle(bandOK, okStyle)
+	c.SetDataSetStyle(bandWarn, warnStyle)
+	c.SetDataSetStyle(bandErr, errStyle)
 
 	// Where "not unusual" sits, so the second series has a zero to be read
 	// against. Without it the right-hand line is a shape with no origin.
@@ -288,7 +339,16 @@ func (m model) combinedChart(vals []float64, base baseline, from, to int64, w, h
 		} else if d < -devLimit {
 			d = -devLimit
 		}
-		c.PushDataSet("unusual", timeserieslinechart.TimePoint{Time: at, Value: place(d)})
+		pt := timeserieslinechart.TimePoint{Time: at, Value: place(d)}
+		b := band(d)
+		// The previous point joins this band too when the band changes, so the
+		// segment between them is drawn. Without it a line that crosses 1 or 2
+		// breaks at exactly the crossing -- the moment it is describing.
+		if prev != nil && b != prevBand {
+			c.PushDataSet(b, *prev)
+		}
+		c.PushDataSet(b, pt)
+		prev, prevBand = &pt, b
 	}
 	c.DrawBrailleAll()
 	return chartLines(c.View())

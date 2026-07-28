@@ -4197,3 +4197,41 @@ func TestFailuresScoreAgainstAPoissonBaseline(t *testing.T) {
 		t.Errorf("first failure after a clean window = %v, want the ceiling (%d)", got, devLimit)
 	}
 }
+
+// The how-unusual line is coloured by how unusual it is, in the three states
+// this interface uses everywhere else -- and the two charts grade differently,
+// because their two directions do not mean the same thing.
+func TestTheUnusualLineIsGraded(t *testing.T) {
+	// Requests: either direction. A flood is an event and so is a sudden
+	// silence, which is usually the same incident from the other side.
+	for _, c := range []struct {
+		score float64
+		want  string
+	}{
+		{0, bandOK}, {1, bandOK}, {-1, bandOK},
+		{1.1, bandWarn}, {2, bandWarn}, {-1.5, bandWarn}, {-2, bandWarn},
+		{2.1, bandErr}, {4, bandErr}, {-3, bandErr},
+	} {
+		if got := bandBothWays(c.score); got != c.want {
+			t.Errorf("bandBothWays(%v) = %s, want %s", c.score, got, c.want)
+		}
+	}
+
+	// Failures: the up side only. Fewer failures than usual is the system
+	// working better than it normally does, and an interface that coloured that
+	// amber would be calling good news a warning.
+	for _, c := range []struct {
+		score float64
+		want  string
+	}{
+		{0, bandOK}, {1, bandOK},
+		{1.1, bandWarn}, {2, bandWarn},
+		{2.1, bandErr}, {4, bandErr},
+		// However far below normal, still green.
+		{-1.5, bandOK}, {-3, bandOK}, {-9, bandOK},
+	} {
+		if got := bandUpOnly(c.score); got != c.want {
+			t.Errorf("bandUpOnly(%v) = %s, want %s", c.score, got, c.want)
+		}
+	}
+}
