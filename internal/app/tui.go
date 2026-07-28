@@ -455,9 +455,28 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.fetch()
 		}
 
-		// Something to hand over -- the two values a new app needs in GitHub --
-		// stays in the footer until it is dismissed. Nothing to hand over is
-		// reported as one line, because "it worked" needs one line.
+		// One value to hand over goes straight to the clipboard, and the page
+		// you started from comes back with a line saying what happened. That is
+		// a rotation: the host keys did not move, so the deploy key is the only
+		// thing there is to choose, and a screen offering one choice is a
+		// screen asking you to press a key it already knows the answer to.
+		//
+		// Only when the copy WORKED. The key is held in memory and nowhere
+		// else, so dismissing the screen without it on the clipboard is losing
+		// it -- a failed copy keeps the screen, where the error is readable and
+		// the value is still there.
+		if msg.result != nil && msg.result.items() == 1 {
+			if err := copyToClipboard(msg.result.key); err == nil {
+				m.prompt = nil
+				m.status, m.statusErr = msg.result.app+" key rotated and copied — update SSH_DEPLOY_KEY", false
+				return m, m.fetch()
+			}
+		}
+
+		// Two values a new app needs in GitHub: the screen stays until it is
+		// dismissed, because there is a choice to make about which to copy.
+		// Nothing to hand over is reported as one line, because "it worked"
+		// needs one line.
 		if msg.result != nil {
 			m.prompt = &prompt{kind: promptResult}
 			return m, m.fetch()

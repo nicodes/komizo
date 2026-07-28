@@ -1731,6 +1731,52 @@ func TestRotationDoesNotOfferHostKeys(t *testing.T) {
 	}
 }
 
+func TestRotationCopiesItselfAndComesBack(t *testing.T) {
+	// A rotation produces one value: the host keys did not move, so the deploy
+	// key is the only thing to choose between, and a screen offering one choice
+	// asks you to press a key it already knows the answer to. It goes to the
+	// clipboard and the monitor comes back with a line saying so.
+	if !clipboardAvailable() {
+		t.Skip("no clipboard tool")
+	}
+	m := testModel()
+	m.width, m.height = 90, 24
+	m.cursor = rowOf(m, focusApp)
+	m = send(m, "r", "y")
+	if !m.running() {
+		t.Fatal("y should start the rotation")
+	}
+
+	rotated := &addResult{app: "blog", rotated: true, onClipboard: -1,
+		key: "-----BEGIN OPENSSH PRIVATE KEY-----\nrotated\n-----END OPENSSH PRIVATE KEY-----\n"}
+	next, cmd := m.Update(runDoneMsg{result: rotated})
+	after := next.(model)
+
+	if after.prompt != nil {
+		t.Error("a rotation should not leave a screen to dismiss")
+	}
+	if after.scr != screenMonitor {
+		t.Errorf("it should come back to the monitor, got %v", after.scr)
+	}
+	if !strings.Contains(after.status, "copied") || after.statusErr {
+		t.Errorf("it should say the key was copied, got %q", after.status)
+	}
+	if !strings.Contains(after.status, "SSH_DEPLOY_KEY") {
+		t.Errorf("it should say where the key goes, got %q", after.status)
+	}
+	if cmd == nil {
+		t.Error("the box should be re-read after a rotation")
+	}
+
+	// Adding keeps the screen: there are two values, and which one you want is
+	// a choice only the person pasting them can make.
+	fresh := &addResult{app: "blog", onClipboard: -1, key: "k", knownHosts: "box ssh-ed25519 AAAA"}
+	next, _ = m.Update(runDoneMsg{result: fresh})
+	if p := next.(model).prompt; p == nil || p.kind != promptResult {
+		t.Error("adding an app should still show both values")
+	}
+}
+
 func TestExactlyOneRowIsEverMarked(t *testing.T) {
 	// The cursor is one row. Two places used to work out where the app rows
 	// start by recounting the rows above them, and a recount is a second
