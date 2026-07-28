@@ -154,16 +154,16 @@ done
 # no config image, nothing from CI ever touches it.
 if [ -d /srv/_proxy ]; then
 	pstate=stopped
-	if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx komizo-caddy; then
+	if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx komizo-proxy; then
 		pstate=running
 	fi
 	pnet="$(sed -n 's/^    name: //p' /srv/_proxy/compose.yml 2>/dev/null | head -n 1)"
 	pimg="$(sed -n 's/^    image: //p' /srv/_proxy/compose.yml 2>/dev/null | head -n 1)"
 	# Docker's own words for how long it has been up, or why it is not.
-	pstatus="$(docker ps -a --filter name=^komizo-caddy$ --format '{{.Status}}' 2>/dev/null | head -n 1)"
+	pstatus="$(docker ps -a --filter name=^komizo-proxy$ --format '{{.Status}}' 2>/dev/null | head -n 1)"
 	# Same timestamps as an app's containers, so the proxy's row can say how
 	# long it has been up in the same words every other row uses.
-	pid="$(docker ps -a --filter name=^komizo-caddy$ -q --no-trunc 2>/dev/null | head -n 1)"
+	pid="$(docker ps -a --filter name=^komizo-proxy$ -q --no-trunc 2>/dev/null | head -n 1)"
 	pts="$(printf '%s\n' "$starts" | awk -F'\t' -v id="$pid" '$1 == id { printf "%s\t%s\t%s", $2, $3, $4; exit }')"
 	printf 'proxy\t%s\t%s\t%s\t%s\t%s\n' "$pstate" "${pnet:-?}" "${pimg:-?}" "${pstatus:-not created}" "$pts"
 fi

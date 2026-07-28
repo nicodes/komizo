@@ -13,7 +13,7 @@ import (
 // image: nothing from CI ever touches it.
 const (
 	proxyDir       = "/srv/_proxy"
-	proxyContainer = "komizo-caddy"
+	proxyContainer = "komizo-proxy"
 	defaultNetwork = "edge"
 	defaultProxy   = "caddy:2"
 )

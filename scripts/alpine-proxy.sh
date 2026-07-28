@@ -49,7 +49,7 @@ PROXY_DIR=/srv/_proxy
 # simply be named after the directory. Fixed rather than derived so the deploy
 # and remove scripts can address the container without discovering it.
 PROXY_PROJECT=komizo-proxy
-PROXY_CONTAINER=komizo-caddy
+PROXY_CONTAINER=komizo-proxy
 
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -154,7 +154,12 @@ log "Writing $PROXY_DIR/compose.yml"
 cat > "$PROXY_DIR/compose.yml" <<EOF
 # Written by komizo. Re-run 'komizo proxy' to change it; edits here are lost.
 services:
-  caddy:
+  # Named for what it is, not what it runs. A compose service name is a network
+  # alias, and this one sits on the network every app's gateway joins -- so a
+  # service called "caddy" claimed that name box-wide, which is precisely what
+  # this proxy tells apps not to do. It answered to both "caddy" and its
+  # container name; now only the latter.
+  komizo-proxy:
     image: $PROXY_IMAGE
     container_name: $PROXY_CONTAINER
     restart: unless-stopped
@@ -195,7 +200,10 @@ log "Starting the proxy"
 cd "$PROXY_DIR"
 docker compose -p "$PROXY_PROJECT" config -q \
 	|| die "the generated proxy compose.yml is not valid -- nothing was started"
-docker compose -p "$PROXY_PROJECT" up -d
+# --remove-orphans matters on a rename: the container under the old service name
+# keeps running and keeps holding 80 and 443, so the new one cannot bind and the
+# box serves nothing at all.
+docker compose -p "$PROXY_PROJECT" up -d --remove-orphans
 
 # Report what Caddy made of it. A fragment that fails to parse keeps the proxy
 # on its previous config rather than taking the site down, so a silent failure

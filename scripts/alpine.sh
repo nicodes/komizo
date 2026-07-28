@@ -72,7 +72,7 @@ APP_DIR="${APP_DIR:-/srv/$APP_NAME}"
 PROJECT_MARKERS='(komizo|ncicd|cicd|alpine-server-scripts|boot\.sh)'
 # Must match alpine-proxy.sh. Fixed rather than discovered so the generated
 # deploy script can address the proxy without searching for it.
-PROXY_CONTAINER=komizo-caddy
+PROXY_CONTAINER=komizo-proxy
 CI_PUBKEY="${CI_PUBKEY:-${1:-}}"
 CONFIG_IMAGE="${CONFIG_IMAGE:-}"
 HARDEN_SSH="${HARDEN_SSH:-0}"

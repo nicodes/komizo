@@ -31,7 +31,7 @@ KEEP_DATA="${KEEP_DATA:-0}"
 DEPLOY_BIN="/usr/local/bin/deploy-$APP_NAME"
 SECRET_BIN="/usr/local/bin/set-secret-$APP_NAME"
 PROJECT_MARKERS='(komizo|ncicd|cicd|alpine-server-scripts|boot\.sh)'
-PROXY_CONTAINER=komizo-caddy
+PROXY_CONTAINER=komizo-proxy
 
 log() { printf '\n==> %s\n' "$*"; }
 

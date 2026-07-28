@@ -27,7 +27,7 @@ func testModel() model {
 	// it does on a real box. Without it every route looks orphaned, which is a
 	// state worth testing but not the default one.
 	m.net = netRow{name: "edge", driver: "bridge", members: []netMember{
-		{container: "komizo-caddy", aliases: []string{"caddy", "komizo-caddy"}},
+		{container: "komizo-proxy", aliases: []string{"komizo-proxy"}},
 		{container: "blog-web-1", aliases: []string{"web", "blog-web"}},
 	}}
 	// Where the first inventory would leave it: on the first app, not on the
@@ -514,7 +514,7 @@ func TestInventoryParsing(t *testing.T) {
 		"app\tworker\tcd-worker\t/srv/worker\tnone\t0\tghcr.io/you/worker-config\t",
 		"proxy\trunning\tedge\tcaddy:2\tUp 3 hours\t2026-07-27T09:00:00Z\t0001-01-01T00:00:00Z\t0",
 		"net\tedge\tbridge\t172.18.0.0/16",
-		"netmember\tkomizo-caddy\tcaddy,komizo-caddy",
+		"netmember\tkomizo-proxy\tkomizo-proxy",
 		"netmember\tblog-web-1\tweb,blog-web",
 		"orphan\tghost",
 		"", // trailing blank, as the server emits
@@ -860,7 +860,7 @@ func netModel() model {
 	m.net = netRow{
 		name: "edge", driver: "bridge", subnet: "172.18.0.0/16",
 		members: []netMember{
-			{container: "komizo-caddy", aliases: []string{"caddy"}},
+			{container: "komizo-proxy", aliases: []string{"komizo-proxy"}},
 			{container: "blog-web-1", aliases: []string{"blog-web"}},
 			{container: "shop-web-1", aliases: []string{"shop-web"}},
 		},
