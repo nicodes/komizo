@@ -188,9 +188,11 @@ func (m model) proxySection() string {
 	}
 	b.WriteString(kvDot("status", pg, pt, m.cursor == m.rowIndex(focusProxy)))
 	b.WriteString(kvDot("network", ng, nt, false))
-	// Last of the three: the image is the one that never changes on its own.
-	// Status and network are things to check; this is a thing to confirm.
-	b.WriteString(kv("image", dimStyle.Render(orDash(m.proxy.image))))
+	// No image row. It is the one fact here that cannot change without someone
+	// deciding it should: status and network are things to check, and an image
+	// pinned by a flag on a command run once is a thing to confirm -- which is
+	// not what this page is for. `komizo list` still prints it, and reinstalling
+	// names it in the question.
 	return b.String()
 }
 

@@ -488,7 +488,7 @@ func (m model) centred(lines ...string) string {
 // available in the terminal's own type, which renders it properly at whatever
 // size and weight the user has picked.
 func (m model) loadingPane() string {
-	lines := append(m.brandBlock(), "", spinnerAccent(m.spin))
+	lines := append(m.brandBlock(), "", spinner(m.spin))
 	// An operation says what it is: setting a server up takes a minute, and a
 	// spinner on its own for that long is indistinguishable from a hang.
 	if m.running() {

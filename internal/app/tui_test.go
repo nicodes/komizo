@@ -591,7 +591,7 @@ func TestTheBoxIsAlwaysOnScreen(t *testing.T) {
 		"root@box.example.com",  // the address, which used to live in the header
 		"Docker version 26.1.3", // docker
 		"edge", "bridge",        // network
-		"running", "caddy:2", // proxy
+		"running", // proxy
 	} {
 		if !strings.Contains(v, want) {
 			t.Errorf("the list is missing %q", want)
@@ -2265,7 +2265,7 @@ func TestTheProxySectionIsPlainRows(t *testing.T) {
 	if !strings.Contains(v, "Proxy\n") {
 		t.Errorf("the heading should be the word alone:\n%s", v)
 	}
-	for _, want := range []string{"status", "image", "network"} {
+	for _, want := range []string{"status", "network"} {
 		found := false
 		for _, ln := range strings.Split(v, "\n") {
 			if strings.HasPrefix(strings.TrimSpace(ln), want) {
@@ -2276,8 +2276,12 @@ func TestTheProxySectionIsPlainRows(t *testing.T) {
 			t.Errorf("the proxy section is missing a %q row:\n%s", want, v)
 		}
 	}
-	if !strings.Contains(v, "caddy:2") {
-		t.Error("the image should still be shown, on its own row")
+	// No image row. It is the one fact here that cannot change without someone
+	// deciding it should -- pinned by a flag on a command run once -- and this
+	// page is for what is happening, not for confirming settings. `komizo list`
+	// prints it, and reinstalling names it in the question.
+	if strings.Contains(v, "caddy:2") {
+		t.Error("the proxy image is not something this page reports")
 	}
 
 	// A box with no proxy has no image, and says so rather than showing blank.
@@ -2703,7 +2707,7 @@ func TestBothWaitsLookTheSame(t *testing.T) {
 		m.reflow()
 		v := stripANSI(m.View())
 
-		if !strings.Contains(v, stripANSI(spinnerAccent(m.spin))) {
+		if !strings.Contains(v, stripANSI(spinner(m.spin))) {
 			t.Errorf("%s: the spinner should be on screen", name)
 		}
 
@@ -3454,7 +3458,7 @@ func TestALoadingLogSpinsInTheMiddle(t *testing.T) {
 	if !m.spinning() {
 		t.Error("the spinner ticker should be running while it loads")
 	}
-	if !strings.Contains(stripANSI(m.View()), stripANSI(spinnerAccent(m.spin))) {
+	if !strings.Contains(stripANSI(m.View()), stripANSI(spinner(m.spin))) {
 		t.Error("a loading log should show the spinner")
 	}
 

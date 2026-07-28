@@ -253,21 +253,19 @@ func brighten(s string) string { return selStyle.Render(stripStyles(s)) }
 // a status dot without the row shifting under it.
 var spinFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-// Amber, not the accent colour. It stands in for a status dot, and the other
-// three states are all status colours -- a blue one read as a fourth kind of
-// healthy rather than as "ask again in a moment". Amber is already the page's
-// word for in-between.
-func spinner(n int) string {
-	return warnStyle.Render(spinFrames[n%len(spinFrames)])
-}
-
-// spinnerAccent is the same frames in the accent, for the loading pane.
+// The accent, everywhere, including where it stands in for a status dot.
 //
-// Amber is right on a ROW, where the spinner stands in for a status dot and
-// belongs to the same three-colour vocabulary as the dots around it. A page
-// that is only a spinner has no statuses to be confused with, and amber there
-// reads as a warning about nothing.
-func spinnerAccent(n int) string {
+// It was amber on a row, on the reasoning that the three status colours are the
+// vocabulary there and a blue one would read as a fourth kind of healthy. What
+// that missed is that amber already means something on this page -- a partially
+// up app, a container in a crash loop -- so a spinner wearing it reads as a
+// warning for as long as it turns, which is exactly when nothing is known yet.
+//
+// Waiting is not a state the box is in. It is the interface saying it has not
+// finished asking, and the accent is what the interface uses to speak for
+// itself: the brand, the cursor, the keys. Nothing red, amber or green is ever
+// about the tool rather than the server.
+func spinner(n int) string {
 	return barStyle.Render(spinFrames[n%len(spinFrames)])
 }
 
