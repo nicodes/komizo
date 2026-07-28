@@ -1,13 +1,15 @@
-package main
+package app
 
 import (
 	"flag"
 	"fmt"
+
+	"github.com/nicodes/komizo-be/cli/scripts"
 )
 
 // runRemove is the non-interactive counterpart to the TUI's remove. It refuses
 // to run without --yes, because unlike everything else here it deletes data.
-func runRemove(args []string) error {
+func RunRemove(args []string) error {
 	fs := flag.NewFlagSet("remove", flag.ContinueOnError)
 	fs.Usage = func() { usageRemove(fs) }
 	var host, app string
@@ -20,7 +22,7 @@ func runRemove(args []string) error {
 	fs.BoolVar(&acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
 	fs.BoolVar(&keepData, "keep-data", false, "leave the app directory and its volumes in place")
 	if err := fs.Parse(args); err != nil {
-		return errSilent
+		return ErrSilent
 	}
 	if host == "" {
 		return fmt.Errorf("--host is required")
@@ -55,27 +57,27 @@ func runRemove(args []string) error {
 	if keepData {
 		env["KEEP_DATA"] = "1"
 	}
-	if err := tgt.runScript(AlpineRemoveScript, env); err != nil {
+	if err := tgt.runScript(scripts.AlpineRemoveScript, env); err != nil {
 		return fmt.Errorf("removal failed -- see the output above")
 	}
 	return nil
 }
 
 // runScript prints one of the embedded server-side scripts.
-func runScript(args []string) error {
+func RunScript(args []string) error {
 	which := "add"
 	if len(args) > 0 {
 		which = args[0]
 	}
 	switch which {
 	case "init":
-		fmt.Print(AlpineInitScript)
+		fmt.Print(scripts.AlpineInitScript)
 	case "add":
-		fmt.Print(AlpineScript)
+		fmt.Print(scripts.AlpineScript)
 	case "remove":
-		fmt.Print(AlpineRemoveScript)
+		fmt.Print(scripts.AlpineRemoveScript)
 	case "proxy":
-		fmt.Print(AlpineProxyScript)
+		fmt.Print(scripts.AlpineProxyScript)
 	default:
 		return fmt.Errorf("no such script %q -- try 'init', 'add', 'remove' or 'proxy'", which)
 	}

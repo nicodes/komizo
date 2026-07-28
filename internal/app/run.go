@@ -1,10 +1,11 @@
-// Command komizo sets up and inspects servers that deploy from GitHub Actions.
+// Package app is komizo: the commands, the interface, and everything they do
+// to a server.
 //
 // It runs on YOUR machine. Every command opens an SSH connection itself; you do
 // not run anything on the server by hand. The server-side work is a shell
-// script embedded in this binary, printable with `komizo script`, so what runs as
-// root on your box stays readable.
-package main
+// script embedded in this binary, printable with `komizo script`, so what runs
+// as root on your box stays readable.
+package app
 
 import (
 	"errors"
@@ -14,77 +15,74 @@ import (
 	"strings"
 )
 
-// errSilent means the failure has already been reported -- flag parsing prints
+// ErrSilent means the failure has already been reported -- flag parsing prints
 // its own message, and repeating it would be noise.
-var errSilent = errors.New("")
+var ErrSilent = errors.New("")
 
-func main() {
+// Main is the whole command line: which subcommand, or an address, or nothing.
+//
+// Here rather than in cmd/komizo so that main() is the one thing it should be --
+// a call and an exit code. Everything this dispatches to is in this package,
+// and a dispatcher that lives apart from what it dispatches to is a file you
+// have to open twice.
+func Main(args []string) error {
 	// `komizo` on its own is the interface with nothing to connect to yet: it
 	// opens and asks for an address. It used to print the usage and exit 2,
 	// which made the shortest thing anyone would type the one thing that did
 	// not work.
-	if len(os.Args) < 2 {
-		if err := runLoginTUI(); err != nil {
-			fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
-			os.Exit(1)
-		}
-		return
+	if len(args) == 0 {
+		return RunLoginTUI()
 	}
 
 	var err error
-	switch os.Args[1] {
+	switch args[0] {
 	case "init":
-		err = runInit(os.Args[2:])
+		err = RunInit(args[1:])
 	case "add":
-		err = runAdd(os.Args[2:])
+		err = RunAdd(args[1:])
 	case "list":
-		err = runList(os.Args[2:])
+		err = RunList(args[1:])
 	case "remove":
-		err = runRemove(os.Args[2:])
+		err = RunRemove(args[1:])
 	case "proxy":
-		err = runProxy(os.Args[2:])
+		err = RunProxy(args[1:])
 	case "script":
-		err = runScript(os.Args[2:])
+		err = RunScript(args[1:])
 	case "-h", "--help", "help":
-		usage()
+		Usage()
 	default:
 		// Anything that is not a known command is treated as a host: the normal
 		// way to use this is `komizo root@your-server`, which opens the interface
 		// and does everything from there. Requiring a subcommand for the common
 		// case would be one more thing to know for no benefit.
-		if strings.HasPrefix(os.Args[1], "-") {
-			fmt.Fprintf(os.Stderr, "unknown flag %q\n\n", os.Args[1])
-			usage()
+		if strings.HasPrefix(args[0], "-") {
+			fmt.Fprintf(os.Stderr, "unknown flag %q\n\n", args[0])
+			Usage()
 			os.Exit(2)
 		}
 		// --port is the one flag the interactive path takes. Without it we read
 		// the port from the user's ssh config instead of assuming 22.
 		fs := flag.NewFlagSet("komizo", flag.ContinueOnError)
-		fs.Usage = usage
+		fs.Usage = Usage
 		port := fs.Int("port", 22, "SSH port")
 		// Interactive, so this only skips the confirmation -- without it komizo
 		// still offers to accept an unseen host key, it just asks first.
 		yes := fs.Bool("accept-host-key", false, "accept an unseen host key without asking")
-		if perr := fs.Parse(os.Args[2:]); perr != nil {
+		if perr := fs.Parse(args[1:]); perr != nil {
 			os.Exit(2)
 		}
 		if fs.NArg() > 0 {
 			fmt.Fprintf(os.Stderr, "unexpected argument %q after a host\n\n", fs.Arg(0))
-			usage()
+			Usage()
 			os.Exit(2)
 		}
-		err = runTUI(os.Args[1], *port, portWasSet(fs), *yes)
+		err = RunTUI(args[0], *port, portWasSet(fs), *yes)
 	}
 
-	if err != nil {
-		if !errors.Is(err, errSilent) {
-			fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
-		}
-		os.Exit(1)
-	}
+	return err
 }
 
-func usage() {
+func Usage() {
 	fmt.Print(`komizo - deploy to your own servers from GitHub Actions
 
   komizo
@@ -116,7 +114,7 @@ Run a command with --help for its flags.
 `)
 }
 
-func usageAdd(fs *flag.FlagSet) {
+func UsageAdd(fs *flag.FlagSet) {
 	fmt.Print(`komizo add - set an app up on a server, or update one
 
   komizo add --host root@myapp.example.com --app myapp \

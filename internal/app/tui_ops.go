@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"bufio"
@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/nicodes/komizo-be/cli/scripts"
 )
 
 // Operations that touch the server run as tea.Cmds and stream their output
@@ -259,7 +261,7 @@ func (m model) startInit(o initOpts) tea.Cmd {
 	t := m.tgt
 	go func() {
 		c := exec.Command("ssh", t.sshArgs(envPrefix(map[string]string{"SHARED_NETWORK": o.network})+"sh -s")...)
-		if err := stream(ch, c, AlpineInitScript); err != nil {
+		if err := stream(ch, c, scripts.AlpineInitScript); err != nil {
 			ch <- runDoneMsg{err: fmt.Errorf("could not set the server up -- see the output above")}
 			return
 		}
@@ -268,7 +270,7 @@ func (m model) startInit(o initOpts) tea.Cmd {
 		pc := exec.Command("ssh", t.sshArgs(envPrefix(proxyEnv(proxyOpts{
 			network: o.network, image: o.image,
 		}))+"sh -s")...)
-		if err := stream(ch, pc, AlpineProxyScript); err != nil {
+		if err := stream(ch, pc, scripts.AlpineProxyScript); err != nil {
 			ch <- runDoneMsg{err: fmt.Errorf("the server is ready, but the proxy failed -- press s to retry it")}
 			return
 		}
@@ -285,7 +287,7 @@ func (m model) startProxy(o proxyOpts) tea.Cmd {
 	t := m.tgt
 	go func() {
 		c := exec.Command("ssh", t.sshArgs(envPrefix(proxyEnv(o))+"sh -s")...)
-		err := stream(ch, c, AlpineProxyScript)
+		err := stream(ch, c, scripts.AlpineProxyScript)
 		ch <- runDoneMsg{err: err}
 	}()
 	return m.run.wait()
@@ -319,7 +321,7 @@ func (m model) startRemove(app string) tea.Cmd {
 	go func() {
 		env := map[string]string{"APP_NAME": app}
 		c := exec.Command("ssh", t.sshArgs(envPrefix(env)+"sh -s")...)
-		err := stream(ch, c, AlpineRemoveScript)
+		err := stream(ch, c, scripts.AlpineRemoveScript)
 		ch <- runDoneMsg{err: err}
 	}()
 	return m.run.wait()

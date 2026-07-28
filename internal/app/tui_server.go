@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"fmt"
@@ -7,6 +7,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/nicodes/komizo-be/cli/scripts"
 )
 
 // The box itself: Docker, the shared network, the proxy, and what is wrong.
@@ -160,7 +162,7 @@ func (m model) startServerUpdate() tea.Cmd {
 	}
 	go func() {
 		c := exec.Command("ssh", t.sshArgs(envPrefix(map[string]string{"SHARED_NETWORK": net})+"sh -s")...)
-		if err := stream(ch, c, AlpineInitScript); err != nil {
+		if err := stream(ch, c, scripts.AlpineInitScript); err != nil {
 			ch <- runDoneMsg{err: fmt.Errorf("server setup failed -- see the output above")}
 			return
 		}

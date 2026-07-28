@@ -1,8 +1,10 @@
-package main
+package app
 
 import (
 	"flag"
 	"fmt"
+
+	"github.com/nicodes/komizo-be/cli/scripts"
 )
 
 // Setting a server up is its own command, not something that happens to a box
@@ -19,7 +21,7 @@ type initOpts struct {
 	acceptHostKey bool
 }
 
-func runInit(args []string) error {
+func RunInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.Usage = func() { usageInit(fs) }
 	var o initOpts
@@ -29,7 +31,7 @@ func runInit(args []string) error {
 	fs.BoolVar(&o.acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
 	fs.IntVar(&o.port, "port", 22, "SSH port")
 	if err := fs.Parse(args); err != nil {
-		return errSilent
+		return ErrSilent
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))
@@ -62,12 +64,12 @@ func runInit(args []string) error {
 	note("reachable.")
 
 	step("Setting up %s", tgt.host)
-	if err := tgt.runScript(AlpineInitScript, map[string]string{"SHARED_NETWORK": o.network}); err != nil {
+	if err := tgt.runScript(scripts.AlpineInitScript, map[string]string{"SHARED_NETWORK": o.network}); err != nil {
 		return fmt.Errorf("the server-side script failed -- see the output above")
 	}
 
 	step("Installing the shared reverse proxy")
-	if err := tgt.runScript(AlpineProxyScript, proxyEnv(proxyOpts{
+	if err := tgt.runScript(scripts.AlpineProxyScript, proxyEnv(proxyOpts{
 		network: o.network,
 		image:   o.image,
 	})); err != nil {

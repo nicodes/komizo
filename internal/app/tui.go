@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"strings"
@@ -909,13 +909,13 @@ func (m model) updateServerPrompt() prompt {
 // one. Everything the argument path does before starting -- resolving the port,
 // probing, offering to accept an unseen host key -- happens inside the program
 // instead, as a command and a question in the footer. See connect.
-func runLoginTUI() error {
+func RunLoginTUI() error {
 	p := tea.NewProgram(newLoginModel(), tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
 
-func runTUI(hostArg string, port int, portExplicit bool, assumeYes bool) error {
+func RunTUI(hostArg string, port int, portExplicit bool, assumeYes bool) error {
 	tgt, err := parseTarget(hostArg)
 	if err != nil {
 		return err

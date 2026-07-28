@@ -1,8 +1,10 @@
-package main
+package app
 
 import (
 	"flag"
 	"fmt"
+
+	"github.com/nicodes/komizo-be/cli/scripts"
 )
 
 // The shared reverse proxy is per-SERVER, so it gets its own command rather
@@ -24,7 +26,7 @@ type proxyOpts struct {
 	acceptHostKey bool
 }
 
-func runProxy(args []string) error {
+func RunProxy(args []string) error {
 	fs := flag.NewFlagSet("proxy", flag.ContinueOnError)
 	fs.Usage = func() { usageProxy(fs) }
 	var o proxyOpts
@@ -34,7 +36,7 @@ func runProxy(args []string) error {
 	fs.IntVar(&o.port, "port", 22, "SSH port")
 	fs.BoolVar(&o.acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
 	if err := fs.Parse(args); err != nil {
-		return errSilent
+		return ErrSilent
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))
@@ -67,7 +69,7 @@ func runProxy(args []string) error {
 	note("reachable.")
 
 	step("Installing the shared reverse proxy")
-	if err := tgt.runScript(AlpineProxyScript, proxyEnv(o)); err != nil {
+	if err := tgt.runScript(scripts.AlpineProxyScript, proxyEnv(o)); err != nil {
 		return fmt.Errorf("the server-side script failed -- see the output above")
 	}
 	return nil

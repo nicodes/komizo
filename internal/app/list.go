@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"flag"
@@ -528,7 +528,7 @@ func (n netRow) duplicateAliases() map[string][]string {
 	return dupes
 }
 
-func runList(args []string) error {
+func RunList(args []string) error {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
 	fs.Usage = func() { usageList(fs) }
 	var host string
@@ -538,7 +538,7 @@ func runList(args []string) error {
 	fs.IntVar(&port, "port", 22, "SSH port")
 	fs.BoolVar(&acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
 	if err := fs.Parse(args); err != nil {
-		return errSilent
+		return ErrSilent
 	}
 	if host == "" {
 		return fmt.Errorf("--host is required, e.g. --host root@myapp.example.com")

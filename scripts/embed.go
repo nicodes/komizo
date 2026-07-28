@@ -1,4 +1,4 @@
-package main
+package scripts
 
 import _ "embed"
 
@@ -16,14 +16,14 @@ import _ "embed"
 // AlpineScript sets an app up: Docker, the deploy account, its two privileged
 // commands, the doas rules and the sshd restrictions.
 //
-//go:embed scripts/alpine.sh
+//go:embed alpine.sh
 var AlpineScript string
 
 // AlpineRemoveScript tears one app back off. Separate from AlpineScript so that
 // the thing which deletes can be read on its own, without hunting for a branch
 // inside the thing that creates.
 //
-//go:embed scripts/alpine-remove.sh
+//go:embed alpine-remove.sh
 var AlpineRemoveScript string
 
 // AlpineInitScript prepares the server itself: the container runtime and the
@@ -32,7 +32,7 @@ var AlpineRemoveScript string
 // initialised or it is not, rather than becoming half-configured as a side
 // effect of whichever app was added first.
 //
-//go:embed scripts/alpine-init.sh
+//go:embed alpine-init.sh
 var AlpineInitScript string
 
 // AlpineProxyScript installs the one shared reverse proxy. Separate again
@@ -40,5 +40,5 @@ var AlpineInitScript string
 // account, and re-running it is how you update Caddy or move it to another
 // network.
 //
-//go:embed scripts/alpine-proxy.sh
+//go:embed alpine-proxy.sh
 var AlpineProxyScript string

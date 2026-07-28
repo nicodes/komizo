@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"flag"
@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/nicodes/komizo-be/cli/scripts"
 )
 
 type addOpts struct {
@@ -54,13 +56,13 @@ func deployBin(app string) string { return "/usr/local/bin/deploy-" + app }
 
 func secretBin(app string) string { return "/usr/local/bin/set-secret-" + app }
 
-func runAdd(args []string) error {
+func RunAdd(args []string) error {
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
-	fs.Usage = func() { usageAdd(fs) }
+	fs.Usage = func() { UsageAdd(fs) }
 	var o addOpts
 	o.bind(fs)
 	if err := fs.Parse(args); err != nil {
-		return errSilent
+		return ErrSilent
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))
@@ -240,7 +242,7 @@ func performAdd(p addPlan, out progress, runner func(script string, env map[stri
 	} else {
 		out.step("Setting up %s on %s", p.app, p.tgt.host)
 	}
-	if err := runner(AlpineScript, env); err != nil {
+	if err := runner(scripts.AlpineScript, env); err != nil {
 		return nil, fmt.Errorf("the server-side script failed -- see the output above.\n" +
 			"    Nothing further was changed.")
 	}
