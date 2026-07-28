@@ -98,7 +98,7 @@ chmod 755 "$PROXY_DIR" "$PROXY_DIR/caddy"
 	printf '# claimed it. It routes; it does not configure anybody. What an app\n'
 	printf '# does with a request once it arrives is inside that app, in its own\n'
 	printf '# gateway container, and cannot be written from here or broken from\n'
-	printf '# here.\n\n'
+	printf '# here.\n'
 
 	# On-demand TLS is the one global option, and it belongs to the SERVER
 	# rather than to an app: it decides, for the whole box, who is allowed to
@@ -106,6 +106,9 @@ chmod 755 "$PROXY_DIR" "$PROXY_DIR/caddy"
 	# config image, which made every app on the machine share one namespace
 	# where Caddy permits exactly one such block -- so a second app adding one
 	# took the box down.
+	# No blank line before the global block: 'caddy fmt' removes one, and a
+	# config that is not formatted the way Caddy formats it warns on every
+	# reload -- which trains you to ignore reload warnings.
 	if [ -n "$TLS_ASK" ]; then
 		printf '{\n'
 		printf '\t# Certificates for wildcard hostnames are issued on demand, one per\n'
@@ -115,10 +118,10 @@ chmod 755 "$PROXY_DIR" "$PROXY_DIR/caddy"
 		printf '\ton_demand_tls {\n'
 		printf '\t\task %s\n' "$TLS_ASK"
 		printf '\t}\n'
-		printf '}\n\n'
+		printf '}\n'
 	fi
 
-	printf '# One file per app, written by deploy-<app> from the hostnames that\n'
+	printf '\n# One file per app, written by deploy-<app> from the hostnames that\n'
 	printf '# app published. Nothing here names an app, so adding or removing one\n'
 	printf '# never edits shared config.\n'
 	printf '#\n'
@@ -215,30 +218,36 @@ cat <<EOF
 EOF
 
 cat <<EOF
-For an app to be reachable through it, that app's compose.yml must join the
-'$SHARED_NETWORK' network with a UNIQUE alias, and publish no ports of its own:
+For an app to be reachable through it, that app needs two things.
+
+A gateway container -- its own Caddy, nginx, or anything that speaks HTTP --
+named <app>-gateway, listening on :80, joined to '$SHARED_NETWORK', publishing
+no ports of its own:
 
   services:
-    web:
+    myapp-gateway:
+      image: ghcr.io/you/myapp-gateway:\${APP_VERSION}
       networks:
-        shared:
-          aliases: [myapp-web]      # unique across every app on this box
+        shared: {}
         default: {}
   networks:
     shared:
       external: true
       name: $SHARED_NETWORK
 
-The alias must be unique because compose gives every service a network alias
-equal to its service name. Two apps that both call a service 'web' would both
-answer to 'web' here, and traffic would be split between them at random.
+Only the gateway joins the shared network. Everything behind it -- the API, the
+database -- stays on the app's own 'default' network, where no other app on this
+box can reach it.
 
-Then ship a fragment at caddy/<anything>.caddy in the app's config image:
+And a hostnames file in the app's config image, one name per line:
 
-  myapp.example.com {
-      reverse_proxy myapp-web:3000
-  }
+  myapp.example.com
+  www.myapp.example.com
 
-It is extracted, validated and loaded on every deploy, and rolls back with the
-app because it lives in the same versioned config image.
+That is all this proxy is told. It generates the route itself and points every
+one of those names at myapp-gateway:80, so no app writes config this server
+loads, and no app's mistake can be another app's outage.
+
+Everything a request meets after the hostname match -- paths, headers, static
+files, which service answers what -- is inside the gateway image the app built.
 EOF
