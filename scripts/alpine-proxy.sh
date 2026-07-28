@@ -29,11 +29,13 @@
 # Inputs, all environment variables:
 #   SHARED_NETWORK docker network apps join                 (default: edge)
 #   PROXY_IMAGE    caddy image to run                       (default: caddy:2)
+#   TLS_ASK        on-demand-TLS gate URL                   (default: none)
 
 set -eu
 
 SHARED_NETWORK="${SHARED_NETWORK:-edge}"
 PROXY_IMAGE="${PROXY_IMAGE:-caddy:2}"
+TLS_ASK="${TLS_ASK:-}"
 
 # Under /srv so the same import glob covers the proxy's own catch-all fragment,
 # which means there is exactly one rule about where fragments live rather than
@@ -60,6 +62,15 @@ esac
 case "$PROXY_IMAGE" in
 	*[!A-Za-z0-9.:/_-]*) die "PROXY_IMAGE contains characters that are not valid in an image reference" ;;
 esac
+# Interpolated into the Caddyfile, so it is constrained rather than trusted.
+case "$TLS_ASK" in
+	'') ;;
+	http://*|https://*)
+		case "$TLS_ASK" in
+			*[!A-Za-z0-9.:/_?=~%\&-]*) die "TLS_ASK contains characters that are not valid in a URL" ;;
+		esac ;;
+	*) die "TLS_ASK must be an http:// or https:// URL" ;;
+esac
 command -v docker >/dev/null 2>&1 || die "this server is not set up yet -- run 'komizo init' first"
 
 # --- 1. the shared network -------------------------------------------------
@@ -81,23 +92,38 @@ chown root:root "$PROXY_DIR" "$PROXY_DIR/caddy"
 chmod 755 "$PROXY_DIR" "$PROXY_DIR/caddy"
 
 {
-	printf '# Global options an app may contribute -- on_demand_tls and the like.\n'
-	printf '# Imported FIRST because Caddy only accepts a global options block as\n'
-	printf '# the very first thing in the adapted config. At most ONE app per\n'
-	printf '# server may ship one; a second fails loudly rather than silently\n'
-	printf '# losing one of them, and the deploy validates before it applies.\n'
+	printf '# Written by komizo. Re-run "komizo proxy" to change it.\n'
 	printf '#\n'
-	printf '# It lives in that app config image, not here, so the values stay\n'
-	printf '# versioned with the app that needs them rather than leaking into\n'
-	printf '# server config shared by everything.\n'
-	printf 'import /srv/*/caddy/global.caddy\n\n'
-	printf '# Every app writes its own fragment here. Nothing in this file names\n'
-	printf '# an app, so adding or removing one never edits shared config.\n'
+	printf '# This file terminates TLS and hands each hostname to the app that\n'
+	printf '# claimed it. It routes; it does not configure anybody. What an app\n'
+	printf '# does with a request once it arrives is inside that app, in its own\n'
+	printf '# gateway container, and cannot be written from here or broken from\n'
+	printf '# here.\n\n'
+
+	# On-demand TLS is the one global option, and it belongs to the SERVER
+	# rather than to an app: it decides, for the whole box, who is allowed to
+	# make it request certificates. An app used to ship this block in its own
+	# config image, which made every app on the machine share one namespace
+	# where Caddy permits exactly one such block -- so a second app adding one
+	# took the box down.
+	if [ -n "$TLS_ASK" ]; then
+		printf '{\n'
+		printf '\t# Certificates for wildcard hostnames are issued on demand, one per\n'
+		printf '\t# name. Without a gate, anyone who pointed a DNS record at this box\n'
+		printf '\t# could make it request certificates on their behalf -- so an app is\n'
+		printf '\t# asked whether a hostname is real. Set with: komizo proxy --tls-ask\n'
+		printf '\ton_demand_tls {\n'
+		printf '\t\task %s\n' "$TLS_ASK"
+		printf '\t}\n'
+		printf '}\n\n'
+	fi
+
+	printf '# One file per app, written by deploy-<app> from the hostnames that\n'
+	printf '# app published. Nothing here names an app, so adding or removing one\n'
+	printf '# never edits shared config.\n'
 	printf '#\n'
 	printf '# One wildcard, and the filename is fixed: Caddy rejects an import glob\n'
 	printf '# with more than one "*", so /srv/*/caddy/*.caddy is not available.\n'
-	printf '# deploy-<app> concatenates whatever the config image ships into this\n'
-	printf '# single file, so an app can still author several.\n'
 	printf 'import /srv/*/caddy/app.caddy\n'
 } > "$PROXY_DIR/Caddyfile"
 chown root:root "$PROXY_DIR/Caddyfile"

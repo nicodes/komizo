@@ -3578,84 +3578,6 @@ func TestALoadingLogSpinsInTheMiddle(t *testing.T) {
 	}
 }
 
-func TestStaticRoutesAppearWithoutPretendingToRun(t *testing.T) {
-	// A hostname served off disk has no container, so it has no state and no
-	// uptime -- but it does have a row. Without one, a hostname that works
-	// looks exactly like a hostname nothing serves.
-	m := testModel()
-	m.apps = []appRow{{
-		name: "ormos", dir: "/srv/ormos", running: "1",
-		containers: []containerRow{
-			{app: "ormos", service: "api", name: "ormos-api-1", state: "running",
-				startedAt: time.Now().Add(-time.Hour)},
-		},
-		statics: []staticRow{
-			{app: "ormos", sites: "ormos.dev,www.ormos.dev", root: "/srv/ormos/public/www"},
-		},
-	}}
-	v := stripANSI(m.View())
-
-	var line string
-	for _, ln := range strings.Split(v, "\n") {
-		if strings.Contains(ln, "ormos.dev") && strings.Contains(ln, "www") {
-			line = ln
-		}
-	}
-	if line == "" {
-		t.Fatalf("the static route should have a row:\n%s", v)
-	}
-	// Named for its document root, and marked as what it is.
-	if !strings.Contains(line, "www") || !strings.Contains(line, "static") {
-		t.Errorf("row should name the root and say it is static: %q", line)
-	}
-	// "static" belongs in the image column, after the empty uptime -- it is
-	// what serves this row in place of an image, not a state it is in.
-	if i, j := strings.Index(line, "—"), strings.Index(line, "static"); i < 0 || i > j {
-		t.Errorf("the dash should come before \"static\": %q", line)
-	}
-	// No status dot: there is no process for it to describe, and a green one
-	// would claim something is running.
-	if strings.Contains(line, "●") {
-		t.Errorf("a static row must not carry a status dot: %q", line)
-	}
-
-	// Not selectable either -- there is nothing to start, stop or read a log
-	// from, so stopping on it would mean pressing down twice for nothing.
-	before := len(m.focusItems())
-	m.apps[0].statics = append(m.apps[0].statics,
-		staticRow{app: "ormos", sites: "app.ormos.dev", root: "/srv/ormos/public/app"})
-	if after := len(m.focusItems()); after != before {
-		t.Errorf("static rows should not be focusable: %d -> %d", before, after)
-	}
-}
-
-func TestStaticHostnamesCountAsRoutes(t *testing.T) {
-	// They are published, and just as gone when the app is removed -- so they
-	// belong in the list of what an app serves, wherever that list is used.
-	a := appRow{
-		name:    "ormos",
-		routes:  []routeRow{{app: "ormos", sites: "api.ormos.dev", upstream: "ormos-api"}},
-		statics: []staticRow{{app: "ormos", sites: "ormos.dev,www.ormos.dev", root: "/srv/ormos/public/www"}},
-	}
-	got := a.allRoutes()
-	if len(got) != 3 {
-		t.Fatalf("allRoutes() = %q, want all three hostnames", got)
-	}
-}
-
-func TestAStaticRootIsNamedForItsLastSegment(t *testing.T) {
-	for _, c := range []struct{ root, want string }{
-		{"/srv/ormos/public/www", "www"},
-		{"/srv/ormos/public/app/", "app"},
-		{"/srv/site/public", "public"},
-		{"public", "public"},
-	} {
-		if got := (staticRow{root: c.root}).label(); got != c.want {
-			t.Errorf("label(%q) = %q, want %q", c.root, got, c.want)
-		}
-	}
-}
-
 func TestTheImageColumnDropsTheVersionItRepeats(t *testing.T) {
 	// Every service is pinned to ${APP_VERSION}, so the tag is the commit SHA
 	// already shown on the app's row -- sixty characters of column saying what
@@ -3688,43 +3610,54 @@ func TestTheImageColumnDropsTheVersionItRepeats(t *testing.T) {
 	}
 }
 
-// The port a container is dialled on is only ever written in the caddy
-// fragment: a komizo app publishes no ports, so docker reports none and the
-// image does not declare one. If it is dropped on the way through, nothing
-// else on the box can answer "which port does this answer on".
-func TestMonitorShowsTheProxiedPort(t *testing.T) {
+// An app declares hostnames; komizo routes them to that app's gateway and shows
+// them on the row of the container actually serving them.
+//
+// This is the whole of what the tool can now say about routing, and saying less
+// than before is the point: what a request meets after the gateway is inside the
+// app, in config komizo neither writes nor reads.
+func TestHostnamesLandOnTheGatewayRow(t *testing.T) {
 	out := strings.Join([]string{
 		"server\tready\tDocker version 26.1.3",
 		"app\tblog\tkomizo-blog\t/srv/blog\ta1b2c3d\t2\tghcr.io/you/blog-config\t",
-		"container\tblog\tblog-web\tblog-blog-web-1\trunning\tUp 3 hours\t2026-07-27T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-web:a1b2c3d",
-		"container\tblog\tworker\tblog-worker-1\trunning\tUp 3 hours\t2026-07-27T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-worker:a1b2c3d",
-		"route\tblog\tblog.example.com\tblog-web\t8080",
-		"static\tblog\tdocs.example.com\t/srv/blog/public/docs",
+		"container\tblog\tblog-gateway\tblog-blog-gateway-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-gateway:a1b2c3d",
+		"container\tblog\tblog-api\tblog-blog-api-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-api:a1b2c3d",
+		"route\tblog\tblog.example.com,www.blog.example.com\tblog-gateway\t80",
 	}, "\n")
 
 	apps, _, _, _, _ := parseInventory(out)
 	if len(apps) != 1 {
 		t.Fatalf("expected 1 app, got %d", len(apps))
 	}
-	if p := apps[0].routes[0].port; p != "8080" {
-		t.Errorf("port not carried through parsing: %q", p)
+	// One record for the app, not one per hostname: the app publishes a list.
+	if n := len(apps[0].routes); n != 1 {
+		t.Fatalf("expected 1 route record, got %d", n)
+	}
+	if got := apps[0].allRoutes(); len(got) != 2 {
+		t.Errorf("allRoutes() = %q, want both names", got)
+	}
+
+	byContainer := apps[0].routesByContainer(netRow{})
+	if got := byContainer["blog-blog-gateway-1"]; len(got) != 2 {
+		t.Errorf("the gateway should carry both hostnames, got %q", got)
+	}
+	// And nothing else does. The API is behind the gateway now; a hostname on
+	// its row would claim the shared proxy reaches it, which it no longer can.
+	if got := byContainer["blog-blog-api-1"]; len(got) != 0 {
+		t.Errorf("a service behind the gateway should carry no hostnames, got %q", got)
 	}
 
 	m := testModel()
-	m.width, m.height = 200, 40
+	m.width, m.height = 120, 30
 	m.apps = apps
 	v := stripANSI(m.View())
-
-	if !strings.Contains(v, ":8080") {
-		t.Errorf("the proxied port should be on the container's row:\n%s", v)
+	if !strings.Contains(v, "blog.example.com") {
+		t.Errorf("the hostnames should be on screen:\n%s", v)
 	}
-	// A worker nothing proxies to has no port, and saying so is the point --
-	// blank would read as "not loaded yet".
-	ports := apps[0].portsByContainer(netRow{})
-	if _, ok := ports["blog-worker-1"]; ok {
-		t.Error("a container no route names should have no port")
-	}
-	if got := portCell(""); !strings.Contains(got, "—") {
-		t.Errorf("a container with no port should render an em dash, got %q", got)
+	// The image is back where the port was. A komizo app publishes no ports and
+	// no longer ships the caddy fragment the port used to be read from, so a
+	// port column would have nothing behind it.
+	if !strings.Contains(v, "blog-gateway") {
+		t.Errorf("the image column should name the image:\n%s", v)
 	}
 }

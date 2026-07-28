@@ -59,7 +59,7 @@ fi
 
 # --- 1b. the reverse-proxy route -------------------------------------------
 # Done here, immediately after the containers stop, and done even with
-# KEEP_DATA=1. The shared Caddy imports /srv/*/caddy/*.caddy, so a fragment left
+# KEEP_DATA=1. The shared Caddy imports /srv/*/caddy/app.caddy, so a route left
 # behind keeps advertising a hostname whose containers are gone -- the domain
 # would answer with a 502 instead of going quiet, and Caddy would keep renewing
 # a certificate for it forever.
@@ -67,6 +67,10 @@ fi
 if [ -d "$APP_DIR/caddy" ]; then
 	log "Removing the reverse-proxy route for '$APP_NAME'"
 	rm -rf "$APP_DIR/caddy"
+	# The hostname list beside it, so nothing on the box still records this app
+	# as the owner of those names -- another app claiming one must not be told
+	# it collides with an app that is gone.
+	rm -f "$APP_DIR/hostnames"
 	if command -v docker >/dev/null 2>&1 &&
 		docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$PROXY_CONTAINER"; then
 		if docker exec "$PROXY_CONTAINER" caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then

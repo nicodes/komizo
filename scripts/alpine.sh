@@ -235,27 +235,20 @@ for f in .env secrets.env; do
 done
 chmod 600 "$APP_DIR/.env" "$APP_DIR/secrets.env"
 
-# Where this app's reverse-proxy fragment lands, if it ships one. The shared
-# Caddy imports /srv/*/caddy/*.caddy, so a file appearing here is all it takes
-# for the app to be routable -- and nothing shared has to be edited to add it.
+# Where this app's route lands. The shared Caddy imports /srv/*/caddy/app.caddy,
+# so a file appearing here is all it takes for the app to be routable -- and
+# nothing shared has to be edited to add it.
+#
+# WRITTEN BY komizo, not by the app: deploy-<app> generates it from the
+# hostnames the config image declares. The app never authors server config, so
+# no app can break another one's routing, and no app can claim a global options
+# block the whole box has to share.
+#
 # Created empty either way: the glob tolerates an empty directory, and having
 # the path exist means the deploy script never has to decide whether to make it.
 mkdir -p "$APP_DIR/caddy"
 chown root:root "$APP_DIR/caddy"
 chmod 755 "$APP_DIR/caddy"
-
-# Where an app's static files land, if it ships any.
-#
-# The shared proxy already mounts /srv read-only, so anything here is a
-# directory it can serve directly -- which means an app that is only files needs
-# no container at all. A marketing site, a docs site, a built SPA: config image,
-# a caddy fragment pointing at this path, and nothing running.
-#
-# Created empty either way, for the same reason caddy/ is: the deploy script
-# never has to decide whether to make it.
-mkdir -p "$APP_DIR/public"
-chown root:root "$APP_DIR/public"
-chmod 755 "$APP_DIR/public"
 
 # --- 3. Deploy path --------------------------------------------------------
 # The only privileged thing the CI user may do, besides setting a secret.
@@ -279,6 +272,13 @@ set -eu
 
 CONFIG_IMAGE="$CONFIG_IMAGE"
 PROXY_CONTAINER="$PROXY_CONTAINER"
+
+# Baked in rather than derived. The app's name decides the upstream the shared
+# proxy is pointed at (<app>-gateway), and its directory is where the hostnames
+# it has claimed are recorded -- both are read below, so both have to be values
+# this script carries rather than things it works out.
+APP_NAME="$APP_NAME"
+APP_DIR="$APP_DIR"
 
 # A record, not a setting: nothing below reads it. It is here because this file
 # is root-owned and already the place root pins what it knows about this app,
@@ -362,6 +362,18 @@ if [ ! -f "\$staging/compose.yml" ]; then
 	exit 1
 fi
 
+# The hostnames this app claims, one per line. This is the whole of what the
+# app tells the reverse proxy: komizo writes the routes itself, so an app can
+# no longer author server config, and no app's mistake can be another app's
+# outage.
+#
+# Optional. An app with no hostnames publishes nothing and is reachable only
+# from inside its own network -- a worker, a cron job, a queue consumer.
+hostnames=""
+if [ -f "\$staging/hostnames" ]; then
+	hostnames="\$(sed 's/#.*//' "\$staging/hostnames" | tr -d '\\r' | tr -s ' \\t' '\\n' | sed '/^\$/d')"
+fi
+
 # Swap everything in, then validate. A broken config must not be left behind
 # on a box that was working, so keep backups and put them back if a check
 # fails -- including the reverse-proxy fragment, which is why this is a
@@ -370,80 +382,116 @@ revert() {
 	cat compose.yml.prev > compose.yml
 	rm -rf caddy
 	mv caddy.prev caddy
-	rm -rf public
-	mv public.prev public
+	rm -f hostnames
+	[ -f hostnames.prev ] && mv hostnames.prev hostnames
 	rm -f compose.yml.prev
 }
 
 cp compose.yml compose.yml.prev
-# mkdir first: the setup script creates these, but a box bootstrapped before
-# they existed would not have them, and 'cp -a' of a missing directory would
-# abort the deploy under 'set -e'.
-mkdir -p caddy public
-rm -rf caddy.prev public.prev
+# mkdir first: the setup script creates this, but a box bootstrapped before it
+# existed would not have it, and 'cp -a' of a missing directory would abort the
+# deploy under 'set -e'.
+mkdir -p caddy
+rm -rf caddy.prev
 cp -a caddy caddy.prev
-cp -a public public.prev
+rm -f hostnames.prev
+[ -f hostnames ] && cp -a hostnames hostnames.prev
 
 cat "\$staging/compose.yml" > compose.yml
 
-# The app's reverse-proxy fragment, if it ships one. Replaced wholesale rather
-# than merged: a route the app has stopped publishing must disappear, and the
-# config image is the whole truth about this version.
+# The reverse-proxy routes, WRITTEN BY KOMIZO from the hostnames above.
 #
-# An app with no caddy/ directory in its image is left with an empty one, which
-# is how a service that should not be routable stays unroutable.
+# The app used to ship Caddy config and this script concatenated it into a file
+# the shared proxy imported. That made every app on the box an author of one
+# config loaded by one process: a syntax error anywhere failed the combined
+# validate for everyone, and Caddy accepts exactly one global options block, so
+# the second app to want one broke the first.
 #
-# Everything is concatenated into ONE file, caddy/app.caddy, because Caddy
-# rejects an import glob containing more than one wildcard: the proxy imports
-# /srv/*/caddy/app.caddy, so the wildcard is spent on the app name and the
-# filename has to be fixed. Joining them here means an app can still ship
-# several .caddy files if that is how it wants to organise them.
+# Now the app declares names and nothing else. Everything a request meets after
+# the hostname match is inside the app, in its own gateway container.
+#
+# Replaced wholesale rather than merged: a hostname the app has stopped
+# publishing must disappear, and the config image is the whole truth about this
+# version.
 rm -rf caddy
 mkdir -p caddy
-if [ -d "\$staging/caddy" ]; then
-	# global.caddy is kept apart rather than concatenated: it carries a Caddy
-	# global options block, which the adapter only accepts as the very first
-	# thing in the config, so the proxy imports it from its own glob ahead of
-	# every site block. Folded in with the rest it would land in the middle and
-	# fail the whole config.
-	if [ -f "\$staging/caddy/global.caddy" ]; then
-		cat "\$staging/caddy/global.caddy" > caddy/global.caddy
-	fi
-	# *.caddy only, so a stray README in the directory cannot break the import.
-	for f in "\$staging"/caddy/*.caddy; do
-		[ -f "\$f" ] || continue
-		case "\$f" in */global.caddy) continue ;; esac
-		cat "\$f"
-		# Guard against a fragment with no trailing newline running into the
-		# next one and silently merging two site blocks.
-		printf '\n'
-	done > caddy/app.caddy
-	[ -s caddy/app.caddy ] || rm -f caddy/app.caddy
+rm -f hostnames
+
+if [ -n "\$hostnames" ]; then
+	# Validated before it is written, because these land in a config the whole
+	# box loads. Charset first, then shape: a leading '*.' is the only wildcard
+	# Caddy takes, and anything else with a '*' in it would adapt to something
+	# nobody meant.
+	for h in \$hostnames; do
+		case "\$h" in
+			*[!A-Za-z0-9.*-]*)
+				revert
+				echo "deploy: '\$h' is not a valid hostname (letters, digits, dot, hyphen, and a leading '*.')" >&2
+				exit 1 ;;
+		esac
+		case "\$h" in
+			\\*.*)
+				case "\${h#\\*.}" in
+					*\\**)
+						revert
+						echo "deploy: '\$h' has more than one wildcard; Caddy takes at most a leading '*.'" >&2
+						exit 1 ;;
+				esac ;;
+			*\\**)
+				revert
+				echo "deploy: '\$h' puts a wildcard somewhere Caddy will not take one; only a leading '*.' works" >&2
+				exit 1 ;;
+		esac
+	done
+
+	# A hostname claimed twice on one box is two site blocks for one name, which
+	# Caddy rejects outright -- so it would take down every app, not just the
+	# two arguing. Caught here, against what the other apps have already
+	# published, so the deploy that would cause it is the deploy that fails.
+	for h in \$hostnames; do
+		for other in /srv/*/hostnames; do
+			[ -f "\$other" ] || continue
+			case "\$other" in "\$APP_DIR/hostnames") continue ;; esac
+			if grep -qxF "\$h" "\$other" 2>/dev/null; then
+				owner="\${other%/hostnames}"
+				revert
+				echo "deploy: '\$h' is already claimed by \${owner##*/}" >&2
+				exit 1
+			fi
+		done
+	done
+
+	printf '%s\n' "\$hostnames" > hostnames
+
+	# One site block for all of them, pointing at the app's gateway. The
+	# upstream is derived from the app name rather than declared, so it cannot
+	# collide with another app's and cannot be pointed at one.
+	{
+		printf '# Written by komizo from %s.\n' "\$ref"
+		printf '# Edits here are lost on the next deploy.\n'
+		sites=""
+		for h in \$hostnames; do
+			[ -n "\$sites" ] && sites="\$sites, "
+			sites="\$sites\$h"
+		done
+		printf '%s {\n' "\$sites"
+		# A wildcard cannot get an ordinary certificate, so on-demand is the
+		# only thing that works for one. It needs the ask endpoint the server
+		# is configured with -- see 'komizo proxy --tls-ask'.
+		for h in \$hostnames; do
+			case "\$h" in
+				\\*.*)
+					printf '\\ttls {\n\\t\\ton_demand\n\\t}\n'
+					break ;;
+			esac
+		done
+		printf '\\treverse_proxy %s-gateway:80\n' "\$APP_NAME"
+		printf '}\n'
+	} > caddy/app.caddy
 fi
 chown -R root:root caddy
 chmod 755 caddy
-
-# The app's static files, if it ships any. Replaced wholesale like the caddy
-# fragment and for the same reason: the config image is the whole truth about
-# this version, so a file the app has stopped shipping must stop being served.
-#
-# This is what lets an app be nothing but files. The proxy mounts /srv read
-# only, so a fragment can point root at this directory and serve it with no
-# container behind it -- and the files still arrive the way everything else
-# does, as a registry layer root extracts, versioned by the same tag.
-rm -rf public
-mkdir -p public
-if [ -d "\$staging/public" ]; then
-	# The trailing /. copies the CONTENTS, so public/ is the document root
-	# rather than containing one.
-	cp -a "\$staging/public/." public/
-fi
-chown -R root:root public
-# a+rX, not 755: directories need traversing and files only need reading, and X
-# leaves an executable bit off anything that is not already a directory. The
-# proxy reads these as root in its own container either way; the point is that
-# nothing here is accidentally runnable.
-chmod -R a+rX public
+[ -f hostnames ] && { chown root:root hostnames; chmod 644 hostnames; }
 
 rm -rf "\$staging"
 
@@ -469,7 +517,7 @@ if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "\$PROXY_CONTAINER"; t
 	proxy_up=1
 fi
 
-if { [ -f caddy/app.caddy ] || [ -f caddy/global.caddy ]; } && [ "\$proxy_up" = 0 ]; then
+if [ -f caddy/app.caddy ] && [ "\$proxy_up" = 0 ]; then
 	revert
 	echo "deploy: this app publishes routes, but the reverse proxy is not running." >&2
 	echo "deploy: nothing would serve them, so this is a failure rather than a no-op." >&2
@@ -478,21 +526,25 @@ if { [ -f caddy/app.caddy ] || [ -f caddy/global.caddy ]; } && [ "\$proxy_up" = 
 	exit 1
 fi
 
-# Validate the fragment BEFORE anything restarts, and validate it the way the
-# proxy will actually read it: inside the container, against the whole imported
-# config. A fragment that parses alone can still collide with another app's --
-# two site blocks for the same hostname, say -- and only the combined check
-# catches that.
+# Validate BEFORE anything restarts, and validate it the way the proxy will
+# actually read it: inside the container, against the whole imported config.
+#
+# komizo writes this file, so it is not checking the app's syntax any more --
+# the app has none to get wrong. What is left is everything about the file that
+# depends on its NEIGHBOURS: a hostname two apps both claim, a name that has
+# become invalid since it was accepted, a proxy config that drifted. The
+# hostname check above catches the common case with a better message; this
+# catches the rest, and costs one exec.
 if [ "\$proxy_up" = 1 ]; then
 	if ! caddy_err="\$(docker exec "\$PROXY_CONTAINER" caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>&1)"; then
 		revert
-		echo "deploy: the caddy fragment from \$ref is not valid -- reverted, nothing restarted" >&2
+		echo "deploy: the routes generated from \$ref do not load -- reverted, nothing restarted" >&2
 		printf '%s\n' "\$caddy_err" | sed 's/^/  /' >&2
 		exit 1
 	fi
 fi
 
-rm -f compose.yml.prev
+rm -f compose.yml.prev hostnames.prev
 rm -rf caddy.prev
 
 # Committed only once the config for this version is in place and valid, so a

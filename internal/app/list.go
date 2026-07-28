@@ -101,72 +101,21 @@ for bin in /usr/local/bin/deploy-*; do
 	fi
 	printf 'app\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$app" "${usr:-?}" "$dir" "${ver:-none}" "$running" "$img" "$kas"
 
-	# What this app publishes through the shared proxy, and WHERE EACH ROUTE
-	# GOES -- the site address paired with the upstream it proxies to.
+	# The hostnames this app answers on, as it declared them -- one per line in
+	# its config image, recorded here by the deploy script.
 	#
-	# The upstream is the join to a container: it is a network alias, so it
-	# resolves through the shared network to exactly one container (or, when
-	# two apps claim the same alias, to more than one, which is the clash the
-	# server screen already reports).
+	# Read from that file rather than from the caddy fragment beside it. The
+	# fragment is GENERATED from this, so parsing it back would be reading
+	# komizo's own output to learn what the app said: the same answer, one
+	# transformation later, and wrong the moment the generator changes.
 	#
-	# Site addresses alone were enough to list what a box serves. They are not
-	# enough to say which container serves what, and that is the question when
-	# one hostname 502s while the rest of the app is fine.
-	#
-	# Depth-tracked rather than matched line by line, because reverse_proxy is
-	# routinely nested inside handle{} and the site it belongs to is several
-	# lines above it. Comments are stripped first so a commented-out directive
-	# does not advertise a route that is not there.
-	if [ -n "$dir" ] && [ -f "$dir/caddy/app.caddy" ]; then
-		awk -v app="$app" '
-			{ line = $0; sub(/#.*/, "", line) }
-			depth == 0 {
-				if (line ~ /\{[ \t]*$/) {
-					sites = line
-					sub(/[ \t]*\{[ \t]*$/, "", sites)
-					gsub(/[ \t]+/, "", sites)
-					if (sites != "") depth = 1
-				}
-				next
-			}
-			{
-				# A document root: this site block is served off disk, with no
-				# container behind it. Emitted so the app list can show it --
-				# "there is no container" and "there is nothing here" look
-				# identical otherwise, and one of them is fine.
-				if (line ~ /^[ \t]*root[ \t]+\*[ \t]/) {
-					r = line
-					sub(/^[ \t]*root[ \t]+\*[ \t]+/, "", r)
-					sub(/[ \t]+$/, "", r)
-					if (r != "") printf "static\t%s\t%s\t%s\n", app, sites, r
-				}
-				if (line ~ /reverse_proxy/) {
-					i = index(line, "reverse_proxy")
-					rest = substr(line, i + 13)
-					n = split(rest, tok, /[ \t]+/)
-					for (j = 1; j <= n; j++) {
-						u = tok[j]
-						# Skip the block form "reverse_proxy {", flags, and the
-						# placeholders a dynamic upstream uses.
-						if (u == "" || u ~ /^[{}]/ || u ~ /^-/) continue
-						sub(/^https?:\/\//, "", u)
-						# The port is kept, not just stripped to find the
-						# alias. It is the other half of what the proxy dials,
-						# and the only place on the box it is written down --
-						# a komizo app publishes no ports, so docker reports
-						# none and the image does not declare which one the
-						# process actually listens on.
-						port = ""
-						if (match(u, /:[0-9]+$/)) port = substr(u, RSTART + 1, RLENGTH - 1)
-						sub(/:[0-9]*$/, "", u)
-						if (u != "") printf "route\t%s\t%s\t%s\t%s\n", app, sites, u, port
-					}
-				}
-				o = gsub(/\{/, "{", line); c = gsub(/\}/, "}", line)
-				depth += o - c
-				if (depth < 1) depth = 0
-			}
-		' "$dir/caddy/app.caddy" 2>/dev/null || true
+	# The upstream is not parsed either, for the same reason -- it is always
+	# <app>-gateway, because that is what the generator writes. Where a request
+	# goes after the gateway is inside the app now; this cannot see it and does
+	# not guess.
+	if [ -n "$dir" ] && [ -f "$dir/hostnames" ]; then
+		sites="$(tr '\n' ',' < "$dir/hostnames" | sed 's/,$//')"
+		[ -n "$sites" ] && printf 'route\t%s\t%s\t%s-gateway\t80\n' "$app" "$sites" "$app"
 	fi
 done
 
@@ -228,47 +177,20 @@ type appRow struct {
 	name, user, dir, version, running, image string
 	containers                               []containerRow
 	routes                                   []routeRow
-	statics                                  []staticRow
 }
 
-// staticRow is a site block served straight off disk: the hostnames it answers
-// on, and the directory they come from.
+// routeRow is what an app publishes: the hostnames it declared, and the gateway
+// the shared proxy hands them to.
 //
-// It has no container, so it has no state and no uptime -- which is exactly why
-// it needs its own row. Without one, a hostname that works looks identical to a
-// hostname nothing serves.
-type staticRow struct {
-	app   string
-	sites string
-	root  string
-}
-
-func (r staticRow) hostnames() []string { return strings.Split(r.sites, ",") }
-
-// label is what to call this root on screen: the last path segment, which is
-// the name the app gave it -- public/www, public/app.
-func (r staticRow) label() string {
-	if i := strings.LastIndex(strings.TrimRight(r.root, "/"), "/"); i >= 0 {
-		return strings.TrimRight(r.root, "/")[i+1:]
-	}
-	return r.root
-}
-
-// routeRow is one site block in an app's caddy fragment: the hostnames it
-// answers on, and the upstream it forwards to.
-//
-// The upstream is a network alias, which is what makes this joinable to a
-// container -- and what makes a route with no container behind it visible
-// rather than a 502 with no explanation on the box.
+// ONE per app now, not one per site block. Routing within an app happens inside
+// that app's own gateway container, which this tool cannot see into and does
+// not try to -- so the honest answer to "what serves this hostname" is the app,
+// and the app's own logs answer the rest.
 type routeRow struct {
 	app      string
-	sites    string // comma-joined, as written in the fragment
-	upstream string
-	// port is what the fragment dials the upstream ON, empty when it named
-	// none. Not derivable from anywhere else: komizo apps publish no ports, so
-	// docker reports none and the image does not declare which one the process
-	// actually listens on.
-	port string
+	sites    string // comma-joined, in the order the app declared them
+	upstream string // always <app>-gateway
+	port     string // always 80; kept so the record shape is self-describing
 }
 
 // hostnames is every name this route answers on.
@@ -292,28 +214,6 @@ func (a appRow) routesByContainer(n netRow) map[string][]string {
 	for _, r := range a.routes {
 		if cn := a.containerFor(r, n); cn != "" {
 			byContainer[cn] = append(byContainer[cn], r.hostnames()...)
-		}
-	}
-	return byContainer
-}
-
-// portsByContainer is the port each container is dialled on, by the same match.
-//
-// One port per container rather than a set: several routes may reach the same
-// container -- ormos's api answers on four hostnames -- but they reach it on
-// the same port, because that is the port the process listens on. A fragment
-// that really did name two would be showing the first, which is a fair reading
-// of a file that contradicts itself.
-func (a appRow) portsByContainer(n netRow) map[string]string {
-	byContainer := map[string]string{}
-	for _, r := range a.routes {
-		if r.port == "" {
-			continue
-		}
-		if cn := a.containerFor(r, n); cn != "" {
-			if _, seen := byContainer[cn]; !seen {
-				byContainer[cn] = r.port
-			}
 		}
 	}
 	return byContainer
@@ -343,26 +243,17 @@ func (a appRow) containerFor(r routeRow, n netRow) string {
 	return ""
 }
 
-// allRoutes is every hostname the app publishes, for the places that want one
-// flat list rather than the per-container breakdown.
+// allRoutes is every hostname the app publishes.
 func (a appRow) allRoutes() []string {
 	var out []string
 	seen := map[string]bool{}
-	add := func(hosts []string) {
-		for _, h := range hosts {
+	for _, r := range a.routes {
+		for _, h := range r.hostnames() {
 			if h != "" && !seen[h] {
 				seen[h] = true
 				out = append(out, h)
 			}
 		}
-	}
-	for _, r := range a.routes {
-		add(r.hostnames())
-	}
-	// Served off disk, but published just the same -- and just as gone if the
-	// app is removed.
-	for _, r := range a.statics {
-		add(r.hostnames())
 	}
 	return out
 }
@@ -370,7 +261,7 @@ func (a appRow) allRoutes() []string {
 // containerRow is one container belonging to an app.
 //
 // service is the name in compose.yml, and is the one to lead with: it is what
-// you wrote, what the caddy fragment points at, and what stays stable across
+// you wrote, what the shared proxy is pointed at, and what stays stable across
 // restarts. The container name is docker's, derived from it.
 type containerRow struct {
 	app     string
@@ -689,7 +580,6 @@ func RunList(args []string) error {
 func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, net netRow, orphans []string) {
 	var containers []containerRow
 	var routes []routeRow
-	var statics []staticRow
 	for _, ln := range strings.Split(out, "\n") {
 		f := strings.Split(ln, "\t")
 		switch {
@@ -710,8 +600,6 @@ func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, n
 			containers = append(containers, c)
 		case len(f) == 5 && f[0] == "route":
 			routes = append(routes, routeRow{app: f[1], sites: f[2], upstream: f[3], port: f[4]})
-		case len(f) == 4 && f[0] == "static":
-			statics = append(statics, staticRow{app: f[1], sites: f[2], root: f[3]})
 		case len(f) == 8 && f[0] == "proxy":
 			proxy = proxyRow{installed: true, state: f[1], network: f[2],
 				image: f[3], status: f[4]}
@@ -744,11 +632,6 @@ func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, n
 		for _, r := range routes {
 			if r.app == apps[i].name {
 				apps[i].routes = append(apps[i].routes, r)
-			}
-		}
-		for _, r := range statics {
-			if r.app == apps[i].name {
-				apps[i].statics = append(apps[i].statics, r)
 			}
 		}
 	}

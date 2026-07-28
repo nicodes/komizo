@@ -71,7 +71,6 @@ func viewMonitor(m model) string {
 		// Putting them on the container turns two lookups into a glance.
 		idx++
 		byContainer := a.routesByContainer(m.net)
-		portOf := a.portsByContainer(m.net)
 
 		// Children are built first so the last one can be corner-joined, and
 		// the join lives INSIDE the name cell -- indenting the name without
@@ -90,38 +89,19 @@ func viewMonitor(m model) string {
 				// placeholder to keep them apart would only be an empty column
 				// down the middle of the block.
 				dimStyle.Render(c.stateText()),
-				// The port the proxy dials this container on, where the image
-				// used to be. Read off the caddy fragment, because that is the
-				// only place it is written: a komizo app publishes no ports, so
-				// docker reports none and the image does not declare which one
-				// the process listens on.
+				// The image is back in this column and the port is gone. The
+				// port was only ever readable from the app's caddy fragment,
+				// and apps no longer ship one -- what a request meets after the
+				// gateway is inside the app, which this tool does not see into.
 				//
-				// The image column went because a service is now named after
-				// its image, so the two said the same word twice -- and neither
-				// of them answered "which port does this answer on".
-				portCell(portOf[c.name]),
+				// The image is the honest thing to show instead: it is the one
+				// fact about a container komizo can still state exactly, and a
+				// tag that is not this app's version is worth noticing.
+				dimStyle.Render(c.imageText(a.version)),
 				m.routesCell(c, byContainer[c.name]),
 			}})
 			idx++
 		}
-		// Served off disk, with nothing behind them. No status dot and no
-		// uptime, because there is no process to be up: a document root is
-		// either there or the route 404s, and the route is the only thing to
-		// show. Giving them a green dot would claim something is running.
-		for _, r := range a.statics {
-			kids = append(kids, child{idx: -1, cells: []string{
-				"",
-				dimStyle.Render(r.label()),
-				// No uptime, because there is no process to be up. "static"
-				// then sits where a container's port would be, which is the
-				// honest answer to what it is dialled on: nothing. The proxy
-				// serves these off disk itself.
-				dimStyle.Render("—"),
-				dimStyle.Render("static"),
-				dimStyle.Render(strings.Join(r.hostnames(), ", ")),
-			}})
-		}
-
 		for i, k := range kids {
 			join := "├ "
 			if i == len(kids)-1 {
@@ -455,15 +435,6 @@ func (m model) routesCell(c containerRow, routes []string) string {
 		}
 	}
 	return routesOrNone(routes)
-}
-
-// portCell renders the port a container is reached on. Em dash when no route
-// names one, which is normal for a worker or anything else nothing proxies to.
-func portCell(port string) string {
-	if port == "" {
-		return dimStyle.Render("—")
-	}
-	return dimStyle.Render(":" + port)
 }
 
 // routesOrNone keeps the column readable when nothing is published through the
