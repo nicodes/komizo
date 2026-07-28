@@ -251,16 +251,18 @@ func (m model) headerLine() string {
 // showsBrand is whether the body already carries the name, centred.
 //
 // The name appears once per screen. Every page that is one thing on an empty
-// screen puts it in the middle -- login, loading, setup, and a log that has not
-// arrived yet -- and on those the corner would be the same word twice. A blank
-// row rather than nothing, so the layout does not shift when the real header
-// takes over.
+// screen puts it in the middle -- login, loading, setup -- and on those the
+// corner would be the same word twice. A blank row rather than nothing, so the
+// layout does not shift when the real header takes over.
+//
+// A log that has not arrived yet is NOT one of them. It is a window that is
+// about to have something in it, and its header already says whose log it is --
+// which is the one thing worth knowing while it loads, and would otherwise
+// appear only once the log did.
 func (m model) showsBrand() bool {
 	switch m.scr {
 	case screenLogin, screenLoading, screenSetup:
 		return true
-	case screenLogs:
-		return m.loading()
 	}
 	return false
 }
@@ -467,6 +469,11 @@ func (m model) centred(lines ...string) string {
 // available in the terminal's own type, which renders it properly at whatever
 // size and weight the user has picked.
 func (m model) loadingPane() string {
+	// The logs screen keeps its header, so the pane under it is the spinner and
+	// nothing else -- the brand would be the same word the corner already says.
+	if m.scr == screenLogs {
+		return m.centred(spinner(m.spin), "", dimStyle.Render("loading..."))
+	}
 	lines := append(m.brandBlock(), "", spinner(m.spin))
 	// An operation says what it is: setting a server up takes a minute, and a
 	// spinner on its own for that long is indistinguishable from a hang.

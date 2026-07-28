@@ -2738,13 +2738,13 @@ func TestAnUnreachableHostComesBackToTheField(t *testing.T) {
 	}
 }
 
-func TestBothWaitsLookTheSame(t *testing.T) {
-	// One component for both places that wait, because it is the same wait: an
-	// SSH command is running and the page cannot be drawn until it answers.
-	// They were written separately and looked it -- the first read said
-	// "connecting…" at the top left, and a log opening showed a spinner in the
-	// middle. The name is the one difference: the first read has nothing else
-	// on the page, and a log already says which log in its header.
+// The two waits share a spinner and differ in everything around it.
+//
+// The first read has nothing to say yet -- no host, no screen behind it -- so
+// it is the name in the middle of an empty page. A log that has not arrived has
+// a header that already says whose log it is, which is the one thing worth
+// knowing while it loads, so it keeps that and shows the spinner alone.
+func TestWaitsShowASpinner(t *testing.T) {
 	first := testModel()
 	first.width, first.height = 60, 12
 	first.scr = screenLoading
@@ -2756,27 +2756,45 @@ func TestBothWaitsLookTheSame(t *testing.T) {
 	for name, m := range map[string]model{"the first read": first, "opening a log": log} {
 		m.reflow()
 		v := stripANSI(m.View())
-
 		if !strings.Contains(v, stripANSI(spinner(m.spin))) {
 			t.Errorf("%s: the spinner should be on screen", name)
 		}
+	}
 
-		// Centred, and the only one on the page: the loading screen stands its
-		// header down, because the pane is already the name.
-		names := 0
-		for _, ln := range strings.Split(v, "\n") {
-			if strings.TrimSpace(ln) != "komizo" {
-				continue
-			}
-			names++
-			if !strings.HasPrefix(ln, "          ") {
-				t.Errorf("%s: the name should be centred, got %q", name, ln)
-			}
+	// Centred, and the only one on the page: the loading screen stands its
+	// header down, because the pane is already the name.
+	first.reflow()
+	fv := stripANSI(first.View())
+	names := 0
+	for _, ln := range strings.Split(fv, "\n") {
+		if strings.TrimSpace(ln) != "komizo" {
+			continue
 		}
-		// Once, wherever it appears: the corner stands down on any page whose
-		// body carries the name in the middle.
-		if names != 1 {
-			t.Errorf("%s: the name appears %d times, want once", name, names)
+		names++
+		if !strings.HasPrefix(ln, "          ") {
+			t.Errorf("the name should be centred, got %q", ln)
+		}
+	}
+	if names != 1 {
+		t.Errorf("the first read shows the name %d times, want once", names)
+	}
+
+	// The log keeps its header, so the middle is the spinner and a word for
+	// what it is doing -- and NOT the name, which the corner already carries.
+	log.reflow()
+	lv := stripANSI(log.View())
+	if !strings.Contains(lv, "komizo / web logs") {
+		t.Errorf("a loading log should keep its header:\n%s", lv)
+	}
+	if !strings.Contains(lv, "loading...") {
+		t.Errorf("a loading log should say so under the spinner:\n%s", lv)
+	}
+	if strings.Contains(lv, tagline) {
+		t.Errorf("a loading log should not carry the brand block:\n%s", lv)
+	}
+	for _, ln := range strings.Split(lv, "\n") {
+		if strings.TrimSpace(ln) == "komizo" {
+			t.Errorf("the name should appear only in the header, got %q", ln)
 		}
 	}
 
@@ -2797,9 +2815,9 @@ func TestTheHeaderSaysWhereYouAre(t *testing.T) {
 	m := testModel()
 	m.width, m.height = 90, 20
 
-	// Only the pages that do NOT carry the name in the middle: login, loading,
-	// setup and a log still arriving stand the header down, because their body
-	// is already the name. See showsBrand.
+	// Only the pages that carry the name in the middle -- login, loading and
+	// setup -- stand the header down, because their body is already the name.
+	// A log keeps its header whether or not it has arrived. See showsBrand.
 	for name, c := range map[string]struct {
 		set  func(*model)
 		want string
