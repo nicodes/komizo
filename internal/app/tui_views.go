@@ -54,18 +54,12 @@ func viewMonitor(m model) string {
 		// the row that is ever urgent, and it can only say so if nothing beside
 		// it is competing -- a table of white text with one coloured glyph in
 		// it reads as one coloured glyph.
-		// The config image sits in the IMAGE column, beside the containers'
-		// own images, rather than one place further right. It used to follow
-		// the deployed version, which put a long string in the narrow port
-		// column and pushed every hostname on the block far to the right to
-		// make room for it.
 		rows = append(rows, treeRow{idx: idx, cells: []string{
 			m.rowDot("app:"+a.name, appDot(a)),
 			dimStyle.Render(a.name),
 			dimStyle.Render(a.stateText()),
+			short(a.version),
 			dimStyle.Render(a.image),
-			"",
-			"",
 		}})
 		// Each container under its app, with the hostnames that reach IT.
 		//
@@ -94,15 +88,15 @@ func viewMonitor(m model) string {
 				// placeholder to keep them apart would only be an empty column
 				// down the middle of the block.
 				dimStyle.Render(c.stateText()),
-				dimStyle.Render(c.imageText(a.version)),
-				// The port the proxy dials this container on. Read off the
-				// caddy fragment, because it is the only place it is written:
-				// no komizo app publishes a port, so docker reports none.
+				// The port the proxy dials this container on, where the image
+				// used to be. Read off the caddy fragment, because that is the
+				// only place it is written: a komizo app publishes no ports, so
+				// docker reports none and the image does not declare which one
+				// the process listens on.
 				//
-				// Worth a column of its own now that a service is named after
-				// its image -- with those two columns saying the same word,
-				// "which port does this answer on" was the question the row
-				// could not answer at all.
+				// The image column went because a service is now named after
+				// its image, so the two said the same word twice -- and neither
+				// of them answered "which port does this answer on".
 				portCell(portOf[c.name]),
 				m.routesCell(c, byContainer[c.name]),
 			}})
@@ -117,13 +111,11 @@ func viewMonitor(m model) string {
 				"",
 				dimStyle.Render(r.label()),
 				// No uptime, because there is no process to be up. "static"
-				// sits in the IMAGE column, which is the honest place for it:
-				// it is what serves this row in place of one.
+				// then sits where a container's port would be, which is the
+				// honest answer to what it is dialled on: nothing. The proxy
+				// serves these off disk itself.
 				dimStyle.Render("—"),
 				dimStyle.Render("static"),
-				// Served by the proxy itself off disk, so there is no port to
-				// dial and no process listening on one.
-				dimStyle.Render("—"),
 				dimStyle.Render(strings.Join(r.hostnames(), ", ")),
 			}})
 		}
