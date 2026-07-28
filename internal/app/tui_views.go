@@ -26,7 +26,7 @@ func viewMonitor(m model) string {
 
 	// Focus indices continue from the sections above, so the cursor runs
 	// straight down the page.
-	idx := m.boxRows()
+	idx := m.rowIndex(focusApp)
 	// No header. Four columns, and each one says what it is: a status dot, a
 	// name, what it is doing, and where it comes from or goes to. A header row
 	// naming them would have to name two different things per column, because
@@ -129,17 +129,22 @@ func (m model) addRow() string {
 	return gutter + glyph + "  " + label + "\n"
 }
 
-// boxRows is how many focusable rows the two sections above the apps
-// contribute, so the app rows can continue the numbering.
-func (m model) boxRows() int {
-	n := 1 // the docker row is always there and always actionable
-	if len(m.srv.hostKeys) > 0 {
-		n++
+// rowIndex is where the first row of a kind sits in the focus list, or -1.
+//
+// READ from focusItems rather than recounted. Two places used to recount it --
+// the proxy row and the top of the app list -- and a recount is a second
+// definition of the same thing. When the known_hosts row left the focus list,
+// both kept counting it, so every row below was numbered one too high: the
+// cursor highlighted one row while the keys acted on another, and on a box with
+// a single app and no containers the app row and "+ add an app" lit up
+// together, because the app had been handed the add row's index.
+func (m model) rowIndex(kind focusKind) int {
+	for i, f := range m.focusItems() {
+		if f.kind == kind {
+			return i
+		}
 	}
-	if m.proxy.installed {
-		n++
-	}
-	return n
+	return -1
 }
 
 // boxSection is the server itself, address included -- it was the header's job
@@ -181,12 +186,7 @@ func (m model) proxySection() string {
 		b.WriteString(kvDot("network", ng, nt, false))
 		return b.String()
 	}
-	// After the docker row, and after known_hosts when there is one.
-	i := 1
-	if len(m.srv.hostKeys) > 0 {
-		i = 2
-	}
-	b.WriteString(kvDot("status", pg, pt, m.cursor == i))
+	b.WriteString(kvDot("status", pg, pt, m.cursor == m.rowIndex(focusProxy)))
 	b.WriteString(kvDot("network", ng, nt, false))
 	// Last of the three: the image is the one that never changes on its own.
 	// Status and network are things to check; this is a thing to confirm.

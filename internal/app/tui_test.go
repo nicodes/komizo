@@ -1731,6 +1731,63 @@ func TestRotationDoesNotOfferHostKeys(t *testing.T) {
 	}
 }
 
+func TestExactlyOneRowIsEverMarked(t *testing.T) {
+	// The cursor is one row. Two places used to work out where the app rows
+	// start by recounting the rows above them, and a recount is a second
+	// definition of the same thing -- when the known_hosts row left the focus
+	// list, both kept counting it. Every row below was then numbered one too
+	// high: the cursor highlighted one row while the keys acted on another,
+	// and on a box with one app and no containers the app row and "+ add an
+	// app" lit up together, the app having been handed the add row's index.
+	//
+	// Walked over the shapes that move the numbering: whether the server's
+	// keys have been read, whether a proxy is installed, whether an app has
+	// containers of its own.
+	for name, m := range map[string]model{
+		"a bare app": {
+			srv:   serverRow{state: "ready", docker: "26.1.3", hostKeys: [][2]string{{"ssh-ed25519", "AAAA"}}},
+			proxy: proxyRow{installed: true, state: "running"},
+			apps:  []appRow{{name: "blog"}},
+		},
+		"no host keys yet": {
+			srv:   serverRow{state: "ready", docker: "26.1.3"},
+			proxy: proxyRow{installed: true, state: "running"},
+			apps:  []appRow{{name: "blog"}},
+		},
+		"no proxy": {
+			srv:  serverRow{state: "ready", docker: "26.1.3", hostKeys: [][2]string{{"ssh-ed25519", "AAAA"}}},
+			apps: []appRow{{name: "blog"}},
+		},
+		"apps with containers": {
+			srv:   serverRow{state: "ready", docker: "26.1.3", hostKeys: [][2]string{{"ssh-ed25519", "AAAA"}}},
+			proxy: proxyRow{installed: true, state: "running"},
+			apps: []appRow{
+				{name: "blog", running: "1", containers: []containerRow{
+					{app: "blog", service: "web", name: "blog-web-1", state: "running"}}},
+				{name: "shop"},
+			},
+		},
+	} {
+		m.scr = screenMonitor
+		m.tgt = target{user: "root", host: "box.example.com", port: 22}
+		m.width, m.height = 100, 40
+		for cursor := range m.focusItems() {
+			m.cursor = cursor
+			m.reflow()
+			marked := 0
+			for _, ln := range strings.Split(m.View(), "\n") {
+				if strings.Contains(ln, cursorBar) {
+					marked++
+				}
+			}
+			if marked != 1 {
+				t.Errorf("%s: cursor %d marks %d rows, want 1:\n%s",
+					name, cursor, marked, stripANSI(m.View()))
+			}
+		}
+	}
+}
+
 func TestCopiedValuesHaveNoStrayNewline(t *testing.T) {
 	// Both of these are pasted into a text field in a browser, where a trailing
 	// newline is a blank last line that gets saved with the value.

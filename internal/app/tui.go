@@ -547,10 +547,8 @@ func (m model) focusItems() []focusItem {
 
 // firstAppRow is where the app rows begin, or 0 on a box with none.
 func (m model) firstAppRow() int {
-	for i, f := range m.focusItems() {
-		if f.kind == focusApp {
-			return i
-		}
+	if i := m.rowIndex(focusApp); i >= 0 {
+		return i
 	}
 	return 0
 }
