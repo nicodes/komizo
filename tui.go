@@ -70,6 +70,11 @@ type model struct {
 	// `komizo` with no arguments is a usable command rather than a usage error.
 	login string
 
+	// setupNo is the cursor on the setup screen's two buttons. It starts on
+	// yes: someone who reached this screen connected to a server on purpose,
+	// and defaulting to "no" would make the common case the extra keypress.
+	setupNo bool
+
 	form addForm
 
 	// prompt is the question in the footer, if one is being asked. Nil most of

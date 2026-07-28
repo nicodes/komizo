@@ -242,7 +242,21 @@ func (m model) handleSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "esc", "ctrl+c":
 		return m, tea.Quit
+
+	case "left", "right", "tab":
+		// Two buttons, so one key that moves is enough and either arrow does
+		// it. Nothing here is a list where direction carries meaning.
+		m.setupNo = !m.setupNo
+		return m, nil
+
 	case "enter":
+		if m.setupNo {
+			// The honest answer to "no" on the one screen whose only action is
+			// setting the server up: there is nothing else to do here, and
+			// leaving someone on a page with no next step is worse than
+			// closing it.
+			return m, tea.Quit
+		}
 		// Straight to the loading screen. What is about to be installed was
 		// worth reading while it was a decision; once it is running, the only
 		// thing anyone wants from the page is whether it is still going -- and
@@ -257,43 +271,55 @@ func (m model) handleSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// viewSetup is what a fresh box gets: a statement of what is about to be
-// installed, centred, and one key.
+// viewSetup is what a fresh box gets: what will happen to it, and one decision.
 //
 // Centred to match the two other pages that are one thing on an empty screen --
-// the login field and the loading pane. It was written flush left like the
-// monitor, which is a list of many things and reads as one; this is a single
-// paragraph with a decision at the end of it, and a wall of text pinned to the
-// left margin of an otherwise blank page reads as an error report.
+// the login field and the loading pane.
 //
-// The rows are padded to a common width before they are centred, so the block
-// keeps a left edge. Centring each line by its own length would stagger the
-// three descriptions and lose the column.
+// One paragraph, in plain words. It used to name the three things being
+// installed in a table -- docker, the network, the proxy -- with a line each
+// saying what they are. That is a list of implementation for someone who has
+// not decided to use the tool yet: the network in particular is a detail they
+// cannot act on, cannot change from here, and will never think about again. The
+// two facts that matter to the person reading are that it takes a minute and
+// that nothing else on the machine is touched.
 func (m model) viewSetup() string {
-	rows := [][2]string{
-		{"docker", "the container runtime, enabled at boot"},
-		{defaultNetwork, "the network apps share to reach each other"},
-		{"caddy", "one reverse proxy, terminating HTTPS for every app"},
-	}
-	var block []string
-	for _, r := range rows {
-		block = append(block, dimStyle.Render(pad(r[0], 8))+"  "+dimStyle.Render(r[1]))
-	}
-
 	lines := []string{titleStyle.Render("This server is not set up yet"), ""}
 	if m.srv.state == "docker-stopped" {
 		lines = append(lines,
 			dot("warn")+" "+warnStyle.Render("Docker is installed but not running; continuing starts it"),
 			"")
 	}
-	lines = append(lines, dimStyle.Render("Setting it up installs"), "")
-	lines = append(lines, alignBlock(block)...)
-	lines = append(lines, "")
-	lines = append(lines, alignBlock([]string{
-		dimStyle.Render("No accounts, and nothing under /srv — that comes later, when"),
-		dimStyle.Render("you add an app. Safe to re-run; it also updates Docker."),
-	})...)
+
+	body := "komizo will install Docker and start a reverse proxy that handles " +
+		"HTTPS for everything you deploy here. It takes a minute, leaves the " +
+		"rest of the machine alone, and is safe to run again later."
+	var wrapped []string
+	for _, ln := range wrap(body, textWidth(m.width)) {
+		wrapped = append(wrapped, dimStyle.Render(ln))
+	}
+	lines = append(lines, alignBlock(wrapped)...)
+
+	lines = append(lines, "", titleStyle.Render("Set it up?"), "", m.setupButtons())
 	return m.centred(lines...)
+}
+
+// setupButtons is the decision, at the end of what there is to read.
+//
+// Marked with the same accent bar the app list uses for its cursor, rather than
+// a box or reverse video: a selection should look the same wherever it is on
+// screen, and this page has one for the first time.
+func (m model) setupButtons() string {
+	// Both buttons are the same width, marker included, so the pair does not
+	// slide sideways as the cursor moves between them -- the line is centred,
+	// and a pair that changed width would shift under the key that moved it.
+	button := func(label string, selected bool) string {
+		if selected {
+			return barStyle.Render(cursorBar) + " " + pad(selStyle.Render(label), 4)
+		}
+		return "  " + pad(dimStyle.Render(label), 4)
+	}
+	return button("yes", !m.setupNo) + "    " + button("no", m.setupNo)
 }
 
 // --- the prompts, shared -----------------------------------------------------

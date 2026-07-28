@@ -409,7 +409,7 @@ func (m model) footerKeys() string {
 	case screenLogs:
 		return m.logsKeys()
 	case screenSetup:
-		return helpLine(m.width, "enter", "set it up", "q", "quit")
+		return helpLine(m.width, "←→", "choose", "enter", "select", "q", "quit")
 	case screenLogin:
 		return helpLine(m.width, "enter", "connect", "esc", "quit")
 	}

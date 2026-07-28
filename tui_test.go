@@ -635,11 +635,20 @@ func TestFreshServerGetsTheInitScreen(t *testing.T) {
 	if m.scr != screenSetup {
 		t.Fatalf("a bare server should open the init screen, got %v", m.scr)
 	}
-	v := m.View()
-	for _, want := range []string{"not set up yet", "docker", "caddy", "edge"} {
-		if !strings.Contains(strings.ToLower(v), strings.ToLower(want)) {
-			t.Errorf("init screen is missing %q", want)
+	// What it says is what the person deciding needs: that the box is bare,
+	// roughly what will happen to it, and that it is reversible enough to try.
+	// It used to name the three things being installed in a table, one line
+	// each -- a list of implementation for someone who has not decided to use
+	// the tool yet, and the shared network in particular is a detail they
+	// cannot act on and will never think about again.
+	v := strings.ToLower(m.View())
+	for _, want := range []string{"not set up yet", "docker", "https", "safe to run again"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("setup screen is missing %q", want)
 		}
+	}
+	if strings.Contains(v, "the network apps share") {
+		t.Error("the setup screen should not list what each piece is")
 	}
 }
 
@@ -1115,13 +1124,17 @@ func TestInitAsksOneThingOnly(t *testing.T) {
 		t.Fatalf("a bare server should open the init screen, got %v", m.scr)
 	}
 	v := m.View()
-	if !strings.Contains(v, "enter") || !strings.Contains(v, "set it up") {
-		t.Error("the init screen should offer exactly one action")
+	// One decision, and it is on the page rather than in the footer: two
+	// buttons, yes selected.
+	for _, want := range []string{"yes", "no", "enter", "select"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("the setup screen should show %q:\n%s", want, v)
+		}
 	}
 	// No question about the proxy survives anywhere on it.
-	for _, gone := range []string{"[yes]", "reverse proxy?", "tab"} {
+	for _, gone := range []string{"reverse proxy?", "tab next"} {
 		if strings.Contains(v, gone) {
-			t.Errorf("init screen still contains %q -- it should ask nothing", gone)
+			t.Errorf("setup screen still contains %q -- it should ask one thing", gone)
 		}
 	}
 	// And enter hands the page over to the loader. What is about to be
@@ -1141,6 +1154,44 @@ func TestInitAsksOneThingOnly(t *testing.T) {
 	}
 	if strings.Contains(v, "installs") {
 		t.Error("the description should be gone once it is running")
+	}
+}
+
+func TestSetupHasTwoButtons(t *testing.T) {
+	m := testModel()
+	m.width, m.height = 76, 20
+	m.scr = screenSetup
+
+	// Yes to start with: someone who reached this screen connected to a server
+	// on purpose, and defaulting to no makes the common case the extra press.
+	if m.setupNo {
+		t.Error("yes should be selected first")
+	}
+	// Either arrow moves between them, and the pair keeps its width so the
+	// line does not slide sideways under the key that moved it.
+	wide := lipglossWidth(m.setupButtons())
+	for _, k := range []string{"right", "left", "tab"} {
+		next := send(m, k)
+		if next.setupNo == m.setupNo {
+			t.Errorf("%q should move between the buttons", k)
+		}
+		if got := lipglossWidth(next.setupButtons()); got != wide {
+			t.Errorf("%q changed the width of the pair: %d -> %d", k, wide, got)
+		}
+	}
+
+	// Enter on yes starts the work; enter on no leaves, because setting the
+	// server up is the only thing this screen does.
+	if yes := send(m, "enter"); !yes.running() || yes.scr != screenLoading {
+		t.Error("enter on yes should start the setup")
+	}
+	no := send(m, "right")
+	next, cmd := no.Update(key("enter"))
+	if next.(model).running() {
+		t.Error("enter on no should not start anything")
+	}
+	if cmd == nil {
+		t.Error("enter on no should quit rather than leave you on a page with no next step")
 	}
 }
 
