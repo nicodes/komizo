@@ -1,7 +1,6 @@
 package app
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -354,8 +353,6 @@ func (m model) hasStatus() bool {
 		return true
 	case m.status != "":
 		return true
-	case m.scr == screenLogs && len(m.logLines()) > 0:
-		return true
 	}
 	return false
 }
@@ -399,8 +396,6 @@ func (m model) statusLine() string {
 			return line(dot("err"), errStyle.Render(m.status))
 		}
 		return line(dot("ok"), okStyle.Render(m.status))
-	case m.scr == screenLogs && len(m.logLines()) > 0:
-		return m.logPosition()
 	}
 	return ""
 }
@@ -431,22 +426,6 @@ func (m model) footerKeys() string {
 		return helpLine(m.width, "enter", "connect", "esc", "quit")
 	}
 	return ""
-}
-
-// logPosition is where you are in the log, and it is only interesting when
-// there is somewhere else to be.
-func (m model) logPosition() string {
-	n := len(m.logLines())
-	if m.maxScroll() == 0 {
-		return "\n" + gutter + dimStyle.Render(fmt.Sprintf("%d lines", n)) + "\n"
-	}
-	start := m.scroll
-	end := start + m.viewport()
-	if end > n {
-		end = n
-	}
-	return "\n" + gutter + dimStyle.Render(
-		fmt.Sprintf("lines %d–%d of %d", start+1, end, n)) + "\n"
 }
 
 // centred puts one short thing in the middle of the viewport, so a window with
