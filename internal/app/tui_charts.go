@@ -199,18 +199,18 @@ func (m model) viewCharts() string {
 	base := trailingBaseline(s.total)
 
 	var b strings.Builder
-	// Requests, with the band that would have been normal drawn behind it. Two
-	// datasets in one canvas: the line you are reading, and the shape it is
-	// being read against.
-	b.WriteString(section("Requests"))
-	b.WriteString(m.chartWithBaseline(s.total, base, s.from, s.to, w, chartHeight))
-
-	// How far outside that band, in robust deviations. Separate panel rather
-	// than a third line on the chart above: braille packs 2x4 dots to a cell, so
-	// a third series in the same canvas is a third thing competing for the same
-	// dots, and colour here carries meaning rather than identity.
-	b.WriteString(section(fmt.Sprintf("Unusual for this app  (band is \u00b1%d\u03c3, line is normal)", devLimit)))
-	b.WriteString(m.deviationBlock(base.score, s.from, s.to, w, panelHeight))
+	// One chart, both series. Reading "busy" and "unusually busy" off the same
+	// x position is the point -- in two stacked panels the eye has to walk
+	// between them and hold a column position while it does.
+	//
+	// No second axis. The deviation is scaled onto the chart's range and its
+	// zero drawn as a flat line, which is the only reference it needs: this
+	// series is read for SHAPE -- where it crosses, how far it swings -- and a
+	// column of numbers down the right would be four more characters of width
+	// for a precision nobody acts on.
+	b.WriteString(section(fmt.Sprintf(
+		"Requests   \u00b7   how unusual  (\u00b1%d\u03c3, flat line is normal)", devLimit)))
+	b.WriteString(m.combinedChart(s.total, base, s.from, s.to, w, chartHeight))
 
 	// No baseline on failures, deliberately. 5xx is zero almost always, so the
 	// trailing spread is zero and every non-zero minute divides by it. Any
@@ -245,75 +245,51 @@ func (m model) chartBlock(vals []float64, from, to int64, w, h int, style lipglo
 	return b.String()
 }
 
-// chartWithBaseline draws the series and, behind it, the centre of what was
-// normal at each point.
-func (m model) chartWithBaseline(vals []float64, b baseline, from, to int64, w, h int) string {
+// combinedChart draws requests and, over them, how unusual each minute was.
+//
+// The deviation is mapped onto the chart's range so both share one canvas: -4
+// sits on the floor, 0 halfway up, +4 at the ceiling. The two series are not
+// comparable in value and were never meant to be -- only in shape and in x.
+func (m model) combinedChart(vals []float64, base baseline, from, to int64, w, h int) string {
+	yMax := 0.0
+	for _, v := range vals {
+		if v > yMax {
+			yMax = v
+		}
+	}
+	if yMax == 0 {
+		yMax = 1
+	}
+	place := func(d float64) float64 { return (d + devLimit) / (2 * devLimit) * yMax }
+
 	c := m.newChart(from, to, w, h)
+	c.SetYRange(0, yMax)
+	c.SetViewYRange(0, yMax)
 	c.SetDataSetStyle("normal", dimStyle)
-	c.SetDataSetStyle("actual", keyStyle)
+	c.SetDataSetStyle("requests", keyStyle)
+	c.SetDataSetStyle("unusual", warnStyle)
+
+	// Where "not unusual" sits, so the second series has a zero to be read
+	// against. Without it the right-hand line is a shape with no origin.
+	c.PushDataSet("normal", timeserieslinechart.TimePoint{Time: time.Unix(from, 0), Value: place(0)})
+	c.PushDataSet("normal", timeserieslinechart.TimePoint{Time: time.Unix(to, 0), Value: place(0)})
+
 	for i, v := range vals {
 		at := time.Unix(from+int64(i)*60, 0)
-		if !math.IsNaN(b.centre[i]) {
-			c.PushDataSet("normal", timeserieslinechart.TimePoint{Time: at, Value: b.centre[i]})
-		}
-		c.PushDataSet("actual", timeserieslinechart.TimePoint{Time: at, Value: v})
-	}
-	c.DrawBrailleAll()
-	return chartLines(c.View())
-}
-
-// deviationBlock is the score panel: zero in the middle, and the line leaving
-// the ordinary band is the whole signal.
-//
-// Clamped for DRAWING only, at the edge of the axis. An unbounded score
-// rescales the whole panel to accommodate one minute, which flattens everything
-// else into a line along zero -- the chart hiding its own contents to show one
-// point that the clamp shows just as well.
-func (m model) deviationBlock(score []float64, from, to int64, w, h int) string {
-	const lim = devLimit
-	c := m.newChart(from, to, w, h,
-		// No y labels at all. ntcharts places label rows and data rows on
-		// slightly different grids at this height -- the zero line lands on the
-		// row labelled +1 -- and a number a row away from the value it names is
-		// worse than no number, because it will be believed. The zero line and
-		// the heading carry the scale instead.
-		timeserieslinechart.WithYLabelFormatter(func(_ int, _ float64) string {
-			return ""
-		}))
-	// Both, and both are needed: SetYRange fixes the data range, SetViewYRange
-	// fixes what is DRAWN. Without the second the panel autoscales to whatever
-	// the scores happen to span, so a quiet hour rescales +-4 into +-1 and every
-	// ordinary wobble fills the panel -- the band stops being a band.
-	c.SetYRange(-lim, lim)
-	c.SetViewYRange(-lim, lim)
-	c.SetDataSetStyle("zero", dimStyle)
-	c.SetDataSetStyle("score", warnStyle)
-
-	// Zero drawn as a line rather than left to the axis labels. It is the only
-	// value on this panel that means anything by itself, and where the label
-	// lands is ntcharts' business -- a line is not.
-	c.PushDataSet("zero", timeserieslinechart.TimePoint{Time: time.Unix(from, 0), Value: 0})
-	c.PushDataSet("zero", timeserieslinechart.TimePoint{Time: time.Unix(to, 0), Value: 0})
-
-	drew := false
-	for i, v := range score {
-		if math.IsNaN(v) {
+		c.PushDataSet("requests", timeserieslinechart.TimePoint{Time: at, Value: v})
+		d := base.score[i]
+		if math.IsNaN(d) {
 			// No baseline yet, or a flat one with no scale. Skipped rather than
-			// drawn as zero: "we cannot say" and "exactly normal" are different
+			// drawn at zero: "we cannot say" and "exactly normal" are different
 			// statements and must not share a shape.
 			continue
 		}
-		if v > lim {
-			v = lim
-		} else if v < -lim {
-			v = -lim
+		if d > devLimit {
+			d = devLimit
+		} else if d < -devLimit {
+			d = -devLimit
 		}
-		c.PushDataSet("score", timeserieslinechart.TimePoint{Time: time.Unix(from+int64(i)*60, 0), Value: v})
-		drew = true
-	}
-	if !drew {
-		return gutter + dimStyle.Render(
-			fmt.Sprintf("not enough history yet — needs %d minutes of baseline", baselineWindow)) + "\n"
+		c.PushDataSet("unusual", timeserieslinechart.TimePoint{Time: at, Value: place(d)})
 	}
 	c.DrawBrailleAll()
 	return chartLines(c.View())
