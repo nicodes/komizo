@@ -2288,6 +2288,67 @@ func TestLoginAsksForAHost(t *testing.T) {
 	}
 }
 
+func TestTheSpinnerTurnsOnEveryPathIntoLoading(t *testing.T) {
+	// The ticker stops when nothing needs it, so every way into a state that
+	// animates has to start it again. From the login screen nothing was
+	// spinning, so the first tick after startup killed the ticker and the
+	// connect that followed showed a spinner frozen on its first frame -- while
+	// the same code worked from the command line, where the model starts on the
+	// loading screen with the ticker already alive.
+	//
+	// Tested through beginLoading rather than by running what the key handlers
+	// return: those batches carry the connect, and running one opens a real SSH
+	// connection and waits out its timeout.
+	sentinel := func() tea.Msg { return appsMsg{} }
+	spins := func(cmd tea.Cmd) bool {
+		batch, ok := cmd().(tea.BatchMsg)
+		if !ok {
+			return false // not a batch: the sentinel came back on its own
+		}
+		for _, c := range batch {
+			if _, isSpin := c().(spinMsg); isSpin {
+				return true
+			}
+		}
+		return false
+	}
+
+	idle := newLoginModel()
+	if !spins(idle.beginLoading(sentinel)) {
+		t.Error("loading from a screen with nothing animating should start the spinner")
+	}
+	if idle.scr != screenLoading {
+		t.Errorf("beginLoading should land on the loading screen, got %v", idle.scr)
+	}
+
+	// Already spinning: no second ticker, or the animation runs at double speed.
+	busy := newLoginModel()
+	busy.busy = map[string]bool{"app:blog": true}
+	if spins(busy.beginLoading(sentinel)) {
+		t.Error("a second ticker should not be started on top of a live one")
+	}
+
+	// And the state keeps it alive once it is running.
+	if !idle.spinning() {
+		t.Error("the loading screen should keep the spinner animating")
+	}
+
+	// The login screen itself has nothing to animate, so Init must not start a
+	// ticker there -- it would die on its first tick and take the next one with
+	// it, which is the whole bug.
+	if newLoginModel().spinning() {
+		t.Error("the login screen has nothing to spin")
+	}
+
+	// Connecting goes through it: the screen changes and work is returned.
+	m := newLoginModel()
+	m.login = "root@box"
+	next, cmd := m.Update(key("enter"))
+	if cmd == nil || next.(model).scr != screenLoading {
+		t.Error("enter on a valid address should start connecting")
+	}
+}
+
 func TestAnUnreachableHostComesBackToTheField(t *testing.T) {
 	// Everything here is recoverable by typing something else, so a failure
 	// returns to the field with the address still in it.

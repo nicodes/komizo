@@ -100,12 +100,36 @@ func newLoginModel() model {
 }
 
 func (m model) Init() tea.Cmd {
-	cmds := []tea.Cmd{tea.WindowSize(), spinTick(), pollTick()}
-	// Nothing to read yet when there is no host: the login screen asks first.
+	cmds := []tea.Cmd{tea.WindowSize(), pollTick()}
+	// Nothing to read yet when there is no host: the login screen asks first,
+	// and has nothing to animate until it gets an answer.
 	if m.scr != screenLogin {
-		cmds = append(cmds, m.fetch())
+		cmds = append(cmds, m.fetch(), spinTick())
 	}
 	return tea.Batch(cmds...)
+}
+
+// beginLoading goes to the loading screen and makes sure something is driving
+// the spinner.
+//
+// The ticker stops when nothing needs it -- spinMsg simply stops rescheduling
+// itself -- so every path INTO a state that animates has to start it again.
+// Deciding here, from whether anything was ALREADY spinning, is what keeps a
+// second ticker from being spawned on top of a live one and running the
+// animation at double speed.
+//
+// This is the bug it exists for: from the login screen nothing was spinning, so
+// the first tick after startup killed the ticker, and connecting then showed a
+// spinner frozen on its first frame. Started from the command line the model
+// begins on the loading screen, where something IS spinning, so the identical
+// code worked and the fault only appeared on the new path.
+func (m *model) beginLoading(next tea.Cmd) tea.Cmd {
+	wasSpinning := m.spinning()
+	m.scr = screenLoading
+	if wasSpinning {
+		return next
+	}
+	return tea.Batch(next, spinTick())
 }
 
 // connectMsg is what a host turned out to be: reachable, never seen before, or
@@ -159,8 +183,7 @@ func (m model) handleLoginKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// The spinner and the word take over while ssh is out; the field comes
 		// back with its text intact if the host turns out not to answer.
 		m.status, m.statusErr = "", false
-		m.scr = screenLoading
-		return m, connect(t)
+		return m, m.beginLoading(connect(t))
 
 	case "backspace":
 		if m.login != "" {
@@ -400,10 +423,10 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.prompt = nil
 		m.status, m.statusErr = "done", false
-		// A box that has just been set up is a different box: the init screen
-		// has to give way to the list, and only a fresh read can say so.
+		// A box that has just been set up is a different box: the setup screen
+		// has to give way to the monitor, and only a fresh read can say so.
 		if m.scr == screenSetup {
-			m.scr = screenLoading
+			return m, m.beginLoading(m.fetch())
 		}
 		return m, m.fetch()
 	}

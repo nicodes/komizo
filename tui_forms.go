@@ -162,8 +162,7 @@ func (m model) trustPrompt(msg connectMsg) prompt {
 				m.status, m.statusErr = err.Error(), true
 				return nil
 			}
-			m.scr = screenLoading
-			return connect(tgt)
+			return m.beginLoading(connect(tgt))
 		},
 	}
 }
