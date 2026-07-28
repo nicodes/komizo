@@ -80,11 +80,20 @@ log() { printf '\n==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "must run as root"
-[ -n "$CI_PUBKEY" ] || die "no SSH public key given (pass as \$1 or CI_PUBKEY)"
-case "$CI_PUBKEY" in
-	ssh-*|ecdsa-*) ;;
-	*) die "CI_PUBKEY does not look like an SSH public key" ;;
-esac
+# An empty CI_PUBKEY means "leave the deploy key alone", which is what a
+# setting change wants: re-running this to re-point an app at a different
+# config image must not issue the repo a new key it does not know about. It is
+# only valid when the account already has one -- an app with no authorized key
+# is an app nothing can deploy to, and failing here is better than creating a
+# deploy account that silently accepts nobody.
+if [ -n "$CI_PUBKEY" ]; then
+	case "$CI_PUBKEY" in
+		ssh-*|ecdsa-*) ;;
+		*) die "CI_PUBKEY does not look like an SSH public key" ;;
+	esac
+elif [ ! -s "/home/$CI_USER/.ssh/authorized_keys" ]; then
+	die "no SSH public key given, and this account has none (pass as \$1 or CI_PUBKEY)"
+fi
 
 # Required. It is the trust anchor: root pins WHICH image the host will accept
 # config from, so a leaked deploy key cannot redirect the host at an image the
@@ -142,33 +151,40 @@ printf '%s:*\n' "$CI_USER" | chpasswd -e >/dev/null 2>&1 \
 # Deliberately NOT added to the docker group -- that would be root.
 deluser "$CI_USER" docker 2>/dev/null || true
 
-log "Installing deploy key"
 ssh_dir="/home/$CI_USER/.ssh"
 mkdir -p "$ssh_dir"
 touch "$ssh_dir/authorized_keys"
 
-# Keys are matched on their COMMENT field, so rotating a key replaces the old
-# one instead of leaving it authorized alongside the new one. Appending was the
-# earlier behaviour and it meant every rotation silently widened access --
-# the old key kept working until someone remembered to prune the file by hand.
-#
-# A key with no comment cannot be matched that way, so fall back to exact-line
-# dedup for those. Either path leaves the file identical on a re-run.
-key_comment="$(printf '%s' "$CI_PUBKEY" | cut -d' ' -f3-)"
-if [ -n "$key_comment" ]; then
-	tmp="$ssh_dir/.authorized_keys.$$"
-	awk -v want="$key_comment" '
-		{
-			com = ""
-			for (i = 3; i <= NF; i++) com = com (i > 3 ? " " : "") $i
-			if (com != want) print
-		}
-	' "$ssh_dir/authorized_keys" > "$tmp"
-	mv "$tmp" "$ssh_dir/authorized_keys"
-	printf '%s\n' "$CI_PUBKEY" >> "$ssh_dir/authorized_keys"
+if [ -z "$CI_PUBKEY" ]; then
+	log "Keeping the deploy key already installed"
 else
-	grep -qxF "$CI_PUBKEY" "$ssh_dir/authorized_keys" || \
+	log "Installing deploy key"
+
+	# Keys are matched on their COMMENT field, so rotating a key replaces the
+	# old one instead of leaving it authorized alongside the new one. Appending
+	# was the earlier behaviour and it meant every rotation silently widened
+	# access -- the old key kept working until someone remembered to prune the
+	# file by hand.
+	#
+	# A key with no comment cannot be matched that way, so fall back to
+	# exact-line dedup for those. Either path leaves the file identical on a
+	# re-run.
+	key_comment="$(printf '%s' "$CI_PUBKEY" | cut -d' ' -f3-)"
+	if [ -n "$key_comment" ]; then
+		tmp="$ssh_dir/.authorized_keys.$$"
+		awk -v want="$key_comment" '
+			{
+				com = ""
+				for (i = 3; i <= NF; i++) com = com (i > 3 ? " " : "") $i
+				if (com != want) print
+			}
+		' "$ssh_dir/authorized_keys" > "$tmp"
+		mv "$tmp" "$ssh_dir/authorized_keys"
 		printf '%s\n' "$CI_PUBKEY" >> "$ssh_dir/authorized_keys"
+	else
+		grep -qxF "$CI_PUBKEY" "$ssh_dir/authorized_keys" || \
+			printf '%s\n' "$CI_PUBKEY" >> "$ssh_dir/authorized_keys"
+	fi
 fi
 
 chmod 700 "$ssh_dir"

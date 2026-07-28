@@ -449,14 +449,44 @@ func TestEscLeavesEveryScreen(t *testing.T) {
 	}
 }
 
+func TestTheDeployKeyIsNeverWrittenDown(t *testing.T) {
+	// The point of generating it in memory: nothing about the interface path
+	// takes a filename, so there is nowhere for it to be written even by
+	// accident. The result carries the key itself, and copying reads that.
+	r := &addResult{app: "blog", key: "-----BEGIN OPENSSH PRIVATE KEY-----\nx\n",
+		knownHosts: "box ssh-ed25519 AAAA", onClipboard: -1}
+	if r.keyPath != "" {
+		t.Error("the interface never asks for a copy on disk")
+	}
+
+	// A config-image change must not issue a new one: it is a setting change,
+	// and a repo whose deploy key silently changed underneath it fails on its
+	// next push for a reason nobody would connect to what they just did.
+	plan := addPlan{tgt: target{host: "box"}, app: "blog", user: "komizo-blog",
+		config: "ghcr.io/you/blog-config", keepKey: true}
+	if !plan.keepKey {
+		t.Error("a config change should keep the key already on the server")
+	}
+
+	// And every generated key is genuinely new.
+	a, err := newKeypair(keyComment("komizo-blog", "box"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := newKeypair(keyComment("komizo-blog", "box"))
+	if a.private == b.private || a.public == b.public {
+		t.Error("two rotations should produce two keys")
+	}
+}
+
 func TestResultShowsBothValuesToPaste(t *testing.T) {
 	r := addResult{
 		app:        "blog",
-		keyPath:    "/home/you/.ssh/deploy_blog_box",
+		key:        "-----BEGIN OPENSSH PRIVATE KEY-----\nxxxx\n",
 		knownHosts: "box ssh-ed25519 AAAA",
 	}
 	v := r.view()
-	for _, want := range []string{"SSH_DEPLOY_KEY", "SSH_KNOWN_HOSTS", "deploy_blog_box", "app: blog"} {
+	for _, want := range []string{"SSH_DEPLOY_KEY", "SSH_KNOWN_HOSTS", "press c to copy", "app: blog"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("result is missing %q", want)
 		}
@@ -1201,34 +1231,34 @@ func TestInitAlwaysInstallsTheProxy(t *testing.T) {
 }
 
 func TestResultNeverPrintsTheKeyItself(t *testing.T) {
-	// This screen ends up in screenshots and scrollback. The path may appear;
-	// the contents may not, on any code path.
-	base := addResult{app: "ormos", keyPath: "/home/you/.ssh/deploy_ormos_1.2.3.4",
+	// This screen ends up in screenshots and scrollback. The key is in the
+	// process and on the clipboard once you press c; it is never on the page,
+	// on any code path -- and there is no longer a file to name instead.
+	base := addResult{app: "ormos",
+		key:        "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEA\n",
 		knownHosts: "1.2.3.4 ssh-ed25519 AAAAC3Nza"}
 	for _, r := range []addResult{
 		base,
-		{app: base.app, keyPath: base.keyPath, knownHosts: base.knownHosts, onClipboard: resultKey},
-		{app: base.app, keyPath: base.keyPath, knownHosts: base.knownHosts, copyErr: "no clipboard tool found"},
-		{app: base.app, keyPath: base.keyPath, knownHosts: base.knownHosts, rotated: true},
+		{app: base.app, key: base.key, knownHosts: base.knownHosts, onClipboard: resultKey},
+		{app: base.app, key: base.key, knownHosts: base.knownHosts, copyErr: "no clipboard tool found"},
+		{app: base.app, key: base.key, knownHosts: base.knownHosts, rotated: true},
 	} {
 		v := r.view()
-		for _, forbidden := range []string{"PRIVATE KEY", "BEGIN OPENSSH"} {
+		for _, forbidden := range []string{"PRIVATE KEY", "BEGIN OPENSSH", "b3BlbnNzaC1rZXktdjEA"} {
 			if strings.Contains(v, forbidden) {
 				t.Errorf("the result screen must never render key material (%q)", forbidden)
 			}
-		}
-		if !strings.Contains(v, base.keyPath) {
-			t.Error("the path should be shown, so you can find the key")
 		}
 	}
 }
 
 func TestResultDoesNotLookLikeTheValueIsACatCommand(t *testing.T) {
 	// "cat /home/..." sat alone under SSH_DEPLOY_KEY, which reads like a value
-	// and invited pasting that literal string into the secret.
-	v := addResult{app: "ormos", keyPath: "/k", knownHosts: "h k b"}.view()
-	if !strings.Contains(v, "contents not shown") {
-		t.Error("the screen must say the value is the file's contents, not the line shown")
+	// and invited pasting that literal string into the secret. There is no file
+	// any more, so what has to be clear is that the value is on the clipboard.
+	v := addResult{app: "ormos", key: "k", knownHosts: "h k b"}.view()
+	if !strings.Contains(v, "not shown") {
+		t.Error("the screen must say why there is no value printed under the name")
 	}
 	// The host key IS shown in full -- it is not confidential, and hiding it
 	// would make a CI mismatch unreadable.
@@ -1307,21 +1337,19 @@ func TestOnlyOneValueIsEverMarked(t *testing.T) {
 }
 
 func TestCopyingTheSecondReplacesTheFirst(t *testing.T) {
+	// Both values are copied the same way now -- out of memory -- so this
+	// drives the mark rather than a failure: copying one must not leave the
+	// other still claiming to be on the clipboard.
 	m := showResult(testModel(), &addResult{app: "a",
-		keyPath: "/nonexistent-so-copy-fails", knownHosts: "h k b", onClipboard: -1})
+		key: "-----BEGIN OPENSSH PRIVATE KEY-----\n", knownHosts: "h k b", onClipboard: -1})
 
-	// Copy the host keys (works: no file involved).
 	m = send(m, "down", "c")
 	if m.run.result.onClipboard != resultHosts {
 		t.Fatalf("host keys should be on the clipboard, got %d", m.run.result.onClipboard)
 	}
-	// Now a failing copy must not leave the previous value claimed.
 	m = send(m, "up", "c")
-	if m.run.result.copyErr == "" {
-		t.Fatal("copying a missing key file should report an error")
-	}
-	if m.run.result.onClipboard != -1 {
-		t.Error("a failed copy must not leave the previous value marked as current")
+	if m.run.result.onClipboard != resultKey {
+		t.Error("the mark should move to the value just copied")
 	}
 }
 
@@ -2284,7 +2312,7 @@ func TestFooterProseWrapsToTheWindow(t *testing.T) {
 	m.reflow()
 
 	v := stripANSI(m.View())
-	if !strings.Contains(v, "already exists.") {
+	if !strings.Contains(v, "another.") {
 		t.Errorf("the last words of the detail were cut off:\n%s", v)
 	}
 	for _, ln := range strings.Split(v, "\n") {

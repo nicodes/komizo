@@ -4,10 +4,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 type addOpts struct {
@@ -33,7 +31,7 @@ func (o *addOpts) bind(fs *flag.FlagSet) {
 	fs.StringVar(&o.config, "config", "", "registry path (NO tag) the host pulls compose.yml from")
 	fs.StringVar(&o.user, "user", "", "deploy account (default komizo-<app>)")
 	fs.StringVar(&o.appDir, "app-dir", "", "root-owned app directory (default /srv/<app>)")
-	fs.StringVar(&o.keyPath, "key", "", "where to write the keypair (default ~/.ssh/deploy_<app>_<host>)")
+	fs.StringVar(&o.keyPath, "key", "", "also write the keypair here (default: not written, printed instead)")
 	fs.StringVar(&o.knownAs, "known-as", "", "other hostname(s) CI connects by, comma-separated (host keys are pinned per name)")
 	fs.IntVar(&o.port, "port", 22, "SSH port")
 	fs.BoolVar(&o.hardenSSHD, "harden-sshd", false, "also disable password auth and root password login for EVERY user")
@@ -146,11 +144,11 @@ func runAdd(args []string) error {
 	if err != nil {
 		return err
 	}
-	// Both may have been resolved inside: the config read back off the box on a
-	// rotation, the key path defaulted. printNextSteps prints them.
-	o.config, o.keyPath = res.config, res.keyPath
+	// The config may have been resolved inside -- read back off the box on a
+	// rotation -- and printNextSteps prints it.
+	o.config = res.config
 
-	printNextSteps(o, tgt, res.knownHosts)
+	printNextSteps(o, tgt, res.knownHosts, res.key)
 	return nil
 }
 
@@ -162,9 +160,15 @@ type addPlan struct {
 	user    string // deploy account; deriveUser(app) unless --user overrode it
 	config  string // may be empty on a rotation, then read back off the box
 	appDir  string // empty means the server script's own default
-	keyPath string // empty means the default under ~/.ssh
+	keyPath string // write the private key here too; empty means nowhere
 	rotate  bool
 	harden  bool
+
+	// keepKey leaves the account's existing authorized_keys alone. Changing an
+	// app's config image re-runs this whole sequence, and issuing a new deploy
+	// key for a setting change would break that repo's next deploy for a reason
+	// nobody would connect to what they just did.
+	keepKey bool
 }
 
 // performAdd is everything `komizo add` does once the connection is known to
@@ -190,50 +194,38 @@ func performAdd(p addPlan, out progress, runner func(script string, env map[stri
 		out.note("keeping the configured image: %s", p.config)
 	}
 
-	if p.keyPath == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("cannot find your home directory: %w", err)
-		}
-		// Includes the app: two apps on one host have separate accounts, and
-		// reusing one keypair for both would hand a single key access to all.
-		p.keyPath = filepath.Join(home, ".ssh",
-			fmt.Sprintf("deploy_%s_%s", p.app, sanitize(p.tgt.host)))
-	}
-
-	// --- keypair, generated here -------------------------------------------
+	// --- keypair, in memory ------------------------------------------------
+	//
+	// Generated here and never written down. komizo does not use this key --
+	// it connects as you, with your own -- so the private half exists to be
+	// pasted into a GitHub secret and for nothing else. Writing it to ~/.ssh
+	// was leaving a valid credential on the machine for every app on every box,
+	// plus one more for every rotation, none of them ever read again.
+	//
+	// --key still writes it, for a script that has somewhere to put it.
 
 	out.step("Deploy keypair")
-	if p.rotate || !fileExists(p.keyPath) {
-		if fileExists(p.keyPath) {
-			backup := fmt.Sprintf("%s.replaced.%s", p.keyPath, time.Now().Format("20060102150405"))
-			if err := os.Rename(p.keyPath, backup); err != nil {
-				return nil, err
-			}
-			_ = os.Rename(p.keyPath+".pub", backup+".pub")
-			out.note("previous key kept at %s", backup)
-		}
-		if err := os.MkdirAll(filepath.Dir(p.keyPath), 0o700); err != nil {
+	var kp keypair
+	if p.keepKey {
+		out.note("keeping the key already on the server")
+	} else {
+		var err error
+		if kp, err = newKeypair(keyComment(p.user, p.tgt.host)); err != nil {
 			return nil, err
 		}
-		comment := fmt.Sprintf("komizo:%s@%s", p.user, p.tgt.host)
-		gen := exec.Command("ssh-keygen", "-q", "-t", "ed25519", "-C", comment, "-f", p.keyPath, "-N", "")
-		if msg, err := gen.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("ssh-keygen failed: %s", strings.TrimSpace(string(msg)))
+		out.note("generated an ed25519 key, held in memory only")
+		if p.keyPath != "" {
+			if err := writeKeyFile(p.keyPath, kp); err != nil {
+				return nil, err
+			}
+			out.note("also written to %s", p.keyPath)
 		}
-		out.note("generated %s", p.keyPath)
-	} else {
-		out.note("reusing %s (rotate the key to replace it)", p.keyPath)
-	}
-	pub, err := os.ReadFile(p.keyPath + ".pub")
-	if err != nil {
-		return nil, fmt.Errorf("cannot read the public key: %w", err)
 	}
 
 	// --- run the server half -----------------------------------------------
 
 	env := map[string]string{
-		"CI_PUBKEY":    strings.TrimSpace(string(pub)),
+		"CI_PUBKEY":    kp.public,
 		"CI_USER":      p.user,
 		"APP_NAME":     p.app,
 		"CONFIG_IMAGE": p.config,
@@ -266,12 +258,28 @@ func performAdd(p addPlan, out progress, runner func(script string, env map[stri
 
 	return &addResult{
 		app:         p.app,
+		key:         kp.private,
 		keyPath:     p.keyPath,
 		knownHosts:  kh,
 		config:      p.config,
 		rotated:     p.rotate,
 		onClipboard: -1,
 	}, nil
+}
+
+// writeKeyFile is --key: the one way a private key reaches the disk, and only
+// because a script asked for it by name.
+func writeKeyFile(path string, kp keypair) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, []byte(kp.private), 0o600); err != nil {
+		return fmt.Errorf("could not write the private key: %w", err)
+	}
+	if err := os.WriteFile(path+".pub", []byte(kp.public+"\n"), 0o644); err != nil {
+		return fmt.Errorf("could not write the public key: %w", err)
+	}
+	return nil
 }
 
 func boolEnv(b bool) string {

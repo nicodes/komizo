@@ -172,8 +172,9 @@ func (m model) addPrompt() prompt {
 	return prompt{
 		kind:     promptForm,
 		question: "Add an app",
-		detail: "A deploy keypair is generated on this machine; only the public " +
-			"half is sent. Safe to run again on an app that already exists.",
+		detail: "A deploy keypair is generated in memory here; only the public " +
+			"half is sent, and the private half is never written to disk — copy " +
+			"it when it appears or rotate the key for another.",
 	}
 }
 

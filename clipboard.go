@@ -56,17 +56,6 @@ func clipboardCmd() []string {
 
 func clipboardAvailable() bool { return clipboardCmd() != nil }
 
-// copyFileToClipboard sends a file's contents to the clipboard without them
-// passing through this process's output. Used for the private key, which must
-// not be read into anything that might later be printed.
-func copyFileToClipboard(path string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("could not read %s: %w", path, err)
-	}
-	return copyToClipboard(string(data))
-}
-
 // copyToClipboard puts text on the clipboard.
 func copyToClipboard(text string) error {
 	argv := clipboardCmd()

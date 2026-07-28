@@ -37,24 +37,35 @@ const rule = "------------------------------------------------------------------
 // printNextSteps ends `add` with the two values GitHub needs and a workflow
 // step to paste.
 //
-// The private key is NOT printed. This output is the sort of thing that ends up
-// in a chat window when something goes wrong; the path plus a cat command gets
-// you there without putting the key on the screen by default.
-func printNextSteps(o addOpts, t target, knownHosts string) {
+// The private key is printed only when there is nowhere else for it to go. It
+// is generated in memory now and never written unless --key says where (see
+// keys.go), so a non-interactive run without --key has stdout and nothing else
+// -- and a key nobody can read is a deploy account nobody can use.
+//
+// This output is the sort of thing that ends up in a chat window when something
+// goes wrong, so --key is the better habit for anything scripted: it keeps the
+// value out of the scrollback and out of any log the run is piped into.
+func printNextSteps(o addOpts, t target, knownHosts, key string) {
 	fmt.Printf("\n%s\n Add these under Settings -> Secrets and variables -> Actions\n%s\n", rule, rule)
 
-	// The VALUE is the file's contents. Spelled out because "cat <path>" on a
-	// line of its own reads like a value, and pasting that literal string into
-	// the secret produces a deploy that fails much later with an unhelpful
-	// authentication error.
-	fmt.Printf("\n 1. SECRET    SSH_DEPLOY_KEY\n\n"+
-		"        the private key in this file (contents not shown here):\n"+
-		"        %s\n", o.keyPath)
-	if clipboardAvailable() {
-		fmt.Printf("\n        To put it on the clipboard without printing it:\n"+
-			"        %s < %s\n", strings.Join(clipboardCmd(), " "), o.keyPath)
+	fmt.Printf("\n 1. SECRET    SSH_DEPLOY_KEY\n\n")
+	if o.keyPath != "" {
+		// The VALUE is the file's contents. Spelled out because "cat <path>" on
+		// a line of its own reads like a value, and pasting that literal string
+		// into the secret produces a deploy that fails much later with an
+		// unhelpful authentication error.
+		fmt.Printf("        the private key in this file (contents not shown here):\n"+
+			"        %s\n", o.keyPath)
+		if clipboardAvailable() {
+			fmt.Printf("\n        To put it on the clipboard without printing it:\n"+
+				"        %s < %s\n", strings.Join(clipboardCmd(), " "), o.keyPath)
+		}
 	} else {
-		fmt.Printf("\n        cat %s\n", o.keyPath)
+		fmt.Printf("        Not written to disk. This is the only copy:\n\n")
+		for _, ln := range strings.Split(strings.TrimRight(key, "\n"), "\n") {
+			fmt.Printf("        %s\n", ln)
+		}
+		fmt.Printf("\n        Pass --key PATH to write it somewhere instead of printing it.\n")
 	}
 	fmt.Printf("\n 2. VARIABLE  SSH_KNOWN_HOSTS\n\n")
 	for _, ln := range strings.Split(knownHosts, "\n") {

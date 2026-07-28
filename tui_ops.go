@@ -30,7 +30,12 @@ type runDoneMsg struct {
 // addResult is what `add` and `rotate` leave the user with: the two things
 // GitHub needs.
 type addResult struct {
-	app        string
+	app string
+	// key is the private half, held in memory for as long as this screen is
+	// open and written nowhere. See keys.go.
+	key string
+	// keyPath is set only when --key asked for a copy on disk, which the
+	// interface never does.
 	keyPath    string
 	knownHosts string
 	// config is what the box ended up pinned to -- given on a setup, read back
@@ -76,7 +81,7 @@ func (a addResult) items() int {
 
 func (a addResult) copySelected() error {
 	if a.cursor == resultKey {
-		return copyFileToClipboard(a.keyPath)
+		return copyToClipboard(a.key)
 	}
 	return copyToClipboard(a.knownHosts + "\n")
 }
@@ -145,12 +150,13 @@ func (a addResult) view() string {
 	b.WriteString(dimStyle.Render(gutter+"  Settings → Secrets and variables → Actions") + "\n")
 
 	// --- 1. the deploy key ---------------------------------------------------
-	// The VALUE is the file's contents, and they are deliberately not shown:
-	// this screen ends up in screenshots and scrollback. Spelled out because a
-	// bare path under the name reads like a value.
+	// Never rendered. This screen ends up in screenshots and scrollback, and
+	// the key is not on disk to be read back later either -- it exists in this
+	// process, until this screen is dismissed. Say so, because a value with no
+	// value under it otherwise reads as a page that failed to load.
 	b.WriteString(a.row(resultKey, "SSH_DEPLOY_KEY", dimStyle.Render("secret")))
-	b.WriteString(gutter + "      " + dimStyle.Render("the private key in this file, contents not shown:") + "\n")
-	b.WriteString(gutter + "      " + a.keyPath + "\n")
+	b.WriteString(gutter + "      " + dimStyle.Render("held in memory and not shown — press c to copy it") + "\n")
+	b.WriteString(gutter + "      " + dimStyle.Render("it is not saved anywhere; rotate the key to get another") + "\n")
 
 	// --- 2. the host keys ----------------------------------------------------
 	// Rotating replaces the deploy KEYPAIR. The server's host keys are its own
@@ -171,7 +177,10 @@ func (a addResult) view() string {
 
 	if a.copyErr != "" {
 		b.WriteString("\n" + gutter + dot("warn") + " " + warnStyle.Render(a.copyErr) + "\n")
-		b.WriteString(para(gutter+"  ", "cat "+a.keyPath))
+		// No fallback command to offer: there is no file to cat. Rotating is
+		// how you get another one, and it is one keypress from the app's row.
+		b.WriteString(para(gutter+"  ",
+			"Install a clipboard tool and rotate the key again to get a fresh one."))
 	}
 
 	if a.rotated {
@@ -283,14 +292,19 @@ func (m model) startProxy(o proxyOpts) tea.Cmd {
 }
 
 // startConfigChange re-points an app at a different config image. Re-running
-// the setup script is what applies it -- the same operation as adding, which is
-// why the key is reused rather than replaced: doAdd only generates one when the
-// file is absent.
+// the setup script is what applies it -- the same operation as adding -- but
+// with the deploy key left exactly as it is: this is a setting change, and
+// issuing a new key for it would break that repo's next deploy for a reason
+// nobody would connect to what they just did.
+//
+// It used to get that for free, because a key was only generated when the file
+// under ~/.ssh was missing. Keys are not kept now, so the intent has to be
+// stated rather than fall out of a file check.
 func (m model) startConfigChange(app, config string) tea.Cmd {
 	ch := m.run.ch
 	t := m.tgt
 	go func() {
-		res, err := doAdd(t, app, config, false, ch)
+		res, err := doAddKeepingKey(t, app, config, ch)
 		if res != nil {
 			res.changedConfig = config
 		}
@@ -329,13 +343,30 @@ func (p chanProgress) note(format string, a ...any) {
 // ch instead of stdout. The sequence itself lives in performAdd -- this only
 // says where the output goes and how the script is piped over.
 func doAdd(t target, app, config string, rotate bool, ch chan tea.Msg) (*addResult, error) {
-	return performAdd(addPlan{
+	return runAddPlan(addPlan{
 		tgt:    t,
 		app:    app,
 		user:   deriveUser(app),
 		config: config,
 		rotate: rotate,
-	}, chanProgress{ch}, func(script string, env map[string]string) error {
+	}, ch)
+}
+
+// doAddKeepingKey is the same sequence with the account's existing key left in
+// place -- what a config-image change wants.
+func doAddKeepingKey(t target, app, config string, ch chan tea.Msg) (*addResult, error) {
+	return runAddPlan(addPlan{
+		tgt:     t,
+		app:     app,
+		user:    deriveUser(app),
+		config:  config,
+		keepKey: true,
+	}, ch)
+}
+
+func runAddPlan(p addPlan, ch chan tea.Msg) (*addResult, error) {
+	t := p.tgt
+	return performAdd(p, chanProgress{ch}, func(script string, env map[string]string) error {
 		c := exec.Command("ssh", t.sshArgs(envPrefix(env)+"sh -s")...)
 		return stream(ch, c, script)
 	})
