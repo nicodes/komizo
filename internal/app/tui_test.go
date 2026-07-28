@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -3878,5 +3879,73 @@ func TestALateChartFetchIsIgnored(t *testing.T) {
 	m = next.(model)
 	if !m.chartsReady || len(m.charts) != 1 {
 		t.Error("the one that was asked for should land")
+	}
+}
+
+// The baseline is trailing: each minute is measured against the minutes BEFORE
+// it and nothing after. That is what makes a point's score final once computed --
+// a whole-window average puts an incident inside its own baseline and silently
+// moves every past point as new data arrives.
+func TestBaselineOnlyLooksBackwards(t *testing.T) {
+	v := make([]float64, baselineWindow+4)
+	for i := range v {
+		v[i] = 10
+	}
+	// A spike at the very end must not have coloured the scores before it.
+	v[len(v)-1] = 500
+
+	b := trailingBaseline(v)
+
+	// No baseline until there is enough history. Not zero -- "we cannot say" and
+	// "exactly normal" must not share a shape.
+	for i := 0; i < baselineWindow; i++ {
+		if !math.IsNaN(b.score[i]) {
+			t.Fatalf("minute %d scored with no baseline: %v", i, b.score[i])
+		}
+	}
+	// The steady minutes read as ordinary...
+	steady := b.score[baselineWindow]
+	if !math.IsNaN(steady) && math.Abs(steady) > 0.001 {
+		t.Errorf("a flat run should score ~0, got %v", steady)
+	}
+	// ...and the spike is the only thing that stands out.
+	if last := b.score[len(v)-1]; !math.IsNaN(last) && last <= 3 {
+		t.Errorf("the spike should score high, got %v", last)
+	}
+}
+
+// A spike must not corrupt the baseline for the minutes after it. That is the
+// whole reason this is a median rather than a mean.
+func TestASpikeDoesNotBecomeTheNewNormal(t *testing.T) {
+	v := make([]float64, baselineWindow*2)
+	for i := range v {
+		v[i] = 10
+	}
+	for i := baselineWindow; i < baselineWindow+3; i++ {
+		v[i] = 400 // a three-minute incident
+	}
+	b := trailingBaseline(v)
+
+	// Ten minutes later, with the incident still inside the trailing window,
+	// "normal" should still be about ten -- a mean would read nearer sixty.
+	after := b.centre[baselineWindow+10]
+	if after > 20 {
+		t.Errorf("the baseline absorbed the spike: normal reads %v, want ~10", after)
+	}
+}
+
+// A flat series has no scale, so there is no honest number of deviations to
+// report. It must decline to answer rather than divide by zero or invent a clamp.
+func TestAFlatBaselineDeclinesToScore(t *testing.T) {
+	v := make([]float64, baselineWindow+2)
+	// every minute identical, then one that is not
+	v[len(v)-1] = 7
+	b := trailingBaseline(v)
+	if got := b.score[len(v)-1]; !math.IsNaN(got) {
+		t.Errorf("a zero-spread baseline should not score, got %v", got)
+	}
+	// And a value equal to the flat baseline is exactly normal, which IS sayable.
+	if got := b.score[baselineWindow]; got != 0 {
+		t.Errorf("matching a flat baseline is 0 deviations, got %v", got)
 	}
 }

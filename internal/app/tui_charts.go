@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -28,6 +29,18 @@ const (
 	chartWindow  = 4 * 60 // minutes
 	sparkWindow  = 30     // minutes
 	sparkColumns = 16
+
+	// Braille packs four dots to a cell vertically, so a seven-row chart had
+	// twenty-eight steps to place a whole day's range in -- enough to draw a
+	// line, not enough to see its shape. These are the thing the screen is for;
+	// the page scrolls if they do not fit, which is the frame's job.
+	chartHeight = 16
+	panelHeight = 12
+
+	// How far out the deviation panel draws before clamping. Beyond this the
+	// exact number stops mattering: four robust deviations from normal is
+	// "look at this", and so is forty.
+	devLimit = 4
 )
 
 // openCharts is the same shape as openLogs: reset, mark not-ready, start the
@@ -166,11 +179,29 @@ func (m model) viewCharts() string {
 		w = 20
 	}
 
+	base := trailingBaseline(s.total)
+
 	var b strings.Builder
+	// Requests, with the band that would have been normal drawn behind it. Two
+	// datasets in one canvas: the line you are reading, and the shape it is
+	// being read against.
 	b.WriteString(section("Requests"))
-	b.WriteString(m.chartBlock(s.total, s.from, s.to, w, 7, keyStyle))
+	b.WriteString(m.chartWithBaseline(s.total, base, s.from, s.to, w, chartHeight))
+
+	// How far outside that band, in robust deviations. Separate panel rather
+	// than a third line on the chart above: braille packs 2x4 dots to a cell, so
+	// a third series in the same canvas is a third thing competing for the same
+	// dots, and colour here carries meaning rather than identity.
+	b.WriteString(section(fmt.Sprintf("Unusual for this app  (band is \u00b1%d\u03c3, line is normal)", devLimit)))
+	b.WriteString(m.deviationBlock(base.score, s.from, s.to, w, panelHeight))
+
+	// No baseline on failures, deliberately. 5xx is zero almost always, so the
+	// trailing spread is zero and every non-zero minute divides by it. Any
+	// number here would be a clamp invented to avoid the division, not a
+	// measurement -- and the thing worth seeing is that the line left the floor,
+	// which it already shows.
 	b.WriteString(section("Failures (5xx)"))
-	b.WriteString(m.chartBlock(s.errors, s.from, s.to, w, 5, errStyle))
+	b.WriteString(m.chartBlock(s.errors, s.from, s.to, w, panelHeight, errStyle))
 
 	rate, errs := s.rate()
 	b.WriteString(section("Now"))
@@ -184,27 +215,114 @@ func (m model) viewCharts() string {
 }
 
 func (m model) chartBlock(vals []float64, from, to int64, w, h int, style lipgloss.Style) string {
-	c := timeserieslinechart.New(w, h,
-		timeserieslinechart.WithTimeRange(time.Unix(from, 0), time.Unix(to, 0)),
-		timeserieslinechart.WithStyle(style),
-		timeserieslinechart.WithXLabelFormatter(func(_ int, v float64) string {
-			return time.Unix(int64(v), 0).Format("15:04")
-		}),
-		// Fixed width, so the two charts on this screen share an x axis.
-		// ntcharts sizes the y gutter to its widest label, so a chart peaking
-		// at 9 is drawn one column further left than one peaking at 53 -- and
-		// two time axes that do not line up are two charts you cannot read
-		// against each other, which is the only reason they are stacked.
-		timeserieslinechart.WithYLabelFormatter(func(_ int, v float64) string {
-			return fmt.Sprintf("%4.0f", v)
-		}),
-	)
+	c := m.newChart(from, to, w, h)
+	c.SetStyle(style)
 	for i, v := range vals {
 		c.Push(timeserieslinechart.TimePoint{Time: time.Unix(from+int64(i)*60, 0), Value: v})
 	}
 	c.DrawBraille()
 	var b strings.Builder
 	for _, ln := range strings.Split(c.View(), "\n") {
+		b.WriteString(gutter + ln + "\n")
+	}
+	return b.String()
+}
+
+// chartWithBaseline draws the series and, behind it, the centre of what was
+// normal at each point.
+func (m model) chartWithBaseline(vals []float64, b baseline, from, to int64, w, h int) string {
+	c := m.newChart(from, to, w, h)
+	c.SetDataSetStyle("normal", dimStyle)
+	c.SetDataSetStyle("actual", keyStyle)
+	for i, v := range vals {
+		at := time.Unix(from+int64(i)*60, 0)
+		if !math.IsNaN(b.centre[i]) {
+			c.PushDataSet("normal", timeserieslinechart.TimePoint{Time: at, Value: b.centre[i]})
+		}
+		c.PushDataSet("actual", timeserieslinechart.TimePoint{Time: at, Value: v})
+	}
+	c.DrawBrailleAll()
+	return chartLines(c.View())
+}
+
+// deviationBlock is the score panel: zero in the middle, and the line leaving
+// the ordinary band is the whole signal.
+//
+// Clamped for DRAWING only, at the edge of the axis. An unbounded score
+// rescales the whole panel to accommodate one minute, which flattens everything
+// else into a line along zero -- the chart hiding its own contents to show one
+// point that the clamp shows just as well.
+func (m model) deviationBlock(score []float64, from, to int64, w, h int) string {
+	const lim = devLimit
+	c := m.newChart(from, to, w, h,
+		// No y labels at all. ntcharts places label rows and data rows on
+		// slightly different grids at this height -- the zero line lands on the
+		// row labelled +1 -- and a number a row away from the value it names is
+		// worse than no number, because it will be believed. The zero line and
+		// the heading carry the scale instead.
+		timeserieslinechart.WithYLabelFormatter(func(_ int, _ float64) string {
+			return ""
+		}))
+	// Both, and both are needed: SetYRange fixes the data range, SetViewYRange
+	// fixes what is DRAWN. Without the second the panel autoscales to whatever
+	// the scores happen to span, so a quiet hour rescales +-4 into +-1 and every
+	// ordinary wobble fills the panel -- the band stops being a band.
+	c.SetYRange(-lim, lim)
+	c.SetViewYRange(-lim, lim)
+	c.SetDataSetStyle("zero", dimStyle)
+	c.SetDataSetStyle("score", warnStyle)
+
+	// Zero drawn as a line rather than left to the axis labels. It is the only
+	// value on this panel that means anything by itself, and where the label
+	// lands is ntcharts' business -- a line is not.
+	c.PushDataSet("zero", timeserieslinechart.TimePoint{Time: time.Unix(from, 0), Value: 0})
+	c.PushDataSet("zero", timeserieslinechart.TimePoint{Time: time.Unix(to, 0), Value: 0})
+
+	drew := false
+	for i, v := range score {
+		if math.IsNaN(v) {
+			// No baseline yet, or a flat one with no scale. Skipped rather than
+			// drawn as zero: "we cannot say" and "exactly normal" are different
+			// statements and must not share a shape.
+			continue
+		}
+		if v > lim {
+			v = lim
+		} else if v < -lim {
+			v = -lim
+		}
+		c.PushDataSet("score", timeserieslinechart.TimePoint{Time: time.Unix(from+int64(i)*60, 0), Value: v})
+		drew = true
+	}
+	if !drew {
+		return gutter + dimStyle.Render(
+			fmt.Sprintf("not enough history yet — needs %d minutes of baseline", baselineWindow)) + "\n"
+	}
+	c.DrawBrailleAll()
+	return chartLines(c.View())
+}
+
+func (m model) newChart(from, to int64, w, h int, extra ...timeserieslinechart.Option) timeserieslinechart.Model {
+	opts := []timeserieslinechart.Option{
+		timeserieslinechart.WithTimeRange(time.Unix(from, 0), time.Unix(to, 0)),
+		timeserieslinechart.WithXLabelFormatter(func(_ int, v float64) string {
+			return time.Unix(int64(v), 0).Format("15:04")
+		}),
+		// Fixed width, so every chart on this screen shares an x axis. ntcharts
+		// sizes the y gutter to its widest label, so a panel peaking at 4 would
+		// be drawn one column left of one peaking at 122 -- and axes that do not
+		// line up are charts you cannot read against each other, which is the
+		// only reason they are stacked.
+		timeserieslinechart.WithYLabelFormatter(func(_ int, v float64) string {
+			return fmt.Sprintf("%4.0f", v)
+		}),
+	}
+	return timeserieslinechart.New(w, h, append(opts, extra...)...)
+}
+
+func chartLines(s string) string {
+	var b strings.Builder
+	for _, ln := range strings.Split(s, "\n") {
 		b.WriteString(gutter + ln + "\n")
 	}
 	return b.String()

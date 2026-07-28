@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -203,4 +204,88 @@ func (s series) any() bool {
 		}
 	}
 	return false
+}
+
+// baseline is what "normal" looked like at each minute, computed from the
+// minutes BEFORE it and nothing after.
+//
+// Trailing on purpose. A baseline taken over the whole window puts an incident
+// inside its own average -- it inflates the centre and the spread, which
+// suppresses its own score -- and every past point silently moves as new data
+// arrives, so the chart you looked at this morning is not the chart you look at
+// now. Trailing fixes both: a point's score is final the moment it is computed.
+//
+// Median and MAD rather than mean and standard deviation. A spike barely moves a
+// median, so it does not corrupt the baseline for the minutes that follow it; a
+// mean carries the spike forward and makes the tail of an incident look ordinary.
+//
+// What it still cannot do, and the chart should not be read as doing: a SUSTAINED
+// outage eventually becomes its own normal, because the trailing window fills
+// with it. This flags the onset sharply and then fades. It is an edge detector,
+// not a severity meter.
+type baseline struct {
+	// centre and score are per minute, aligned with the series they came from.
+	// score is in robust deviations; both are NaN for minutes with no baseline
+	// yet, which the chart must skip rather than draw as zero.
+	centre []float64
+	spread []float64
+	score  []float64
+}
+
+// baselineWindow is how many previous minutes make up "normal". Half an hour:
+// long enough that one quiet minute is not an event, short enough to follow the
+// shape of a day rather than averaging it flat.
+const baselineWindow = 30
+
+// madScale converts a median absolute deviation into something comparable to a
+// standard deviation, for a normal distribution. Only so the numbers read at a
+// familiar scale -- "about two" meaning unusual, "about three" meaning notable.
+const madScale = 1.4826
+
+func trailingBaseline(v []float64) baseline {
+	b := baseline{
+		centre: make([]float64, len(v)),
+		spread: make([]float64, len(v)),
+		score:  make([]float64, len(v)),
+	}
+	nan := math.NaN()
+	for i := range v {
+		if i < baselineWindow {
+			b.centre[i], b.spread[i], b.score[i] = nan, nan, nan
+			continue
+		}
+		win := append([]float64(nil), v[i-baselineWindow:i]...)
+		med := medianOf(win)
+		dev := make([]float64, len(win))
+		for j, x := range win {
+			dev[j] = math.Abs(x - med)
+		}
+		mad := medianOf(dev) * madScale
+		b.centre[i], b.spread[i] = med, mad
+		switch {
+		case mad > 0:
+			b.score[i] = (v[i] - med) / mad
+		case v[i] == med:
+			b.score[i] = 0
+		default:
+			// A flat baseline has no scale, so there is no honest number of
+			// deviations to report -- dividing by zero would invent one. Left
+			// unscored rather than clamped to something invented.
+			b.score[i] = nan
+		}
+	}
+	return b
+}
+
+func medianOf(v []float64) float64 {
+	if len(v) == 0 {
+		return 0
+	}
+	s := append([]float64(nil), v...)
+	sort.Float64s(s)
+	n := len(s)
+	if n%2 == 1 {
+		return s[n/2]
+	}
+	return (s[n/2-1] + s[n/2]) / 2
 }
