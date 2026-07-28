@@ -99,12 +99,16 @@ func TestListShowsEveryApp(t *testing.T) {
 	if strings.Contains(v, "/srv/blog") {
 		t.Error("the list should stay compact; the directory is derivable")
 	}
-	// A long SHA is trimmed, but to something that still identifies the commit.
-	if !strings.Contains(v, "a1b2c3d4e5f6") {
-		t.Error("list view should show a shortened version")
-	}
-	if strings.Contains(v, "a1b2c3d4e5f6a7b8") {
-		t.Error("list view should not show the full 16-char version")
+	// The deployed version is NOT on this screen. The config image took its
+	// column, so that a long string sits beside the containers' images rather
+	// than in the narrow port column, where it pushed every hostname on the
+	// block far to the right.
+	//
+	// Nothing else here needs the SHA: what is live is one keypress away, and
+	// the containers' own image tags carry it whenever they differ from the
+	// app's.
+	if strings.Contains(v, "a1b2c3d4e5f6") {
+		t.Error("the app row should no longer carry the deployed version")
 	}
 }
 

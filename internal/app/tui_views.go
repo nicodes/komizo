@@ -54,12 +54,17 @@ func viewMonitor(m model) string {
 		// the row that is ever urgent, and it can only say so if nothing beside
 		// it is competing -- a table of white text with one coloured glyph in
 		// it reads as one coloured glyph.
+		// The config image sits in the IMAGE column, beside the containers'
+		// own images, rather than one place further right. It used to follow
+		// the deployed version, which put a long string in the narrow port
+		// column and pushed every hostname on the block far to the right to
+		// make room for it.
 		rows = append(rows, treeRow{idx: idx, cells: []string{
 			m.rowDot("app:"+a.name, appDot(a)),
 			dimStyle.Render(a.name),
 			dimStyle.Render(a.stateText()),
-			short(a.version),
 			dimStyle.Render(a.image),
+			"",
 			"",
 		}})
 		// Each container under its app, with the hostnames that reach IT.
