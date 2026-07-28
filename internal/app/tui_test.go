@@ -1777,6 +1777,50 @@ func TestRotationCopiesItselfAndComesBack(t *testing.T) {
 	}
 }
 
+func TestAppsAreGrouped(t *testing.T) {
+	// Each app and its containers read as a block. Without the gap the whole
+	// section was one column and the eye had to find the app rows by their
+	// indentation; without dropping the one under the heading, the first block
+	// sat lower than the rest and read as though something were missing.
+	m := testModel()
+	m.width, m.height = 90, 30
+	m.apps = []appRow{
+		{name: "blog", running: "1", containers: []containerRow{
+			{app: "blog", service: "web", name: "blog-web-1", state: "running"}}},
+		{name: "shop", running: "1", containers: []containerRow{
+			{app: "shop", service: "web", name: "shop-web-1", state: "running"}}},
+	}
+	m.reflow()
+	lines := strings.Split(stripANSI(m.View()), "\n")
+
+	at := func(want string) int {
+		for i, ln := range lines {
+			if strings.Contains(ln, want) {
+				return i
+			}
+		}
+		t.Fatalf("%q is not on the page:\n%s", want, strings.Join(lines, "\n"))
+		return -1
+	}
+	// The first app follows the heading immediately.
+	if apps, first := at("Apps"), at("blog"); first != apps+1 {
+		t.Errorf("the heading and the first app are %d lines apart, want 1", first-apps)
+	}
+	// The next app is separated from the one above by a blank line.
+	if blank := at("shop") - 1; strings.TrimSpace(lines[blank]) != "" {
+		t.Errorf("apps should be separated by a blank line, got %q", lines[blank])
+	}
+	// And the blank rows are not somewhere the cursor can land: every position
+	// still marks exactly one row, which the next test covers across shapes.
+	for cursor := range m.focusItems() {
+		m.cursor = cursor
+		m.reflow()
+		if n := strings.Count(m.View(), cursorBar); n != 1 {
+			t.Errorf("cursor %d marks %d rows, want 1", cursor, n)
+		}
+	}
+}
+
 func TestExactlyOneRowIsEverMarked(t *testing.T) {
 	// The cursor is one row. Two places used to work out where the app rows
 	// start by recounting the rows above them, and a recount is a second

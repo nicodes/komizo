@@ -16,9 +16,13 @@ func viewMonitor(m model) string {
 	b.WriteString(m.boxSection())
 	b.WriteString(m.proxySection())
 
-	b.WriteString(section("Apps") + "\n")
+	// No blank line under the heading. Every app below is a group with a blank
+	// line above it, so one here made the first group sit lower than the rest
+	// and read as though something were missing from it.
+	b.WriteString(section("Apps"))
 
 	if len(m.apps) == 0 {
+		b.WriteString("\n")
 		b.WriteString(para(gutter, "An app is a compose stack with its own directory, deploy account\nand privileged commands.") + "\n")
 		b.WriteString(m.addRow())
 		return b.String()
@@ -33,7 +37,19 @@ func viewMonitor(m model) string {
 	// an app and a container are not the same shape -- and having tried that,
 	// the labels were the least useful line in the block.
 	var rows []treeRow
-	for _, a := range m.apps {
+	for i, a := range m.apps {
+		// A blank line between apps, so each one and its containers read as a
+		// block rather than as one long column. Between them and not after, so
+		// the last group is separated from the add row by exactly the same gap
+		// as the groups are from each other.
+		//
+		// A row with no cells: tree gives it the same treatment as any other,
+		// which is a line with nothing on it. It carries idx -1, so it is not
+		// somewhere the cursor can land.
+		if i > 0 {
+			rows = append(rows, treeRow{idx: -1})
+		}
+
 		// Everything but the status dot is muted. The dot is the only thing on
 		// the row that is ever urgent, and it can only say so if nothing beside
 		// it is competing -- a table of white text with one coloured glyph in
