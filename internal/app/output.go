@@ -78,7 +78,14 @@ func printNextSteps(o addOpts, t target, knownHosts, key string) {
 	// Moving an app to another box, or reaching this one by a different name
 	// while its public DNS is mid-cutover, is then a settings change instead of
 	// a commit and a deploy.
-	fmt.Printf("\n 3. VARIABLE  KOMIZO_URL\n\n        %s\n", t.knownHostsField())
+	fmt.Printf("\n 3. VARIABLE  KOMIZO_SERVER_URL\n\n        %s\n", t.knownHostsField())
+
+	// The app name selects the deploy account and both privileged commands, so
+	// the actions need it. Hold this one more loosely than the three above: it
+	// is also written into the app's own compose.yml (network aliases), its
+	// caddy fragment (/srv/<app>/...) and its image names, all committed. This
+	// variable is where CI reads it, not where it is decided.
+	fmt.Printf("\n 4. VARIABLE  KOMIZO_APP_NAME\n\n        %s\n", o.app)
 	fmt.Printf("\n%s\n", rule)
 
 	if o.rotateKey {
@@ -94,27 +101,33 @@ func printNextSteps(o addOpts, t target, knownHosts, key string) {
 			" password login machine-wide, re-run with --harden-sshd.\n", o.user)
 	}
 
-	appLine := fmt.Sprintf("\n          app: %s", o.app)
 	portLine := ""
 	if t.port != 22 {
 		portLine = fmt.Sprintf("\n          port: \"%d\"", t.port)
 	}
 
+	// No app, host or key in the snippet: all four settings above are read from
+	// the environment by name. Each secret the app needs is one more line under
+	// env:, named KOMIZO_SECRET_<NAME>, and arrives on the host as <NAME>.
 	fmt.Printf(`
  Then in your app repo: put compose.yml in a directory of its own
  (deploy/ by convention) and add a workflow. Your deploy step:
 
    - uses: nicodes/komizo-actions/deploy@v0
      env:
+          KOMIZO_APP_NAME: ${{ vars.KOMIZO_APP_NAME }}
+          KOMIZO_SERVER_URL: ${{ vars.KOMIZO_SERVER_URL }}
           KOMIZO_DEPLOY_KEY: ${{ secrets.KOMIZO_DEPLOY_KEY }}
           KOMIZO_KNOWN_HOSTS: ${{ vars.KOMIZO_KNOWN_HOSTS }}
+
+          KOMIZO_SECRET_DATABASE_URL: ${{ secrets.DATABASE_URL }}
      with:
           version: ${{ github.sha }}%s
-          host: %s%s
-          config-context: deploy
+          config-compose: deploy/compose.yml
+          config-caddy: deploy/caddy/app.caddy
           config-image: %s
           registry-user: ${{ github.actor }}
           registry-token: ${{ secrets.GITHUB_TOKEN }}
 
-`, appLine, t.host, portLine, o.config)
+`, portLine, o.config)
 }

@@ -33,7 +33,7 @@ type runDoneMsg struct {
 // GitHub needs.
 type addResult struct {
 	app string
-	// host is the address CI should dial: what KOMIZO_URL is set to. Carried
+	// host is the address CI should dial: what KOMIZO_SERVER_URL is set to. Carried
 	// on the result because the screen handing over the other two values is
 	// where someone is already copying from.
 	host string
@@ -170,7 +170,7 @@ func (a addResult) view() string {
 	// needs updating in GitHub when nothing does. They stay one keypress away
 	// on the server screen.
 	if a.rotated {
-		b.WriteString(para("\n"+gutter, "KOMIZO_KNOWN_HOSTS and KOMIZO_URL are unchanged — the server did\n"+
+		b.WriteString(para("\n"+gutter, "KOMIZO_KNOWN_HOSTS and KOMIZO_SERVER_URL are unchanged — the server did\n"+
 			"not move, and its own keys did not either."))
 	} else {
 		// Shown in full, unlike the key: a host key needs integrity, not
@@ -180,13 +180,22 @@ func (a addResult) view() string {
 			b.WriteString(gutter + "      " + dimStyle.Render(l) + "\n")
 		}
 
-		// The third value, and the only one that is not produced here: it is
-		// simply the address you connected on. A variable rather than a line in
-		// the workflow, so moving an app to another box -- or reaching this one
-		// by another name while its DNS moves -- is a settings change.
-		b.WriteString("\n" + gutter + "  " + keyStyle.Render("KOMIZO_URL") + "  " +
+		// The last two are not produced here, only repeated: the address you
+		// connected on, and the name you gave the app. Variables rather than
+		// lines in the workflow, so moving an app to another box -- or reaching
+		// this one by another name while its DNS moves -- is a settings change.
+		//
+		// The app name is the weaker of the two. It is also written into the
+		// app's own compose.yml, its caddy fragment and its image names, all of
+		// which are committed and all of which must agree with it; this is
+		// where CI reads it, not where it is decided.
+		b.WriteString("\n" + gutter + "  " + keyStyle.Render("KOMIZO_SERVER_URL") + "  " +
 			dimStyle.Render("variable") + "\n")
 		b.WriteString(gutter + "      " + dimStyle.Render(a.host) + "\n")
+
+		b.WriteString("\n" + gutter + "  " + keyStyle.Render("KOMIZO_APP_NAME") + "  " +
+			dimStyle.Render("variable") + "\n")
+		b.WriteString(gutter + "      " + dimStyle.Render(a.app) + "\n")
 	}
 
 	if a.copyErr != "" {
