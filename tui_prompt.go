@@ -166,7 +166,7 @@ func (m model) handlePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if p.kind != promptConfirm {
-		if s := msg.String(); len(s) == 1 {
+		if s := typedText(msg); s != "" {
 			p.typed += s
 			p.problem = ""
 		}

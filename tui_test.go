@@ -2294,6 +2294,77 @@ func TestFooterProseWrapsToTheWindow(t *testing.T) {
 	}
 }
 
+// paste is what a terminal sends when text is pasted: one key message carrying
+// every rune, rather than one message per character.
+func paste(text string) tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text), Paste: true}
+}
+
+func TestEveryFieldTakesAPaste(t *testing.T) {
+	// A paste is one key message with all the runes in it, and the test that
+	// used to gate typing -- len(msg.String()) == 1 -- dropped it silently.
+	// Every field was type-only, which is the wrong way round: an address or a
+	// registry path is copied from a provider's console or a registry page.
+
+	// The login field.
+	login := newLoginModel()
+	next, _ := login.Update(paste("root@box.example.com"))
+	if got := next.(model).login; got != "root@box.example.com" {
+		t.Errorf("login field has %q after a paste", got)
+	}
+
+	// The add form, which is three fields in the footer.
+	form := openAddForm(testModel())
+	next, _ = form.Update(paste("blog"))
+	form = next.(model)
+	form = send(form, "tab")
+	next, _ = form.Update(paste("ghcr.io/you/blog-config"))
+	form = next.(model)
+	if form.form.app() != "blog" || form.form.config() != "ghcr.io/you/blog-config" {
+		t.Errorf("form has %q / %q after pastes", form.form.app(), form.form.config())
+	}
+
+	// An editable value in the footer -- changing an app's config image.
+	m := testModel()
+	m.cursor = rowOf(m, focusApp)
+	input := send(m, "c")
+	if input.prompt == nil {
+		t.Fatal("c should open an input")
+	}
+	next, _ = input.Update(paste("ghcr.io/you/other-config"))
+	if got := next.(model).prompt.typed; !strings.HasSuffix(got, "other-config") {
+		t.Errorf("input has %q after a paste", got)
+	}
+
+	// And the one that asks you to type a name to confirm.
+	word := send(m, "x")
+	next, _ = word.Update(paste("blog"))
+	if got := next.(model).prompt.typed; got != "blog" {
+		t.Errorf("confirmation has %q after a paste", got)
+	}
+}
+
+func TestAPasteArrivesAsOneLine(t *testing.T) {
+	// A value copied out of a terminal or a web page routinely brings a
+	// trailing newline, and every field here is one line.
+	m := newLoginModel()
+	next, _ := m.Update(paste("root@box\n"))
+	if got := next.(model).login; got != "root@box" {
+		t.Errorf("login field has %q; the newline should not survive", got)
+	}
+	next, _ = m.Update(paste("a\tb\rc"))
+	if got := next.(model).login; got != "abc" {
+		t.Errorf("login field has %q; control characters should be dropped", got)
+	}
+
+	// Alt chords are not text: alt+a is a rune with the Alt flag, and inserting
+	// "a" for it would put a letter in the field for a key nobody typed.
+	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a"), Alt: true})
+	if got := next.(model).login; got != "" {
+		t.Errorf("alt+a typed %q", got)
+	}
+}
+
 func TestLoginAsksForAHost(t *testing.T) {
 	// `komizo` on its own used to print the usage and exit 2, which made the
 	// shortest thing anyone would type the one thing that did not work.
@@ -2302,7 +2373,7 @@ func TestLoginAsksForAHost(t *testing.T) {
 	m.reflow()
 
 	v := stripANSI(m.View())
-	for _, want := range []string{"komizo", "your server, secured", "root@example.com", "connect"} {
+	for _, want := range []string{"komizo", tagline, "root@example.com", "connect"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("the login screen should show %q:\n%s", want, v)
 		}
@@ -2466,8 +2537,10 @@ func TestBothWaitsLookTheSame(t *testing.T) {
 				t.Errorf("%s: the name should be centred, got %q", name, ln)
 			}
 		}
-		if want := map[bool]int{true: 1, false: 0}[m.scr == screenLoading]; names != want {
-			t.Errorf("%s: the name appears %d times, want %d", name, names, want)
+		// Once, wherever it appears: the corner stands down on any page whose
+		// body carries the name in the middle.
+		if names != 1 {
+			t.Errorf("%s: the name appears %d times, want once", name, names)
 		}
 	}
 
@@ -2488,6 +2561,9 @@ func TestTheHeaderSaysWhereYouAre(t *testing.T) {
 	m := testModel()
 	m.width, m.height = 90, 20
 
+	// Only the pages that do NOT carry the name in the middle: login, loading,
+	// setup and a log still arriving stand the header down, because their body
+	// is already the name. See showsBrand.
 	for name, c := range map[string]struct {
 		set  func(*model)
 		want string
@@ -2497,7 +2573,6 @@ func TestTheHeaderSaysWhereYouAre(t *testing.T) {
 			m.scr, m.logsLabel, m.logsOf, m.logsReady = screenLogs, "blog-web-1", "x", true
 			m.logs = "one\ntwo"
 		}, "komizo / blog-web-1 logs"},
-		"an unset-up box": {func(m *model) { m.scr = screenSetup }, "komizo / setup"},
 	} {
 		next := m
 		c.set(&next)
@@ -2555,8 +2630,9 @@ func TestEveryScreenIsFramed(t *testing.T) {
 			t.Errorf("%s: %d lines in a %d-line terminal", name, len(lines), m.height)
 			continue
 		}
-		if !strings.Contains(lines[0], "komizo") {
-			t.Errorf("%s: no title on the first row, got %q", name, lines[0])
+		// Either the header names the page, or the body centres the name.
+		if !strings.Contains(strings.Join(lines, "\n"), "komizo") {
+			t.Errorf("%s: the name is nowhere on the page", name)
 		}
 		foot := rowsOf(stripANSI(m.pageFooter()))
 		if got, want := lines[len(lines)-1], foot[len(foot)-1]; got != want {
@@ -3172,9 +3248,14 @@ func TestTheLogWindowNeverOutgrowsTheTerminal(t *testing.T) {
 			if n := strings.Count(v, "\n") + 1; n > h {
 				t.Errorf("height=%d loaded=%v rendered %d lines", h, loaded, n)
 			}
-			// And the title is still the first thing on it.
-			if got := strings.SplitN(v, "\n", 2)[0]; !strings.Contains(got, "komizo") {
-				t.Errorf("height=%d loaded=%v: first line is %q", h, loaded, got)
+			// And the window still says which log it is -- unless it is still
+			// arriving, where the page is the centred name and the spinner.
+			want := "x logs"
+			if !loaded {
+				want = "komizo"
+			}
+			if !strings.Contains(v, want) {
+				t.Errorf("height=%d loaded=%v: %q is missing", h, loaded, want)
 			}
 		}
 	}

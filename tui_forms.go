@@ -218,7 +218,7 @@ func (m model) handleFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		f.problem = ""
 	default:
-		if s := msg.String(); len(s) == 1 {
+		if s := typedText(msg); s != "" {
 			f.fields[f.focus].value += s
 			f.problem = ""
 		}
@@ -284,21 +284,20 @@ func (m model) handleSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // two facts that matter to the person reading are that it takes a minute and
 // that nothing else on the machine is touched.
 func (m model) viewSetup() string {
-	lines := []string{titleStyle.Render("This server is not set up yet"), ""}
+	// The same opening as the login screen and the loader, then a gap, then
+	// what this particular box needs. The gap is doing real work: it separates
+	// what the tool is from what is being asked, which are two different
+	// registers -- one is a banner, the other is a decision.
+	lines := append(m.brandBlock(), "", "")
 	if m.srv.state == "docker-stopped" {
 		lines = append(lines,
 			dot("warn")+" "+warnStyle.Render("Docker is installed but not running; continuing starts it"),
 			"")
 	}
-
-	// Centred line by line, not aligned to a common left edge. A block edge is
-	// what a table or a list wants; a sentence under a centred title wants to
-	// sit under the middle of it.
-	for _, ln := range wrap("Your server & keys secured", textWidth(m.width)) {
-		lines = append(lines, dimStyle.Render(ln))
-	}
-
-	lines = append(lines, "", "", m.setupButtons())
+	lines = append(lines,
+		titleStyle.Render("This server is not set up yet"),
+		"",
+		m.setupButtons())
 	return m.centred(lines...)
 }
 

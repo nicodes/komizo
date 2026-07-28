@@ -243,10 +243,33 @@ func concat(parts ...[]string) []string {
 // A blank row rather than nothing, so the layout does not shift when the first
 // inventory lands and the real header appears.
 func (m model) headerLine() string {
-	if m.scr == screenLoading || m.scr == screenLogin {
+	if m.showsBrand() {
 		return "\n"
 	}
 	return header(m.crumb())
+}
+
+// showsBrand is whether the body already carries the name, centred.
+//
+// The name appears once per screen. Every page that is one thing on an empty
+// screen puts it in the middle -- login, loading, setup, and a log that has not
+// arrived yet -- and on those the corner would be the same word twice. A blank
+// row rather than nothing, so the layout does not shift when the real header
+// takes over.
+func (m model) showsBrand() bool {
+	switch m.scr {
+	case screenLogin, screenLoading, screenSetup:
+		return true
+	case screenLogs:
+		return m.loading()
+	}
+	return false
+}
+
+// brandBlock is the name and what it is for: the three lines every centred page
+// opens with, so they open the same way.
+func (m model) brandBlock() []string {
+	return []string{brandStyle.Render("komizo"), "", dimStyle.Render(tagline)}
 }
 
 // crumb is where you are, for the header: komizo / monitor.
@@ -343,13 +366,7 @@ func (m model) hasStatus() bool {
 // the page and no page to be anywhere in yet. The address is the only thing
 // this program needs that it cannot work out for itself.
 func (m model) loginPane() string {
-	return m.centred(
-		brandStyle.Render("komizo"),
-		"",
-		dimStyle.Render("your server, secured"),
-		"",
-		m.loginField(),
-	)
+	return m.centred(append(m.brandBlock(), "", m.loginField())...)
 }
 
 // loginField is the address being typed, with a caret and a placeholder.
@@ -471,14 +488,7 @@ func (m model) centred(lines ...string) string {
 // available in the terminal's own type, which renders it properly at whatever
 // size and weight the user has picked.
 func (m model) loadingPane() string {
-	// The name only on the first read, where there is nothing else to say and
-	// the header has stood down. A log opening has its own header -- "komizo /
-	// blog-web-1 logs" -- and repeating the brand under it would be the same
-	// word twice on a page that is already telling you what it is fetching.
-	if m.scr != screenLoading {
-		return m.centred(spinnerAccent(m.spin))
-	}
-	lines := []string{brandStyle.Render("komizo"), "", spinnerAccent(m.spin)}
+	lines := append(m.brandBlock(), "", spinnerAccent(m.spin))
 	// An operation says what it is: setting a server up takes a minute, and a
 	// spinner on its own for that long is indistinguishable from a hang.
 	if m.running() {

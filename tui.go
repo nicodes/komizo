@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"time"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -198,11 +199,46 @@ func (m model) handleLoginKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if s := msg.String(); len(s) == 1 {
+	if s := typedText(msg); s != "" {
 		m.login += s
 		m.status, m.statusErr = "", false
 	}
 	return m, nil
+}
+
+// typedText is the text a keypress adds to a field: one character, or the whole
+// of a paste.
+//
+// A paste arrives as ONE key message carrying every rune -- bracketed paste is
+// on by default -- so the test this replaced, `len(msg.String()) == 1`, dropped
+// it entirely. Every field in the interface was type-only, and silently: the
+// keystroke was received and discarded, so nothing appeared and nothing said
+// why. Pasting an address or a config image path is the normal way to enter
+// one; they are copied from a provider's console or a registry page.
+//
+// Newlines, tabs and control characters are stripped rather than inserted.
+// Every field here is a single line, and a value copied out of a terminal or a
+// web page routinely brings a trailing newline with it.
+//
+// Alt chords are not text. Alt+a arrives as a rune with the Alt flag set, and
+// inserting "a" for it would put a letter in the field for a key nobody typed.
+func typedText(msg tea.KeyMsg) string {
+	if msg.Alt {
+		return ""
+	}
+	switch msg.Type {
+	case tea.KeySpace:
+		return " "
+	case tea.KeyRunes:
+		var b strings.Builder
+		for _, r := range msg.Runes {
+			if !unicode.IsControl(r) {
+				b.WriteRune(r)
+			}
+		}
+		return b.String()
+	}
+	return ""
 }
 
 // pollMsg is five seconds passing: time to re-read the box.
