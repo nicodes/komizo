@@ -14,7 +14,6 @@ import (
 func viewMonitor(m model) string {
 	var b strings.Builder
 	b.WriteString(m.boxSection())
-	b.WriteString(m.proxySection())
 
 	// No blank line under the heading. Every app below is a group with a blank
 	// line above it, so one here made the first group sit lower than the rest
@@ -191,29 +190,37 @@ func (m model) boxSection() string {
 	b.WriteString(kvSel("docker", dimStyle.Render(orDash(m.srv.docker)), m.cursor == 0))
 	// No known_hosts row. The value is per app -- the keys are the box's, the
 	// names are the repo's -- so it is copied from the app it belongs to.
+	b.WriteString(m.proxyRows())
 	return b.String()
 }
 
-// proxySection sits between the server and the apps because that is what it is:
-// the thing every app on the box reaches the outside through, and the first
-// suspect when one of them is up and still not answering.
+// proxyRows are the shared reverse proxy, under the Server heading rather than
+// one of their own. A heading for two rows was a heading earning its keep on
+// grouping alone, and there was nothing else to group them against: the proxy
+// is a fact about this box the same way its docker version is.
+//
+// They stay directly under the server and above the apps, which is what they
+// are: the thing every app on the box reaches the outside through, and the
+// first suspect when one of them is up and still not answering.
 //
 // It had a settings page once, with a field for the network and one for the
 // image. Two questions to reach a button that almost always wanted the values
 // already on screen -- so the values are simply shown, in the same label/value
 // rows the Server section uses, and changing either is a flag on the command
 // line where it belongs for something you do once.
-func (m model) proxySection() string {
+func (m model) proxyRows() string {
 	var b strings.Builder
-	b.WriteString(section("Proxy"))
 	pg, pt := m.proxyLine()
 	ng, nt := m.networkLine()
+	// "proxy", not "status". Under its own heading the row could be called that
+	// and be unambiguous; under Server it would read as the server's status,
+	// which is a different thing and one this page does not claim to know.
 	if !m.proxy.installed {
-		b.WriteString(kvDot("status", pg, pt, false))
+		b.WriteString(kvDot("proxy", pg, pt, false))
 		b.WriteString(kvDot("network", ng, nt, false))
 		return b.String()
 	}
-	b.WriteString(kvDot("status", pg, pt, m.cursor == m.rowIndex(focusProxy)))
+	b.WriteString(kvDot("proxy", pg, pt, m.cursor == m.rowIndex(focusProxy)))
 	b.WriteString(kvDot("network", ng, nt, false))
 	// No image row. It is the one fact here that cannot change without someone
 	// deciding it should: status and network are things to check, and an image

@@ -2309,16 +2309,14 @@ func TestAddIsGlobalButTheDestructiveKeysAreNot(t *testing.T) {
 		}
 	}
 }
-func TestTheProxySectionIsPlainRows(t *testing.T) {
-	// Same shape as the Server section above it: a heading, then label/value
-	// rows. The image lived in the heading for a while, which made this the one
-	// section on the page with a different anatomy.
+func TestTheProxyIsPlainRowsUnderServer(t *testing.T) {
+	// Label/value rows under the Server heading, the same shape as the docker
+	// row above them. They had a heading of their own once; two rows is not a
+	// group, and the proxy is a fact about this box the way its docker version
+	// is.
 	m := netModel()
 	v := stripANSI(m.View())
-	if !strings.Contains(v, "Proxy\n") {
-		t.Errorf("the heading should be the word alone:\n%s", v)
-	}
-	for _, want := range []string{"status", "network"} {
+	for _, want := range []string{"proxy", "network"} {
 		found := false
 		for _, ln := range strings.Split(v, "\n") {
 			if strings.HasPrefix(strings.TrimSpace(ln), want) {
@@ -2326,7 +2324,7 @@ func TestTheProxySectionIsPlainRows(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("the proxy section is missing a %q row:\n%s", want, v)
+			t.Errorf("the server section is missing a %q row:\n%s", want, v)
 		}
 	}
 	// No image row. It is the one fact here that cannot change without someone
@@ -2340,7 +2338,7 @@ func TestTheProxySectionIsPlainRows(t *testing.T) {
 	// A box with no proxy has no image, and says so rather than showing blank.
 	m.proxy = proxyRow{}
 	if !strings.Contains(stripANSI(m.View()), "not installed") {
-		t.Error("with no proxy the status row should say so")
+		t.Error("with no proxy the row should say so")
 	}
 }
 
@@ -3005,18 +3003,31 @@ func TestStartStopAsksFirst(t *testing.T) {
 }
 
 func TestEverySectionIsAHeading(t *testing.T) {
-	// One page, three groups. The title is the only coloured thing on it; the
-	// headings are bold, so they mark a break without competing with it.
+	// Two groups, not three. The title is the only coloured thing on the page;
+	// the headings are bold, so they mark a break without competing with it.
+	//
+	// The proxy lost its heading and kept its rows: two rows under a heading of
+	// their own was a heading earning its keep on grouping alone, with nothing
+	// to group them against. They are facts about this box, like its docker
+	// version, so they sit under Server.
 	v := stripANSI(testModel().View())
-	for _, want := range []string{"komizo", "Server", "Proxy", "Apps"} {
+	for _, want := range []string{"komizo", "Server", "Apps"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("the page is missing the %q heading", want)
 		}
 	}
+	if strings.Contains(v, "Proxy") {
+		t.Error("the proxy should not have a heading of its own")
+	}
 	// Order matters: the box, then the thing every app depends on, then them.
-	iS, iP, iA := strings.Index(v, "Server"), strings.Index(v, "Proxy"), strings.Index(v, "Apps")
+	iS, iP, iA := strings.Index(v, "docker"), strings.Index(v, "proxy"), strings.Index(v, "Apps")
 	if !(iS < iP && iP < iA) {
-		t.Errorf("sections out of order: Server=%d Proxy=%d Apps=%d", iS, iP, iA)
+		t.Errorf("rows out of order: docker=%d proxy=%d Apps=%d", iS, iP, iA)
+	}
+	// Named "proxy" rather than "status": under Server that would read as the
+	// server's status, which is a different claim.
+	if strings.Contains(v, "status") {
+		t.Error(`the proxy row should be labelled "proxy", not "status"`)
 	}
 }
 
