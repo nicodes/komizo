@@ -283,7 +283,7 @@ func (m model) pageBody() string {
 	case screenLogs:
 		return m.viewLogs()
 	case screenSetup:
-		return viewSetup(m.srv)
+		return m.viewSetup()
 	}
 	return ""
 }
@@ -391,10 +391,15 @@ func (m model) statusLine() string {
 // footerKeys is what this screen can do, and it is the last thing on the page
 // on every one of them.
 func (m model) footerKeys() string {
+	// An operation on the loading screen says so in the middle of the page, so
+	// the footer stays empty rather than spinning a second time under it.
+	if m.running() && m.scr == screenLoading {
+		return ""
+	}
 	// A question replaces the keys rather than joining them: while one is open
 	// the keys underneath do not apply, and printing both would offer two sets
-	// of instructions at once. Before any screen's own keys, because setting a
-	// server up runs in the init screen's footer.
+	// of instructions at once. Before any screen's own keys, because an
+	// operation started from the setup screen runs in its footer.
 	if m.prompt != nil {
 		return m.promptView()
 	}
@@ -449,6 +454,20 @@ func (m model) centred(lines ...string) string {
 	return b.String()
 }
 
+// alignBlock pads lines to a common width, so centring them gives the block one
+// left edge instead of staggering every line by its own length.
+func alignBlock(lines []string) []string {
+	w := 0
+	for _, ln := range lines {
+		w = max(w, lipglossWidth(ln))
+	}
+	out := make([]string, len(lines))
+	for i, ln := range lines {
+		out[i] = pad(ln, w)
+	}
+	return out
+}
+
 // loadingPane is the one thing this interface shows while it waits: a spinner
 // with the word under it, in the middle of whatever space the page has.
 //
@@ -470,8 +489,14 @@ func (m model) loadingPane() string {
 	// the header has stood down. A log opening has its own header -- "komizo /
 	// blog-web-1 logs" -- and repeating the brand under it would be the same
 	// word twice on a page that is already telling you what it is fetching.
-	if m.scr == screenLoading {
-		return m.centred(brandStyle.Render("komizo"), "", spinnerAccent(m.spin))
+	if m.scr != screenLoading {
+		return m.centred(spinnerAccent(m.spin))
 	}
-	return m.centred(spinnerAccent(m.spin))
+	lines := []string{brandStyle.Render("komizo"), "", spinnerAccent(m.spin)}
+	// An operation says what it is: setting a server up takes a minute, and a
+	// spinner on its own for that long is indistinguishable from a hang.
+	if m.running() {
+		lines = append(lines, "", dimStyle.Render(m.run.title))
+	}
+	return m.centred(lines...)
 }

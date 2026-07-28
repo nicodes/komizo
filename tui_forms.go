@@ -243,36 +243,57 @@ func (m model) handleSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q", "esc", "ctrl+c":
 		return m, tea.Quit
 	case "enter":
-		// In this screen's footer, with the description of what is about to be
-		// installed still above it.
-		return m, tea.Batch(
-			m.startOp("Setting up "+m.tgt.host),
+		// Straight to the loading screen. What is about to be installed was
+		// worth reading while it was a decision; once it is running, the only
+		// thing anyone wants from the page is whether it is still going -- and
+		// leaving the description up behind a spinner reads as though it is
+		// still asking. The box is re-read when it finishes, and that read
+		// decides where you land: the monitor, or back here if it did not take.
+		cmd := m.startOp("Setting up " + m.tgt.host)
+		m.scr = screenLoading
+		return m, tea.Batch(cmd,
 			m.startInit(initOpts{network: defaultNetwork, image: defaultProxy}))
 	}
 	return m, nil
 }
 
-func viewSetup(srv serverRow) string {
-	var b strings.Builder
-	b.WriteString("\n" + gutter + titleStyle.Render("Connected") +
-		dimStyle.Render(" — this server is not set up yet") + "\n\n")
-
-	if srv.state == "docker-stopped" {
-		b.WriteString(gutter + dot("warn") + " " + warnStyle.Render(
-			"Docker is installed but not running. Continuing will try to start it.") + "\n\n")
-	}
-
-	b.WriteString(para(gutter, "Setting it up installs:"))
-	b.WriteString("\n")
-	for _, l := range [][2]string{
+// viewSetup is what a fresh box gets: a statement of what is about to be
+// installed, centred, and one key.
+//
+// Centred to match the two other pages that are one thing on an empty screen --
+// the login field and the loading pane. It was written flush left like the
+// monitor, which is a list of many things and reads as one; this is a single
+// paragraph with a decision at the end of it, and a wall of text pinned to the
+// left margin of an otherwise blank page reads as an error report.
+//
+// The rows are padded to a common width before they are centred, so the block
+// keeps a left edge. Centring each line by its own length would stagger the
+// three descriptions and lose the column.
+func (m model) viewSetup() string {
+	rows := [][2]string{
 		{"docker", "the container runtime, enabled at boot"},
 		{defaultNetwork, "the network apps share to reach each other"},
 		{"caddy", "one reverse proxy, terminating HTTPS for every app"},
-	} {
-		b.WriteString(gutter + "  " + dimStyle.Render(pad(l[0], 10)) + " " + dimStyle.Render(l[1]) + "\n")
 	}
-	b.WriteString("\n" + para(gutter, "No accounts, and nothing under /srv — that comes later, when you\nadd an app. Safe to re-run; it is also how you update Docker."))
-	return b.String()
+	var block []string
+	for _, r := range rows {
+		block = append(block, dimStyle.Render(pad(r[0], 8))+"  "+dimStyle.Render(r[1]))
+	}
+
+	lines := []string{titleStyle.Render("This server is not set up yet"), ""}
+	if m.srv.state == "docker-stopped" {
+		lines = append(lines,
+			dot("warn")+" "+warnStyle.Render("Docker is installed but not running; continuing starts it"),
+			"")
+	}
+	lines = append(lines, dimStyle.Render("Setting it up installs"), "")
+	lines = append(lines, alignBlock(block)...)
+	lines = append(lines, "")
+	lines = append(lines, alignBlock([]string{
+		dimStyle.Render("No accounts, and nothing under /srv — that comes later, when"),
+		dimStyle.Render("you add an app. Safe to re-run; it also updates Docker."),
+	})...)
+	return m.centred(lines...)
 }
 
 // --- the prompts, shared -----------------------------------------------------

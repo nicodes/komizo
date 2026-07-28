@@ -1124,17 +1124,23 @@ func TestInitAsksOneThingOnly(t *testing.T) {
 			t.Errorf("init screen still contains %q -- it should ask nothing", gone)
 		}
 	}
-	// And enter goes straight to work, in this screen's own footer -- the
-	// description of what is being installed stays above it.
+	// And enter hands the page over to the loader. What is about to be
+	// installed was worth reading while it was a decision; once it is running,
+	// leaving the description up behind a spinner reads as though it is still
+	// asking.
 	m = send(m, "enter")
 	if !m.running() {
 		t.Error("enter should start the setup")
 	}
-	if m.scr != screenSetup {
-		t.Errorf("setting up should not leave the init screen, got %v", m.scr)
+	if m.scr != screenLoading {
+		t.Errorf("setting up should hand over to the loader, got %v", m.scr)
 	}
-	if !strings.Contains(stripANSI(m.View()), "Setting up") {
-		t.Error("the footer should say what it is doing")
+	v = stripANSI(m.View())
+	if !strings.Contains(v, "Setting up") {
+		t.Error("the loader should say what it is doing")
+	}
+	if strings.Contains(v, "installs") {
+		t.Error("the description should be gone once it is running")
 	}
 }
 
