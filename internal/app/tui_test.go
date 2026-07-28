@@ -668,8 +668,11 @@ func TestFreshServerGetsTheInitScreen(t *testing.T) {
 	// What gets installed is in docs/server.md; this screen used to list it
 	// piece by piece, which is implementation detail for someone who has not
 	// decided to use the tool yet.
+	// The tagline by reference, not by a word out of it: this assertion has
+	// outlived one rewording already, and a literal here fails on the next one
+	// without anything actually being wrong.
 	v := strings.ToLower(m.View())
-	for _, want := range []string{"not set up yet", "secured", "start", "cancel"} {
+	for _, want := range []string{"not set up yet", strings.ToLower(tagline), "start", "cancel"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("setup screen is missing %q", want)
 		}
