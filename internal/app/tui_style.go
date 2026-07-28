@@ -84,14 +84,21 @@ func pad(s string, w int) string {
 // A second rule six lines above it separated the title from the content, which
 // were never in danger of being confused.
 //
-// The address used to sit here. It moved to a row in the Server section, where
-// it is one fact among the others rather than a permanent banner -- but that
-// removed it from the confirmation screens, so anything destructive now names
-// the host itself. See removePrompt.
-func header(crumb string) string {
+// The address is the first crumb: komizo / root@box / monitor. It spent a while
+// as a row in the Server section instead, on the grounds that it was one fact
+// among the others -- but it is not one of the others. Everything else in that
+// section is a property of the box; the address is WHICH box, and every row on
+// the page is about a different thing depending on it.
+//
+// Which is why anything destructive names the host in its own prompt, and still
+// does: a banner is read once and then stops being read. See removePrompt.
+func header(parts ...string) string {
 	line := brandStyle.Render("komizo")
-	if crumb != "" {
-		line += dimStyle.Render(" / ") + crumbStyle.Render(crumb)
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		line += dimStyle.Render(" / ") + crumbStyle.Render(p)
 	}
 	// Flush left, and no blank row above it. The header and the footer are the
 	// window's edges: they run corner to corner, and the gutter belongs to the

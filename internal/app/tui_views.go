@@ -174,8 +174,9 @@ func (m model) rowIndex(kind focusKind) int {
 	return -1
 }
 
-// boxSection is the server itself, address included -- it was the header's job
-// until the header became just the name of the tool.
+// boxSection is the server itself. Not its address: that is in the header, as
+// the first crumb, because it is the one fact on this page that every other
+// fact is relative to.
 //
 // The docker row is where re-running server setup lives -- that is what an
 // update IS, and it is the version on that row that changes. Putting the action
@@ -187,7 +188,6 @@ func (m model) rowIndex(kind focusKind) int {
 func (m model) boxSection() string {
 	var b strings.Builder
 	b.WriteString(section("Server"))
-	b.WriteString(kv("address", dimStyle.Render(m.tgt.display())))
 	b.WriteString(kvSel("docker", dimStyle.Render(orDash(m.srv.docker)), m.cursor == 0))
 	// No known_hosts row. The value is per app -- the keys are the box's, the
 	// names are the repo's -- so it is copied from the app it belongs to.

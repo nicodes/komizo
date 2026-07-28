@@ -2786,7 +2786,7 @@ func TestWaitsShowASpinner(t *testing.T) {
 	// what it is doing -- and NOT the name, which the corner already carries.
 	log.reflow()
 	lv := stripANSI(log.View())
-	if !strings.Contains(lv, "komizo / web logs") {
+	if !strings.Contains(lv, "komizo / root@box.example.com / web logs") {
 		t.Errorf("a loading log should keep its header:\n%s", lv)
 	}
 	if !strings.Contains(lv, "loading...") {
@@ -2812,9 +2812,13 @@ func TestWaitsShowASpinner(t *testing.T) {
 }
 
 func TestTheHeaderSaysWhereYouAre(t *testing.T) {
-	// komizo / monitor. The brand keeps the accent and the bold; the crumb is
-	// plain, so the eye lands on the tool first and the part that changes reads
-	// as the part that changes.
+	// komizo / root@box / monitor: the tool, which box, where in it. The brand
+	// keeps the accent and the bold; the crumbs are plain, so the eye lands on
+	// the tool first and the parts that change read as the parts that change.
+	//
+	// The address is a crumb rather than a row in the Server section because it
+	// is not a property of the box the way its docker version is -- it is WHICH
+	// box, and every other fact on the page is relative to it.
 	m := testModel()
 	m.width, m.height = 90, 20
 
@@ -2825,11 +2829,11 @@ func TestTheHeaderSaysWhereYouAre(t *testing.T) {
 		set  func(*model)
 		want string
 	}{
-		"the list": {func(m *model) {}, "komizo / monitor"},
+		"the list": {func(m *model) {}, "komizo / root@box.example.com / monitor"},
 		"a log": {func(m *model) {
 			m.scr, m.logsLabel, m.logsOf, m.logsReady = screenLogs, "blog-web-1", "x", true
 			m.logs = "one\ntwo"
-		}, "komizo / blog-web-1 logs"},
+		}, "komizo / root@box.example.com / blog-web-1 logs"},
 	} {
 		next := m
 		c.set(&next)
