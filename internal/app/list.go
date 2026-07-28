@@ -319,6 +319,15 @@ func (c containerRow) portsText() string {
 	if c.ports == "" {
 		return "—"
 	}
+	return c.portsList()
+}
+
+// portsList is the same without the em dash, for the places that leave nothing
+// out rather than drawing a placeholder.
+func (c containerRow) portsList() string {
+	if c.ports == "" {
+		return ""
+	}
 	return ":" + strings.ReplaceAll(c.ports, ",", ", :")
 }
 

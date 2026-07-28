@@ -67,7 +67,7 @@ func viewIndex(m model) string {
 		// clipped away entirely, on a box that was serving traffic.
 		rows = append(rows, treeRow{idx: idx, cells: []string{
 			m.rowDot("app:"+a.name, appDot(a)),
-			dimStyle.Render(a.name),
+			named(a.name, shortText(a.version)),
 			dimStyle.Render(a.stateText()),
 			// The last half hour of requests, and the last complete minute's
 			// rate. Dots rather than a flat line when nothing has arrived: a
@@ -75,7 +75,6 @@ func viewIndex(m model) string {
 			// box for anything" is a different statement from "zero requests".
 			m.sparkFor(a.name),
 			m.rateFor(a.name),
-			short(a.version),
 			dimStyle.Render(a.image),
 		}})
 		// Each container under its app, with the hostnames that reach IT.
@@ -98,7 +97,7 @@ func viewIndex(m model) string {
 		for _, c := range a.containers {
 			kids = append(kids, child{idx: idx, cells: []string{
 				m.rowDot(c.name, stateDot(c.state)),
-				dimStyle.Render(c.service),
+				named(c.service, c.portsList()),
 				// Docker's wording goes in the app's uptime column rather than
 				// beside it. It is the same measurement in another format, so a
 				// placeholder to keep them apart would only be an empty column
@@ -112,7 +111,6 @@ func viewIndex(m model) string {
 				// proxy DIALLED, which is a declaration and could be wrong.
 				// Apps ship no fragment now, and the port is observed instead:
 				// strictly better information from a source that cannot drift.
-				dimStyle.Render(c.portsText()),
 				"",
 				"",
 				m.routesCell(c, byContainer[c.name]),
@@ -359,13 +357,37 @@ func appActions() []string {
 
 // short trims a commit SHA to something readable without losing which it is.
 func short(v string) string {
+	return dimStyle.Render(shortText(v))
+}
+
+// shortText is the same trimming without the styling, for the places that build
+// a longer string around it.
+func shortText(v string) string {
 	if v == "" || v == "none" {
-		return dimStyle.Render("never deployed")
+		return "never deployed"
 	}
 	if len(v) > 12 {
 		v = v[:12]
 	}
-	return dimStyle.Render(v)
+	return v
+}
+
+// named is a row's name with the one fact that belongs to it rather than to a
+// column: an app's deployed version, a container's listening ports.
+//
+// Beside the name rather than in a column of their own because they are not
+// comparable down the page -- every row's version is a different string and
+// every row's ports a different number, so a column of them is a column nothing
+// lines up in. Next to the name they read as what they are: this app, at this
+// version.
+//
+// Nothing in parentheses when there is nothing to say. "api ()" and "api (—)"
+// both claim a fact is missing; the name alone claims nothing.
+func named(name, detail string) string {
+	if detail == "" {
+		return dimStyle.Render(name)
+	}
+	return dimStyle.Render(name + " (" + detail + ")")
 }
 
 // rowDot is a row's status, or a spinner when that row has an action running.
