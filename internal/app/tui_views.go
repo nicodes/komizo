@@ -60,6 +60,7 @@ func viewMonitor(m model) string {
 			dimStyle.Render(a.stateText()),
 			short(a.version),
 			dimStyle.Render(a.image),
+			"",
 		}})
 		// Each container under its app, with the hostnames that reach IT.
 		//
@@ -69,6 +70,7 @@ func viewMonitor(m model) string {
 		// Putting them on the container turns two lookups into a glance.
 		idx++
 		byContainer := a.routesByContainer(m.net)
+		portOf := a.portsByContainer(m.net)
 
 		// Children are built first so the last one can be corner-joined, and
 		// the join lives INSIDE the name cell -- indenting the name without
@@ -88,6 +90,15 @@ func viewMonitor(m model) string {
 				// down the middle of the block.
 				dimStyle.Render(c.stateText()),
 				dimStyle.Render(c.imageText(a.version)),
+				// The port the proxy dials this container on. Read off the
+				// caddy fragment, because it is the only place it is written:
+				// no komizo app publishes a port, so docker reports none.
+				//
+				// Worth a column of its own now that a service is named after
+				// its image -- with those two columns saying the same word,
+				// "which port does this answer on" was the question the row
+				// could not answer at all.
+				portCell(portOf[c.name]),
 				m.routesCell(c, byContainer[c.name]),
 			}})
 			idx++
@@ -105,6 +116,9 @@ func viewMonitor(m model) string {
 				// it is what serves this row in place of one.
 				dimStyle.Render("—"),
 				dimStyle.Render("static"),
+				// Served by the proxy itself off disk, so there is no port to
+				// dial and no process listening on one.
+				dimStyle.Render("—"),
 				dimStyle.Render(strings.Join(r.hostnames(), ", ")),
 			}})
 		}
@@ -417,6 +431,15 @@ func (m model) routesCell(c containerRow, routes []string) string {
 		}
 	}
 	return routesOrNone(routes)
+}
+
+// portCell renders the port a container is reached on. Em dash when no route
+// names one, which is normal for a worker or anything else nothing proxies to.
+func portCell(port string) string {
+	if port == "" {
+		return dimStyle.Render("—")
+	}
+	return dimStyle.Render(":" + port)
 }
 
 // routesOrNone keeps the column readable when nothing is published through the

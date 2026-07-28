@@ -150,8 +150,16 @@ for bin in /usr/local/bin/deploy-*; do
 						# placeholders a dynamic upstream uses.
 						if (u == "" || u ~ /^[{}]/ || u ~ /^-/) continue
 						sub(/^https?:\/\//, "", u)
+						# The port is kept, not just stripped to find the
+						# alias. It is the other half of what the proxy dials,
+						# and the only place on the box it is written down --
+						# a komizo app publishes no ports, so docker reports
+						# none and the image does not declare which one the
+						# process actually listens on.
+						port = ""
+						if (match(u, /:[0-9]+$/)) port = substr(u, RSTART + 1, RLENGTH - 1)
 						sub(/:[0-9]*$/, "", u)
-						if (u != "") printf "route\t%s\t%s\t%s\n", app, sites, u
+						if (u != "") printf "route\t%s\t%s\t%s\t%s\n", app, sites, u, port
 					}
 				}
 				o = gsub(/\{/, "{", line); c = gsub(/\}/, "}", line)
@@ -256,6 +264,11 @@ type routeRow struct {
 	app      string
 	sites    string // comma-joined, as written in the fragment
 	upstream string
+	// port is what the fragment dials the upstream ON, empty when it named
+	// none. Not derivable from anywhere else: komizo apps publish no ports, so
+	// docker reports none and the image does not declare which one the process
+	// actually listens on.
+	port string
 }
 
 // hostnames is every name this route answers on.
@@ -275,33 +288,59 @@ func (r routeRow) hostnames() []string { return strings.Split(r.sites, ",") }
 // fragment naming something else simply matches nothing -- which is the same
 // answer the alias lookup gives, arrived at without pretending.
 func (a appRow) routesByContainer(n netRow) map[string][]string {
-	alias := map[string]string{}
-	for _, m := range n.members {
-		for _, al := range m.aliases {
-			alias[al] = m.container
-		}
-	}
-	mine := map[string]bool{}
-	for _, c := range a.containers {
-		mine[c.name] = true
-	}
-
 	byContainer := map[string][]string{}
 	for _, r := range a.routes {
-		if cn, ok := alias[r.upstream]; ok && mine[cn] {
+		if cn := a.containerFor(r, n); cn != "" {
 			byContainer[cn] = append(byContainer[cn], r.hostnames()...)
+		}
+	}
+	return byContainer
+}
+
+// portsByContainer is the port each container is dialled on, by the same match.
+//
+// One port per container rather than a set: several routes may reach the same
+// container -- ormos's api answers on four hostnames -- but they reach it on
+// the same port, because that is the port the process listens on. A fragment
+// that really did name two would be showing the first, which is a fair reading
+// of a file that contradicts itself.
+func (a appRow) portsByContainer(n netRow) map[string]string {
+	byContainer := map[string]string{}
+	for _, r := range a.routes {
+		if r.port == "" {
 			continue
 		}
-		for _, c := range a.containers {
-			if r.upstream == c.service ||
-				r.upstream == a.name+"-"+c.service ||
-				strings.HasSuffix(r.upstream, "-"+c.service) {
-				byContainer[c.name] = append(byContainer[c.name], r.hostnames()...)
-				break
+		if cn := a.containerFor(r, n); cn != "" {
+			if _, seen := byContainer[cn]; !seen {
+				byContainer[cn] = r.port
 			}
 		}
 	}
 	return byContainer
+}
+
+// containerFor resolves a route's upstream to one of this app's containers,
+// or "" when it names nothing here.
+func (a appRow) containerFor(r routeRow, n netRow) string {
+	mine := map[string]bool{}
+	for _, c := range a.containers {
+		mine[c.name] = true
+	}
+	for _, m := range n.members {
+		for _, al := range m.aliases {
+			if al == r.upstream && mine[m.container] {
+				return m.container
+			}
+		}
+	}
+	for _, c := range a.containers {
+		if r.upstream == c.service ||
+			r.upstream == a.name+"-"+c.service ||
+			strings.HasSuffix(r.upstream, "-"+c.service) {
+			return c.name
+		}
+	}
+	return ""
 }
 
 // allRoutes is every hostname the app publishes, for the places that want one
@@ -654,8 +693,8 @@ func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, n
 			fmt.Sscanf(f[8], "%d", &c.exitCode)
 			c.image = f[9]
 			containers = append(containers, c)
-		case len(f) == 4 && f[0] == "route":
-			routes = append(routes, routeRow{app: f[1], sites: f[2], upstream: f[3]})
+		case len(f) == 5 && f[0] == "route":
+			routes = append(routes, routeRow{app: f[1], sites: f[2], upstream: f[3], port: f[4]})
 		case len(f) == 4 && f[0] == "static":
 			statics = append(statics, staticRow{app: f[1], sites: f[2], root: f[3]})
 		case len(f) == 8 && f[0] == "proxy":

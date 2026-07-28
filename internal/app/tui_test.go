@@ -508,7 +508,7 @@ func TestInventoryParsing(t *testing.T) {
 	out := strings.Join([]string{
 		"server\tready\tDocker version 26.1.3",
 		"app\tblog\tcd-blog\t/srv/blog\ta1b2\t2\tghcr.io/you/blog-config\tblog.example.com",
-		"route\tblog\tblog.example.com\tblog-web",
+		"route\tblog\tblog.example.com\tblog-web\t8080",
 		"app\tworker\tcd-worker\t/srv/worker\tnone\t0\tghcr.io/you/worker-config\t",
 		"proxy\trunning\tedge\tcaddy:2\tUp 3 hours\t2026-07-27T09:00:00Z\t0001-01-01T00:00:00Z\t0",
 		"net\tedge\tbridge\t172.18.0.0/16",
@@ -1487,7 +1487,7 @@ func TestInventoryAttachesContainersToTheirApp(t *testing.T) {
 		"app\tblog\tkomizo-blog\t/srv/blog\ta1b2c3d\t2\tghcr.io/you/blog-config\t",
 		"container\tblog\tweb\tblog-web-1\trunning\tUp 3 hours\t2026-07-27T09:00:00.123456789Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-web:a1b2c3d",
 		"container\tblog\tdb\tblog-db-1\texited\tExited (1) 2 minutes ago\t2026-07-27T08:00:00Z\t2026-07-27T09:30:00Z\t1\tghcr.io/you/blog-db:a1b2c3d",
-		"route\tblog\tblog.example.com,www.blog.example.com\tblog-web",
+		"route\tblog\tblog.example.com,www.blog.example.com\tblog-web\t8080",
 		"app\tshop\tkomizo-shop\t/srv/shop\tnone\t0\tghcr.io/you/shop-config\t",
 	}, "\n")
 
@@ -3631,5 +3631,46 @@ func TestTheImageColumnDropsTheVersionItRepeats(t *testing.T) {
 	}
 	if got := (containerRow{image: "localhost:5000/api"}).imageText("none"); got != "api" {
 		t.Errorf("an untagged image on a ported registry, got %q", got)
+	}
+}
+
+// The port a container is dialled on is only ever written in the caddy
+// fragment: a komizo app publishes no ports, so docker reports none and the
+// image does not declare one. If it is dropped on the way through, nothing
+// else on the box can answer "which port does this answer on".
+func TestMonitorShowsTheProxiedPort(t *testing.T) {
+	out := strings.Join([]string{
+		"server\tready\tDocker version 26.1.3",
+		"app\tblog\tkomizo-blog\t/srv/blog\ta1b2c3d\t2\tghcr.io/you/blog-config\t",
+		"container\tblog\tblog-web\tblog-blog-web-1\trunning\tUp 3 hours\t2026-07-27T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-web:a1b2c3d",
+		"container\tblog\tworker\tblog-worker-1\trunning\tUp 3 hours\t2026-07-27T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-worker:a1b2c3d",
+		"route\tblog\tblog.example.com\tblog-web\t8080",
+		"static\tblog\tdocs.example.com\t/srv/blog/public/docs",
+	}, "\n")
+
+	apps, _, _, _, _ := parseInventory(out)
+	if len(apps) != 1 {
+		t.Fatalf("expected 1 app, got %d", len(apps))
+	}
+	if p := apps[0].routes[0].port; p != "8080" {
+		t.Errorf("port not carried through parsing: %q", p)
+	}
+
+	m := testModel()
+	m.width, m.height = 200, 40
+	m.apps = apps
+	v := stripANSI(m.View())
+
+	if !strings.Contains(v, ":8080") {
+		t.Errorf("the proxied port should be on the container's row:\n%s", v)
+	}
+	// A worker nothing proxies to has no port, and saying so is the point --
+	// blank would read as "not loaded yet".
+	ports := apps[0].portsByContainer(netRow{})
+	if _, ok := ports["blog-worker-1"]; ok {
+		t.Error("a container no route names should have no port")
+	}
+	if got := portCell(""); !strings.Contains(got, "—") {
+		t.Errorf("a container with no port should render an em dash, got %q", got)
 	}
 }
