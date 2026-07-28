@@ -760,6 +760,11 @@ func (m model) handleIndexKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// An app, or one container inside it. Not the proxy: its traffic is
 		// every app's added together, which is a number with no owner.
 		switch f := m.focused(); f.kind {
+		case focusProxy:
+			// Everything on the box, which is what the proxy is: every request
+			// to every app passes through it, and it is the only thing here
+			// that can be asked about all of them at once.
+			return m.openCharts("", "")
 		case focusApp:
 			if f.app >= 0 {
 				return m.openCharts(m.apps[f.app].name, "")

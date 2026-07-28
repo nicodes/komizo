@@ -164,9 +164,14 @@ func (m model) viewCharts() string {
 	}
 	now := time.Now().Unix()
 	var s series
-	if m.chartsSvc == "" {
+	switch {
+	case m.chartsOf == "":
+		// The whole box: every app added together. Not every request -- traffic
+		// matching no app is counted for nobody and is missing here too.
+		s = seriesForBox(m.charts, now-chartWindow*60, now)
+	case m.chartsSvc == "":
 		s = seriesFor(m.charts, m.chartsOf, now-chartWindow*60, now)
-	} else {
+	default:
 		// A container nobody pointed a hostname at is not idle -- it is
 		// unmeasurable from here, and a chart of zeros would say the first
 		// thing while meaning the second.
@@ -182,10 +187,12 @@ func (m model) viewCharts() string {
 		s = seriesForService(m.charts, m.chartsOf, m.chartsSvc, now-chartWindow*60, now)
 	}
 	if !s.any() {
-		return m.centred(
-			dimStyle.Render("no requests in the last "+fmt.Sprintf("%dh", chartWindow/60)),
-			"",
-			dimStyle.Render("nothing has reached this app, or nothing has reached the box"))
+		what := "this app"
+		if m.chartsOf == "" {
+			what = "this box"
+		}
+		return m.centred(dimStyle.Render(
+			fmt.Sprintf("no requests to %s in the last %dh", what, chartWindow/60)))
 	}
 
 	// Built against m.width, not left to wrap: the frame CLIPS long rows rather
@@ -223,14 +230,6 @@ func (m model) viewCharts() string {
 	// including the ordinary ones.
 	b.WriteString(m.combinedChart(s.errors, trailingPoisson(s.errors), s.from, s.to, w, panelHeight, keyStyle, bandUpOnly))
 
-	rate, errs := s.rate()
-	b.WriteString(section("Now"))
-	b.WriteString(kv("requests", dimStyle.Render(fmt.Sprintf("%d in the last full minute", rate))))
-	b.WriteString(kv("failures", dimStyle.Render(fmt.Sprintf("%d in the last full minute", errs))))
-	// Said out loud because every other number on this screen is exact, and
-	// somebody will otherwise read this one as exact too.
-	b.WriteString(kv("window", dimStyle.Render(
-		fmt.Sprintf("%dh, as far back as the proxy's log still goes", chartWindow/60))))
 	return b.String()
 }
 

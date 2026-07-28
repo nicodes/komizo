@@ -3859,16 +3859,25 @@ func TestChartsOpenOnAnAppOnly(t *testing.T) {
 		t.Error("esc should go back to the list")
 	}
 
-	// Not on the proxy row, and not advertised there either -- an unadvertised
-	// key that acts on a row you did not select is worse than no key.
+	// The proxy row opens the whole box: every request to every app passes
+	// through it, and it is the only row that can be asked about all of them.
 	p := netModel()
 	p.width, p.height = 100, 30
 	p.cursor = rowOf(p, focusProxy)
-	if next := send(p, "m"); next.scr != screenIndex {
-		t.Error("m must do nothing with the proxy selected")
+	box, cmd := sendCmd(p, "m")
+	if box.scr != screenCharts {
+		t.Fatalf("m on the proxy should open the box's requests, got %v", box.scr)
 	}
-	if strings.Contains(stripANSI(p.pageFooter()), "metrics") {
-		t.Error("the footer should not offer metrics on a row that has none")
+	if cmd == nil {
+		t.Error("it should fetch")
+	}
+	if box.chartsOf != "" || box.chartsSvc != "" {
+		t.Errorf("the box's chart names no app: got %q/%q", box.chartsOf, box.chartsSvc)
+	}
+	// Its crumb nests under nothing -- the host in front of it already names
+	// the machine.
+	if got := box.crumb(); got != "requests" {
+		t.Errorf("box crumb = %q, want \"requests\"", got)
 	}
 }
 
@@ -4233,5 +4242,30 @@ func TestTheUnusualLineIsGraded(t *testing.T) {
 		if got := bandUpOnly(c.score); got != c.want {
 			t.Errorf("bandUpOnly(%v) = %s, want %s", c.score, got, c.want)
 		}
+	}
+}
+
+// The box's chart is every app added together -- and NOT every request. Traffic
+// matching no app is counted for nobody, which is the honest limit of a number
+// built by attribution.
+func TestTheBoxChartSumsEveryApp(t *testing.T) {
+	rows := []metricRow{
+		{minute: 600, app: "blog", service: "api", c2: 10, c5: 1},
+		{minute: 600, app: "shop", c2: 5},
+		{minute: 660, app: "blog", c2: 2},
+	}
+	s := seriesForBox(rows, 600, 660)
+	if s.total[0] != 16 {
+		t.Errorf("minute one = %v, want (10+1)+5", s.total[0])
+	}
+	if s.errors[0] != 1 {
+		t.Errorf("minute one 5xx = %v, want 1", s.errors[0])
+	}
+	if s.total[1] != 2 {
+		t.Errorf("minute two = %v, want 2", s.total[1])
+	}
+	// One app's own view is unchanged by the box's existing.
+	if b := seriesFor(rows, "blog", 600, 660); b.total[0] != 11 {
+		t.Errorf("blog alone = %v, want 11", b.total[0])
 	}
 }

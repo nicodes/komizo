@@ -305,6 +305,7 @@ func (m model) crumb() string {
 		return crumbPath(m.logsApp, m.logsSvc, m.logsLabel, "logs")
 	case screenCharts:
 		return crumbPath(m.chartsOf, m.chartsSvc, m.chartsOf, "requests")
+
 	case screenSetup:
 		return "setup"
 	case screenIndex:
@@ -330,7 +331,12 @@ func crumbPath(app, service, fallback, leaf string) string {
 	parts := []string{}
 	switch {
 	case app == "":
-		parts = append(parts, fallback)
+		// Nothing to nest under. Either a thing that belongs to no app -- the
+		// proxy -- or the whole box, which is every app at once and so is named
+		// by the host already in front of this.
+		if fallback != "" {
+			parts = append(parts, fallback)
+		}
 	case service == "":
 		parts = append(parts, app)
 	default:

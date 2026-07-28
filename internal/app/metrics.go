@@ -204,6 +204,30 @@ func seriesFor(rows []metricRow, app string, from, to int64) series {
 	return s
 }
 
+// seriesForBox totals every app on the machine.
+//
+// Every APP -- not every request. Traffic whose hostname matches no app is
+// counted for nobody and is missing from this too, which is the honest limit of
+// a number built by attribution: a scanner on the raw IP, or somebody else's
+// DNS pointed here, never appears.
+func seriesForBox(rows []metricRow, from, to int64) series {
+	from, to = from/60*60, to/60*60
+	if to < from {
+		to = from
+	}
+	n := int((to-from)/60) + 1
+	s := series{from: from, to: to, total: make([]float64, n), errors: make([]float64, n)}
+	for _, r := range rows {
+		if r.minute < from || r.minute > to {
+			continue
+		}
+		i := int((r.minute - from) / 60)
+		s.total[i] += float64(r.total())
+		s.errors[i] += float64(r.c5)
+	}
+	return s
+}
+
 func seriesForService(rows []metricRow, app, service string, from, to int64) series {
 	var mine []metricRow
 	for _, r := range rows {
