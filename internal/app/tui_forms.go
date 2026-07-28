@@ -200,18 +200,18 @@ func (m model) handleFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		// Recorded on the target, not just passed to the operation, so the
-		// server screen keeps showing the complete SSH_KNOWN_HOSTS afterwards.
-		// It used to be handed to the add alone, which meant the one screen
-		// meant to be the durable home for that value silently gave a shorter
-		// answer than the add had just printed.
-		m.tgt.aliases = mergeNames(m.tgt.aliases, f.knownAs())
+		// The names go to the app, not onto the connection. They are recorded
+		// on the box beside the app, so this app's value can be rebuilt on any
+		// later run -- which is what the merge onto the target was reaching
+		// for and could not do: it lasted one session and leaked one app's
+		// names into the next app's value.
+		//
 		// Adding an app is not destructive, so it runs without a confirmation
 		// step -- re-running it on an existing app is how you repair one.
 		m.prompt = nil
 		return m, tea.Batch(
 			m.startOp(fmt.Sprintf("Setting up %q", f.app())),
-			m.startAdd(f.app(), f.config()))
+			m.startAdd(f.app(), f.config(), f.knownAs()))
 	case "backspace":
 		v := f.fields[f.focus].value
 		if v != "" {

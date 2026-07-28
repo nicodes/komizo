@@ -67,6 +67,19 @@ func (t target) knownHostsName(host string) string {
 	return "[" + host + "]:" + strconv.Itoa(t.port)
 }
 
+// namedFor is this target with one app's extra names on it, for building that
+// app's known_hosts value.
+//
+// A copy rather than a mutation: the names belong to the app, not to the
+// connection, and the interface holds one target across every app on the box.
+// They used to be merged onto it as apps were added, which meant an app's value
+// carried the names of whatever else had been set up in the same session -- and
+// lost them entirely on the next run, since nothing wrote them down.
+func (t target) namedFor(names []string) target {
+	t.aliases = names
+	return t
+}
+
 // knownHostsNames is every name to write an entry for: the one we connected by,
 // plus any aliases, de-duplicated and in a stable order.
 func (t target) knownHostsNames() []string {

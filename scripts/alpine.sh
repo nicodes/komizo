@@ -26,6 +26,7 @@
 #   APP_NAME       which app on this box                          (default: app)
 #   CI_USER        deploy account        (default: komizo-<app>)
 #   APP_DIR        root-owned app directory                (default: /srv/<app>)
+#   KNOWN_AS       names CI dials this app by, comma-separated    (kept if unset)
 #   HARDEN_SSH     1 to also harden sshd machine-wide             (default: 0)
 #
 # The server must already be initialised (alpine-init.sh) -- this script does
@@ -75,6 +76,19 @@ PROXY_CONTAINER=komizo-caddy
 CI_PUBKEY="${CI_PUBKEY:-${1:-}}"
 CONFIG_IMAGE="${CONFIG_IMAGE:-}"
 HARDEN_SSH="${HARDEN_SSH:-0}"
+
+# The names CI connects to this app by. Recorded per APP rather than per box:
+# known_hosts is matched on the exact string the client dialled, and each repo
+# dials one name -- so the value that repo pins should name that one, not every
+# name every app on this box answers to.
+#
+# Empty means keep whatever is already recorded, which is what re-running for a
+# config-image change wants: it is not saying the names changed, it is not
+# mentioning them.
+KNOWN_AS="${KNOWN_AS:-}"
+if [ -z "$KNOWN_AS" ] && [ -f "$DEPLOY_BIN" ]; then
+	KNOWN_AS="$(sed -n 's/^KNOWN_AS="\(.*\)"$/\1/p' "$DEPLOY_BIN" | head -n 1)"
+fi
 
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -265,6 +279,12 @@ set -eu
 
 CONFIG_IMAGE="$CONFIG_IMAGE"
 PROXY_CONTAINER="$PROXY_CONTAINER"
+
+# A record, not a setting: nothing below reads it. It is here because this file
+# is root-owned and already the place root pins what it knows about this app,
+# and because rebuilding the app's SSH_KNOWN_HOSTS later means knowing which
+# names it is dialled by.
+KNOWN_AS="$KNOWN_AS"
 
 version="\${1:-}"
 registry="\${2:-}"

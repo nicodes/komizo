@@ -167,7 +167,7 @@ func TestCursorReachesTheBoxRowsAndEveryContainer(t *testing.T) {
 	for _, f := range m.focusItems() {
 		kinds = append(kinds, f.kind)
 	}
-	want := []focusKind{focusServer, focusHosts, focusProxy, focusApp, focusContainer, focusApp, focusAdd}
+	want := []focusKind{focusServer, focusProxy, focusApp, focusContainer, focusApp, focusAdd}
 	if len(kinds) != len(want) {
 		t.Fatalf("focus list = %v, want %v", kinds, want)
 	}
@@ -180,7 +180,7 @@ func TestCursorReachesTheBoxRowsAndEveryContainer(t *testing.T) {
 	// A container row is not an app row: the app-wide keys must not fire from
 	// it, or "remove" beside one container's name reads as removing that
 	// container.
-	m.cursor = 4
+	m.cursor = 3
 	if got := m.selectedApp(); got != -1 {
 		t.Errorf("a container row must not select an app, got %d", got)
 	}
@@ -188,7 +188,7 @@ func TestCursorReachesTheBoxRowsAndEveryContainer(t *testing.T) {
 		t.Errorf("focusedContainer did not find the container: %+v", c)
 	}
 	// An app row is not a container.
-	m.cursor = 3
+	m.cursor = 2
 	if m.focusedContainer() != nil {
 		t.Error("an app row must not report a focused container")
 	}
@@ -507,9 +507,9 @@ func TestRotatedResultWarnsAboutTheOldKey(t *testing.T) {
 func TestInventoryParsing(t *testing.T) {
 	out := strings.Join([]string{
 		"server\tready\tDocker version 26.1.3",
-		"app\tblog\tcd-blog\t/srv/blog\ta1b2\t2\tghcr.io/you/blog-config",
+		"app\tblog\tcd-blog\t/srv/blog\ta1b2\t2\tghcr.io/you/blog-config\tblog.example.com",
 		"route\tblog\tblog.example.com\tblog-web",
-		"app\tworker\tcd-worker\t/srv/worker\tnone\t0\tghcr.io/you/worker-config",
+		"app\tworker\tcd-worker\t/srv/worker\tnone\t0\tghcr.io/you/worker-config\t",
 		"proxy\trunning\tedge\tcaddy:2\tUp 3 hours\t2026-07-27T09:00:00Z\t0001-01-01T00:00:00Z\t0",
 		"net\tedge\tbridge\t172.18.0.0/16",
 		"netmember\tkomizo-caddy\tcaddy,komizo-caddy",
@@ -560,7 +560,7 @@ func TestInventoryParsing(t *testing.T) {
 func TestInventoryWithoutAProxy(t *testing.T) {
 	// A box with no proxy emits no proxy record at all; that must read as
 	// "not installed" rather than as an empty-but-present proxy.
-	_, _, proxy, _, _ := parseInventory("app\tblog\tcd-blog\t/srv/blog\ta1b2\t2\tghcr.io/you/blog-config\t")
+	_, _, proxy, _, _ := parseInventory("app\tblog\tcd-blog\t/srv/blog\ta1b2\t2\tghcr.io/you/blog-config\t\t")
 	if proxy.installed {
 		t.Errorf("no proxy record should mean not installed, got %+v", proxy)
 	}
@@ -592,7 +592,6 @@ func TestTheBoxIsAlwaysOnScreen(t *testing.T) {
 		"Docker version 26.1.3", // docker
 		"edge", "bridge",        // network
 		"running", "caddy:2", // proxy
-		"known_hosts",
 	} {
 		if !strings.Contains(v, want) {
 			t.Errorf("the list is missing %q", want)
@@ -1485,11 +1484,11 @@ func TestKnownHostsDeduplicatesAndKeepsPort(t *testing.T) {
 func TestInventoryAttachesContainersToTheirApp(t *testing.T) {
 	out := strings.Join([]string{
 		"server\tready\tDocker version 26.1.3",
-		"app\tblog\tkomizo-blog\t/srv/blog\ta1b2c3d\t2\tghcr.io/you/blog-config",
+		"app\tblog\tkomizo-blog\t/srv/blog\ta1b2c3d\t2\tghcr.io/you/blog-config\t",
 		"container\tblog\tweb\tblog-web-1\trunning\tUp 3 hours\t2026-07-27T09:00:00.123456789Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-web:a1b2c3d",
 		"container\tblog\tdb\tblog-db-1\texited\tExited (1) 2 minutes ago\t2026-07-27T08:00:00Z\t2026-07-27T09:30:00Z\t1\tghcr.io/you/blog-db:a1b2c3d",
 		"route\tblog\tblog.example.com,www.blog.example.com\tblog-web",
-		"app\tshop\tkomizo-shop\t/srv/shop\tnone\t0\tghcr.io/you/shop-config",
+		"app\tshop\tkomizo-shop\t/srv/shop\tnone\t0\tghcr.io/you/shop-config\t",
 	}, "\n")
 
 	apps, _, _, _, _ := parseInventory(out)
@@ -1732,28 +1731,48 @@ func TestRotationDoesNotOfferHostKeys(t *testing.T) {
 	}
 }
 
-func TestListAccountsForKnownHosts(t *testing.T) {
-	// The keys belong to the server, not an app: every app on the box pins the
-	// same ones. Showing them only in the output of adding an app meant wanting
-	// them again meant re-running setup.
+func TestKnownHostsIsCopiedPerApp(t *testing.T) {
+	// The KEYS belong to the box and every app pins the same ones; the NAMES
+	// belong to the repo, because known_hosts is matched on the exact string
+	// the client dialled and each repo dials one name. So the value is built
+	// per app, from that app's recorded names.
+	//
+	// It used to be one server-wide row built from every name every app had
+	// mentioned in the session, which put one app's hostnames in another app's
+	// repository -- and lost them entirely on the next run, since nothing wrote
+	// them down.
 	m := netModel()
 	m.srv.hostKeys = [][2]string{
 		{"ssh-ed25519", "AAAAC3NzaC1lZDI1NTE5AAAAI"},
 		{"ssh-rsa", "AAAAB3NzaC1yc2EAAAADAQABA"},
 	}
-	v := m.View()
-	// Summarised, not printed: it is one line per name per key, and it sits
-	// above the app list now. The value itself goes to the clipboard.
-	if !strings.Contains(v, "known_hosts") {
-		t.Error("the list should account for the value CI pins")
+	m.apps = []appRow{
+		{name: "blog", knownAs: []string{"blog.example.com"}},
+		{name: "shop", knownAs: []string{"shop.example.com"}},
 	}
-	if !strings.Contains(v, "2 lines for box.example.com") {
-		t.Errorf("it should say how many lines and which names:\n%s", v)
+
+	blog := formatKnownHosts(m.tgt.namedFor(m.apps[0].knownAs), m.srv.hostKeys)
+	if !strings.Contains(blog, "blog.example.com ssh-ed25519") {
+		t.Errorf("blog's value should name blog: %q", blog)
 	}
-	// The way to get it is on the row itself, so selecting it says so.
-	m.cursor = rowOf(m, focusHosts)
-	if !strings.Contains(m.View(), "copy SSH_KNOWN_HOSTS") {
-		t.Error("selecting the row should offer to copy it")
+	if strings.Contains(blog, "shop.example.com") {
+		t.Error("blog's value must not carry another app's hostnames")
+	}
+	// The name this session connected by is in it too: that is what CI dials
+	// when a repo was set up without extra names.
+	if !strings.Contains(blog, m.tgt.host) {
+		t.Errorf("the connected name should be covered: %q", blog)
+	}
+
+	// Offered on the app's own row, beside the other things that act on it.
+	m.cursor = rowOf(m, focusApp)
+	if !strings.Contains(stripANSI(m.pageFooter()), "hosts") {
+		t.Error("the app row should offer its known_hosts")
+	}
+	// And nowhere else: the server row has no value of its own any more.
+	m.cursor = rowOf(m, focusServer)
+	if strings.Contains(stripANSI(m.pageFooter()), "hosts") {
+		t.Error("known_hosts is not a server-level value")
 	}
 }
 
@@ -1782,11 +1801,10 @@ func TestHelpFollowsTheCursor(t *testing.T) {
 		cursor int
 		want   string
 	}{
-		{0, "update server"},        // the box
-		{1, "copy SSH_KNOWN_HOSTS"}, // known_hosts
-		{2, "stop"},                 // proxy, running
-		{3, "stop"},                 // app, running
-		{4, "stop"},                 // container, running
+		{0, "update server"}, // the box
+		{1, "stop"},          // proxy, running
+		{2, "stop"},          // app, running
+		{3, "stop"},          // container, running
 	} {
 		m.cursor = c.cursor
 		if got := m.enterLabel(); got != c.want {
@@ -1975,7 +1993,7 @@ func TestHelpIsOneLineInAFixedOrder(t *testing.T) {
 	m := testModel()
 	m.srv.hostKeys = [][2]string{{"ssh-ed25519", "AAAA"}}
 
-	for _, k := range []focusKind{focusServer, focusHosts, focusProxy, focusApp} {
+	for _, k := range []focusKind{focusServer, focusProxy, focusApp} {
 		m.cursor = rowOf(m, k)
 		v := stripANSI(m.View())
 		for _, always := range []string{"quit", "select"} {
@@ -1986,10 +2004,10 @@ func TestHelpIsOneLineInAFixedOrder(t *testing.T) {
 	}
 
 	// The app keys are absent from rows they cannot act on.
-	m.cursor = rowOf(m, focusHosts)
+	m.cursor = rowOf(m, focusServer)
 	for _, gone := range []string{"rotate", "remove", "config", "reinstall"} {
 		if strings.Contains(stripANSI(m.pageFooter()), gone) {
-			t.Errorf("%q should not be offered on the known_hosts row", gone)
+			t.Errorf("%q should not be offered on the server row", gone)
 		}
 	}
 	// And present on one they can.
@@ -2083,7 +2101,7 @@ func TestAddIsGlobalButTheDestructiveKeysAreNot(t *testing.T) {
 	m := testModel()
 	m.srv.hostKeys = [][2]string{{"ssh-ed25519", "AAAA"}}
 
-	for _, k := range []focusKind{focusServer, focusHosts, focusProxy} {
+	for _, k := range []focusKind{focusServer, focusProxy} {
 		m.cursor = rowOf(m, k)
 		v := stripANSI(m.View())
 		if !strings.Contains(v, "add an app") {

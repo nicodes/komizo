@@ -105,6 +105,7 @@ func RunAdd(args []string) error {
 	if err := validateHost(tgt.host); err != nil {
 		return err
 	}
+	var knownAs []string
 	for _, a := range strings.Split(o.knownAs, ",") {
 		a = strings.TrimSpace(a)
 		if a == "" {
@@ -113,7 +114,7 @@ func RunAdd(args []string) error {
 		if err := validateHost(a); err != nil {
 			return fmt.Errorf("--known-as: %w", err)
 		}
-		tgt.aliases = append(tgt.aliases, a)
+		knownAs = append(knownAs, a)
 	}
 
 	// --- preflight ---------------------------------------------------------
@@ -140,6 +141,7 @@ func RunAdd(args []string) error {
 		config:  o.config,
 		appDir:  o.appDir,
 		keyPath: o.keyPath,
+		knownAs: knownAs,
 		rotate:  o.rotateKey,
 		harden:  o.hardenSSHD && !o.rotateKey,
 	}, cliProgress{}, tgt.runScript)
@@ -163,6 +165,13 @@ type addPlan struct {
 	config  string // may be empty on a rotation, then read back off the box
 	appDir  string // empty means the server script's own default
 	keyPath string // write the private key here too; empty means nowhere
+
+	// knownAs is the extra names CI dials THIS app by, on top of the one we
+	// connected on. Per app rather than per box: known_hosts matches the exact
+	// string the client dialled, and each repo dials one name -- so the value
+	// that repo pins should name that one, not every name every app on this
+	// box answers to. Empty leaves whatever the box already recorded.
+	knownAs []string
 	rotate  bool
 	harden  bool
 
@@ -226,7 +235,11 @@ func performAdd(p addPlan, out progress, runner func(script string, env map[stri
 
 	// --- run the server half -----------------------------------------------
 
+	// The names this app is dialled by, for the box to record. Comma-joined
+	// because that is what the script reads back; empty means "unchanged",
+	// which is what a config-image change is saying.
 	env := map[string]string{
+		"KNOWN_AS":     strings.Join(p.knownAs, ","),
 		"CI_PUBKEY":    kp.public,
 		"CI_USER":      p.user,
 		"APP_NAME":     p.app,
@@ -249,8 +262,12 @@ func performAdd(p addPlan, out progress, runner func(script string, env map[stri
 
 	// --- host key, straight from the box -----------------------------------
 
+	// Scoped to this app's names. The target carries the one we dialled; the
+	// app adds any others its repo uses. Every app on the box shares the KEYS
+	// -- they are the machine's -- and differs only in which names they are
+	// written against, which is the half that belongs to the repo.
 	out.step("Reading the server's host keys")
-	kh, err := readKnownHosts(p.tgt)
+	kh, err := readKnownHosts(p.tgt.namedFor(p.knownAs))
 	if err != nil {
 		return nil, err
 	}

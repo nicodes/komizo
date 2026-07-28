@@ -171,38 +171,6 @@ func (m model) startServerUpdate() tea.Cmd {
 	return m.run.wait()
 }
 
-// knownHostsLine summarises the SSH_KNOWN_HOSTS value in one line.
-//
-// It belongs on the server rather than on an app: the keys are the BOX's, and
-// every app pins the same ones. It used to appear only in the output of adding
-// an app, which meant wanting it again meant re-running setup.
-//
-// Summarised rather than printed in full. It is one line per name per key --
-// six for a box with two names -- and this now sits above the app list, which
-// is the thing people actually came to look at. What you need at a glance is
-// that it exists and which names it covers; the value itself is one keypress
-// away and goes to the clipboard, which is where it was always headed.
-func (m model) knownHostsLine() (string, string) {
-	if len(m.srv.hostKeys) == 0 {
-		return "", "—"
-	}
-	names := m.tgt.knownHostsNames()
-	n := len(names) * len(m.srv.hostKeys)
-	unit := "lines"
-	if n == 1 {
-		unit = "line"
-	}
-	// No status glyph, deliberately. Connecting by address once carried a
-	// warning here, on the reasoning that CI probably dials a name that is not
-	// in the value -- but that is a guess, not a fact, and the row already
-	// lists exactly which names are covered for anyone who wants to check.
-	//
-	// The real signal is unambiguous and arrives where it matters: a deploy to
-	// a name that is not pinned fails with "no entry for <name>". A coloured
-	// dot that might mean that is worth less than the failure that says it.
-	return "", fmt.Sprintf("%d %s for %s", n, unit, strings.Join(names, ", "))
-}
-
 func (m model) networkLine() (string, string) {
 	n := m.net
 	if n.name == "" {

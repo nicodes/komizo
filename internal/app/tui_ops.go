@@ -233,11 +233,11 @@ func stream(ch chan tea.Msg, c *exec.Cmd, stdin string) error {
 // rather than free functions returning a Cmd.
 // The target already carries any extra names -- the form records them on it
 // before starting, so every later screen sees the same set.
-func (m model) startAdd(app, config string) tea.Cmd {
+func (m model) startAdd(app, config string, knownAs []string) tea.Cmd {
 	ch := m.run.ch
 	t := m.tgt
 	go func() {
-		res, err := doAdd(t, app, config, false, ch)
+		res, err := doAdd(t, app, config, knownAs, false, ch)
 		ch <- runDoneMsg{err: err, result: res}
 	}()
 	return m.run.wait()
@@ -247,7 +247,7 @@ func (m model) startRotate(app string) tea.Cmd {
 	ch := m.run.ch
 	t := m.tgt
 	go func() {
-		res, err := doAdd(t, app, "", true, ch)
+		res, err := doAdd(t, app, "", nil, true, ch)
 		ch <- runDoneMsg{err: err, result: res}
 	}()
 	return m.run.wait()
@@ -344,13 +344,14 @@ func (p chanProgress) note(format string, a ...any) {
 // doAdd performs the same sequence as `komizo add`, reporting progress through
 // ch instead of stdout. The sequence itself lives in performAdd -- this only
 // says where the output goes and how the script is piped over.
-func doAdd(t target, app, config string, rotate bool, ch chan tea.Msg) (*addResult, error) {
+func doAdd(t target, app, config string, knownAs []string, rotate bool, ch chan tea.Msg) (*addResult, error) {
 	return runAddPlan(addPlan{
-		tgt:    t,
-		app:    app,
-		user:   deriveUser(app),
-		config: config,
-		rotate: rotate,
+		tgt:     t,
+		app:     app,
+		user:    deriveUser(app),
+		config:  config,
+		knownAs: knownAs,
+		rotate:  rotate,
 	}, ch)
 }
 

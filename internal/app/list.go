@@ -72,6 +72,9 @@ for bin in /usr/local/bin/deploy-*; do
 	app="${bin#/usr/local/bin/deploy-}"
 	dir="$(sed -n 's/^cd "\(.*\)"$/\1/p' "$bin" | head -n 1)"
 	img="$(sed -n 's/^CONFIG_IMAGE="\(.*\)"$/\1/p' "$bin" | head -n 1)"
+	# The names CI dials this app by, recorded when it was added. Empty for an
+	# app set up before they were kept, which the caller falls back for.
+	kas="$(sed -n 's/^KNOWN_AS="\(.*\)"$/\1/p' "$bin" | head -n 1)"
 	ver=""
 	[ -n "$dir" ] && [ -f "$dir/.env" ] && ver="$(sed -n 's/^APP_VERSION=//p' "$dir/.env" | head -n 1)"
 	usr="$(awk -v b="$bin" '$0 ~ "cmd " b "$" {print $3; exit}' /etc/doas.conf 2>/dev/null)"
@@ -96,7 +99,7 @@ for bin in /usr/local/bin/deploy-*; do
 				$1 == id { printf "container\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", app, $5, $2, $3, $4, ts, $6 }'
 		done
 	fi
-	printf 'app\t%s\t%s\t%s\t%s\t%s\t%s\n' "$app" "${usr:-?}" "$dir" "${ver:-none}" "$running" "$img"
+	printf 'app\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$app" "${usr:-?}" "$dir" "${ver:-none}" "$running" "$img" "$kas"
 
 	# What this app publishes through the shared proxy, and WHERE EACH ROUTE
 	# GOES -- the site address paired with the upstream it proxies to.
@@ -209,6 +212,11 @@ done
 `
 
 type appRow struct {
+	// knownAs is the names CI dials this app by, as recorded on the box. The
+	// SSH_KNOWN_HOSTS this app pins is these names against the server's keys --
+	// the keys belong to the machine, the names belong to the repo.
+	knownAs []string
+
 	name, user, dir, version, running, image string
 	containers                               []containerRow
 	routes                                   []routeRow
@@ -635,10 +643,10 @@ func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, n
 			srv.state, srv.docker = f[1], f[2]
 		case len(f) == 3 && f[0] == "hostkey":
 			srv.hostKeys = append(srv.hostKeys, [2]string{f[1], f[2]})
-		case len(f) == 7 && f[0] == "app":
+		case len(f) == 8 && f[0] == "app":
 			apps = append(apps, appRow{
 				name: f[1], user: f[2], dir: f[3], version: f[4],
-				running: f[5], image: f[6],
+				running: f[5], image: f[6], knownAs: splitNames(f[7]),
 			})
 		case len(f) == 10 && f[0] == "container":
 			c := containerRow{app: f[1], service: f[2], name: f[3], state: f[4], status: f[5]}

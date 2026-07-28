@@ -502,7 +502,6 @@ type focusKind int
 
 const (
 	focusServer    focusKind = iota // the box itself: docker and the network
-	focusHosts                      // the SSH_KNOWN_HOSTS value
 	focusProxy                      // the shared reverse proxy
 	focusApp                        // one app
 	focusContainer                  // one container belonging to an app
@@ -530,9 +529,6 @@ func (m model) focusItems() []focusItem {
 	// the ones that are pure fact do not -- which is why the docker row is here
 	// (enter re-runs setup on it) and the network row is not.
 	out = append(out, focusItem{kind: focusServer, app: -1, ctr: -1})
-	if len(m.srv.hostKeys) > 0 {
-		out = append(out, focusItem{kind: focusHosts, app: -1, ctr: -1})
-	}
 	if m.proxy.installed {
 		out = append(out, focusItem{kind: focusProxy, app: -1, ctr: -1})
 	}
@@ -635,6 +631,18 @@ func (m model) handleMonitorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m = m.ask(m.configPrompt(m.apps[i]))
 		}
 
+	case "h":
+		// The app's own SSH_KNOWN_HOSTS. On the app row for the same reason
+		// rotate and remove are: it is that app's value, and offering it beside
+		// a container's name would say it belonged to the container.
+		//
+		// "h" rather than "k", which is already up. It is one of the two keys
+		// the monitor freed when it stopped offering vim aliases for enter and
+		// esc, and the other one -- "l" -- is logs.
+		if i := m.selectedApp(); i >= 0 {
+			m = m.copyKnownHosts(m.apps[i])
+		}
+
 	case "r":
 		if i := m.selectedApp(); i >= 0 {
 			m = m.ask(m.rotatePrompt(m.apps[i]))
@@ -681,20 +689,32 @@ func (m model) handleMonitorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// copyKnownHosts puts the value CI pins on the clipboard.
+// copyKnownHosts puts one app's SSH_KNOWN_HOSTS on the clipboard.
 //
-// Reached by selecting the row and pressing enter. It had a global "y" as well,
-// which was a second route to something already offered on the row it belongs
-// to -- the same redundancy "t" and "u" had before it. Not a secret -- it
-// needs integrity, not secrecy -- so it is copied like any other text.
-func (m model) copyKnownHosts() model {
+// Per app, because that is the granularity it is consumed at: the value lives
+// in one repo's variables, and known_hosts is matched on the exact name the
+// client dialled. The KEYS are the box's and every app pins the same ones; the
+// NAMES are the repo's. It used to be one server-wide value built from every
+// name every app had mentioned, which put one app's hostnames in another app's
+// repository for nothing.
+//
+// Not a secret -- it needs integrity, not secrecy -- so it is copied like any
+// other text.
+func (m model) copyKnownHosts(a appRow) model {
 	if len(m.srv.hostKeys) == 0 {
+		m.status, m.statusErr = "the server's host keys have not been read yet", true
 		return m
 	}
-	if err := copyToClipboard(formatKnownHosts(m.tgt, m.srv.hostKeys) + "\n"); err != nil {
+	// An app added before the names were recorded has none; the name this
+	// session connected by is the best guess, and usually the right one.
+	names := a.knownAs
+	if len(names) == 0 {
+		m.status, m.statusErr = "no names recorded for "+a.name+"; using "+m.tgt.host, true
+	}
+	if err := copyToClipboard(formatKnownHosts(m.tgt.namedFor(names), m.srv.hostKeys) + "\n"); err != nil {
 		m.status, m.statusErr = err.Error(), true
-	} else {
-		m.status, m.statusErr = "known_hosts copied", false
+	} else if !m.statusErr {
+		m.status, m.statusErr = a.name+" known_hosts copied", false
 	}
 	return m
 }
@@ -732,9 +752,6 @@ func (m model) primaryAction() (tea.Model, tea.Cmd) {
 	case focusServer:
 		m = m.ask(m.updateServerPrompt())
 		return m, nil
-
-	case focusHosts:
-		return m.copyKnownHosts(), nil
 
 	case focusProxy:
 		return m.ask(m.lifecyclePrompt(

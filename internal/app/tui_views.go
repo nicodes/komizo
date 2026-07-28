@@ -157,8 +157,8 @@ func (m model) boxSection() string {
 	b.WriteString(section("Server"))
 	b.WriteString(kv("address", dimStyle.Render(m.tgt.display())))
 	b.WriteString(kvSel("docker", dimStyle.Render(orDash(m.srv.docker)), m.cursor == 0))
-	kg, kt := m.knownHostsLine()
-	b.WriteString(kvDot("known_hosts", kg, kt, len(m.srv.hostKeys) > 0 && m.cursor == 1))
+	// No known_hosts row. The value is per app -- the keys are the box's, the
+	// names are the repo's -- so it is copied from the app it belongs to.
 	return b.String()
 }
 
@@ -265,9 +265,6 @@ func (m model) rowKeys() []string {
 	case focusServer:
 		return []string{"enter", "update server"}
 
-	case focusHosts:
-		return []string{"enter", "copy SSH_KNOWN_HOSTS"}
-
 	case focusProxy:
 		return []string{"enter", startStop(m.proxy.running()),
 			"l", "logs", "p", "reinstall"}
@@ -304,7 +301,7 @@ func (m model) rowKeys() []string {
 // selected app -- which repeated the cursor back at you and cost the width that
 // keeps the whole line on an eighty-column window.
 func appActions() []string {
-	return []string{"c", "config", "r", "rotate", "x", "remove"}
+	return []string{"h", "hosts", "c", "config", "r", "rotate", "x", "remove"}
 }
 
 // short trims a commit SHA to something readable without losing which it is.
