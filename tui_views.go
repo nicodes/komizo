@@ -4,26 +4,25 @@ import (
 	"strings"
 )
 
-// viewList is the whole interface: the box, then what is running on it.
+// viewMonitor is the whole interface: the box, then what is running on it.
 //
 // The box had a page of its own once, behind "s". The two are not separable
 // questions -- an app being up and anything being able to reach it have the
 // same answer most of the time -- and a stopped proxy stayed invisible for as
 // long as it took someone to think of looking. State you have to navigate to is
 // state you learn about late.
-func viewList(m model) string {
+func viewMonitor(m model) string {
 	var b strings.Builder
 	b.WriteString(m.boxSection())
 	b.WriteString(m.proxySection())
 
+	b.WriteString(section("Apps") + "\n")
+
 	if len(m.apps) == 0 {
-		b.WriteString("\n" + gutter + titleStyle.Render("No apps yet") + "\n")
-		b.WriteString("\n" + para(gutter, "An app is a compose stack with its own directory, deploy account\nand privileged commands."))
-		b.WriteString("\n" + gutter + keyStyle.Render("a") + dimStyle.Render(" adds one.") + "\n")
+		b.WriteString(para(gutter, "An app is a compose stack with its own directory, deploy account\nand privileged commands.") + "\n")
+		b.WriteString(m.addRow())
 		return b.String()
 	}
-
-	b.WriteString(section("Apps") + "\n")
 
 	// Focus indices continue from the sections above, so the cursor runs
 	// straight down the page.
@@ -85,8 +84,11 @@ func viewList(m model) string {
 			kids = append(kids, child{idx: -1, cells: []string{
 				"",
 				dimStyle.Render(r.label()),
+				// No uptime, because there is no process to be up. "static"
+				// sits in the IMAGE column, which is the honest place for it:
+				// it is what serves this row in place of one.
+				dimStyle.Render("—"),
 				dimStyle.Render("static"),
-				dimStyle.Render("—"), // no image: there is nothing running
 				dimStyle.Render(strings.Join(r.hostnames(), ", ")),
 			}})
 		}
@@ -101,30 +103,30 @@ func viewList(m model) string {
 		}
 	}
 	b.WriteString(tree(rows, m.cursor))
-
-	if m.status != "" {
-		mark, style := dot("ok"), okStyle
-		if m.statusErr {
-			mark, style = dot("err"), errStyle
-		}
-		b.WriteString("\n" + gutter + mark + " " + style.Render(m.status) + "\n")
-	}
+	b.WriteString("\n" + m.addRow())
+	// No status line here. It used to be appended after the last app, which put
+	// the reply to a keypress in a different place on every host and, once the
+	// list was longer than the terminal, off the bottom of it. It is in the
+	// footer now, where every page's is. See statusLine.
 	return b.String()
 }
 
-// footer is the question, when one is being asked, and the key hints when not.
-// The same place either way, so the answer appears where the keys were.
+// addRow is the last row of the Apps section: the one that adds one.
 //
-// Ruled off and pinned to the bottom of the terminal by the caller. It is the
-// only part of the page that is ever interactive, and a question that moves up
-// and down as the list above it grows is a question you have to look for.
-func (m model) footer() string {
-	body := m.helpLines()
-	if m.prompt != nil {
-		body = m.prompt.view()
+// A row rather than a key, because a key is a promise that it is worth keeping
+// in your head, and this is done a handful of times in the life of a server.
+// The footer only has room for the things you do constantly.
+//
+// Drawn like the tree's rows and not like a button -- a leading "+" where a
+// status dot would be, since it is the one row in the section with no state to
+// report. It selects and acts exactly like everything above it.
+func (m model) addRow() string {
+	selected := m.focused().kind == focusAdd
+	glyph, label := dimStyle.Render("+"), dimStyle.Render("add an app")
+	if selected {
+		return barStyle.Render(cursorBar) + " " + glyph + "  " + brighten(label) + "\n"
 	}
-	return "\n" + gutter + dimStyle.Render(strings.Repeat("─", ruleWidth(m.width))) + "\n" +
-		trimTrailing(body)
+	return gutter + glyph + "  " + label + "\n"
 }
 
 // boxRows is how many focusable rows the two sections above the apps
@@ -213,16 +215,35 @@ func (m model) enterLabel() string {
 	return ""
 }
 
-// The help is two lines, and the split is the point: what is always true, then
-// what is true of the thing under the cursor.
+// The help is one line, in a fixed order: move, act, everything else, leave.
 //
-// One line meant every key on the page was on screen at once -- thirteen pairs
-// of them -- so the two that always work were no easier to find than the four
-// that only work on an app. Splitting them makes the bottom line answer "what
-// can I do with THIS", which is the question someone actually has.
+// It was two -- what always works, then what the selected row can do -- on the
+// reasoning that the split told you which was which. It did, and it cost more
+// than it paid: two lines of grey to read instead of one, a footer that changed
+// height as you moved, and the two ends of the line you actually use ("select"
+// and "quit") separated by everything in between.
+//
+// The order does the same work the split did, without the second line. Moving
+// is always first and leaving is always last, so the two keys that work on
+// every screen are in the same place on every screen, and what changes as the
+// cursor moves is the middle -- which is exactly what "what can I do with this"
+// means. Enter leads that middle, because it is the one you press.
 func (m model) helpLines() string {
-	return help("↑↓", "select", "a", "add an app", "R", "refresh", "q", "quit") +
-		trimTrailing(help(m.contextKeys()...))
+	pairs := []string{"↑↓", "select"}
+	var rest []string
+	k := m.contextKeys()
+	for i := 0; i+1 < len(k); i += 2 {
+		// Enter jumps the queue rather than keeping its place among the row's
+		// other keys: it is the one that does the obvious thing, and its label
+		// is the row's own answer to "and what happens if I just press enter".
+		if k[i] == "enter" {
+			pairs = append(pairs, k[i], k[i+1])
+			continue
+		}
+		rest = append(rest, k[i], k[i+1])
+	}
+	pairs = append(pairs, rest...)
+	return helpLine(m.width, append(pairs, "q", "quit")...)
 }
 
 // contextKeys is what the selected row can do. Every entry here acts on that
@@ -249,21 +270,24 @@ func (m model) rowKeys() []string {
 
 	case focusProxy:
 		return []string{"enter", startStop(m.proxy.running()),
-			"l", "proxy log", "p", "reinstall"}
+			"l", "logs", "p", "reinstall"}
 
 	case focusApp:
 		if f.app < 0 {
 			return nil
 		}
 		a := m.apps[f.app]
-		return append([]string{"enter", startStop(a.up()), "l", a.name + " log"},
+		return append([]string{"enter", startStop(a.up()), "l", "logs"},
 			appActions()...)
 
 	case focusContainer:
 		// No app actions here. They are app-wide, and offering them beside one
 		// container's name reads as though they apply to that container.
 		c := m.focusedContainer()
-		return []string{"enter", startStop(c.up()), "l", c.service + " log"}
+		return []string{"enter", startStop(c.up()), "l", "logs"}
+
+	case focusAdd:
+		return []string{"enter", "add an app"}
 	}
 	return nil
 }
@@ -275,8 +299,12 @@ func (m model) rowKeys() []string {
 // on one, and it lives on the always-available line. Removing very much is --
 // "remove" offered anywhere else is an invitation to a question nobody wants to
 // have to ask, which is "remove what?".
+// Labels are short because the row is what says which thing they act on. They
+// used to name it -- "config image", "rotate key", and "l ormos log" naming the
+// selected app -- which repeated the cursor back at you and cost the width that
+// keeps the whole line on an eighty-column window.
 func appActions() []string {
-	return []string{"c", "config image", "r", "rotate key", "x", "remove"}
+	return []string{"c", "config", "r", "rotate", "x", "remove"}
 }
 
 // short trims a commit SHA to something readable without losing which it is.

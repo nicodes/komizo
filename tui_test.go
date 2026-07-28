@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -12,7 +13,7 @@ import (
 func testModel() model {
 	m := newModel(target{user: "root", host: "box.example.com", port: 22})
 	m.width, m.height = 100, 40
-	m.scr = screenList
+	m.scr = screenMonitor
 	m.apps = []appRow{
 		{name: "blog", user: "komizo-blog", dir: "/srv/blog", version: "a1b2c3d4e5f6a7b8", running: "3", image: "ghcr.io/you/blog-config",
 			routes: []routeRow{{app: "blog", sites: "blog.example.com", upstream: "blog-web"}}},
@@ -107,15 +108,34 @@ func TestListShowsEveryApp(t *testing.T) {
 	}
 }
 
+// showResult puts an operation's values in the footer, the way finishing one
+// does. There is no result SCREEN to put the model on any more.
+func showResult(m model, r *addResult) model {
+	m.run = newRunState("Setting up " + r.app)
+	m.run.done, m.run.result = true, r
+	m.prompt = &prompt{kind: promptResult}
+	return m
+}
+
+// openAddForm selects the row under the app list and presses enter, which is
+// the only way in now that adding has no key of its own. The form opens in the
+// footer -- the screen stays on the list.
+func openAddForm(m model) model {
+	m.cursor = rowOf(m, focusAdd)
+	return send(m, "enter")
+}
+
 func TestEmptyListExplainsWhatAnAppIs(t *testing.T) {
 	m := testModel()
 	m.apps = nil
+	m.cursor = 0
 	v := m.View()
-	if !strings.Contains(v, "No apps") {
-		t.Error("empty list should say so")
+	if !strings.Contains(v, "compose stack") {
+		t.Error("empty list should say what an app is")
 	}
-	if !strings.Contains(v, "add") {
-		t.Error("empty list should point at adding one")
+	// The row that adds one is the only thing to select on a box with none.
+	if !strings.Contains(v, "add an app") {
+		t.Error("empty list should offer the row that adds one")
 	}
 }
 
@@ -147,7 +167,7 @@ func TestCursorReachesTheBoxRowsAndEveryContainer(t *testing.T) {
 	for _, f := range m.focusItems() {
 		kinds = append(kinds, f.kind)
 	}
-	want := []focusKind{focusServer, focusHosts, focusProxy, focusApp, focusContainer, focusApp}
+	want := []focusKind{focusServer, focusHosts, focusProxy, focusApp, focusContainer, focusApp, focusAdd}
 	if len(kinds) != len(want) {
 		t.Fatalf("focus list = %v, want %v", kinds, want)
 	}
@@ -206,9 +226,13 @@ func TestAnAppIsOneRow(t *testing.T) {
 }
 
 func TestAddFormValidatesBeforeRunning(t *testing.T) {
-	m := send(testModel(), "a")
-	if m.scr != screenAddForm {
-		t.Fatalf("'a' did not open the add form, got %v", m.scr)
+	m := openAddForm(testModel())
+	// In the footer, with the list still behind it.
+	if m.prompt == nil || m.prompt.kind != promptForm {
+		t.Fatalf("the add row did not open the form, got %v", m.prompt)
+	}
+	if m.scr != screenMonitor {
+		t.Errorf("the form should not take over the screen, got %v", m.scr)
 	}
 	// A tag in the config image is the mistake most worth catching, since the
 	// deploy supplies the tag.
@@ -219,7 +243,7 @@ func TestAddFormValidatesBeforeRunning(t *testing.T) {
 	// Enter advances while there is a field below, and submits on the last one.
 	// "known as" is now always present, so reaching the submit takes one more.
 	m = send(m, "enter", "enter")
-	if m.scr != screenAddForm {
+	if m.prompt == nil {
 		t.Error("form should stay open when a field is invalid")
 	}
 	if !strings.Contains(m.form.problem, "tag") {
@@ -227,8 +251,32 @@ func TestAddFormValidatesBeforeRunning(t *testing.T) {
 	}
 }
 
+func TestTheAddFormKeepsTheListInView(t *testing.T) {
+	// The whole reason it moved into the footer: the apps already on the box
+	// stay on screen while you type the name of a new one.
+	m := testModel()
+	m.width, m.height = 90, 26
+	m = openAddForm(m)
+	m.reflow()
+
+	v := stripANSI(m.View())
+	for _, want := range []string{"blog", "shop", "Add an app", "app name", "config image"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("%q should be on screen with the form open:\n%s", want, v)
+		}
+	}
+	if n := len(strings.Split(v, "\n")); n != m.height {
+		t.Errorf("the form made the page %d lines, want %d", n, m.height)
+	}
+	// esc puts the keys back without leaving the list.
+	back := send(m, "esc")
+	if back.prompt != nil || back.scr != screenMonitor {
+		t.Error("esc should close the form and leave you on the list")
+	}
+}
+
 func TestAddFormRejectsABadAppName(t *testing.T) {
-	m := send(testModel(), "a")
+	m := openAddForm(testModel())
 	for _, r := range "bad name" {
 		m = send(m, string(r))
 	}
@@ -237,7 +285,7 @@ func TestAddFormRejectsABadAppName(t *testing.T) {
 		m = send(m, string(r))
 	}
 	m = send(m, "enter", "enter")
-	if m.scr != screenAddForm || m.form.problem == "" {
+	if m.prompt == nil || m.form.problem == "" {
 		t.Error("a space in the app name should be rejected")
 	}
 }
@@ -247,7 +295,7 @@ func TestRemoveRequiresTypingTheAppName(t *testing.T) {
 	if m.prompt == nil {
 		t.Fatal("'x' did not ask anything")
 	}
-	if m.scr != screenList {
+	if m.scr != screenMonitor {
 		t.Errorf("the question should not leave the list, got %v", m.scr)
 	}
 	v := m.View()
@@ -287,18 +335,117 @@ func TestRotateDoesNotRequireTyping(t *testing.T) {
 	if !strings.Contains(m.prompt.detail, "stops working") {
 		t.Error("the rotate question should warn that the old key dies immediately")
 	}
-	// One key answers it.
-	if next := send(m, "y"); next.prompt != nil {
-		t.Error("y should answer a plain confirmation")
+	// One key answers it, and the operation takes the footer the question was
+	// asked in rather than a screen of its own.
+	next := send(m, "y")
+	if !next.running() {
+		t.Error("y should answer a plain confirmation and start the work")
+	}
+	if next.scr != screenMonitor {
+		t.Errorf("rotating should not leave the list, got %v", next.scr)
+	}
+}
+
+func TestAnOperationRunsInTheFooter(t *testing.T) {
+	// Every operation used to blank the page, stream a few hundred lines of apk
+	// and docker output, and finish on a page of results. The output was never
+	// the point -- it was there because the operation had taken the screen and
+	// something had to fill it.
+	m := testModel()
+	m.width, m.height = 90, 24
+	m.cursor = rowOf(m, focusApp)
+	m = send(m, "r", "y")
+
+	if !m.running() || m.scr != screenMonitor {
+		t.Fatalf("rotating should run in the footer over the list, got %v", m.scr)
+	}
+	v := stripANSI(m.View())
+	if !strings.Contains(v, "Rotating the deploy key for blog") {
+		t.Error("the footer should say what it is doing, as a statement")
+	}
+	// The list it was started from is still there, and still the whole page.
+	if !strings.Contains(v, "shop") {
+		t.Error("the list should stay visible while the work runs")
+	}
+	if n := len(strings.Split(v, "\n")); n != m.height {
+		t.Errorf("the page is %d lines, want %d", n, m.height)
+	}
+	// Keys do nothing until it comes back -- there is nothing to press.
+	for _, k := range []string{"enter", "x", "up", "esc"} {
+		if next := send(m, k); !next.running() {
+			t.Errorf("%q should do nothing mid-operation", k)
+		}
+	}
+
+	// Something to hand over stays in the footer until it is dismissed.
+	next, _ := m.Update(runDoneMsg{result: &addResult{
+		app: "blog", keyPath: "/k", knownHosts: "h k b", onClipboard: -1}})
+	after := next.(model)
+	if after.prompt == nil || after.prompt.kind != promptResult {
+		t.Fatal("a result should stay in the footer")
+	}
+	if !strings.Contains(stripANSI(after.View()), "SSH_DEPLOY_KEY") {
+		t.Error("the values are the whole reason this screen existed")
+	}
+	if done := send(after, "enter"); done.prompt != nil {
+		t.Error("enter should dismiss the result")
+	}
+}
+
+func TestAnythingThatChangesTheBoxReReadsIt(t *testing.T) {
+	// The poll is every five seconds; a change you just made should be on
+	// screen before that. Every path that touches the server ends in a read --
+	// including the ones that failed, because a command that reports failure is
+	// exactly when the rows are least trustworthy: a `compose up` can start two
+	// of three services and fail on the third.
+	m := testModel()
+	m.busy = map[string]bool{"app:blog": true}
+
+	for name, msg := range map[string]tea.Msg{
+		"start or stop":      opDoneMsg{key: "app:blog"},
+		"a failed start":     opDoneMsg{key: "app:blog", err: fmt.Errorf("no such service")},
+		"an operation":       runDoneMsg{},
+		"a failed operation": runDoneMsg{err: fmt.Errorf("exit status 1")},
+		"one with a result":  runDoneMsg{result: &addResult{app: "blog", keyPath: "/k"}},
+	} {
+		next, cmd := m.Update(msg)
+		if cmd == nil {
+			t.Errorf("%s: should have re-read the box", name)
+		}
+		if !next.(model).fetching {
+			t.Errorf("%s: the read should be recorded as in flight", name)
+		}
+	}
+}
+
+func TestAFailedOperationKeepsItsOutput(t *testing.T) {
+	// The stream is collected and never shown -- but "exit status 1" on its own
+	// diagnoses nothing, so the last lines come back when something fails.
+	m := testModel()
+	m.width, m.height = 90, 24
+	m.cursor = rowOf(m, focusApp)
+	m = send(m, "r", "y")
+	m.run.lines = []string{"+ doas rotate-blog", "doas: authentication failed", "Killed"}
+
+	next, _ := m.Update(runDoneMsg{err: fmt.Errorf("ssh: exit status 1")})
+	v := stripANSI(next.(model).View())
+	for _, want := range []string{"failed", "exit status 1", "authentication failed", "Killed"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("a failure should show %q:\n%s", want, v)
+		}
 	}
 }
 
 func TestEscLeavesEveryScreen(t *testing.T) {
-	for _, open := range []string{"a", "x", "r"} {
+	for _, open := range []string{"x", "r", "c"} {
 		m := send(testModel(), open, "esc")
-		if m.scr != screenList {
-			t.Errorf("esc from %q did not return to the list, got %v", open, m.scr)
+		if m.scr != screenMonitor || m.prompt != nil {
+			t.Errorf("esc from %q did not close the question, got %v", open, m.scr)
 		}
+	}
+	// Including the form, which is a question like the others now.
+	if m := send(openAddForm(testModel()), "esc"); m.prompt != nil {
+		t.Error("esc should close the add form")
 	}
 }
 
@@ -485,7 +632,7 @@ func TestFreshServerGetsTheInitScreen(t *testing.T) {
 	m.width, m.height = 100, 40
 	next, _ := m.Update(appsMsg{srv: serverRow{state: "bare"}})
 	m = next.(model)
-	if m.scr != screenInit {
+	if m.scr != screenSetup {
 		t.Fatalf("a bare server should open the init screen, got %v", m.scr)
 	}
 	v := m.View()
@@ -500,7 +647,7 @@ func TestReadyServerGoesStraightToTheList(t *testing.T) {
 	m := newModel(target{user: "root", host: "box", port: 22})
 	m.width, m.height = 100, 40
 	next, _ := m.Update(appsMsg{srv: serverRow{state: "ready"}})
-	if next.(model).scr != screenList {
+	if next.(model).scr != screenMonitor {
 		t.Error("a ready server should go straight to the app list")
 	}
 }
@@ -555,7 +702,7 @@ func TestALogGetsTheWholeWindow(t *testing.T) {
 	}
 	// Always a fresh fetch from the top: reopening a log after something has
 	// happened to it is the common case.
-	if m.logs != "" || m.logScroll != 0 {
+	if m.logs != "" || m.scroll != 0 {
 		t.Error("opening a log should not show the previous one's text or position")
 	}
 
@@ -570,7 +717,7 @@ func TestALogGetsTheWholeWindow(t *testing.T) {
 	}
 
 	// And esc returns to the list.
-	if back := send(m, "esc"); back.scr != screenList {
+	if back := send(m, "esc"); back.scr != screenMonitor {
 		t.Errorf("esc should go back, got %v", back.scr)
 	}
 }
@@ -587,25 +734,27 @@ func TestScrollingStopsAtBothEnds(t *testing.T) {
 	m.logs = strings.Join(lines, "\n")
 
 	m = send(m, "up", "up", "up")
-	if m.logScroll != 0 {
-		t.Errorf("scrolled above the first line: %d", m.logScroll)
+	if m.scroll != 0 {
+		t.Errorf("scrolled above the first line: %d", m.scroll)
 	}
 	for i := 0; i < 200; i++ {
 		m = send(m, "down")
 	}
-	if want := m.maxLogScroll(); m.logScroll != want {
-		t.Errorf("scrolled past the end: %d, want %d", m.logScroll, want)
+	if want := m.maxScroll(); m.scroll != want {
+		t.Errorf("scrolled past the end: %d, want %d", m.scroll, want)
 	}
-	// G and g are the ends.
-	if got := send(m, "g").logScroll; got != 0 {
-		t.Errorf("g should go to the top, got %d", got)
+	// Shift with the arrow you are already using goes to the ends. It replaced
+	// g/G, home/end, pgup/pgdn, space, f and b -- six pairs of undocumented
+	// keys for a window that shows one screenful of text.
+	if got := send(m, "shift+up").scroll; got != 0 {
+		t.Errorf("shift+up should go to the top, got %d", got)
 	}
-	if got := send(m, "G").logScroll; got != m.maxLogScroll() {
-		t.Errorf("G should go to the bottom, got %d", got)
+	if got := send(m, "shift+down").scroll; got != m.maxScroll() {
+		t.Errorf("shift+down should go to the bottom, got %d", got)
 	}
 	// A log that fits needs no scrolling at all.
 	m.logs = "one\ntwo"
-	if m.maxLogScroll() != 0 {
+	if m.maxScroll() != 0 {
 		t.Error("a log that fits should not scroll")
 	}
 }
@@ -766,7 +915,7 @@ func TestUpdatingTheServerDoesNotAskAboutTheProxy(t *testing.T) {
 	m.proxy = proxyRow{} // no proxy on this box, by choice
 	m.cursor = rowOf(m, focusServer)
 	m = send(m, "enter")
-	if m.scr == screenInit {
+	if m.scr == screenSetup {
 		t.Fatal("update must not reopen the first-run form; that would re-ask the proxy question")
 	}
 	if m.prompt == nil {
@@ -792,7 +941,7 @@ func TestFirstRunStillAsksAboutTheProxy(t *testing.T) {
 	m.width, m.height = 100, 40
 	next, _ := m.Update(appsMsg{srv: serverRow{state: "bare"}})
 	m = next.(model)
-	if m.scr != screenInit {
+	if m.scr != screenSetup {
 		t.Fatalf("a bare server should still open the init form, got %v", m.scr)
 	}
 	if !strings.Contains(m.View(), "reverse proxy") {
@@ -962,7 +1111,7 @@ func TestInitAsksOneThingOnly(t *testing.T) {
 	m.width, m.height = 100, 40
 	next, _ := m.Update(appsMsg{srv: serverRow{state: "bare"}})
 	m = next.(model)
-	if m.scr != screenInit {
+	if m.scr != screenSetup {
 		t.Fatalf("a bare server should open the init screen, got %v", m.scr)
 	}
 	v := m.View()
@@ -975,10 +1124,17 @@ func TestInitAsksOneThingOnly(t *testing.T) {
 			t.Errorf("init screen still contains %q -- it should ask nothing", gone)
 		}
 	}
-	// And enter goes straight to work.
+	// And enter goes straight to work, in this screen's own footer -- the
+	// description of what is being installed stays above it.
 	m = send(m, "enter")
-	if m.scr != screenRunning {
-		t.Errorf("enter should start the setup, got %v", m.scr)
+	if !m.running() {
+		t.Error("enter should start the setup")
+	}
+	if m.scr != screenSetup {
+		t.Errorf("setting up should not leave the init screen, got %v", m.scr)
+	}
+	if !strings.Contains(stripANSI(m.View()), "Setting up") {
+		t.Error("the footer should say what it is doing")
 	}
 }
 
@@ -1042,9 +1198,7 @@ func TestBothValuesAreSelectableAndCopyable(t *testing.T) {
 	}
 
 	m := testModel()
-	m.scr = screenResult
-	m.run = newRunState("x")
-	m.run.done, m.run.result = true, r
+	m = showResult(m, r)
 
 	m = send(m, "down")
 	if m.run.result.cursor != resultHosts {
@@ -1105,12 +1259,8 @@ func TestOnlyOneValueIsEverMarked(t *testing.T) {
 }
 
 func TestCopyingTheSecondReplacesTheFirst(t *testing.T) {
-	m := testModel()
-	m.scr = screenResult
-	m.run = newRunState("x")
-	m.run.done = true
-	m.run.result = &addResult{app: "a", keyPath: "/nonexistent-so-copy-fails",
-		knownHosts: "h k b", onClipboard: -1}
+	m := showResult(testModel(), &addResult{app: "a",
+		keyPath: "/nonexistent-so-copy-fails", knownHosts: "h k b", onClipboard: -1})
 
 	// Copy the host keys (works: no file involved).
 	m = send(m, "down", "c")
@@ -1154,9 +1304,9 @@ func TestEveryAdvertisedKeyDoesSomething(t *testing.T) {
 	// whose handler was not, so it offered rotate and remove and did neither.
 	m := testModel()
 	m.cursor = rowOf(m, focusApp)
-	// "a" opens a screen; the rest now ask in the footer without leaving it.
-	if next := send(m, "a"); next.scr != screenAddForm {
-		t.Error("'a' is advertised on the list but does nothing")
+	// All of them ask in the footer now, adding included.
+	if next := openAddForm(m); next.prompt == nil {
+		t.Error("the add row is advertised on the list but does nothing")
 	}
 	for _, k := range []string{"c", "r", "x"} {
 		if next := send(m, k); next.prompt == nil {
@@ -1172,7 +1322,7 @@ func TestConfigImageIsEditable(t *testing.T) {
 	if m.prompt == nil || m.prompt.kind != promptInput {
 		t.Fatal("'c' should open an input in the footer")
 	}
-	if m.scr != screenList {
+	if m.scr != screenMonitor {
 		t.Errorf("editing a setting should not leave the list, got %v", m.scr)
 	}
 	// Pre-filled, and the row it came from is still visible above it.
@@ -1201,7 +1351,7 @@ func TestUnchangedConfigImageDoesNothing(t *testing.T) {
 	if m.prompt != nil {
 		t.Error("enter should close the question")
 	}
-	if m.scr != screenList {
+	if m.scr != screenMonitor {
 		t.Errorf("an unchanged value should just go back, got %v", m.scr)
 	}
 }
@@ -1364,7 +1514,7 @@ func TestListNestsContainersWithoutMovingTheCursor(t *testing.T) {
 	// land on shop -- the container rows are focusable now, so this is about
 	// the view and the key handling agreeing on the same index.
 	m.cursor = m.firstAppRow() + 3
-	got := stripANSI(viewList(m))
+	got := stripANSI(viewMonitor(m))
 
 	var selected string
 	for _, ln := range strings.Split(got, "\n") {
@@ -1568,16 +1718,16 @@ func TestHelpFollowsTheCursor(t *testing.T) {
 		}
 	}
 
-	// And the log key names the container it would show.
-	m.cursor = 4
-	if !strings.Contains(m.View(), "web log") {
-		t.Error("with a container selected, l should offer that container's log")
-	}
-	// An app has a log of its own -- every service interleaved -- rather than
-	// falling back to something the cursor is not on.
-	m.cursor = 3
-	if !strings.Contains(m.View(), "blog log") {
-		t.Error("with an app selected, l should offer that app's log")
+	// The log key is offered on both, labelled the same. It used to name the
+	// row -- "l web log", "l blog log" -- which repeated the cursor back at you
+	// and made the footer's width depend on how long an app was called. Which
+	// log it opens is still the selected row's, and the window it opens says so
+	// in its title.
+	for _, c := range []int{4, 3} {
+		m.cursor = c
+		if !strings.Contains(stripANSI(m.pageFooter()), "l logs") {
+			t.Errorf("cursor %d: l should be offered", c)
+		}
 	}
 }
 
@@ -1612,7 +1762,7 @@ func TestStartStopRunsInlineWithoutConfirming(t *testing.T) {
 		t.Fatal("start/stop should ask before acting")
 	}
 	m, cmd := sendCmd(m, "y")
-	if m.scr != screenList {
+	if m.scr != screenMonitor {
 		t.Fatalf("start/stop must not leave the list, got %v", m.scr)
 	}
 	if !m.busy[proxyContainer] {
@@ -1670,7 +1820,7 @@ func TestUpdateServerHasNoGlobalKey(t *testing.T) {
 	// "u" was a second route to what enter on the docker row already does.
 	m := testModel()
 	m.cursor = rowOf(m, focusApp) // deliberately NOT the docker row
-	if next := send(m, "u"); next.scr != screenList {
+	if next := send(m, "u"); next.scr != screenMonitor {
 		t.Errorf("'u' should no longer do anything, got %v", next.scr)
 	}
 	if strings.Contains(m.View(), "update server") {
@@ -1684,29 +1834,29 @@ func TestAppKeysOnlyOfferedWithAnAppSelected(t *testing.T) {
 	m := testModel()
 
 	m.cursor = rowOf(m, focusServer)
-	v := stripANSI(m.View())
-	for _, k := range []string{"rotate key", "remove", "config image"} {
+	v := stripANSI(m.pageFooter())
+	for _, k := range []string{"rotate", "remove", "config"} {
 		if strings.Contains(v, k) {
 			t.Errorf("%q should not be offered with no app selected:\n%s", k, v)
 		}
 	}
 	// And pressing them does nothing rather than acting on some other app.
 	for _, k := range []string{"c", "r", "x"} {
-		if next := send(m, k); next.scr != screenList {
+		if next := send(m, k); next.scr != screenMonitor {
 			t.Errorf("%q with no app selected should do nothing, got %v", k, next.scr)
 		}
 	}
-	// "a" is the exception: it creates an app rather than acting on one, so it
-	// works from anywhere and lives on the always-available line.
-	if next := send(m, "a"); next.scr != screenAddForm {
-		t.Errorf("'a' should work with no app selected, got %v", next.scr)
+	// Adding is not among them at all now: it is its own row under the list,
+	// so it needs no key and cannot be pressed by accident from an app.
+	if next := send(m, "a"); next.scr != screenMonitor {
+		t.Errorf("'a' should no longer do anything, got %v", next.scr)
 	}
 
 	m.cursor = rowOf(m, focusApp)
-	v = stripANSI(m.View())
-	for _, k := range []string{"rotate key", "remove", "config image"} {
-		if !strings.Contains(v, k) {
-			t.Errorf("%q should be offered with an app selected:\n%s", k, v)
+	f := stripANSI(m.pageFooter())
+	for _, k := range []string{"rotate", "remove", "config"} {
+		if !strings.Contains(f, k) {
+			t.Errorf("%q should be offered with an app selected:\n%s", k, f)
 		}
 	}
 
@@ -1716,14 +1866,14 @@ func TestAppKeysOnlyOfferedWithAnAppSelected(t *testing.T) {
 		{app: "blog", service: "web", name: "blog-web-1", state: "running"},
 	}
 	m.cursor = rowOf(m, focusContainer)
-	cv := stripANSI(m.View())
-	for _, gone := range []string{"rotate key", "remove", "config image"} {
-		if strings.Contains(cv, gone) {
-			t.Errorf("%q must not be offered on a container row:\n%s", gone, cv)
+	cf := stripANSI(m.pageFooter())
+	for _, gone := range []string{"rotate", "remove", "config"} {
+		if strings.Contains(cf, gone) {
+			t.Errorf("%q must not be offered on a container row:\n%s", gone, cf)
 		}
 	}
 	for _, k := range []string{"c", "r", "x"} {
-		if next := send(m, k); next.scr != screenList {
+		if next := send(m, k); next.scr != screenMonitor {
 			t.Errorf("%q on a container row should do nothing, got %v", k, next.scr)
 		}
 	}
@@ -1737,22 +1887,22 @@ func TestAddIsStillReachableOnAnEmptyBox(t *testing.T) {
 	if !strings.Contains(stripANSI(m.View()), "add an app") {
 		t.Error("a box with no apps must still offer to add one")
 	}
-	if next := send(m, "a"); next.scr != screenAddForm {
-		t.Errorf("'a' should open the add form on an empty box, got %v", next.scr)
+	if next := openAddForm(m); next.prompt == nil {
+		t.Error("the add row should open the form on an empty box")
 	}
 }
 
-func TestHelpSplitsGlobalFromContextual(t *testing.T) {
-	// Two lines: what is always true, then what is true of the selected row.
-	// One line meant the two keys that always work were no easier to find than
-	// the four that only work on an app.
+func TestHelpIsOneLineInAFixedOrder(t *testing.T) {
+	// One line: move, act, the row's own keys, leave. The order is what the
+	// second line used to do -- "select" and "quit" are in the same place on
+	// every screen, and what changes as the cursor moves is the middle.
 	m := testModel()
 	m.srv.hostKeys = [][2]string{{"ssh-ed25519", "AAAA"}}
 
 	for _, k := range []focusKind{focusServer, focusHosts, focusProxy, focusApp} {
 		m.cursor = rowOf(m, k)
 		v := stripANSI(m.View())
-		for _, always := range []string{"refresh", "quit", "select"} {
+		for _, always := range []string{"quit", "select"} {
 			if !strings.Contains(v, always) {
 				t.Errorf("%v: %q must be offered from every row", k, always)
 			}
@@ -1761,15 +1911,76 @@ func TestHelpSplitsGlobalFromContextual(t *testing.T) {
 
 	// The app keys are absent from rows they cannot act on.
 	m.cursor = rowOf(m, focusHosts)
-	for _, gone := range []string{"rotate key", "remove", "config image", "reinstall"} {
-		if strings.Contains(stripANSI(m.View()), gone) {
+	for _, gone := range []string{"rotate", "remove", "config", "reinstall"} {
+		if strings.Contains(stripANSI(m.pageFooter()), gone) {
 			t.Errorf("%q should not be offered on the known_hosts row", gone)
 		}
 	}
 	// And present on one they can.
 	m.cursor = rowOf(m, focusApp)
-	if !strings.Contains(stripANSI(m.View()), "rotate key") {
+	if !strings.Contains(stripANSI(m.pageFooter()), "rotate") {
 		t.Error("the app row should offer the app keys")
+	}
+}
+
+func TestTheFooterIsOneLineAtAnyWidth(t *testing.T) {
+	m := testModel()
+	m.cursor = rowOf(m, focusApp)
+
+	// Move first, enter next, the row's own keys after it, leave last.
+	for _, w := range []int{200, 100, 80} {
+		m.width = w
+		line := strings.TrimSpace(stripANSI(m.helpLines()))
+		if n := strings.Count(strings.TrimSpace(stripANSI(m.pageFooter())), "\n"); n > 2 {
+			t.Errorf("width %d: the footer is more than one line of keys", w)
+		}
+		if !strings.HasPrefix(line, "↑↓ select") {
+			t.Errorf("width %d: %q should start with select", w, line)
+		}
+		if !strings.HasSuffix(line, "q quit") {
+			t.Errorf("width %d: %q should end with quit", w, line)
+		}
+		if i, j := strings.Index(line, "enter"), strings.Index(line, "· c "); i < 0 || (j > 0 && i > j) {
+			t.Errorf("width %d: enter should lead the row's own keys: %q", w, line)
+		}
+	}
+
+	// Narrow enough that not everything fits. The two that work on every screen
+	// survive, the row's own keys go, and an ellipsis says they went -- rather
+	// than the line being clipped, which would take "q quit" off the end.
+	for _, w := range []int{60, 40, 24} {
+		m.width = w
+		line := strings.TrimSpace(stripANSI(m.helpLines()))
+		if lipglossWidth(line)+len(gutter) > w {
+			t.Errorf("width %d: %q is too wide", w, line)
+		}
+		if !strings.HasPrefix(line, "↑↓ select") || !strings.HasSuffix(line, "q quit") {
+			t.Errorf("width %d: lost an end of %q", w, line)
+		}
+		if !strings.Contains(line, "…") {
+			t.Errorf("width %d: dropped keys without saying so: %q", w, line)
+		}
+	}
+}
+
+func TestNoRowIsWiderThanTheWindow(t *testing.T) {
+	// A row that wraps makes the page taller than the terminal, and the
+	// terminal scrolls to fit -- which takes the title off the top. Long log
+	// lines are the ordinary case, not the corner.
+	m := testModel()
+	m.scr, m.logsLabel, m.logsOf, m.logsReady = screenLogs, "blog-web-1", "blog-web-1", true
+	m.logs = strings.Repeat("x", 400) + "\n" + strings.Repeat("y", 400)
+	m.width, m.height = 70, 12
+	m.reflow()
+
+	lines := strings.Split(stripANSI(m.View()), "\n")
+	if len(lines) != m.height {
+		t.Fatalf("rendered %d lines into %d", len(lines), m.height)
+	}
+	for i, ln := range lines {
+		if w := lipglossWidth(ln); w > m.width {
+			t.Errorf("row %d is %d columns wide, window is %d", i, w, m.width)
+		}
 	}
 }
 
@@ -1807,10 +2018,10 @@ func TestAddIsGlobalButTheDestructiveKeysAreNot(t *testing.T) {
 				t.Errorf("%v: %q must not be offered with no app selected", k, gone)
 			}
 		}
-		if next := send(m, "x"); next.scr != screenList {
+		if next := send(m, "x"); next.scr != screenMonitor {
 			t.Errorf("%v: 'x' must do nothing with no app selected", k)
 		}
-		if next := send(m, "r"); next.scr != screenList {
+		if next := send(m, "r"); next.scr != screenMonitor {
 			t.Errorf("%v: 'r' must do nothing with no app selected", k)
 		}
 	}
@@ -1851,7 +2062,7 @@ func TestTheHostIsNamedWhereItMatters(t *testing.T) {
 	// screen. Anything destructive has to name the box itself now, or the most
 	// dangerous prompt in the program says "this server" and means nothing.
 	m := testModel()
-	if strings.Contains(stripANSI(header()), "@") {
+	if strings.Contains(stripANSI(header("monitor")), "@") {
 		t.Error("the header should no longer carry the address")
 	}
 	if !strings.Contains(stripANSI(m.View()), "root@box.example.com") {
@@ -1884,7 +2095,7 @@ func TestAQuestionTakesTheKeysWhileItIsOpen(t *testing.T) {
 
 	before := m.cursor
 	m = send(m, "a", "down", "up")
-	if m.scr != screenList {
+	if m.scr != screenMonitor {
 		t.Errorf("keys must not reach the list while a question is open, got %v", m.scr)
 	}
 	if m.cursor != before {
@@ -1899,7 +2110,7 @@ func TestAQuestionTakesTheKeysWhileItIsOpen(t *testing.T) {
 	if m.prompt != nil {
 		t.Error("esc should close the question")
 	}
-	if m.scr != screenList {
+	if m.scr != screenMonitor {
 		t.Error("and leave the list exactly where it was")
 	}
 }
@@ -1910,7 +2121,7 @@ func TestQuestionsNeverLeaveTheList(t *testing.T) {
 	m.cursor = rowOf(m, focusApp)
 	for _, k := range []string{"c", "r", "x", "p"} {
 		next := send(m, k)
-		if next.scr != screenList {
+		if next.scr != screenMonitor {
 			t.Errorf("%q left the list for %v", k, next.scr)
 		}
 		if next.prompt == nil {
@@ -1922,7 +2133,7 @@ func TestQuestionsNeverLeaveTheList(t *testing.T) {
 	}
 	// And the server row's question behaves the same.
 	m.cursor = rowOf(m, focusServer)
-	if next := send(m, "enter"); next.scr != screenList || next.prompt == nil {
+	if next := send(m, "enter"); next.scr != screenMonitor || next.prompt == nil {
 		t.Error("updating the server should ask in the footer too")
 	}
 }
@@ -1954,11 +2165,364 @@ func TestTheFooterIsPinnedAndRuledOff(t *testing.T) {
 		t.Errorf("expected one rule, above the footer, got %d", n)
 	}
 
-	// A page that already overflows must not be padded further -- scrolling the
-	// top away to pin the bottom trades position for the content itself.
+	// A page that overflows is SCROLLED, not spilled. It used to render in full
+	// and let the terminal do the scrolling, and what a terminal scrolls off is
+	// the top: the title went, then the Server section, and the keys ended up
+	// wherever the last line landed.
 	m.height = 12
-	if n := strings.Count(stripANSI(m.View()), "\n"); n < 12 {
-		t.Error("an overflowing page should render in full, not be truncated")
+	small := strings.Split(stripANSI(m.View()), "\n")
+	if len(small) != 12 {
+		t.Errorf("rendered %d lines into a 12-line terminal", len(small))
+	}
+	if !strings.Contains(small[0], "komizo") {
+		t.Error("the title should survive a terminal too small for the page")
+	}
+	foot := rowsOf(stripANSI(m.pageFooter()))
+	if got, want := small[len(small)-1], foot[len(foot)-1]; got != want {
+		t.Errorf("bottom row is %q, want the footer's last line %q", got, want)
+	}
+}
+
+func TestTheChromeRunsCornerToCorner(t *testing.T) {
+	// The header and the footer are the window's edges. The gutter belongs to
+	// the content between them -- indenting the chrome too put the title in
+	// from the corner and left the rule short at both ends, so the page read as
+	// a box floating inside the terminal rather than as the terminal.
+	m := testModel()
+	m.width, m.height = 70, 20
+	m.cursor = rowOf(m, focusApp)
+	m.status = "known_hosts copied"
+	m.reflow()
+	lines := strings.Split(stripANSI(m.View()), "\n")
+
+	if strings.HasPrefix(lines[0], " ") {
+		t.Errorf("the header should start in the corner, got %q", lines[0])
+	}
+	rule := ""
+	for _, ln := range lines {
+		if strings.HasPrefix(ln, "───") {
+			rule = ln
+		}
+	}
+	if lipglossWidth(rule) != m.width {
+		t.Errorf("the rule is %d columns, want the full %d", lipglossWidth(rule), m.width)
+	}
+	// The status and the keys sit against the same margin as the rule.
+	for _, want := range []string{"● known_hosts copied", "↑↓ select"} {
+		found := false
+		for _, ln := range lines {
+			if strings.HasPrefix(ln, want) {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%q should be flush left in the footer:\n%s", want, strings.Join(lines, "\n"))
+		}
+	}
+	// The body keeps its gutter: content is indented, chrome is not.
+	for _, ln := range lines {
+		if strings.Contains(ln, "docker ") && !strings.HasPrefix(ln, gutter) {
+			t.Errorf("a body row lost its gutter: %q", ln)
+		}
+	}
+}
+
+func TestFooterProseWrapsToTheWindow(t *testing.T) {
+	// Rows are clipped to the window, so prose wrapped to a hard-coded 74 lost
+	// its end in anything narrower.
+	m := testModel()
+	m.width, m.height = 62, 20
+	m = openAddForm(m)
+	m.reflow()
+
+	v := stripANSI(m.View())
+	if !strings.Contains(v, "already exists.") {
+		t.Errorf("the last words of the detail were cut off:\n%s", v)
+	}
+	for _, ln := range strings.Split(v, "\n") {
+		if lipglossWidth(ln) > m.width {
+			t.Errorf("%q is wider than the window", ln)
+		}
+	}
+}
+
+func TestLoginAsksForAHost(t *testing.T) {
+	// `komizo` on its own used to print the usage and exit 2, which made the
+	// shortest thing anyone would type the one thing that did not work.
+	m := newLoginModel()
+	m.width, m.height = 64, 14
+	m.reflow()
+
+	v := stripANSI(m.View())
+	for _, want := range []string{"komizo", "your server, secured", "root@example.com", "connect"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("the login screen should show %q:\n%s", want, v)
+		}
+	}
+	// A placeholder, not a value: enter on an empty field does nothing.
+	if next, cmd := m.Update(key("enter")); cmd != nil || next.(model).scr != screenLogin {
+		t.Error("enter with nothing typed should do nothing")
+	}
+
+	typed := send(m, "r", "o", "o", "t", "@", "b", "o", "x")
+	if typed.login != "root@box" {
+		t.Errorf("typed %q, want root@box", typed.login)
+	}
+	if !strings.Contains(stripANSI(typed.View()), "root@box") {
+		t.Error("the field should show what was typed")
+	}
+	if back := send(typed, "backspace"); back.login != "root@bo" {
+		t.Errorf("backspace left %q", back.login)
+	}
+
+	// A bad address is refused before any connection is attempted, and the
+	// text stays in the field to be fixed.
+	bad := send(m, "r", "o", "o", "t", "@", "b", "a", "d", " ", "x")
+	next, cmd := bad.Update(key("enter"))
+	if cmd != nil {
+		t.Error("a malformed address should not open a connection")
+	}
+	after := next.(model)
+	if after.scr != screenLogin || after.login == "" || !after.statusErr {
+		t.Errorf("expected the field kept and an error shown, got %q / %v", after.login, after.status)
+	}
+}
+
+func TestAnUnreachableHostComesBackToTheField(t *testing.T) {
+	// Everything here is recoverable by typing something else, so a failure
+	// returns to the field with the address still in it.
+	m := newLoginModel()
+	m.width, m.height = 64, 14
+	m.login, m.scr = "root@box", screenLoading
+
+	tgt, _ := parseTarget("root@box")
+	next, _ := m.Update(connectMsg{tgt: tgt, res: reachResult{kind: reachNetwork}})
+	after := next.(model)
+	if after.scr != screenLogin {
+		t.Errorf("a failed connection should return to the login screen, got %v", after.scr)
+	}
+	if after.login != "root@box" {
+		t.Errorf("the address should still be in the field, got %q", after.login)
+	}
+	if !after.statusErr || !strings.Contains(after.status, "box") {
+		t.Errorf("the reason should name the host, got %q", after.status)
+	}
+
+	// A host nobody has met asks rather than failing -- with its fingerprints
+	// beside the question, which is the only reason the question is answerable.
+	unseen := connectMsg{tgt: tgt, res: reachResult{kind: reachUnknownHost},
+		scan: []byte("box ssh-ed25519 AAAA\n"), fp: []string{"256 SHA256:abc box (ED25519)"}}
+	next, _ = m.Update(unseen)
+	asked := next.(model)
+	if asked.prompt == nil || !strings.Contains(asked.prompt.question, "Trust") {
+		t.Fatal("an unseen host key should be asked about, not refused")
+	}
+	if !strings.Contains(asked.prompt.detail, "SHA256:abc") {
+		t.Error("the fingerprints should be on screen while the question is asked")
+	}
+}
+
+func TestBothWaitsLookTheSame(t *testing.T) {
+	// One component for both places that wait, because it is the same wait: an
+	// SSH command is running and the page cannot be drawn until it answers.
+	// They were written separately and looked it -- the first read said
+	// "connecting…" at the top left, and a log opening showed a spinner in the
+	// middle. The name is the one difference: the first read has nothing else
+	// on the page, and a log already says which log in its header.
+	first := testModel()
+	first.width, first.height = 60, 12
+	first.scr = screenLoading
+
+	log := testModel()
+	log.width, log.height = 60, 12
+	log.scr, log.logsOf, log.logsLabel, log.logsReady = screenLogs, "web", "web", false
+
+	for name, m := range map[string]model{"the first read": first, "opening a log": log} {
+		m.reflow()
+		v := stripANSI(m.View())
+
+		if !strings.Contains(v, stripANSI(spinnerAccent(m.spin))) {
+			t.Errorf("%s: the spinner should be on screen", name)
+		}
+
+		// Centred, and the only one on the page: the loading screen stands its
+		// header down, because the pane is already the name.
+		names := 0
+		for _, ln := range strings.Split(v, "\n") {
+			if strings.TrimSpace(ln) != "komizo" {
+				continue
+			}
+			names++
+			if !strings.HasPrefix(ln, "          ") {
+				t.Errorf("%s: the name should be centred, got %q", name, ln)
+			}
+		}
+		if want := map[bool]int{true: 1, false: 0}[m.scr == screenLoading]; names != want {
+			t.Errorf("%s: the name appears %d times, want %d", name, names, want)
+		}
+	}
+
+	// And the spinner has to be turning: the ticker runs from the first frame,
+	// because the loading pane is the first thing on screen.
+	if !first.spinning() {
+		t.Error("the loading screen should keep the spinner animating")
+	}
+	if cmds := testModel().Init(); cmds == nil {
+		t.Error("Init should start the spinner ticking")
+	}
+}
+
+func TestTheHeaderSaysWhereYouAre(t *testing.T) {
+	// komizo / monitor. The brand keeps the accent and the bold; the crumb is
+	// plain, so the eye lands on the tool first and the part that changes reads
+	// as the part that changes.
+	m := testModel()
+	m.width, m.height = 90, 20
+
+	for name, c := range map[string]struct {
+		set  func(*model)
+		want string
+	}{
+		"the list": {func(m *model) {}, "komizo / monitor"},
+		"a log": {func(m *model) {
+			m.scr, m.logsLabel, m.logsOf, m.logsReady = screenLogs, "blog-web-1", "x", true
+			m.logs = "one\ntwo"
+		}, "komizo / blog-web-1 logs"},
+		"an unset-up box": {func(m *model) { m.scr = screenSetup }, "komizo / setup"},
+	} {
+		next := m
+		c.set(&next)
+		next.reflow()
+		lines := strings.Split(stripANSI(next.View()), "\n")
+		if got := strings.TrimSpace(lines[0]); got != c.want {
+			t.Errorf("%s: header is %q, want %q", name, got, c.want)
+		}
+	}
+
+	// The log window's title was the first line of its body, so reading to the
+	// bottom of a long log left a screen of untitled output. Up here it cannot
+	// scroll away.
+	l := m
+	l.scr, l.logsLabel, l.logsOf, l.logsReady = screenLogs, "blog-web-1", "x", true
+	l.logs = strings.Repeat("a line\n", 200)
+	l.scroll = 999
+	l.reflow()
+	if !strings.Contains(stripANSI(l.View()), "blog-web-1 logs") {
+		t.Error("the crumb should survive scrolling to the end of a log")
+	}
+}
+
+func TestEveryScreenIsFramed(t *testing.T) {
+	// The frame is the point: whatever is on screen, the title is on top, the
+	// keys are on the bottom row, and the page is exactly the height of the
+	// terminal. Every screen, at a size too small for any of them, because the
+	// size that fits is the one that never showed the bug.
+	base := testModel()
+	base.width, base.height = 80, 14
+
+	logs := base
+	logs.scr, logs.logsLabel, logs.logsOf, logs.logsReady = screenLogs, "blog-web-1", "blog-web-1", true
+	logs.logs = strings.Repeat("a log line\n", 40)
+
+	run := base
+	run.startOp("Setting up box.example.com")
+
+	done := showResult(base, &addResult{app: "blog", keyPath: "/k", knownHosts: "h k b"})
+
+	form := base
+	form.form = newAddForm(base.tgt)
+	form.prompt = &prompt{kind: promptForm, question: "Add an app"}
+
+	init := base
+	init.scr = screenSetup
+
+	for name, m := range map[string]model{
+		"list": base, "logs": logs, "running": run,
+		"result": done, "form": form, "init": init,
+	} {
+		m.reflow()
+		lines := strings.Split(stripANSI(m.View()), "\n")
+		if len(lines) != m.height {
+			t.Errorf("%s: %d lines in a %d-line terminal", name, len(lines), m.height)
+			continue
+		}
+		if !strings.Contains(lines[0], "komizo") {
+			t.Errorf("%s: no title on the first row, got %q", name, lines[0])
+		}
+		foot := rowsOf(stripANSI(m.pageFooter()))
+		if got, want := lines[len(lines)-1], foot[len(foot)-1]; got != want {
+			t.Errorf("%s: bottom row is %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestScrollingNeverMovesTheSelection(t *testing.T) {
+	// The page scrolls to keep the selected row visible. The reverse must not
+	// happen: nothing about where the page sits may change WHICH row is
+	// selected, or the keys in the footer would act on a row you never chose.
+	// Up and down are the only two keys that move it.
+	m := testModel()
+	one := m.apps[0]
+	for i := 0; i < 30; i++ {
+		a := one
+		a.name = fmt.Sprintf("app%02d", i)
+		m.apps = append(m.apps, a)
+	}
+	m.width, m.height = 90, 16
+	m.cursor = 8
+	m.reflow()
+	was := m.cursor
+
+	// A resize re-lays out the whole page, and a refresh replaces every row.
+	for _, h := range []int{40, 10, 24} {
+		next, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: h})
+		m = next.(model)
+		if m.cursor != was {
+			t.Errorf("resizing to %d lines moved the selection %d -> %d", h, was, m.cursor)
+		}
+	}
+	// And the five-second poll, which happens whether or not anyone is here.
+	next, _ := m.Update(pollMsg{})
+	if got := next.(model).cursor; got != was {
+		t.Errorf("the poll moved the selection %d -> %d", was, got)
+	}
+
+	for _, k := range []string{"g", "G", "pgup", "pgdown", " ", "f", "b", "c", "l", "p"} {
+		if got := send(m, k).cursor; got != was {
+			t.Errorf("%q moved the selection %d -> %d", k, was, got)
+		}
+	}
+	if got := send(m, "down").cursor; got != was+1 {
+		t.Errorf("down should move the selection, got %d", got)
+	}
+	if got := send(m, "up").cursor; got != was-1 {
+		t.Errorf("up should move the selection, got %d", got)
+	}
+}
+
+func TestTheCursorStaysOnScreen(t *testing.T) {
+	// Thirty apps in a window with room for a handful of rows. Whichever one is
+	// selected has to be visible: a cursor you cannot see is a cursor you cannot
+	// use, and the keys in the footer act on it.
+	m := testModel()
+	one := m.apps[0]
+	for i := 0; i < 30; i++ {
+		a := one
+		a.name = fmt.Sprintf("app%02d", i)
+		m.apps = append(m.apps, a)
+	}
+	m.width, m.height = 90, 20
+
+	for _, c := range []int{0, 5, 12, len(m.focusItems()) - 1, 3} {
+		m.cursor = c
+		m.reflow()
+		v := stripANSI(m.View())
+		if n := len(strings.Split(v, "\n")); n != m.height {
+			t.Fatalf("cursor %d: rendered %d lines into %d", c, n, m.height)
+		}
+		if anchorOf(strings.Split(m.View(), "\n")) < 0 {
+			t.Errorf("cursor %d is off screen", c)
+		}
 	}
 }
 
@@ -2324,15 +2888,104 @@ func TestAnAppIsUpSinceItsLatestContainer(t *testing.T) {
 	}
 }
 
-func TestTheClockRunsWithoutTouchingTheServer(t *testing.T) {
-	// Durations are computed from timestamps the box already gave us, so
-	// keeping them current is a repaint rather than a poll. The tick carries no
-	// data and changes no state -- returning at all is the point.
+func TestThePollSkipsWhenItWouldHurt(t *testing.T) {
+	// The poll is only ever right on the list, idle. Everywhere else it is a
+	// connection nobody asked for, and in two of these cases its answer would
+	// visibly break the page.
+	for name, mutate := range map[string]func(*model){
+		"reading a log":  func(m *model) { m.scr = screenLogs },
+		"already asking": func(m *model) { m.fetching = true },
+		"a row is busy":  func(m *model) { m.busy = map[string]bool{"app:blog": true} },
+		"a row settling": func(m *model) { m.settling = map[string]bool{"app:blog": true} },
+	} {
+		m := testModel()
+		mutate(&m)
+		if cmd := m.poll(); cmd != nil {
+			t.Errorf("%s: should not have polled", name)
+		}
+	}
+
+	m := testModel()
+	if cmd := m.poll(); cmd == nil {
+		t.Error("an idle list should poll")
+	} else if !m.fetching {
+		t.Error("a poll in flight should be recorded, or the next tick stacks another")
+	}
+
+	// An open question does NOT stop it. The list behind the question is the
+	// reason the question is in the footer, and one that stops updating the
+	// moment you start deciding is stale exactly when you are looking hardest.
+	for name, mutate := range map[string]func(*model){
+		"a confirmation": func(m *model) { m.prompt = &prompt{kind: promptConfirm} },
+		"the add form":   func(m *model) { *m = openAddForm(*m) },
+		"mid-operation":  func(m *model) { m.startOp("Setting up blog") },
+		"a result shown": func(m *model) {
+			*m = showResult(*m, &addResult{app: "blog", keyPath: "/k"})
+		},
+	} {
+		m := testModel()
+		mutate(&m)
+		if cmd := m.poll(); cmd == nil {
+			t.Errorf("%s: the list behind it should keep updating", name)
+		}
+	}
+}
+
+func TestAFailedPollKeepsThePage(t *testing.T) {
+	// One dropped connection must not blank a working list. The error comes
+	// back with an empty inventory, and taking it would replace every row --
+	// then the next poll five seconds later would put them all back.
+	m := testModel()
+	m.loaded = true
+	had := len(m.apps)
+
+	next, _ := m.Update(appsMsg{err: fmt.Errorf("connection refused")})
+	after := next.(model)
+	if len(after.apps) != had {
+		t.Errorf("a failed poll emptied the list: %d apps, want %d", len(after.apps), had)
+	}
+	if after.err == nil {
+		t.Error("a failed poll should still say so")
+	}
+	if after.fetching {
+		t.Error("a failed poll must clear the in-flight flag, or polling stops for good")
+	}
+	// And the next good read clears it again.
+	next, _ = after.Update(appsMsg{apps: m.apps, srv: m.srv, proxy: m.proxy})
+	if next.(model).err != nil {
+		t.Error("a good read should clear the error")
+	}
+}
+
+func TestAPollDoesNotMoveYouBetweenScreens(t *testing.T) {
+	// appsMsg used to set the screen unconditionally, which was harmless when
+	// the only way to trigger one was pressing R on the list. A poll arriving
+	// every five seconds would now throw you out of whatever you were reading.
+	for _, scr := range []screen{screenLogs} {
+		m := testModel()
+		m.loaded, m.scr = true, scr
+		next, _ := m.Update(appsMsg{apps: m.apps, srv: m.srv, proxy: m.proxy})
+		if got := next.(model).scr; got != scr {
+			t.Errorf("a poll moved the screen %v -> %v", scr, got)
+		}
+	}
+	// From the loading screen it is the thing that decides where to go.
+	m := testModel()
+	m.scr = screenLoading
+	next, _ := m.Update(appsMsg{apps: m.apps, srv: m.srv, proxy: m.proxy})
+	if got := next.(model).scr; got != screenMonitor {
+		t.Errorf("the first read should land on the list, got %v", got)
+	}
+}
+
+func TestThePollKeepsTicking(t *testing.T) {
+	// The tick carries no data and changes nothing on the page: it asks for a
+	// read, and the answer arrives later as an appsMsg.
 	m := netModel()
 	before := m
-	next, cmd := m.Update(clockMsg{})
+	next, cmd := m.Update(pollMsg{})
 	if cmd == nil {
-		t.Fatal("the clock should keep ticking")
+		t.Fatal("the poll should keep ticking")
 	}
 	after := next.(model)
 	if after.cursor != before.cursor || after.scr != before.scr || len(after.apps) != len(before.apps) {
@@ -2411,7 +3064,7 @@ func TestTheLogWindowNeverOutgrowsTheTerminal(t *testing.T) {
 				t.Errorf("height=%d loaded=%v rendered %d lines", h, loaded, n)
 			}
 			// And the title is still the first thing on it.
-			if got := strings.SplitN(v, "\n", 3)[1]; !strings.Contains(got, "komizo") {
+			if got := strings.SplitN(v, "\n", 2)[0]; !strings.Contains(got, "komizo") {
 				t.Errorf("height=%d loaded=%v: first line is %q", h, loaded, got)
 			}
 		}
@@ -2429,8 +3082,8 @@ func TestALoadingLogSpinsInTheMiddle(t *testing.T) {
 	if !m.spinning() {
 		t.Error("the spinner ticker should be running while it loads")
 	}
-	if !strings.Contains(stripANSI(m.View()), spinFrames[0]) {
-		t.Error("a loading log should show a spinner")
+	if !strings.Contains(stripANSI(m.View()), stripANSI(spinnerAccent(m.spin))) {
+		t.Error("a loading log should show the spinner")
 	}
 
 	// A container that has genuinely logged nothing is NOT loading -- inferring
@@ -2474,6 +3127,11 @@ func TestStaticRoutesAppearWithoutPretendingToRun(t *testing.T) {
 	// Named for its document root, and marked as what it is.
 	if !strings.Contains(line, "www") || !strings.Contains(line, "static") {
 		t.Errorf("row should name the root and say it is static: %q", line)
+	}
+	// "static" belongs in the image column, after the empty uptime -- it is
+	// what serves this row in place of an image, not a state it is in.
+	if i, j := strings.Index(line, "—"), strings.Index(line, "static"); i < 0 || i > j {
+		t.Errorf("the dash should come before \"static\": %q", line)
 	}
 	// No status dot: there is no process for it to describe, and a green one
 	// would claim something is running.
@@ -2521,21 +3179,31 @@ func TestAStaticRootIsNamedForItsLastSegment(t *testing.T) {
 func TestTheImageColumnDropsTheVersionItRepeats(t *testing.T) {
 	// Every service is pinned to ${APP_VERSION}, so the tag is the commit SHA
 	// already shown on the app's row -- sixty characters of column saying what
-	// the row above said.
+	// the row above said. The registry and namespace go too: they are the same
+	// for every image in the app, so they are a wall with the answer after it.
 	c := containerRow{image: "ghcr.io/you/blog-api:a1b2c3d4e5f6"}
-	if got := c.imageText("a1b2c3d4e5f6"); got != "ghcr.io/you/blog-api" {
-		t.Errorf("imageText = %q, want the repo alone", got)
+	if got := c.imageText("a1b2c3d4e5f6"); got != "blog-api" {
+		t.Errorf("imageText = %q, want the name alone", got)
 	}
 	// A tag that is NOT the version is the interesting case: a service left on
-	// :latest, or an upstream image. Shown in full.
-	if got := c.imageText("deadbeef"); got != "ghcr.io/you/blog-api:a1b2c3d4e5f6" {
+	// :latest, or an upstream image. That tag survives.
+	if got := c.imageText("deadbeef"); got != "blog-api:a1b2c3d4e5f6" {
 		t.Errorf("a tag that is not the version should survive, got %q", got)
 	}
 	if got := (containerRow{image: "caddy:2"}).imageText("a1b2c3d"); got != "caddy:2" {
 		t.Errorf("an upstream image should be shown as it is, got %q", got)
 	}
-	// An app that has never deployed has no version to compare against.
-	if got := c.imageText("none"); got != "ghcr.io/you/blog-api:a1b2c3d4e5f6" {
-		t.Errorf("with no version the image is shown whole, got %q", got)
+	// An app that has never deployed has no version to compare against, so the
+	// tag stays -- but the registry is noise either way.
+	if got := c.imageText("none"); got != "blog-api:a1b2c3d4e5f6" {
+		t.Errorf("with no version the tag is shown whole, got %q", got)
+	}
+	// A registry with a port has a colon that is not a tag separator. Cutting
+	// the tag first and the path second is what keeps them apart.
+	if got := (containerRow{image: "localhost:5000/api:v3"}).imageText("v3"); got != "api" {
+		t.Errorf("a registry port is not a tag, got %q", got)
+	}
+	if got := (containerRow{image: "localhost:5000/api"}).imageText("none"); got != "api" {
+		t.Errorf("an untagged image on a ported registry, got %q", got)
 	}
 }

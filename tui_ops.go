@@ -118,45 +118,18 @@ func (r runState) wait() tea.Cmd {
 	return func() tea.Msg { return <-r.ch }
 }
 
-func (r runState) view(finished bool, height int) string {
-	var b strings.Builder
-	b.WriteString("\n" + gutter + titleStyle.Render(r.title) + "\n\n")
-
-	// Show the tail; a bootstrap prints more than fits.
-	max := height - 12
-	if max < 5 {
-		max = 5
+// runTail is the last few lines of output, for a failure.
+//
+// The stream is collected and never shown -- a bootstrap prints hundreds of
+// lines of apk and docker progress, and the operation taking the screen to
+// display them was the reason it took the screen. When one fails, though, the
+// error alone is often "exit status 1", and the lines before it are the whole
+// diagnosis.
+func (r runState) tail(n int) []string {
+	if len(r.lines) <= n {
+		return r.lines
 	}
-	start := 0
-	if len(r.lines) > max {
-		start = len(r.lines) - max
-	}
-	for _, l := range r.lines[start:] {
-		b.WriteString(gutter + dimStyle.Render(l) + "\n")
-	}
-
-	if !finished {
-		b.WriteString("\n" + gutter + barStyle.Render("▍") + dimStyle.Render(" working…") + "\n")
-		return b.String()
-	}
-
-	if r.err != nil {
-		b.WriteString("\n" + gutter + dot("err") + " " + errStyle.Render(r.err.Error()) + "\n")
-		b.WriteString(help("enter", "back"))
-		return b.String()
-	}
-
-	if r.result != nil {
-		b.WriteString("\n" + r.result.view())
-		if clipboardAvailable() {
-			b.WriteString(help("↑↓", "select", "c", "copy", "enter", "back"))
-			return b.String()
-		}
-	} else {
-		b.WriteString("\n" + gutter + dot("ok") + " " + titleStyle.Render("Done") + "\n")
-	}
-	b.WriteString(help("enter", "back"))
-	return b.String()
+	return r.lines[len(r.lines)-n:]
 }
 
 func (a addResult) view() string {

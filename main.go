@@ -19,9 +19,16 @@ import (
 var errSilent = errors.New("")
 
 func main() {
+	// `komizo` on its own is the interface with nothing to connect to yet: it
+	// opens and asks for an address. It used to print the usage and exit 2,
+	// which made the shortest thing anyone would type the one thing that did
+	// not work.
 	if len(os.Args) < 2 {
-		usage()
-		os.Exit(2)
+		if err := runLoginTUI(); err != nil {
+			fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	var err error
@@ -80,11 +87,13 @@ func main() {
 func usage() {
 	fmt.Print(`komizo - deploy to your own servers from GitHub Actions
 
+  komizo
   komizo root@your-server
   komizo root@your-server --port 2222
 
-That opens the interface. Everything -- adding an app, rotating its deploy key,
-removing one -- is done from there. It runs on your machine and connects to the
+On its own it asks which server; with an address it goes straight there. Either
+way opens the interface, and everything -- adding an app, rotating its deploy
+key, removing one -- is done from there. It runs on your machine and connects to the
 server itself; you never run anything on the box by hand.
 
 The same operations are available non-interactively, for scripting:

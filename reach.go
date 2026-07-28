@@ -95,6 +95,29 @@ func ensureReachable(t target, acceptUnknown bool) error {
 	return nil
 }
 
+// summary is the same diagnosis as explain, in one line, for the footer.
+//
+// explain is several paragraphs with a command to run in the middle of it --
+// right for a shell, wrong for a status line under an input field, where the
+// next step is always "type a different address" or "fix it and press enter".
+func (r reachResult) summary(t target) string {
+	switch r.kind {
+	case reachUnknownHost:
+		return t.host + " has not been seen before"
+	case reachChangedHost:
+		return t.host + " is presenting a different host key than last time"
+	case reachAuth:
+		return "no key on this machine is accepted by " + t.addr()
+	case reachNetwork:
+		return "could not reach " + t.host
+	}
+	if r.raw != "" {
+		// ssh's first line: what follows is usually a debug trail.
+		return strings.SplitN(r.raw, "\n", 2)[0]
+	}
+	return "could not connect to " + t.addr()
+}
+
 // explain turns a failure into something with a next step in it.
 func (r reachResult) explain(t target) error {
 	switch r.kind {
@@ -155,25 +178,15 @@ func indent(s string) string {
 // of /etc/ssh on the server over an already-authenticated session, and never
 // scanned.
 func acceptHostKey(t target, assumeYes bool) error {
-	args := []string{"-T", "5"}
-	if t.port != 22 {
-		args = append(args, "-p", fmt.Sprint(t.port))
-	}
-	args = append(args, t.host)
-	scan, err := exec.Command("ssh-keyscan", args...).Output()
-	if err != nil || len(strings.TrimSpace(string(scan))) == 0 {
-		return fmt.Errorf("could not reach %s to read its host key", t.host)
+	scan, err := scanHostKeys(t)
+	if err != nil {
+		return err
 	}
 
 	if !assumeYes {
 		fmt.Printf("\n  %s has not been seen before. Its fingerprints are:\n\n", t.host)
-		fp := exec.Command("ssh-keygen", "-l", "-f", "-")
-		fp.Stdin = strings.NewReader(string(scan))
-		out, _ := fp.Output()
-		for _, ln := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-			if ln != "" {
-				fmt.Printf("      %s\n", ln)
-			}
+		for _, ln := range fingerprints(scan) {
+			fmt.Printf("      %s\n", ln)
 		}
 		fmt.Printf("\n  These came from the network, not from the server's own /etc/ssh --\n" +
 			"  nothing here has verified them. Compare against your provider's\n" +
@@ -184,22 +197,65 @@ func acceptHostKey(t target, assumeYes bool) error {
 		}
 	}
 
-	home, err := os.UserHomeDir()
+	kh, err := writeKnownHosts(scan)
 	if err != nil {
-		return err
-	}
-	kh := filepath.Join(home, ".ssh", "known_hosts")
-	if err := os.MkdirAll(filepath.Dir(kh), 0o700); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(kh, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if _, err := f.Write(scan); err != nil {
 		return err
 	}
 	note("added %s to %s", t.host, kh)
 	return nil
+}
+
+// scanHostKeys asks the network what keys the host presents. Nothing here has
+// verified them -- that is the whole point of showing the fingerprints before
+// anyone accepts them.
+func scanHostKeys(t target) ([]byte, error) {
+	args := []string{"-T", "5"}
+	if t.port != 22 {
+		args = append(args, "-p", fmt.Sprint(t.port))
+	}
+	args = append(args, t.host)
+	scan, err := exec.Command("ssh-keyscan", args...).Output()
+	if err != nil || len(strings.TrimSpace(string(scan))) == 0 {
+		return nil, fmt.Errorf("could not reach %s to read its host key", t.host)
+	}
+	return scan, nil
+}
+
+// fingerprints is the scanned keys in the form a person can compare against a
+// provider's console.
+func fingerprints(scan []byte) []string {
+	fp := exec.Command("ssh-keygen", "-l", "-f", "-")
+	fp.Stdin = strings.NewReader(string(scan))
+	out, _ := fp.Output()
+	var lines []string
+	for _, ln := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		if ln != "" {
+			lines = append(lines, ln)
+		}
+	}
+	return lines
+}
+
+// writeKnownHosts appends the scanned keys and returns the file it wrote to.
+//
+// Split out from acceptHostKey so the interface can use it: that function
+// prints to stdout, which inside a full-screen program paints over the page.
+func writeKnownHosts(scan []byte) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	kh := filepath.Join(home, ".ssh", "known_hosts")
+	if err := os.MkdirAll(filepath.Dir(kh), 0o700); err != nil {
+		return "", err
+	}
+	f, err := os.OpenFile(kh, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	if _, err := f.Write(scan); err != nil {
+		return "", err
+	}
+	return kh, nil
 }

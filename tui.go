@@ -17,13 +17,11 @@ import (
 type screen int
 
 const (
-	screenLoading screen = iota
-	screenInit           // connected, but the server has nothing installed
-	screenList           // the apps on this box
-	screenAddForm        // name + config image for a new app
-	screenLogs           // one log, full window
-	screenRunning        // an operation is in flight, streaming output
-	screenResult         // it finished; show what came back
+	screenLogin screen = iota // no host given: ask which one
+	screenLoading
+	screenSetup   // connected, but the server has nothing installed
+	screenMonitor // the apps on this box
+	screenLogs    // one log, full window
 )
 
 type model struct {
@@ -60,8 +58,17 @@ type model struct {
 	spin     int
 
 	// loaded records that the first inventory has arrived, so the cursor can be
-	// parked on the first app once and not re-parked on every refresh.
+	// parked on the first app once and not re-parked on every refresh. It is
+	// also what tells a failed poll there is a good page to keep.
 	loaded bool
+
+	// fetching is a read already on its way, so the five-second poll cannot
+	// stack connections on a box that is answering slower than it is asked.
+	fetching bool
+
+	// login is the address being typed on the login screen, and the reason
+	// `komizo` with no arguments is a usable command rather than a usage error.
+	login string
 
 	form addForm
 
@@ -75,7 +82,7 @@ type model struct {
 	logsOf    string // container name, so a late fetch for another one is dropped
 	logsLabel string
 	logsCmd   string
-	logScroll int
+	scroll    int
 	logsReady bool // the fetch has come back, even if it came back empty
 	run       runState
 
@@ -86,29 +93,161 @@ func newModel(t target) model {
 	return model{tgt: t, scr: screenLoading, form: newAddForm(t)}
 }
 
+// newLoginModel is `komizo` with nothing after it: no host to connect to, so
+// the first thing on screen asks for one.
+func newLoginModel() model {
+	return model{scr: screenLogin, form: newAddForm(target{})}
+}
+
 func (m model) Init() tea.Cmd {
-	return tea.Batch(fetchApps(m.tgt), tea.WindowSize(), clockTick())
+	cmds := []tea.Cmd{tea.WindowSize(), spinTick(), pollTick()}
+	// Nothing to read yet when there is no host: the login screen asks first.
+	if m.scr != screenLogin {
+		cmds = append(cmds, m.fetch())
+	}
+	return tea.Batch(cmds...)
 }
 
-// clockMsg is one second passing.
-//
-// Every duration on the page is computed at render time from a timestamp the
-// box already gave us, so keeping them current costs nothing but a repaint --
-// no SSH, no inventory, no work on the server at all. Without it the numbers
-// would simply be as old as the last keypress, which on a page you leave open
-// to watch something is most of the time.
-//
-// Every ten seconds. Nothing here is shown finer than a minute, so a
-// once-a-second repaint would be redrawing an identical screen nine times out
-// of ten -- but a full minute between ticks would leave a value up to a minute
-// stale, which on the row you just acted on is the one place it shows.
-type clockMsg struct{}
-
-func clockTick() tea.Cmd {
-	return tea.Tick(10*time.Second, func(time.Time) tea.Msg { return clockMsg{} })
+// connectMsg is what a host turned out to be: reachable, never seen before, or
+// unreachable with a reason.
+type connectMsg struct {
+	tgt  target
+	res  reachResult
+	scan []byte   // the host keys, when it is a host we have not met
+	fp   []string // and their fingerprints, to compare before trusting them
 }
 
+// connect resolves the port the way the rest of the tool does -- out of the
+// user's ssh config -- then finds out whether the host answers.
+func connect(t target) tea.Cmd {
+	return func() tea.Msg {
+		t.resolvePort()
+		r := t.probe()
+		if r.kind != reachUnknownHost {
+			return connectMsg{tgt: t, res: r}
+		}
+		// Scanned here rather than after the question, so the fingerprints are
+		// on screen while it is being asked. Nothing has verified them; that is
+		// what the question is for.
+		scan, err := scanHostKeys(t)
+		if err != nil {
+			return connectMsg{tgt: t, res: reachResult{kind: reachOther, raw: err.Error()}}
+		}
+		return connectMsg{tgt: t, res: r, scan: scan, fp: fingerprints(scan)}
+	}
+}
+
+// handleLoginKey drives the one field on the login screen.
+func (m model) handleLoginKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "ctrl+c":
+		return m, tea.Quit
+
+	case "enter":
+		host := strings.TrimSpace(m.login)
+		if host == "" {
+			return m, nil
+		}
+		t, err := parseTarget(host)
+		if err == nil {
+			err = validateHost(t.host)
+		}
+		if err != nil {
+			m.status, m.statusErr = err.Error(), true
+			return m, nil
+		}
+		// The spinner and the word take over while ssh is out; the field comes
+		// back with its text intact if the host turns out not to answer.
+		m.status, m.statusErr = "", false
+		m.scr = screenLoading
+		return m, connect(t)
+
+	case "backspace":
+		if m.login != "" {
+			m.login = m.login[:len(m.login)-1]
+			m.status, m.statusErr = "", false
+		}
+		return m, nil
+	}
+
+	if s := msg.String(); len(s) == 1 {
+		m.login += s
+		m.status, m.statusErr = "", false
+	}
+	return m, nil
+}
+
+// pollMsg is five seconds passing: time to re-read the box.
+//
+// It replaced a manual "R refresh" and a ten-second repaint that only redrew
+// what was already in memory. Both were the same admission -- that the page
+// could be wrong and you would not know -- and the second one made it worse by
+// keeping the durations moving on a list that was otherwise frozen. A row can
+// say a container has been up for nine minutes when it died eight minutes ago,
+// and nothing on screen suggests asking.
+//
+// Five seconds is chosen for the case this page is open for: watching something
+// you just changed settle, or watching for something that is about to go wrong.
+//
+// It is not free, and that is the trade. Every poll is a fresh SSH connection --
+// no multiplexing here -- so a window left open all day is a login every five
+// seconds in the server's auth log, and a handshake on both ends. Cheap for a
+// box you are looking at, which is the only time this runs.
+type pollMsg struct{}
+
+func pollTick() tea.Cmd {
+	return tea.Tick(5*time.Second, func(time.Time) tea.Msg { return pollMsg{} })
+}
+
+// poll re-reads the inventory, or does nothing.
+//
+// Three reasons to skip, and each is a way the poll could otherwise make the
+// page worse than not polling at all:
+//
+//   - Not on the list. A refresh finishing while you are reading a log is an
+//     answer to a question nobody asked, and appsMsg used to switch screens.
+//   - One already in flight. A slow box would otherwise accumulate connections
+//     faster than it answers them.
+//   - A row is mid-action, or has just finished one and is waiting for the
+//     truth to land. That refresh is already coming, and a poll landing in the
+//     gap clears the spinner early -- the flicker `settling` exists to prevent.
+//
+// An open question is NOT one of them. It was, on the reasoning that a
+// connection every five seconds while someone types an app name is work nobody
+// asked for -- but the list behind the question is the reason the question is
+// in the footer, and a list that stops updating the moment you start deciding
+// is stale exactly when you are looking hardest. Nothing a poll returns can
+// corrupt an answer: prompts capture the app they act on by value, and an
+// operation in flight owns no rows.
+func (m *model) poll() tea.Cmd {
+	if m.scr != screenMonitor || m.fetching || len(m.busy) > 0 || len(m.settling) > 0 {
+		return nil
+	}
+	return m.fetch()
+}
+
+// fetch marks a read as in flight and returns the command that does it.
+func (m *model) fetch() tea.Cmd {
+	m.fetching = true
+	return fetchApps(m.tgt)
+}
+
+// Update is the frame around the real one: whatever a message changes, the
+// scroll offset is brought back into agreement with it before the next render.
+//
+// Here rather than in View because View is called on a copy -- a correction
+// made there would be thrown away and recomputed from the stale value on every
+// frame. See reflow.
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := m.update(msg)
+	if nm, ok := next.(model); ok {
+		nm.reflow()
+		return nm, cmd
+	}
+	return next, cmd
+}
+
+func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -117,13 +256,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// Ctrl+C always leaves, whatever is on screen -- except mid-operation,
 		// where quitting would abandon a half-applied change on the server.
-		if msg.String() == "ctrl+c" && m.scr != screenRunning {
+		if msg.String() == "ctrl+c" && !m.running() {
 			return m, tea.Quit
 		}
 		return m.handleKey(msg)
 
 	case appsMsg:
-		m.apps, m.srv, m.proxy, m.net, m.err = msg.apps, msg.srv, msg.proxy, msg.net, msg.err
+		m.fetching = false
+
+		// A poll that failed keeps the last good inventory on screen and says so
+		// in the footer. Taking the assignment below would replace every row with
+		// the empty slice that comes back with an error -- so one dropped
+		// connection would blank a working page, and the next poll would put it
+		// back. The first read is the exception: there is nothing to keep.
+		if msg.err != nil {
+			m.err = msg.err
+			if m.loaded {
+				return m, nil
+			}
+			m.scr = screenMonitor
+			return m, nil
+		}
+
+		m.apps, m.srv, m.proxy, m.net, m.err = msg.apps, msg.srv, msg.proxy, msg.net, nil
 		// This snapshot covers every row, so anything waiting on one is now
 		// current. Rows still mid-command keep their own spinner via busy.
 		m.settling = nil
@@ -137,19 +292,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if n := len(m.focusItems()); m.cursor >= n {
 			m.cursor = max(0, n-1)
 		}
+		// Only ever from the loading screen. A poll landing while you are reading
+		// a log, filling in the add form or watching a bootstrap must not move
+		// you -- this used to set the screen unconditionally, which was harmless
+		// when the only way here was pressing R on the list, and is not now that
+		// one arrives every five seconds.
+		//
 		// A box with nothing installed gets its own screen rather than an empty
 		// app list, which would look identical to a set-up server with no apps.
-		if m.err == nil && !m.srv.ready() {
-			m.scr = screenInit
-			return m, nil
+		if m.scr == screenLoading {
+			if !m.srv.ready() {
+				m.scr = screenSetup
+			} else {
+				m.scr = screenMonitor
+			}
 		}
-		m.scr = screenList
 		return m, nil
 
-	case clockMsg:
-		// Nothing to change: the view reads the clock itself. Returning at all
-		// is what triggers the repaint.
-		return m, clockTick()
+	case pollMsg:
+		// The tick is rescheduled whatever else happens, so a screen that skips
+		// the read does not stop the clock: come back to the list and the next
+		// poll is five seconds away, not never.
+		return m, tea.Batch(pollTick(), m.poll())
 
 	case spinMsg:
 		if !m.spinning() {
@@ -162,7 +326,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		delete(m.busy, msg.key)
 		if msg.err != nil {
 			m.status, m.statusErr = msg.err.Error(), true
-			return m, nil
+			// Re-read anyway. A failed `compose up` is not a no-op -- it can
+			// start two of three services and fail on the third -- so the rows
+			// are least trustworthy exactly when the command reports failure.
+			// This used to return here, leaving the page as it was before a
+			// command that had already changed the box.
+			return m, m.fetch()
 		}
 		// Keep spinning until the refreshed inventory lands. Re-reading rather
 		// than guessing is deliberate -- a stop that half-worked should show as
@@ -172,7 +341,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.settling = map[string]bool{}
 		}
 		m.settling[msg.key] = true
-		return m, fetchApps(m.tgt)
+		return m, m.fetch()
 
 	case runOutputMsg:
 		m.run.append(string(msg))
@@ -191,17 +360,52 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.logs = msg.lines
 		}
 		// A log arriving is a new document, not a continuation of the last one.
-		if m.logScroll > m.maxLogScroll() {
-			m.logScroll = m.maxLogScroll()
+		if m.scroll > m.maxScroll() {
+			m.scroll = m.maxScroll()
 		}
 		return m, nil
 
-	case runDoneMsg:
-		m.run.done = true
-		m.run.err = msg.err
-		m.run.result = msg.result
-		m.scr = screenResult
+	case connectMsg:
+		if msg.res.ok() {
+			m.tgt = msg.tgt
+			m.form = newAddForm(msg.tgt)
+			return m, m.fetch()
+		}
+		// Back to the field, with the address still in it and a reason under
+		// it. Everything here is recoverable by typing something else.
+		m.scr = screenLogin
+		if msg.res.kind == reachUnknownHost {
+			return m.ask(m.trustPrompt(msg)), nil
+		}
+		m.status, m.statusErr = msg.res.summary(msg.tgt), true
 		return m, nil
+
+	case runDoneMsg:
+		m.run.done, m.run.err, m.run.result = true, msg.err, msg.result
+
+		// A failure stays in the footer with the last few lines of output under
+		// it. They are the only diagnosis there is now that the stream is not on
+		// screen, and "exit status 1" on its own is not one. See runState.tail.
+		if msg.err != nil {
+			m.prompt = &prompt{kind: promptResult}
+			return m, m.fetch()
+		}
+
+		// Something to hand over -- the two values a new app needs in GitHub --
+		// stays in the footer until it is dismissed. Nothing to hand over is
+		// reported as one line, because "it worked" needs one line.
+		if msg.result != nil {
+			m.prompt = &prompt{kind: promptResult}
+			return m, m.fetch()
+		}
+		m.prompt = nil
+		m.status, m.statusErr = "done", false
+		// A box that has just been set up is a different box: the init screen
+		// has to give way to the list, and only a fresh read can say so.
+		if m.scr == screenSetup {
+			m.scr = screenLoading
+		}
+		return m, m.fetch()
 	}
 	return m, nil
 }
@@ -209,53 +413,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// A question in the footer takes the keys while it is open, whatever screen
 	// is behind it -- otherwise typing an app's name to confirm its removal
-	// would also be pressing the keys that act on it.
-	if m.prompt != nil && m.scr == screenList {
+	// would also be pressing the keys that act on it. The init screen included:
+	// setting a server up now runs in its footer rather than on a page of its
+	// own, and "enter" must not start it twice.
+	if m.prompt != nil {
 		return m.handlePromptKey(msg)
 	}
 
 	switch m.scr {
-	case screenList:
-		return m.handleListKey(msg)
+	case screenMonitor:
+		return m.handleMonitorKey(msg)
+	case screenLogin:
+		return m.handleLoginKey(msg)
 	case screenLogs:
 		return m.handleLogsKey(msg)
-	case screenInit:
-		return m.handleInitKey(msg)
-	case screenAddForm:
-		return m.handleFormKey(msg)
-	case screenResult:
-		switch msg.String() {
-		case "up", "k":
-			if m.run.result != nil && m.run.result.cursor > 0 {
-				m.run.result.cursor--
-			}
-			return m, nil
-		case "down", "j":
-			if m.run.result != nil && m.run.result.cursor < m.run.result.items()-1 {
-				m.run.result.cursor++
-			}
-			return m, nil
-		case "c":
-			// Both values have to reach GitHub, so both are copyable. Copying
-			// one does not finish the job, which is why each keeps its own tick.
-			if m.run.result == nil {
-				return m, nil
-			}
-			if err := m.run.result.copySelected(); err != nil {
-				m.run.result.copyErr = err.Error()
-				m.run.result.onClipboard = -1
-			} else {
-				// Replaces, never accumulates: whatever was there is gone.
-				m.run.result.onClipboard = m.run.result.cursor
-				m.run.result.copyErr = ""
-			}
-			return m, nil
-		case "esc", "q", "enter":
-			m.scr = screenLoading
-			m.status = ""
-			return m, fetchApps(m.tgt)
-		}
-		return m, nil
+	case screenSetup:
+		return m.handleSetupKey(msg)
 	}
 	return m, nil
 }
@@ -269,6 +442,7 @@ const (
 	focusProxy                      // the shared reverse proxy
 	focusApp                        // one app
 	focusContainer                  // one container belonging to an app
+	focusAdd                        // the row that adds one, under the list
 )
 
 type focusItem struct {
@@ -304,6 +478,10 @@ func (m model) focusItems() []focusItem {
 			out = append(out, focusItem{kind: focusContainer, app: i, ctr: j})
 		}
 	}
+	// Last, under the apps, because that is where it is drawn and this list is
+	// in page order. It is always present -- on a box with no apps it is the
+	// only thing to select, which is the one screen where it matters most.
+	out = append(out, focusItem{kind: focusAdd, app: -1, ctr: -1})
 	return out
 }
 
@@ -350,7 +528,7 @@ func (m model) focusedContainer() *containerRow {
 	return &m.apps[f.app].containers[f.ctr]
 }
 
-// handleListKey drives the one screen there is.
+// handleMonitorKey drives the one screen there is.
 //
 // The box used to have a page of its own, reached with "s". It is now the block
 // above the app list, because the two were never separable questions: "is my
@@ -362,7 +540,7 @@ func (m model) focusedContainer() *containerRow {
 // The cost is that the server's actions moved onto keys the list had spare, so
 // "l" and "h" no longer duplicate enter and esc. They were aliases for keys
 // that already existed; the proxy's log had nowhere else to go.
-func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleMonitorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "esc":
 		return m, tea.Quit
@@ -393,13 +571,6 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m = m.ask(m.configPrompt(m.apps[i]))
 		}
 
-	case "a":
-		// Global, unlike the other app keys. Adding does not act on a selection
-		// -- there is nothing to select yet -- and it is the thing done most
-		// often, so making it depend on where the cursor happens to be would be
-		// a gate around the common case.
-		m.form = newAddForm(m.tgt)
-		m.scr = screenAddForm
 	case "r":
 		if i := m.selectedApp(); i >= 0 {
 			m = m.ask(m.rotatePrompt(m.apps[i]))
@@ -442,11 +613,6 @@ func (m model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// command line, where it is one flag: komizo proxy --network / --image.
 		m = m.ask(m.installProxyPrompt())
 
-	case "R":
-		m.scr = screenLoading
-		m.status, m.statusErr = "", false
-		m.logs, m.logsOf = "", ""
-		return m, fetchApps(m.tgt)
 	}
 	return m, nil
 }
@@ -476,7 +642,7 @@ func (m model) copyKnownHosts() model {
 // scroll position in yesterday's text would be worse than a moment's wait.
 func (m model) openLogs(key, label, cmd string) (tea.Model, tea.Cmd) {
 	m.logs, m.logsOf, m.logsLabel, m.logsCmd = "", key, label, cmd
-	m.logsReady, m.logScroll = false, 0
+	m.logsReady, m.scroll = false, 0
 	m.status, m.statusErr = "", false
 	wasSpinning := m.spinning()
 	m.scr = screenLogs
@@ -529,6 +695,15 @@ func (m model) primaryAction() (tea.Model, tea.Cmd) {
 		return m.ask(m.lifecyclePrompt(
 			title(startStop(a.up()))+" "+a.name+"?", detail,
 			"app:"+a.name, stackCmd(a, verbFor(a.up())))), nil
+
+	case focusAdd:
+		// Adding had a global "a" once, on the reasoning that it does not act on
+		// a selection so it should not need one. True, and beside the point: it
+		// is done a handful of times in a server's life, and a permanent line in
+		// the footer for something that rare crowds out the keys that are not.
+		// It is a row now, which is also where someone looks for it.
+		m.form = newAddForm(m.tgt)
+		return m.ask(m.addPrompt()), nil
 
 	case focusContainer:
 		c := m.focusedContainer()
@@ -608,7 +783,8 @@ func (m *model) begin(key, cmd string) tea.Cmd {
 // spinning reports whether any row is mid-action or waiting for the refresh
 // that follows one.
 func (m model) spinning() bool {
-	return len(m.busy)+len(m.settling) > 0 || (m.scr == screenLogs && m.loading())
+	return len(m.busy)+len(m.settling) > 0 || m.running() ||
+		m.scr == screenLoading || (m.scr == screenLogs && m.loading())
 }
 
 // routesFor is the hostnames that reach one container, for the moment before
@@ -635,18 +811,18 @@ func (m model) installProxyPrompt() prompt {
 		o.image = defaultProxy
 	}
 	q := "Reinstall the proxy from " + o.image + "?"
+	doing := "Reinstalling the proxy"
 	detail := "Certificates survive — they are in a volume. Every app is briefly unreachable."
 	if !m.proxy.installed {
 		q = "Install the proxy from " + o.image + " on '" + o.network + "'?"
+		doing = "Installing the proxy"
 		detail = "One Caddy terminates HTTPS for every app, so no app publishes a port."
 	}
 	return prompt{
 		question: q,
 		detail:   detail,
 		action: func(m *model, _ string) tea.Cmd {
-			m.scr = screenRunning
-			m.run = newRunState(q)
-			return m.startProxy(o)
+			return tea.Batch(m.startOp(doing), m.startProxy(o))
 		},
 	}
 }
@@ -658,64 +834,21 @@ func (m model) updateServerPrompt() prompt {
 		detail: "Installs any Docker updates. Your apps keep running, the proxy is not " +
 			"touched either way, and nothing is deleted.",
 		action: func(m *model, _ string) tea.Cmd {
-			m.scr = screenRunning
-			m.run = newRunState(q)
-			return m.startServerUpdate()
+			return tea.Batch(
+				m.startOp("Re-running setup on "+m.tgt.host),
+				m.startServerUpdate())
 		},
 	}
 }
 
-func (m model) View() string {
-	var b strings.Builder
-	b.WriteString(header())
-
-	switch m.scr {
-	case screenLoading:
-		b.WriteString("\n" + gutter + barStyle.Render("▍") + dimStyle.Render(" connecting…") + "\n")
-	case screenList:
-		b.WriteString(viewList(m))
-	case screenLogs:
-		b.WriteString(m.viewLogs())
-	case screenInit:
-		b.WriteString(viewInit(m.srv))
-	case screenAddForm:
-		b.WriteString(m.form.view())
-	case screenRunning, screenResult:
-		b.WriteString(m.run.view(m.scr == screenResult, m.height))
-	}
-
-	if m.err != nil {
-		b.WriteString("\n" + gutter + dot("err") + " " + errStyle.Render(m.err.Error()) + "\n")
-	}
-
-	out := trimTrailing(b.String())
-	// The list and the log window pin their footers. The others are a question
-	// or a stream of output, and padding those to the bottom of the terminal
-	// would leave the thing you are reading floating at the top.
-	switch m.scr {
-	case screenList:
-		return out + m.pad(out, m.footer()) + trimTrailing(m.footer())
-	case screenLogs:
-		f := m.logsFooter()
-		return out + m.pad(out, f) + trimTrailing(f)
-	}
-	return out
-}
-
-// pad is the blank space that pushes the footer to the bottom of the terminal.
-//
-// Nothing at all when the content already overflows: pinning is a nicety, and
-// scrolling the top of the page off to honour it would trade a fixed position
-// for the information you came to read.
-func (m model) pad(body, footer string) string {
-	if m.height <= 0 {
-		return ""
-	}
-	used := strings.Count(body, "\n") + strings.Count(footer, "\n") + 2
-	if used >= m.height {
-		return ""
-	}
-	return strings.Repeat("\n", m.height-used)
+// runLoginTUI opens the interface with no host, on the screen that asks for
+// one. Everything the argument path does before starting -- resolving the port,
+// probing, offering to accept an unseen host key -- happens inside the program
+// instead, as a command and a question in the footer. See connect.
+func runLoginTUI() error {
+	p := tea.NewProgram(newLoginModel(), tea.WithAltScreen())
+	_, err := p.Run()
+	return err
 }
 
 func runTUI(hostArg string, port int, portExplicit bool, assumeYes bool) error {

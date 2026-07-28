@@ -40,6 +40,11 @@ var (
 
 	barStyle   = lipgloss.NewStyle().Foreground(cAccent)
 	brandStyle = lipgloss.NewStyle().Foreground(cAccent).Bold(true)
+
+	// The breadcrumb: the terminal's own foreground, unstyled. Not bold, and
+	// not the accent -- both belong to the brand beside it, and a crumb wearing
+	// either would compete with the word it is hanging off.
+	crumbStyle = lipgloss.NewStyle()
 )
 
 const gutter = "  "
@@ -57,7 +62,17 @@ func pad(s string, w int) string {
 	return s
 }
 
-// header is the page title, and nothing else.
+// header is the tool, then where in it you are: komizo / monitor.
+//
+// A breadcrumb rather than a bare name, because the pages stopped announcing
+// themselves. The log window used to write its own title into the body and the
+// list never had one at all -- so the only thing on screen saying which page
+// you were on was the shape of the page.
+//
+// Two weights, not two sizes. A terminal has one font size and no escape
+// sequence changes it, so "bigger" here is the brand keeping the accent colour
+// and the bold, with the crumb in plain white beside it: the eye still lands on
+// "komizo" first, and the part that changes reads as the part that changes.
 //
 // No rule under it. There is one at the bottom, above the footer, and that one
 // earns its place by separating the part you read from the part you type at.
@@ -68,8 +83,17 @@ func pad(s string, w int) string {
 // it is one fact among the others rather than a permanent banner -- but that
 // removed it from the confirmation screens, so anything destructive now names
 // the host itself. See removePrompt.
-func header() string {
-	return "\n" + gutter + brandStyle.Render("komizo") + "\n"
+func header(crumb string) string {
+	line := brandStyle.Render("komizo")
+	if crumb != "" {
+		line += dimStyle.Render(" / ") + crumbStyle.Render(crumb)
+	}
+	// Flush left, and no blank row above it. The header and the footer are the
+	// window's edges: they run corner to corner, and the gutter belongs to the
+	// content between them. Indenting them by two put the title in from the
+	// corner and left the rule short at both ends, so the page read as a box
+	// floating inside the terminal rather than as the terminal.
+	return line + "\n"
 }
 
 // title capitalises the first letter. The key hints want "stop" lowercase and
@@ -81,13 +105,12 @@ func title(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-// ruleWidth is how wide a horizontal rule should be. Shared so the line under
-// the header and the one above the footer are the same length -- two rules of
-// different widths read as two unrelated things rather than the top and bottom
-// of one page.
+// ruleWidth is how wide the footer's rule is: the whole window. It stopped
+// short by two at each end when the footer was indented, which read as a line
+// drawn around something rather than a division of the page.
 func ruleWidth(width int) int {
-	if w := width - 4; w > 8 {
-		return w
+	if width > 8 {
+		return width
 	}
 	return 8
 }
@@ -100,6 +123,51 @@ func help(pairs ...string) string {
 		parts = append(parts, keyStyle.Render(pairs[i])+" "+dimStyle.Render(pairs[i+1]))
 	}
 	return "\n" + gutter + strings.Join(parts, dimStyle.Render(" · ")) + "\n"
+}
+
+// helpLine is help that fits, by dropping pairs from the END OF THE MIDDLE
+// until it does, and saying so with an ellipsis.
+//
+// The footer is one line now, and one line can be too long for a window. It is
+// clipped to the terminal either way -- a wrapped footer makes the page taller
+// than the screen and scrolls the title away -- so the question is only which
+// end gets lost, and clipping alone loses the right-hand one. That is "q quit":
+// the single key someone in trouble is looking for.
+//
+// So the first pair and the last survive at any width. They are the two that
+// work on every screen and mean the same thing everywhere -- how to move, how
+// to leave -- and a footer down to just those two is still a useful footer. The
+// keys that go are the ones that only apply to the row you happen to be on,
+// which is also what the ellipsis is admitting.
+func helpLine(width int, pairs ...string) string {
+	var items [][2]string
+	for i := 0; i+1 < len(pairs); i += 2 {
+		items = append(items, [2]string{pairs[i], pairs[i+1]})
+	}
+
+	render := func(items [][2]string, elided bool) string {
+		var parts []string
+		for _, it := range items {
+			parts = append(parts, keyStyle.Render(it[0])+" "+dimStyle.Render(it[1]))
+		}
+		if elided && len(parts) > 1 {
+			last := parts[len(parts)-1]
+			parts = append(parts[:len(parts)-1], dimStyle.Render("…"), last)
+		}
+		return "\n" + gutter + strings.Join(parts, dimStyle.Render(" · ")) + "\n"
+	}
+
+	elided := false
+	for {
+		out := render(items, elided)
+		if width <= 0 || lipgloss.Width(strings.Trim(out, "\n")) <= width || len(items) <= 2 {
+			return out
+		}
+		// Drop the last of the middle: the pairs nearest the end are the row's
+		// own, and the ones nearest the front are the ones every row shares.
+		items = append(items[:len(items)-2], items[len(items)-1])
+		elided = true
+	}
 }
 
 // section is the heading above a group of rows -- Server, Proxy, Apps.
@@ -188,6 +256,16 @@ func spinner(n int) string {
 	return warnStyle.Render(spinFrames[n%len(spinFrames)])
 }
 
+// spinnerAccent is the same frames in the accent, for the loading pane.
+//
+// Amber is right on a ROW, where the spinner stands in for a status dot and
+// belongs to the same three-colour vocabulary as the dots around it. A page
+// that is only a spinner has no statuses to be confused with, and amber there
+// reads as a warning about nothing.
+func spinnerAccent(n int) string {
+	return barStyle.Render(spinFrames[n%len(spinFrames)])
+}
+
 // dot is a status indicator: one filled circle, three colours.
 //
 // It used to vary the shape too -- a hollow circle for a fault, a half-filled
@@ -210,6 +288,19 @@ func dot(state string) string {
 	default:
 		return dimStyle.Render("·")
 	}
+}
+
+// textWidth is how wide prose in the footer may run.
+//
+// The terminal's width, less the gutter the text is written with -- it used to
+// be the constant 74, chosen for a window nobody has to have. Anything wider
+// than the window is clipped now rather than wrapped, so a hard-coded margin is
+// a sentence with its end cut off.
+func textWidth(width int) int {
+	if w := width - len(gutter)*2; w > 20 {
+		return w
+	}
+	return 20
 }
 
 // wrap breaks text on spaces to a visible width. Field help used to be one

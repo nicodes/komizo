@@ -140,11 +140,49 @@ func (f addForm) knownAs() []string { return splitNames(f.fields[2].value) }
 func (f addForm) app() string    { return strings.TrimSpace(f.fields[0].value) }
 func (f addForm) config() string { return strings.TrimSpace(f.fields[1].value) }
 
+// trustPrompt asks whether to add a host key to known_hosts, with the
+// fingerprints beside the question.
+//
+// The same trust ssh asks for on a first connection, and asked the same way --
+// except that komizo puts the fingerprints next to the question instead of
+// making you run a second command to see them. They came off the network and
+// nothing has verified them, which is exactly why the question exists.
+func (m model) trustPrompt(msg connectMsg) prompt {
+	detail := "These came from the network, not from the server's own /etc/ssh. " +
+		"Compare them against your provider's console before accepting."
+	for _, ln := range msg.fp {
+		detail += "\n" + ln
+	}
+	scan, tgt := msg.scan, msg.tgt
+	return prompt{
+		question: "Trust the host key for " + tgt.host + "?",
+		detail:   detail,
+		action: func(m *model, _ string) tea.Cmd {
+			if _, err := writeKnownHosts(scan); err != nil {
+				m.status, m.statusErr = err.Error(), true
+				return nil
+			}
+			m.scr = screenLoading
+			return connect(tgt)
+		},
+	}
+}
+
+// addPrompt is the add form, asked in the footer with the list still behind it.
+func (m model) addPrompt() prompt {
+	return prompt{
+		kind:     promptForm,
+		question: "Add an app",
+		detail: "A deploy keypair is generated on this machine; only the public " +
+			"half is sent. Safe to run again on an app that already exists.",
+	}
+}
+
 func (m model) handleFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	f := &m.form
 	switch msg.String() {
 	case "esc":
-		m.scr = screenList
+		m.prompt = nil
 		return m, nil
 	case "tab", "down":
 		f.focus = (f.focus + 1) % len(f.fields)
@@ -170,9 +208,10 @@ func (m model) handleFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.tgt.aliases = mergeNames(m.tgt.aliases, f.knownAs())
 		// Adding an app is not destructive, so it runs without a confirmation
 		// step -- re-running it on an existing app is how you repair one.
-		m.scr = screenRunning
-		m.run = newRunState(fmt.Sprintf("Setting up %q", f.app()))
-		return m, m.startAdd(f.app(), f.config())
+		m.prompt = nil
+		return m, tea.Batch(
+			m.startOp(fmt.Sprintf("Setting up %q", f.app())),
+			m.startAdd(f.app(), f.config()))
 	case "backspace":
 		v := f.fields[f.focus].value
 		if v != "" {
@@ -188,18 +227,6 @@ func (m model) handleFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (f addForm) view() string {
-	var b strings.Builder
-	b.WriteString("\n" + gutter + titleStyle.Render("Add an app") + "\n\n")
-	b.WriteString(renderFields(f.fields, f.focus))
-	if f.problem != "" {
-		b.WriteString("\n" + gutter + dot("err") + " " + errStyle.Render(f.problem) + "\n")
-	}
-	b.WriteString("\n" + para(gutter, "A deploy keypair is generated on this machine; only the public half\nis sent. Safe to run again on an app that already exists."))
-	b.WriteString(help("tab", "next field", "enter", "confirm", "esc", "cancel"))
-	return b.String()
-}
-
 // --- the shared reverse proxy ----------------------------------------------
 
 // --- setting the server up -------------------------------------------------
@@ -212,19 +239,21 @@ func (f addForm) view() string {
 // reached through, so "no" only meant finding out later. It is always
 // installed; stopping it afterwards is one keypress on the server screen.
 
-func (m model) handleInitKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "esc", "ctrl+c":
 		return m, tea.Quit
 	case "enter":
-		m.scr = screenRunning
-		m.run = newRunState("Setting up " + m.tgt.host)
-		return m, m.startInit(initOpts{network: defaultNetwork, image: defaultProxy})
+		// In this screen's footer, with the description of what is about to be
+		// installed still above it.
+		return m, tea.Batch(
+			m.startOp("Setting up "+m.tgt.host),
+			m.startInit(initOpts{network: defaultNetwork, image: defaultProxy}))
 	}
 	return m, nil
 }
 
-func viewInit(srv serverRow) string {
+func viewSetup(srv serverRow) string {
 	var b strings.Builder
 	b.WriteString("\n" + gutter + titleStyle.Render("Connected") +
 		dimStyle.Render(" — this server is not set up yet") + "\n\n")
@@ -244,7 +273,6 @@ func viewInit(srv serverRow) string {
 		b.WriteString(gutter + "  " + dimStyle.Render(pad(l[0], 10)) + " " + dimStyle.Render(l[1]) + "\n")
 	}
 	b.WriteString("\n" + para(gutter, "No accounts, and nothing under /srv — that comes later, when you\nadd an app. Safe to re-run; it is also how you update Docker."))
-	b.WriteString(help("enter", "set it up", "q", "quit"))
 	return b.String()
 }
 
@@ -262,9 +290,9 @@ func (m model) rotatePrompt(a appRow) prompt {
 		detail: "The current key stops working immediately — update SSH_DEPLOY_KEY " +
 			"before this app's next deploy.",
 		action: func(m *model, _ string) tea.Cmd {
-			m.scr = screenRunning
-			m.run = newRunState(q)
-			return m.startRotate(a.name)
+			return tea.Batch(
+				m.startOp("Rotating the deploy key for "+a.name),
+				m.startRotate(a.name))
 		},
 	}
 }
@@ -281,9 +309,7 @@ func (m model) removePrompt(a appRow) prompt {
 		detail: "Deletes " + a.dir + ", its volumes, the account " + a.user +
 			" and its rules. Images stay in your registry. Cannot be undone.",
 		action: func(m *model, _ string) tea.Cmd {
-			m.scr = screenRunning
-			m.run = newRunState(q)
-			return m.startRemove(a.name)
+			return tea.Batch(m.startOp("Removing "+a.name), m.startRemove(a.name))
 		},
 	}
 }
@@ -311,9 +337,7 @@ func (m model) configPrompt(a appRow) prompt {
 			if v == a.image {
 				return nil
 			}
-			m.scr = screenRunning
-			m.run = newRunState("Pointing " + a.name + " at " + v)
-			return m.startConfigChange(a.name, v)
+			return tea.Batch(m.startOp("Pointing "+a.name+" at "+v), m.startConfigChange(a.name, v))
 		},
 	}
 }

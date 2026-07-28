@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -17,34 +16,10 @@ import (
 //
 // The page is deliberately the same page: identical title, identical footer in
 // the identical place. Only the middle changes, so nothing about where you are
-// has to be re-learned.
-
-// logViewport is how many lines of log fit on screen.
-//
-// The chrome is MEASURED, not guessed at with a constant. It was a constant,
-// and it was two lines short -- so a full window rendered two lines taller than
-// the terminal, the terminal scrolled to fit, and the title went off the top.
-// A title that disappears once there is something to read is the opposite of a
-// title, and the bug is invisible until a log happens to be long enough.
-//
-// The footer is the part that moves: it grows by two lines when a status
-// appears, which is exactly what pressing "copy" does.
-func (m model) logViewport() int {
-	chrome := strings.Count(header(), "\n") +
-		strings.Count(section(""), "\n") +
-		strings.Count(m.logsFooter(), "\n") +
-		// The blank line before the log, the position line and its blank, and
-		// the one the whole render ends on. Off by one here means the terminal
-		// scrolls and the title is the thing that leaves.
-		4
-	// One line at the floor rather than three. A floor above what actually
-	// fits is a floor that overflows the terminal to honour itself, which is
-	// the bug this function exists to avoid -- just at a size nobody uses.
-	if n := m.height - chrome; n > 1 {
-		return n
-	}
-	return 1
-}
+// has to be re-learned. That used to be true by careful imitation -- this
+// window measured its own chrome and pinned its own footer, and the app list
+// did something similar but not the same. Both go through one frame now, so it
+// is true by construction. See tui_frame.go.
 
 // loading reports whether we are waiting for the log to arrive.
 //
@@ -61,45 +36,35 @@ func (m model) logLines() []string {
 	return strings.Split(strings.TrimRight(m.logs, "\n"), "\n")
 }
 
-// maxLogScroll is the furthest down we can go: enough to put the last line at
-// the bottom of the viewport, and no further. Scrolling into blank space below
-// the end is a way of losing the text you were reading.
-func (m model) maxLogScroll() int {
-	if n := len(m.logLines()) - m.logViewport(); n > 0 {
-		return n
-	}
-	return 0
-}
-
+// Five keys, and the footer names all five. There were eleven: g/G and
+// home/end and pgup/pgdn and space and f and b, plus left and h as second ways
+// to go back -- a vi mode and a pager mode layered over a window that shows one
+// screenful of text.
+//
+// Shift with the arrow you are already using replaces both jump pairs. It is
+// the same gesture for "further" that every list has, so there is nothing extra
+// to learn, and it means no key on this page is undocumented.
+//
+// No refresh either. `docker logs --tail 40` is a snapshot, and this window is
+// where you read one -- if it has moved on, esc and l give you the current one.
 func (m model) handleLogsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	page := m.logViewport() - 1
 	switch msg.String() {
-	case "esc", "q", "left", "h":
-		m.scr = screenList
+	case "q":
+		return m, tea.Quit
+
+	case "esc":
+		m.scr = screenMonitor
 		m.status, m.statusErr = "", false
 		return m, nil
 
-	case "up", "k":
-		m.logScroll--
-	case "down", "j":
-		m.logScroll++
-	case "pgup", "b":
-		m.logScroll -= page
-	case "pgdown", " ", "f":
-		m.logScroll += page
-	case "g", "home":
-		m.logScroll = 0
-	case "G", "end":
-		m.logScroll = m.maxLogScroll()
-
-	case "R":
-		// Re-read it. A log is the one thing on this page worth asking for
-		// again with nothing having changed. Through openLogs so it shows the
-		// spinner while it waits, exactly as it did the first time.
-		if m.logsOf == "" {
-			return m, nil
-		}
-		return m.openLogs(m.logsOf, m.logsLabel, m.logsCmd)
+	case "up":
+		m.scroll--
+	case "down":
+		m.scroll++
+	case "shift+up":
+		m.scroll = 0
+	case "shift+down":
+		m.scroll = m.maxScroll()
 
 	case "c":
 		if m.logs == "" {
@@ -115,78 +80,46 @@ func (m model) handleLogsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if m.logScroll > m.maxLogScroll() {
-		m.logScroll = m.maxLogScroll()
-	}
-	if m.logScroll < 0 {
-		m.logScroll = 0
-	}
+	// Deliberately unclamped here. Update clamps it on the way out, against a
+	// viewport this keypress may have just changed the height of -- "copy" adds
+	// a status line, and a bound computed before it would be one line stale.
 	return m, nil
 }
 
+// viewLogs is every line of the log.
+//
+// What fits, and where in it we are, is the frame's business. This used to
+// slice the log itself, which meant the window knew its own height and the
+// scroll arithmetic existed in two places that had to agree.
 func (m model) viewLogs() string {
-	var b strings.Builder
-	b.WriteString(section(m.logsLabel + " log"))
-
 	if m.loading() {
-		b.WriteString(m.centred(spinner(m.spin)))
-		return b.String()
+		return m.loadingPane()
 	}
 
 	lines := m.logLines()
 	if len(lines) == 0 {
-		b.WriteString(m.centred(dimStyle.Render("this one has logged nothing")))
-		return b.String()
+		return m.centred(dimStyle.Render("this one has logged nothing"))
 	}
 
-	start := m.logScroll
-	if start > m.maxLogScroll() {
-		start = m.maxLogScroll()
-	}
-	end := start + m.logViewport()
-	if end > len(lines) {
-		end = len(lines)
-	}
-
+	// A blank row before the first line, so the log does not start hard against
+	// the header. It is part of the body rather than the header, which means it
+	// scrolls away with the top of the log -- correct, since the gap is there to
+	// separate the log's beginning from the title, and once you are past the
+	// beginning there is nothing to separate.
+	var b strings.Builder
 	b.WriteString("\n")
-	for _, ln := range lines[start:end] {
+	for _, ln := range lines {
 		b.WriteString(gutter + dimStyle.Render(ln) + "\n")
-	}
-
-	// Where you are, but only when there is somewhere else to be.
-	if m.maxLogScroll() > 0 {
-		b.WriteString("\n" + gutter + dimStyle.Render(
-			fmt.Sprintf("lines %d–%d of %d", start+1, end, len(lines))) + "\n")
 	}
 	return b.String()
 }
 
-// centred puts one short thing in the middle of the viewport, so a window with
-// nothing to show yet still looks like the window it is about to be.
-func (m model) centred(s string) string {
-	h := m.logViewport()
-	above := h / 2
-	left := (m.width - lipglossWidth(s)) / 2
-	if left < len(gutter) {
-		left = len(gutter)
-	}
-	return strings.Repeat("\n", above+1) +
-		strings.Repeat(" ", left) + s + "\n" +
-		strings.Repeat("\n", h-above-1)
-}
-
-// logsFooter is the same footer as the list's, with the keys this window has.
-func (m model) logsFooter() string {
-	var b strings.Builder
-	b.WriteString("\n" + gutter +
-		dimStyle.Render(strings.Repeat("─", ruleWidth(m.width))) + "\n")
-	if m.status != "" {
-		mark, style := dot("ok"), okStyle
-		if m.statusErr {
-			mark, style = dot("err"), errStyle
-		}
-		b.WriteString("\n" + gutter + mark + " " + style.Render(m.status) + "\n")
-	}
-	b.WriteString(help("↑↓", "scroll", "R", "refresh", "esc", "back", "q", "quit"))
-	return b.String() + trimTrailing(help("c", "copy", "g/G", "top/bottom", "pgup/pgdn", "page"))
+// logsKeys is what this window answers to -- all of it, with nothing left
+// undocumented. Same shape as the list's: move first, leave last.
+//
+// esc goes back and q quits, which is what those keys do everywhere else. They
+// used to both go back, while the footer claimed q quit.
+func (m model) logsKeys() string {
+	return helpLine(m.width, "↑↓", "scroll", "shift+↑↓", "ends",
+		"c", "copy", "esc", "back", "q", "quit")
 }

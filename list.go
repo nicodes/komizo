@@ -340,22 +340,40 @@ type containerRow struct {
 	exitCode   int
 }
 
-// imageText is the container's image, with the tag dropped when it is simply
-// this app's deployed version.
+// imageText is the container's image, trimmed to the part that differs between
+// one row and the next.
 //
-// Every service in a komizo app is pinned to ${APP_VERSION}, so the tag is the
+// Two things come off. The tag, when it is simply this app's deployed version:
+// every service in a komizo app is pinned to ${APP_VERSION}, so it is the
 // commit SHA already shown on the app's row -- sixty characters of column
 // saying what the row above it said. A tag that is NOT the version is the
 // interesting case, and that one is shown in full: a service left on :latest,
 // or an upstream image like caddy:2, is a fact you want to notice.
+//
+// And the registry and namespace, which are the same for every image in an app
+// and usually every app on the host. "ghcr.io/nicodes/ormos-api" and
+// "ghcr.io/nicodes/ormos-db" differ in their last four characters and share
+// the nineteen in front, so the column reads as a wall with the answer at the
+// end of it.
+//
+// This does lose a distinction: two images with the same final segment on
+// different registries now look identical. The full reference is one keypress
+// away in the container's logs and in compose.yml, and the case this optimises
+// for -- reading down a list of an app's own services -- is the one that
+// happens every time the page is opened.
 func (c containerRow) imageText(version string) string {
-	if version == "" || version == "none" {
-		return c.image
+	ref := c.image
+	if version != "" && version != "none" {
+		if s, ok := strings.CutSuffix(ref, ":"+version); ok {
+			ref = s
+		}
 	}
-	if s, ok := strings.CutSuffix(c.image, ":"+version); ok {
-		return s
+	// After the tag, so a registry given with a port (localhost:5000/api) is
+	// not mistaken for one -- the slash is what separates path from name.
+	if i := strings.LastIndex(ref, "/"); i >= 0 {
+		ref = ref[i+1:]
 	}
-	return c.image
+	return ref
 }
 
 // stateText is how long a container has been in the state it is in.
