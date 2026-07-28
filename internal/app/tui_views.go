@@ -56,18 +56,27 @@ func viewMonitor(m model) string {
 		// the row that is ever urgent, and it can only say so if nothing beside
 		// it is competing -- a table of white text with one coloured glyph in
 		// it reads as one coloured glyph.
+		// Column order matters more than it looks. Widths are shared across
+		// every row in the table, and the LAST column is the only one that can
+		// afford to overflow -- the frame clips rather than wraps. Routes is
+		// far and away the widest thing here (ormos publishes seven hostnames),
+		// so it goes last and everything bounded goes before it.
+		//
+		// The sparkline learnt this the hard way: put after the routes column,
+		// it started past the right edge of a 132-column terminal and was
+		// clipped away entirely, on a box that was serving traffic.
 		rows = append(rows, treeRow{idx: idx, cells: []string{
 			m.rowDot("app:"+a.name, appDot(a)),
 			dimStyle.Render(a.name),
 			dimStyle.Render(a.stateText()),
-			short(a.version),
-			dimStyle.Render(a.image),
 			// The last half hour of requests, and the last complete minute's
 			// rate. Dots rather than a flat line when nothing has arrived: a
 			// line along zero claims a measurement, and "nobody has asked this
 			// box for anything" is a different statement from "zero requests".
 			m.sparkFor(a.name),
 			m.rateFor(a.name),
+			short(a.version),
+			dimStyle.Render(a.image),
 		}})
 		// Each container under its app, with the hostnames that reach IT.
 		//
@@ -104,9 +113,9 @@ func viewMonitor(m model) string {
 				// Apps ship no fragment now, and the port is observed instead:
 				// strictly better information from a source that cannot drift.
 				dimStyle.Render(c.portsText()),
+				"",
+				"",
 				m.routesCell(c, byContainer[c.name]),
-				"",
-				"",
 			}})
 			idx++
 		}
