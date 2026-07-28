@@ -506,9 +506,24 @@ func (a appRow) stateText() string {
 
 // serverRow is the box itself, before any app is considered.
 type serverRow struct {
-	state    string // ready | docker-stopped | bare
-	docker   string
+	state  string // ready | docker-stopped | bare
+	docker string
+	// os is the distribution the box runs. Not reported by the inventory yet --
+	// komizo installs Alpine and nothing else, so there is one answer and osName
+	// gives it. The field exists so that reading /etc/os-release on the host is
+	// a change to the script and this struct, and not to every place that shows
+	// it.
+	os       string
 	hostKeys [][2]string // {type, base64}
+}
+
+// osName is what the box runs, or what komizo puts on it when nothing has said
+// otherwise.
+func (s serverRow) osName() string {
+	if s.os == "" {
+		return "alpine"
+	}
+	return s.os
 }
 
 func (s serverRow) ready() bool { return s.state == "ready" }

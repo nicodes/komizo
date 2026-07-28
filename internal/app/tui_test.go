@@ -167,7 +167,9 @@ func TestCursorReachesTheBoxRowsAndEveryContainer(t *testing.T) {
 	for _, f := range m.focusItems() {
 		kinds = append(kinds, f.kind)
 	}
-	want := []focusKind{focusServer, focusProxy, focusApp, focusContainer, focusApp, focusAdd}
+	// Page order, and the page draws the proxy above the docker row now. The
+	// cursor is an index into this list, so the two have to agree.
+	want := []focusKind{focusProxy, focusServer, focusApp, focusContainer, focusApp, focusAdd}
 	if len(kinds) != len(want) {
 		t.Fatalf("focus list = %v, want %v", kinds, want)
 	}
@@ -585,10 +587,11 @@ func TestTheBoxIsAlwaysOnScreen(t *testing.T) {
 	// Docker, the network and the proxy had a page each, then one page, and are
 	// now the block above the app list. A stopped proxy used to stay invisible
 	// for as long as it took someone to think of pressing a key.
+	// No heading over them any more -- the facts are the point, not the label.
 	v := netModel().View()
 	for _, want := range []string{
-		"Server",
-		"root@box.example.com",  // the address, which used to live in the header
+		"box.example.com",       // which box, in the header
+		"alpine",                // os
 		"Docker version 26.1.3", // docker
 		"edge", "bridge",        // network
 		"running", // proxy
@@ -1805,9 +1808,15 @@ func TestAppsAreGrouped(t *testing.T) {
 		t.Fatalf("%q is not on the page:\n%s", want, strings.Join(lines, "\n"))
 		return -1
 	}
-	// The first app follows the heading immediately.
-	if apps, first := at("Apps"), at("blog"); first != apps+1 {
-		t.Errorf("the heading and the first app are %d lines apart, want 1", first-apps)
+	// The apps have no heading. They are still set off from the box's own rows
+	// by one blank line -- the separation the heading used to carry, which the
+	// tree needs and the label did not.
+	first := at("blog")
+	if strings.TrimSpace(lines[first-1]) != "" {
+		t.Errorf("the app list should be preceded by a blank line, got %q", lines[first-1])
+	}
+	if strings.TrimSpace(lines[first-2]) == "" {
+		t.Errorf("one blank line, not two:\n%s", strings.Join(lines, "\n"))
 	}
 	// The next app is separated from the one above by a blank line.
 	if blank := at("shop") - 1; strings.TrimSpace(lines[blank]) != "" {
@@ -1990,8 +1999,8 @@ func TestHelpFollowsTheCursor(t *testing.T) {
 		cursor int
 		want   string
 	}{
-		{0, "update server"}, // the box
-		{1, "stop"},          // proxy, running
+		{0, "stop"},          // proxy, running -- drawn first, so selected first
+		{1, "update server"}, // the box
 		{2, "stop"},          // app, running
 		{3, "stop"},          // container, running
 	} {
@@ -2020,7 +2029,8 @@ func TestEnterOnTheDockerRowUpdatesTheServer(t *testing.T) {
 	// is no second way to reach it -- a global key as well would be two routes
 	// to one action, and one of them undiscoverable from the row it affects.
 	m := netModel()
-	m.cursor = 0
+	// By kind, not by index: the docker row is no longer the first one.
+	m.cursor = rowOf(m, focusServer)
 	m = send(m, "enter")
 	if m.prompt == nil {
 		t.Fatal("enter on the docker row should ask about an update")
@@ -2343,17 +2353,21 @@ func TestTheProxyIsPlainRowsUnderServer(t *testing.T) {
 }
 
 func TestTheHostIsNamedWhereItMatters(t *testing.T) {
-	// The address moved out of the header, which used to put it on every
-	// screen. Anything destructive has to name the box itself now, or the most
-	// dangerous prompt in the program says "this server" and means nothing.
+	// The header names the box, and only the box: the account is the same all
+	// session and is not what tells two terminals apart, so a breadcrumb
+	// carrying it spends width on a constant.
 	m := testModel()
-	if strings.Contains(stripANSI(header("monitor")), "@") {
-		t.Error("the header should no longer carry the address")
+	v := stripANSI(m.View())
+	if !strings.Contains(v, "box.example.com") {
+		t.Error("the header should name the box")
 	}
-	if !strings.Contains(stripANSI(m.View()), "root@box.example.com") {
-		t.Error("the Server section should carry it instead")
+	if strings.Contains(v, "root@") {
+		t.Error("the header should not carry the account")
 	}
 
+	// And anything destructive names the box itself regardless. A header is
+	// read once and then stops being read, which is when it stops protecting
+	// you -- so the most dangerous prompt in the program cannot lean on it.
 	m.cursor = rowOf(m, focusApp)
 	if q := send(m, "x").prompt; q == nil || !strings.Contains(q.question, "box.example.com") {
 		t.Error("the remove question must name the host")
@@ -2784,7 +2798,7 @@ func TestWaitsShowASpinner(t *testing.T) {
 	// what it is doing -- and NOT the name, which the corner already carries.
 	log.reflow()
 	lv := stripANSI(log.View())
-	if !strings.Contains(lv, "komizo / root@box.example.com / web logs") {
+	if !strings.Contains(lv, "komizo / box.example.com / web logs") {
 		t.Errorf("a loading log should keep its header:\n%s", lv)
 	}
 	if !strings.Contains(lv, "loading...") {
@@ -2827,11 +2841,11 @@ func TestTheHeaderSaysWhereYouAre(t *testing.T) {
 		set  func(*model)
 		want string
 	}{
-		"the list": {func(m *model) {}, "komizo / root@box.example.com / monitor"},
+		"the list": {func(m *model) {}, "komizo / box.example.com / monitor"},
 		"a log": {func(m *model) {
 			m.scr, m.logsLabel, m.logsOf, m.logsReady = screenLogs, "blog-web-1", "x", true
 			m.logs = "one\ntwo"
-		}, "komizo / root@box.example.com / blog-web-1 logs"},
+		}, "komizo / box.example.com / blog-web-1 logs"},
 	} {
 		next := m
 		c.set(&next)
@@ -3002,30 +3016,34 @@ func TestStartStopAsksFirst(t *testing.T) {
 	}
 }
 
-func TestEverySectionIsAHeading(t *testing.T) {
-	// Two groups, not three. The title is the only coloured thing on the page;
-	// the headings are bold, so they mark a break without competing with it.
-	//
-	// The proxy lost its heading and kept its rows: two rows under a heading of
-	// their own was a heading earning its keep on grouping alone, with nothing
-	// to group them against. They are facts about this box, like its docker
-	// version, so they sit under Server.
+func TestTheMonitorHasNoHeadings(t *testing.T) {
+	// The page carries no section labels at all. Server, Proxy and Apps each
+	// named a handful of rows whose shape already said what they were -- flat
+	// label/value rows for the box, a tree for the apps -- so each heading cost
+	// a line to repeat what was under it. The blank lines between them stayed;
+	// that was the part doing the work.
 	v := stripANSI(testModel().View())
-	for _, want := range []string{"komizo", "Server", "Apps"} {
-		if !strings.Contains(v, want) {
-			t.Errorf("the page is missing the %q heading", want)
+	for _, gone := range []string{"Server", "Proxy", "Apps"} {
+		if strings.Contains(v, gone) {
+			t.Errorf("the page should have no %q heading:\n%s", gone, v)
 		}
 	}
-	if strings.Contains(v, "Proxy") {
-		t.Error("the proxy should not have a heading of its own")
+	// The tool's name is still on it, in the header.
+	if !strings.Contains(v, "komizo") {
+		t.Error("the header should still name the tool")
 	}
-	// Order matters: the box, then the thing every app depends on, then them.
-	iS, iP, iA := strings.Index(v, "docker"), strings.Index(v, "proxy"), strings.Index(v, "Apps")
-	if !(iS < iP && iP < iA) {
-		t.Errorf("rows out of order: docker=%d proxy=%d Apps=%d", iS, iP, iA)
+	// Order still matters: what the box IS, then what every app depends on,
+	// then the apps. Docker is last of the three -- the proxy and its network
+	// are what break, and what you came to look at.
+	iOS := strings.Index(v, "alpine")
+	iP := strings.Index(v, "proxy")
+	iD := strings.Index(v, "docker")
+	iA := strings.Index(v, "blog")
+	if !(iOS < iP && iP < iD && iD < iA) {
+		t.Errorf("rows out of order: os=%d proxy=%d docker=%d apps=%d", iOS, iP, iD, iA)
 	}
-	// Named "proxy" rather than "status": under Server that would read as the
-	// server's status, which is a different claim.
+	// Named "proxy" rather than "status": with no heading over it, "status"
+	// would read as the server's status, which is a different claim.
 	if strings.Contains(v, "status") {
 		t.Error(`the proxy row should be labelled "proxy", not "status"`)
 	}

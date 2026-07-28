@@ -18,7 +18,10 @@ func viewMonitor(m model) string {
 	// No blank line under the heading. Every app below is a group with a blank
 	// line above it, so one here made the first group sit lower than the rest
 	// and read as though something were missing from it.
-	b.WriteString(section("Apps"))
+	// No heading here either: the tree is unmistakably the apps, and nothing
+	// else on the page has that shape. The blank line above it still separates
+	// them from the box's own rows.
+	b.WriteString("\n")
 
 	if len(m.apps) == 0 {
 		b.WriteString("\n")
@@ -186,11 +189,28 @@ func (m model) rowIndex(kind focusKind) int {
 // chosen here, and moving it strands every app that names it.
 func (m model) boxSection() string {
 	var b strings.Builder
-	b.WriteString(section("Server"))
-	b.WriteString(kvSel("docker", dimStyle.Render(orDash(m.srv.docker)), m.cursor == 0))
+	// No heading. Two groups of a few rows each did not need naming: the page is
+	// short enough that the shape of it -- flat rows, then a tree -- says which
+	// is which, and a heading over three lines was a line spent on a label.
+	//
+	// The blank line stays. It came from the heading, and dropping it too ran
+	// the block into the header above it: the labels went, the structure they
+	// marked did not.
+	b.WriteString("\n")
+	// What the box runs, above the things running on it.
+	b.WriteString(kv("os", dimStyle.Render(m.srv.osName())))
+	b.WriteString(m.proxyRows())
+	// Docker last: it is the least of the three. The proxy and its network are
+	// what break, and what you came to look at; the docker version changes when
+	// someone changes it.
+	//
+	// Not m.cursor == 0 any more. The proxy row is above it now, so the index
+	// has to come from the focus list rather than from where this row used to
+	// be -- which is the bug that pairing hardcodes a number with a layout.
+	b.WriteString(kvSel("docker", dimStyle.Render(orDash(m.srv.docker)),
+		m.cursor == m.rowIndex(focusServer)))
 	// No known_hosts row. The value is per app -- the keys are the box's, the
 	// names are the repo's -- so it is copied from the app it belongs to.
-	b.WriteString(m.proxyRows())
 	return b.String()
 }
 

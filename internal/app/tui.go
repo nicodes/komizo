@@ -547,10 +547,14 @@ func (m model) focusItems() []focusItem {
 	// In page order. Every row that has something to do sits in this list, and
 	// the ones that are pure fact do not -- which is why the docker row is here
 	// (enter re-runs setup on it) and the network row is not.
-	out = append(out, focusItem{kind: focusServer, app: -1, ctr: -1})
+	//
+	// The proxy leads because it is drawn first, and this list has to agree with
+	// the page: the cursor is an index into it, so a row that moves on screen
+	// and not here selects its neighbour.
 	if m.proxy.installed {
 		out = append(out, focusItem{kind: focusProxy, app: -1, ctr: -1})
 	}
+	out = append(out, focusItem{kind: focusServer, app: -1, ctr: -1})
 	for i, a := range m.apps {
 		out = append(out, focusItem{kind: focusApp, app: i, ctr: -1})
 		for j := range a.containers {

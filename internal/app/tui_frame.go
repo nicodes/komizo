@@ -248,7 +248,7 @@ func (m model) headerLine() string {
 	// Which box, then where in it. The address leads because it scopes
 	// everything under it -- two terminals open on two servers are otherwise
 	// the same picture.
-	return header(m.tgt.display(), m.crumb())
+	return header(m.tgt.hostDisplay(), m.crumb())
 }
 
 // showsBrand is whether the body already carries the name, centred.
