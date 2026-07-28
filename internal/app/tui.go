@@ -85,9 +85,13 @@ type model struct {
 
 	// The log window: what is showing, whose it is, what to call it, how to
 	// fetch it again, and how far down you have scrolled.
-	logs      string
-	logsOf    string // container name, so a late fetch for another one is dropped
-	logsLabel string
+	logs   string
+	logsOf string // container name, so a late fetch for another one is dropped
+	// What the log belongs to, for the breadcrumb: the app, and the container
+	// within it when one was selected. The proxy has neither and names itself.
+	logsLabel string // proxy, or the app; kept for the crumb's leaf
+	logsApp   string // "" for the proxy
+	logsSvc   string // "" for a whole app
 	logsCmd   string
 	scroll    int
 	logsReady bool // the fetch has come back, even if it came back empty
@@ -712,16 +716,16 @@ func (m model) handleMonitorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// on a row you did not select is worse than no key.
 		switch f := m.focused(); f.kind {
 		case focusProxy:
-			return m.openLogs(proxyContainer, "proxy", containerLogCmd(proxyContainer))
+			return m.openLogs(proxyContainer, "proxy", "", "", containerLogCmd(proxyContainer))
 		case focusContainer:
 			c := m.focusedContainer()
-			return m.openLogs(c.name, c.service, containerLogCmd(c.name))
+			return m.openLogs(c.name, c.service, c.app, c.service, containerLogCmd(c.name))
 		case focusApp:
 			if f.app < 0 {
 				return m, nil
 			}
 			a := m.apps[f.app]
-			return m.openLogs("app:"+a.name, a.name, stackLogCmd(a))
+			return m.openLogs("app:"+a.name, a.name, a.name, "", stackLogCmd(a))
 		}
 		return m, nil
 
@@ -790,8 +794,9 @@ func (m model) copyKnownHosts(a appRow) model {
 // Always a fresh fetch, and always from the top. Reopening the same log after
 // something has happened to it is the common case, and showing yesterday's
 // scroll position in yesterday's text would be worse than a moment's wait.
-func (m model) openLogs(key, label, cmd string) (tea.Model, tea.Cmd) {
+func (m model) openLogs(key, label, app, svc, cmd string) (tea.Model, tea.Cmd) {
 	m.logs, m.logsOf, m.logsLabel, m.logsCmd = "", key, label, cmd
+	m.logsApp, m.logsSvc = app, svc
 	m.logsReady, m.scroll = false, 0
 	m.status, m.statusErr = "", false
 	wasSpinning := m.spinning()

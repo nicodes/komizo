@@ -833,7 +833,7 @@ func TestLogsRenderAndLateOnesAreIgnored(t *testing.T) {
 	if !strings.Contains(v, "challenge failed") {
 		t.Error("logs should render; they are usually the answer to a TLS problem")
 	}
-	if !strings.Contains(v, "proxy log") {
+	if !strings.Contains(v, "proxy / logs") {
 		t.Error("the window should say whose log it is")
 	}
 
@@ -2824,7 +2824,7 @@ func TestWaitsShowASpinner(t *testing.T) {
 	// what it is doing -- and NOT the name, which the corner already carries.
 	log.reflow()
 	lv := stripANSI(log.View())
-	if !strings.Contains(lv, "komizo / box.example.com / web logs") {
+	if !strings.Contains(lv, "komizo / box.example.com / web / logs") {
 		t.Errorf("a loading log should keep its header:\n%s", lv)
 	}
 	if !strings.Contains(lv, "loading...") {
@@ -2870,8 +2870,9 @@ func TestTheHeaderSaysWhereYouAre(t *testing.T) {
 		"the list": {func(m *model) {}, "komizo / box.example.com / monitor"},
 		"a log": {func(m *model) {
 			m.scr, m.logsLabel, m.logsOf, m.logsReady = screenLogs, "blog-web-1", "x", true
+			m.logsApp, m.logsSvc = "blog", "blog-web-1"
 			m.logs = "one\ntwo"
-		}, "komizo / box.example.com / blog-web-1 logs"},
+		}, "komizo / box.example.com / blog / blog-web-1 / logs"},
 	} {
 		next := m
 		c.set(&next)
@@ -2887,10 +2888,11 @@ func TestTheHeaderSaysWhereYouAre(t *testing.T) {
 	// scroll away.
 	l := m
 	l.scr, l.logsLabel, l.logsOf, l.logsReady = screenLogs, "blog-web-1", "x", true
+	l.logsApp, l.logsSvc = "blog", "blog-web-1"
 	l.logs = strings.Repeat("a line\n", 200)
 	l.scroll = 999
 	l.reflow()
-	if !strings.Contains(stripANSI(l.View()), "blog-web-1 logs") {
+	if !strings.Contains(stripANSI(l.View()), "blog-web-1 / logs") {
 		t.Error("the crumb should survive scrolling to the end of a log")
 	}
 }
@@ -3566,7 +3568,7 @@ func TestTheLogWindowNeverOutgrowsTheTerminal(t *testing.T) {
 			}
 			// And the window still says which log it is -- unless it is still
 			// arriving, where the page is the centred name and the spinner.
-			want := "x logs"
+			want := "x / logs"
 			if !loaded {
 				want = "komizo"
 			}
@@ -4035,5 +4037,50 @@ func TestChartsOpenForAContainer(t *testing.T) {
 	}
 	if strings.Contains(app.crumb(), "/ api /") {
 		t.Errorf("crumb = %q, should not name a container", app.crumb())
+	}
+}
+
+// The breadcrumb names every level: which app, which container inside it, and
+// what you are looking at. A container's log and its app's log are different
+// documents, and "astry logs" was true of both.
+func TestCrumbsNameTheWholePath(t *testing.T) {
+	m := testModel()
+	m.width, m.height = 110, 30
+	m.apps[0].containers = []containerRow{
+		{app: "blog", service: "api", name: "blog-api-1", state: "running"},
+	}
+
+	// A container's log.
+	c := m
+	c.cursor = rowOf(c, focusContainer)
+	c, _ = sendCmd(c, "l")
+	if got := c.crumb(); got != "blog / api / logs" {
+		t.Errorf("container log crumb = %q, want \"blog / api / logs\"", got)
+	}
+
+	// The app's log is the stack's, and says so with one fewer level.
+	a := m
+	a.cursor = rowOf(a, focusApp)
+	a, _ = sendCmd(a, "l")
+	if got := a.crumb(); got != "blog / logs" {
+		t.Errorf("app log crumb = %q, want \"blog / logs\"", got)
+	}
+
+	// The proxy belongs to no app. It names itself rather than being nested
+	// under something it is not part of.
+	p := netModel()
+	p.width, p.height = 110, 30
+	p.cursor = rowOf(p, focusProxy)
+	p, _ = sendCmd(p, "l")
+	if got := p.crumb(); got != "proxy / logs" {
+		t.Errorf("proxy log crumb = %q, want \"proxy / logs\"", got)
+	}
+
+	// Requests take the same shape, so the two screens read alike.
+	r := m
+	r.cursor = rowOf(r, focusContainer)
+	r, _ = sendCmd(r, "m")
+	if got := r.crumb(); got != "blog / api / requests" {
+		t.Errorf("container requests crumb = %q", got)
 	}
 }

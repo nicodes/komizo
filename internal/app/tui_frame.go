@@ -288,21 +288,39 @@ func (m model) crumb() string {
 	case screenLogin:
 		return "login"
 	case screenLogs:
-		return m.logsLabel + " logs"
+		// Same shape as the charts crumb: app / container / what. The proxy
+		// belongs to no app and names itself.
+		return crumbPath(m.logsApp, m.logsSvc, m.logsLabel, "logs")
 	case screenCharts:
-		// app / container / requests, so the crumb says exactly what is being
-		// counted. A container's chart and its app's look identical otherwise,
-		// and the difference between them is the whole reason to open one.
-		if m.chartsSvc != "" {
-			return m.chartsOf + " / " + m.chartsSvc + " / requests"
-		}
-		return m.chartsOf + " / requests"
+		return crumbPath(m.chartsOf, m.chartsSvc, m.chartsOf, "requests")
 	case screenSetup:
 		return "setup"
 	case screenMonitor:
 		return "monitor"
 	}
 	return ""
+}
+
+// crumbPath is the trail under the host: which app, which container inside it,
+// and what you are looking at.
+//
+// Every level is named because the alternative is a screen that cannot say what
+// it is about. A container's log and its app's log are different documents, and
+// "astry logs" was true of both.
+//
+// fallback covers the things that belong to no app -- the proxy -- which name
+// themselves rather than being nested under something they are not part of.
+func crumbPath(app, service, fallback, leaf string) string {
+	parts := []string{}
+	switch {
+	case app == "":
+		parts = append(parts, fallback)
+	case service == "":
+		parts = append(parts, app)
+	default:
+		parts = append(parts, app, service)
+	}
+	return strings.Join(append(parts, leaf), " / ")
 }
 
 // pageBody is the scrolling middle: what the screen is about, and nothing that
