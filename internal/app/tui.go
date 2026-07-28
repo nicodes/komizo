@@ -23,6 +23,7 @@ const (
 	screenSetup   // connected, but the server has nothing installed
 	screenMonitor // the apps on this box
 	screenLogs    // one log, full window
+	screenCharts  // one app's request rate over time
 )
 
 type model struct {
@@ -91,6 +92,17 @@ type model struct {
 	scroll    int
 	logsReady bool // the fetch has come back, even if it came back empty
 	run       runState
+
+	// Request counts off the proxy's access log.
+	//
+	// metrics rides along on the inventory poll and covers a short window --
+	// enough for the sparkline on an app's row. charts is the deeper window the
+	// chart screen fetches for itself on entry, because reading hours of log
+	// every five seconds to move a line one column is a waste of the box.
+	metrics     []metricRow
+	charts      []metricRow
+	chartsOf    string // which app, so a late fetch for another one is dropped
+	chartsReady bool
 
 	width, height int
 }
@@ -343,6 +355,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		m.apps, m.srv, m.proxy, m.net, m.err = msg.apps, msg.srv, msg.proxy, msg.net, nil
+		m.metrics = msg.metrics
 		// This snapshot covers every row, so anything waiting on one is now
 		// current. Rows still mid-command keep their own spinner via busy.
 		m.settling = nil
@@ -410,6 +423,20 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case runOutputMsg:
 		m.run.append(string(msg))
 		return m, m.run.wait()
+
+	case chartsMsg:
+		// Dropped if another app's chart was asked for while this was in
+		// flight, the same guard logsMsg needs and for the same reason.
+		if msg.app != m.chartsOf {
+			return m, nil
+		}
+		m.chartsReady = true
+		if msg.err != nil {
+			m.status, m.statusErr = "could not read the proxy's access log", true
+			return m, nil
+		}
+		m.charts = msg.rows
+		return m, nil
 
 	case logsMsg:
 		// Ignored if another log was asked for while this was in flight --
@@ -510,6 +537,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleLoginKey(msg)
 	case screenLogs:
 		return m.handleLogsKey(msg)
+	case screenCharts:
+		return m.handleChartsKey(msg)
 	case screenSetup:
 		return m.handleSetupKey(msg)
 	}
@@ -692,6 +721,16 @@ func (m model) handleMonitorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			a := m.apps[f.app]
 			return m.openLogs("app:"+a.name, a.name, stackLogCmd(a))
+		}
+		return m, nil
+
+	case "m":
+		// Only an app has a chart. The proxy's own traffic is every app's
+		// traffic added up, and a single container's share of a hostname is
+		// not something this box knows -- what happens after the gateway is
+		// inside the app.
+		if f := m.focused(); f.kind == focusApp && f.app >= 0 {
+			return m.openCharts(m.apps[f.app].name)
 		}
 		return m, nil
 	case "p":
@@ -885,6 +924,9 @@ func (m *model) begin(key, cmd string) tea.Cmd {
 // spinning reports whether any row is mid-action or waiting for the refresh
 // that follows one.
 func (m model) spinning() bool {
+	if m.scr == screenCharts && !m.chartsReady {
+		return true
+	}
 	return len(m.busy)+len(m.settling) > 0 || m.running() ||
 		m.scr == screenLoading || (m.scr == screenLogs && m.loading())
 }

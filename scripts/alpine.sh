@@ -478,6 +478,29 @@ if [ -n "\$hostnames" ]; then
 		esac
 	done
 
+	# Access logging, emitted into every site block this generates.
+	#
+	# Per-site because these ARE the only site blocks on the box -- Caddy has no
+	# server-wide access log, and the shared Caddyfile has nothing but imports.
+	#
+	# To a FILE, not stdout. The proxy's stdout is what 'l' shows on its row,
+	# and it is the only place a certificate or TLS failure is explained;
+	# folding every request into it would cost that for a feature nobody had
+	# asked for yet. A file also rotates itself and can be totalled by reading
+	# it, rather than by asking docker for a stream.
+	#
+	# One file for the whole box rather than one per app: Caddy opens it once
+	# and the aggregate names the app on every line anyway, via the hostname.
+	access_log() {
+		printf '\\tlog {\n'
+		printf '\\t\\toutput file /var/log/caddy/access.log {\n'
+		printf '\\t\\t\\troll_size 10mb\n'
+		printf '\\t\\t\\troll_keep 3\n'
+		printf '\\t\\t}\n'
+		printf '\\t\\tformat json\n'
+		printf '\\t}\n'
+	}
+
 	# The upstream is derived from the app name rather than declared, so it
 	# cannot collide with another app's and cannot be pointed at one.
 	{
@@ -485,6 +508,7 @@ if [ -n "\$hostnames" ]; then
 		printf '# Edits here are lost on the next deploy.\n'
 		if [ -n "\$plain" ]; then
 			printf '%s {\n' "\$plain"
+			access_log
 			printf '\\treverse_proxy %s-gateway:80\n' "\$APP_NAME"
 			printf '}\n'
 		fi
@@ -495,6 +519,7 @@ if [ -n "\$hostnames" ]; then
 			# server is configured with -- see 'komizo proxy --tls-ask'.
 			printf '%s {\n' "\$wild"
 			printf '\\ttls {\n\\t\\ton_demand\n\\t}\n'
+			access_log
 			printf '\\treverse_proxy %s-gateway:80\n' "\$APP_NAME"
 			printf '}\n'
 		fi

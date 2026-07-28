@@ -87,9 +87,13 @@ fi
 # --- 2. the Caddyfile ------------------------------------------------------
 
 log "Writing $PROXY_DIR/Caddyfile"
-mkdir -p "$PROXY_DIR/caddy"
-chown root:root "$PROXY_DIR" "$PROXY_DIR/caddy"
+mkdir -p "$PROXY_DIR/caddy" "$PROXY_DIR/logs"
+chown root:root "$PROXY_DIR" "$PROXY_DIR/caddy" "$PROXY_DIR/logs"
 chmod 755 "$PROXY_DIR" "$PROXY_DIR/caddy"
+# Access logs. 750 rather than 755: they carry client IPs and request paths,
+# which is the one thing on this box that is about the people using it rather
+# than about the box.
+chmod 750 "$PROXY_DIR/logs"
 
 {
 	printf '# Written by komizo. Re-run "komizo proxy" to change it.\n'
@@ -176,6 +180,14 @@ services:
       # match the host's. Read-only means a compromised proxy cannot write an
       # app's compose.yml, which would be equivalent to root.
       - /srv:/srv:ro
+      # The one writable path. Access logs are written here rather than to
+      # stdout so that the proxy's own log -- the one that explains a
+      # certificate failure -- does not become a request firehose, and so the
+      # host can total them up by reading a file rather than by asking docker.
+      #
+      # Named explicitly rather than making /srv writable: this is the only
+      # thing the proxy has any business writing.
+      - $PROXY_DIR/logs:/var/log/caddy:rw
       # ACME account key and issued certificates. Losing this volume means
       # every certificate is re-issued, and Let's Encrypt rate limits are per
       # domain per week -- so it is the one volume on the box worth backing up.
@@ -183,6 +195,14 @@ services:
       - caddy_config:/config
     networks:
       - shared
+    # Unbounded by default, which is a disk filling up slowly enough that
+    # nobody notices until it has. This is Caddy's operational log; the access
+    # log is a file and rotates itself, see the Caddyfile.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   caddy_data:

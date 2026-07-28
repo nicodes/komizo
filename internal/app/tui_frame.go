@@ -289,6 +289,8 @@ func (m model) crumb() string {
 		return "login"
 	case screenLogs:
 		return m.logsLabel + " logs"
+	case screenCharts:
+		return m.chartsOf + " requests"
 	case screenSetup:
 		return "setup"
 	case screenMonitor:
@@ -309,6 +311,8 @@ func (m model) pageBody() string {
 		return viewMonitor(m)
 	case screenLogs:
 		return m.viewLogs()
+	case screenCharts:
+		return m.viewCharts()
 	case screenSetup:
 		return m.viewSetup()
 	}
@@ -425,6 +429,8 @@ func (m model) footerKeys() string {
 		return m.helpLines()
 	case screenLogs:
 		return m.logsKeys()
+	case screenCharts:
+		return m.chartsKeys()
 	case screenSetup:
 		return helpLine(m.width, "←→", "choose", "enter", "select", "q", "quit")
 	case screenLogin:
@@ -474,7 +480,7 @@ func (m model) centred(lines ...string) string {
 func (m model) loadingPane() string {
 	// The logs screen keeps its header, so the pane under it is the spinner and
 	// nothing else -- the brand would be the same word the corner already says.
-	if m.scr == screenLogs {
+	if m.scr == screenLogs || m.scr == screenCharts {
 		return m.centred(spinner(m.spin), "", dimStyle.Render("loading..."))
 	}
 	lines := append(m.brandBlock(), "", spinner(m.spin))

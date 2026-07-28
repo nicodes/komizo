@@ -62,6 +62,12 @@ func viewMonitor(m model) string {
 			dimStyle.Render(a.stateText()),
 			short(a.version),
 			dimStyle.Render(a.image),
+			// The last half hour of requests, and the last complete minute's
+			// rate. Dots rather than a flat line when nothing has arrived: a
+			// line along zero claims a measurement, and "nobody has asked this
+			// box for anything" is a different statement from "zero requests".
+			m.sparkFor(a.name),
+			m.rateFor(a.name),
 		}})
 		// Each container under its app, with the hostnames that reach IT.
 		//
@@ -99,6 +105,8 @@ func viewMonitor(m model) string {
 				// strictly better information from a source that cannot drift.
 				dimStyle.Render(c.portsText()),
 				m.routesCell(c, byContainer[c.name]),
+				"",
+				"",
 			}})
 			idx++
 		}
@@ -310,7 +318,7 @@ func (m model) rowKeys() []string {
 			return nil
 		}
 		a := m.apps[f.app]
-		return append([]string{"enter", startStop(a.up()), "l", "logs"},
+		return append([]string{"enter", startStop(a.up()), "l", "logs", "m", "requests"},
 			appActions()...)
 
 	case focusContainer:

@@ -2275,6 +2275,31 @@ func TestNoRowIsWiderThanTheWindow(t *testing.T) {
 			t.Errorf("row %d is %d columns wide, window is %d", i, w, m.width)
 		}
 	}
+
+	// The charts screen has the same obligation and is the likeliest to break
+	// it: a chart is drawn to a width it computes rather than to whatever the
+	// text happens to be, and the frame CLIPS rather than wraps -- so getting
+	// this wrong silently cuts off the right-hand end, which is now.
+	for _, w := range []int{60, 80, 120} {
+		c := testModel()
+		c.scr, c.chartsOf, c.chartsReady = screenCharts, "blog", true
+		now := time.Now().Unix() / 60 * 60
+		for i := 0; i < 120; i++ {
+			c.charts = append(c.charts, metricRow{
+				minute: now - int64(119-i)*60, app: "blog", c2: 10 + i, c5: i % 7})
+		}
+		c.width, c.height = w, 24
+		c.reflow()
+		cl := strings.Split(stripANSI(c.View()), "\n")
+		if len(cl) != c.height {
+			t.Errorf("charts at width %d: rendered %d lines into %d", w, len(cl), c.height)
+		}
+		for i, ln := range cl {
+			if got := lipglossWidth(ln); got > c.width {
+				t.Errorf("charts at width %d: row %d is %d columns", w, i, got)
+			}
+		}
+	}
 }
 
 func TestAbsentThingsStayReachable(t *testing.T) {
@@ -3436,7 +3461,7 @@ func TestAPollDoesNotMoveYouBetweenScreens(t *testing.T) {
 	// appsMsg used to set the screen unconditionally, which was harmless when
 	// the only way to trigger one was pressing R on the list. A poll arriving
 	// every five seconds would now throw you out of whatever you were reading.
-	for _, scr := range []screen{screenLogs} {
+	for _, scr := range []screen{screenLogs, screenCharts} {
 		m := testModel()
 		m.loaded, m.scr = true, scr
 		next, _ := m.Update(appsMsg{apps: m.apps, srv: m.srv, proxy: m.proxy})
@@ -3706,5 +3731,152 @@ func TestPortsAreObservedPerContainer(t *testing.T) {
 	// what the proxy was told to dial.
 	if !strings.Contains(v, ":5432") {
 		t.Errorf("a container no route names should still show its port:\n%s", v)
+	}
+}
+
+// Request counts are read off the proxy's access log and attributed to apps by
+// hostname. The join is the part most likely to be silently wrong, so it is what
+// this pins.
+func TestMetricsParseAndAttribute(t *testing.T) {
+	out := strings.Join([]string{
+		"app\tblog\tkomizo-blog\t/srv/blog\ta1b2c3d\t1\tghcr.io/you/blog-config\t",
+		"metric\t1785225600\tblog\t10\t1\t2\t3",
+		"metric\t1785225660\tblog\t20\t0\t0\t0",
+		"metric\t1785225660\tshop\t5\t0\t0\t0",
+		"garbage that is not a record",
+		"metric\tnotanumber\tblog\t1\t1\t1\t1",
+	}, "\n")
+
+	rows := parseMetrics(out)
+	if len(rows) != 3 {
+		t.Fatalf("expected 3 metric rows, got %d: %+v", len(rows), rows)
+	}
+	// Sorted by minute then app, so a chart can walk them in order.
+	if rows[0].minute != 1785225600 || rows[0].app != "blog" {
+		t.Errorf("first row = %+v", rows[0])
+	}
+	if got := rows[0].total(); got != 16 {
+		t.Errorf("total = %d, want 10+1+2+3", got)
+	}
+
+	// One app's series never picks up another's counts.
+	s := seriesFor(rows, "blog", 1785225600, 1785225660)
+	if len(s.total) != 2 {
+		t.Fatalf("expected 2 minutes, got %d", len(s.total))
+	}
+	if s.total[0] != 16 || s.total[1] != 20 {
+		t.Errorf("blog totals = %v, want [16 20]", s.total)
+	}
+	if s.errors[0] != 3 || s.errors[1] != 0 {
+		t.Errorf("blog 5xx = %v, want [3 0]", s.errors)
+	}
+}
+
+// A minute with no traffic produces no record -- there is nothing to count. It
+// has to chart as zero, because a missing point draws a line straight across the
+// gap, and the gap is the outage.
+func TestQuietMinutesChartAsZeroNotAsAGap(t *testing.T) {
+	rows := []metricRow{
+		{minute: 600, app: "blog", c2: 9},
+		{minute: 780, app: "blog", c2: 4}, // 600, [nothing], [nothing], 780
+	}
+	s := seriesFor(rows, "blog", 600, 780)
+	if len(s.total) != 4 {
+		t.Fatalf("expected 4 minutes, got %d", len(s.total))
+	}
+	if s.total[0] != 9 || s.total[1] != 0 || s.total[2] != 0 || s.total[3] != 4 {
+		t.Errorf("series = %v, want [9 0 0 4]", s.total)
+	}
+}
+
+// The rate reads the last COMPLETE minute. The final bucket is the one in
+// progress, and a number that dips every time you look at it is worse than no
+// number.
+func TestRateIgnoresTheMinuteInProgress(t *testing.T) {
+	rows := []metricRow{
+		{minute: 600, app: "blog", c2: 50, c5: 2},
+		{minute: 660, app: "blog", c2: 3}, // partial: only a few seconds in
+	}
+	s := seriesFor(rows, "blog", 600, 660)
+	rate, errs := s.rate()
+	if rate != 52 || errs != 2 {
+		t.Errorf("rate = %d/%d err, want the last full minute (52/2)", rate, errs)
+	}
+
+	// And a window too short to have a complete minute reports nothing rather
+	// than reporting the partial one.
+	short := seriesFor(rows, "blog", 660, 660)
+	if r, _ := short.rate(); r != 0 {
+		t.Errorf("a single partial bucket should report 0, got %d", r)
+	}
+}
+
+// Downsampling averages rather than samples: picking every kth minute drops the
+// spike that is the whole reason anyone looked.
+func TestBucketingKeepsSpikes(t *testing.T) {
+	v := make([]float64, 40)
+	v[17] = 100
+	out := bucketTo(v, 8)
+	if len(out) != 8 {
+		t.Fatalf("want 8 buckets, got %d", len(out))
+	}
+	var sum float64
+	for _, x := range out {
+		sum += x
+	}
+	if sum == 0 {
+		t.Error("the spike vanished; downsampling must average, not sample")
+	}
+}
+
+// `m` opens the chart screen for an app, and offers itself on no other row.
+func TestChartsOpenOnAnAppOnly(t *testing.T) {
+	m := netModel()
+	m.width, m.height = 100, 30
+	m.cursor = rowOf(m, focusApp)
+	next, cmd := sendCmd(m, "m")
+	if next.scr != screenCharts {
+		t.Fatalf("m on an app should open charts, got %v", next.scr)
+	}
+	if cmd == nil {
+		t.Error("it should fetch the counts")
+	}
+	if next.chartsOf != m.apps[0].name {
+		t.Errorf("charts are for %q, want %q", next.chartsOf, m.apps[0].name)
+	}
+	if next.chartsReady {
+		t.Error("it should not claim to be ready before the fetch lands")
+	}
+	if back := send(next, "esc"); back.scr != screenMonitor {
+		t.Error("esc should go back to the list")
+	}
+
+	// Not on the proxy row, and not advertised there either -- an unadvertised
+	// key that acts on a row you did not select is worse than no key.
+	p := netModel()
+	p.width, p.height = 100, 30
+	p.cursor = rowOf(p, focusProxy)
+	if next := send(p, "m"); next.scr != screenMonitor {
+		t.Error("m must do nothing with the proxy selected")
+	}
+	if strings.Contains(stripANSI(p.pageFooter()), "metrics") {
+		t.Error("the footer should not offer metrics on a row that has none")
+	}
+}
+
+// A late fetch for one app must not land over another's, the same guard the log
+// window needs.
+func TestALateChartFetchIsIgnored(t *testing.T) {
+	m := netModel()
+	m.chartsOf, m.chartsReady = "blog", false
+	next, _ := m.Update(chartsMsg{app: "shop", rows: []metricRow{{minute: 60, app: "shop", c2: 1}}})
+	m = next.(model)
+	if m.chartsReady || len(m.charts) != 0 {
+		t.Error("a chart for another app should be dropped, not shown")
+	}
+	next, _ = m.Update(chartsMsg{app: "blog", rows: []metricRow{{minute: 60, app: "blog", c2: 1}}})
+	m = next.(model)
+	if !m.chartsReady || len(m.charts) != 1 {
+		t.Error("the one that was asked for should land")
 	}
 }

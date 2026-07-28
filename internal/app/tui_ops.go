@@ -15,11 +15,12 @@ import (
 // back as messages, so an apk install does not freeze the interface.
 
 type appsMsg struct {
-	apps  []appRow
-	srv   serverRow
-	proxy proxyRow
-	net   netRow
-	err   error
+	apps    []appRow
+	srv     serverRow
+	proxy   proxyRow
+	net     netRow
+	metrics []metricRow
+	err     error
 }
 
 type runOutputMsg string
@@ -94,12 +95,17 @@ func (a addResult) copySelected() error {
 
 func fetchApps(t target) tea.Cmd {
 	return func() tea.Msg {
-		out, err := t.runCapture(inventoryScript)
+		// One script, one connection. The request counts ride along on the
+		// inventory rather than getting a poll of their own: every poll opens a
+		// fresh SSH connection, and that -- not the awk -- is the expensive
+		// part. A second ticker would double the connection rate against the
+		// box to draw a line that moves one column.
+		out, err := t.runCapture(inventoryScript + "\n" + metricsScript(sparkWindow))
 		if err != nil {
 			return appsMsg{err: fmt.Errorf("could not read the server's inventory: %w", err)}
 		}
 		apps, srv, proxy, net, _ := parseInventory(out)
-		return appsMsg{apps: apps, srv: srv, proxy: proxy, net: net}
+		return appsMsg{apps: apps, srv: srv, proxy: proxy, net: net, metrics: parseMetrics(out)}
 	}
 }
 
