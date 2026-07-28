@@ -213,7 +213,7 @@ done
 
 type appRow struct {
 	// knownAs is the names CI dials this app by, as recorded on the box. The
-	// SSH_KNOWN_HOSTS this app pins is these names against the server's keys --
+	// KOMIZO_KNOWN_HOSTS this app pins is these names against the server's keys --
 	// the keys belong to the machine, the names belong to the repo.
 	knownAs []string
 

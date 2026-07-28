@@ -282,7 +282,7 @@ PROXY_CONTAINER="$PROXY_CONTAINER"
 
 # A record, not a setting: nothing below reads it. It is here because this file
 # is root-owned and already the place root pins what it knows about this app,
-# and because rebuilding the app's SSH_KNOWN_HOSTS later means knowing which
+# and because rebuilding the app's KOMIZO_KNOWN_HOSTS later means knowing which
 # names it is dialled by.
 KNOWN_AS="$KNOWN_AS"
 

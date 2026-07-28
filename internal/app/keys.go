@@ -33,7 +33,7 @@ import (
 // away, and a deploy key on a laptop is there until the laptop is not.
 
 type keypair struct {
-	// private is the OpenSSH-format private key, the value of SSH_DEPLOY_KEY.
+	// private is the OpenSSH-format private key, the value of KOMIZO_DEPLOY_KEY.
 	private string
 	// public is the one line that goes in the server's authorized_keys.
 	public string

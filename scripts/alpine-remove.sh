@@ -143,6 +143,6 @@ log "Removed '$APP_NAME'"
 cat <<EOF
 
   Its images are still in your registry, and the deploy key on your machine
-  still exists. Delete SSH_DEPLOY_KEY from the repo's secrets if the app is
+  still exists. Delete KOMIZO_DEPLOY_KEY from the repo's secrets if the app is
   gone for good.
 EOF

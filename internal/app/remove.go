@@ -94,7 +94,7 @@ account, its doas rules, its sshd restrictions and its privileged commands.
 Every step targets that app's own name, so an app sharing the box is untouched.
 
 Its images stay in your registry, and the deploy key on your machine is left
-alone -- delete SSH_DEPLOY_KEY from the repo's secrets yourself if the app is
+alone -- delete KOMIZO_DEPLOY_KEY from the repo's secrets yourself if the app is
 gone for good.
 
 Flags:

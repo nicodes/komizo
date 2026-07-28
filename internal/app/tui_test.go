@@ -384,7 +384,7 @@ func TestAnOperationRunsInTheFooter(t *testing.T) {
 	if after.prompt == nil || after.prompt.kind != promptResult {
 		t.Fatal("a result should stay in the footer")
 	}
-	if !strings.Contains(stripANSI(after.View()), "SSH_DEPLOY_KEY") {
+	if !strings.Contains(stripANSI(after.View()), "KOMIZO_DEPLOY_KEY") {
 		t.Error("the values are the whole reason this screen existed")
 	}
 	if done := send(after, "enter"); done.prompt != nil {
@@ -486,7 +486,7 @@ func TestResultShowsBothValuesToPaste(t *testing.T) {
 		knownHosts: "box ssh-ed25519 AAAA",
 	}
 	v := r.view()
-	for _, want := range []string{"SSH_DEPLOY_KEY", "SSH_KNOWN_HOSTS", "press c to copy", "app: blog"} {
+	for _, want := range []string{"KOMIZO_DEPLOY_KEY", "KOMIZO_KNOWN_HOSTS", "press c to copy", "app: blog"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("result is missing %q", want)
 		}
@@ -1252,7 +1252,7 @@ func TestResultNeverPrintsTheKeyItself(t *testing.T) {
 }
 
 func TestResultDoesNotLookLikeTheValueIsACatCommand(t *testing.T) {
-	// "cat /home/..." sat alone under SSH_DEPLOY_KEY, which reads like a value
+	// "cat /home/..." sat alone under KOMIZO_DEPLOY_KEY, which reads like a value
 	// and invited pasting that literal string into the secret. There is no file
 	// any more, so what has to be clear is that the value is on the clipboard.
 	v := addResult{app: "ormos", key: "k", knownHosts: "h k b"}.view()
@@ -1311,10 +1311,10 @@ func TestOnlyOneValueIsEverMarked(t *testing.T) {
 	// the first row.
 	mark := func(r addResult) (onKey, onHosts bool) {
 		for _, ln := range strings.Split(r.view(), "\n") {
-			if strings.Contains(ln, "clipboard") && strings.Contains(ln, "SSH_DEPLOY_KEY") {
+			if strings.Contains(ln, "clipboard") && strings.Contains(ln, "KOMIZO_DEPLOY_KEY") {
 				onKey = true
 			}
-			if strings.Contains(ln, "clipboard") && strings.Contains(ln, "SSH_KNOWN_HOSTS") {
+			if strings.Contains(ln, "clipboard") && strings.Contains(ln, "KOMIZO_KNOWN_HOSTS") {
 				onHosts = true
 			}
 		}
@@ -1661,7 +1661,7 @@ func TestKnownAsSplitsAndTrims(t *testing.T) {
 func TestAliasesSurviveOntoTheServerScreen(t *testing.T) {
 	// The value shown by the server screen is built from the target, so an
 	// alias given at add time has to be recorded there. Passing it only to the
-	// add meant the screen meant to be the durable home for SSH_KNOWN_HOSTS
+	// add meant the screen meant to be the durable home for KOMIZO_KNOWN_HOSTS
 	// gave a shorter answer than the add had just printed.
 	tgt := target{user: "root", host: "komizo.example.com", port: 22}
 	tgt.aliases = mergeNames(tgt.aliases, []string{"app.example.com"})
@@ -1706,7 +1706,7 @@ func TestIsIPDistinguishesNamesFromAddresses(t *testing.T) {
 
 func TestRotationDoesNotOfferHostKeys(t *testing.T) {
 	// Rotating replaces the deploy keypair. The server's own host keys do not
-	// move, so presenting SSH_KNOWN_HOSTS as something to copy would say
+	// move, so presenting KOMIZO_KNOWN_HOSTS as something to copy would say
 	// something else needs updating in GitHub when nothing does.
 	rot := addResult{app: "blog", keyPath: "/k", knownHosts: "h ssh-ed25519 AAAA",
 		rotated: true, onClipboard: -1}
@@ -1726,7 +1726,7 @@ func TestRotationDoesNotOfferHostKeys(t *testing.T) {
 	if fresh.items() != resultItems {
 		t.Errorf("a fresh setup offers %d rows, got %d", resultItems, fresh.items())
 	}
-	if !strings.Contains(fresh.view(), "SSH_KNOWN_HOSTS") {
+	if !strings.Contains(fresh.view(), "KOMIZO_KNOWN_HOSTS") {
 		t.Error("a fresh setup should still show the host keys")
 	}
 }
@@ -1761,7 +1761,7 @@ func TestRotationCopiesItselfAndComesBack(t *testing.T) {
 	if !strings.Contains(after.status, "copied") || after.statusErr {
 		t.Errorf("it should say the key was copied, got %q", after.status)
 	}
-	if !strings.Contains(after.status, "SSH_DEPLOY_KEY") {
+	if !strings.Contains(after.status, "KOMIZO_DEPLOY_KEY") {
 		t.Errorf("it should say where the key goes, got %q", after.status)
 	}
 	if cmd == nil {

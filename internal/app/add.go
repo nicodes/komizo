@@ -277,6 +277,7 @@ func performAdd(p addPlan, out progress, runner func(script string, env map[stri
 
 	return &addResult{
 		app:         p.app,
+		host:        p.tgt.knownHostsField(),
 		key:         kp.private,
 		keyPath:     p.keyPath,
 		knownHosts:  kh,

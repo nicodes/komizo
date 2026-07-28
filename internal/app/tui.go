@@ -468,7 +468,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.result != nil && msg.result.items() == 1 {
 			if err := copyToClipboard(msg.result.key); err == nil {
 				m.prompt = nil
-				m.status, m.statusErr = msg.result.app+" key rotated and copied — update SSH_DEPLOY_KEY", false
+				m.status, m.statusErr = msg.result.app+" key rotated and copied — update KOMIZO_DEPLOY_KEY", false
 				return m, m.fetch()
 			}
 		}
@@ -649,7 +649,7 @@ func (m model) handleMonitorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "h":
-		// The app's own SSH_KNOWN_HOSTS. On the app row for the same reason
+		// The app's own KOMIZO_KNOWN_HOSTS. On the app row for the same reason
 		// rotate and remove are: it is that app's value, and offering it beside
 		// a container's name would say it belonged to the container.
 		//
@@ -706,7 +706,7 @@ func (m model) handleMonitorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// copyKnownHosts puts one app's SSH_KNOWN_HOSTS on the clipboard.
+// copyKnownHosts puts one app's KOMIZO_KNOWN_HOSTS on the clipboard.
 //
 // Per app, because that is the granularity it is consumed at: the value lives
 // in one repo's variables, and known_hosts is matched on the exact name the

@@ -337,7 +337,7 @@ func (m model) rotatePrompt(a appRow) prompt {
 	q := fmt.Sprintf("Rotate the deploy key for %q?", a.name)
 	return prompt{
 		question: q,
-		detail: "The current key stops working immediately — update SSH_DEPLOY_KEY " +
+		detail: "The current key stops working immediately — update KOMIZO_DEPLOY_KEY " +
 			"before this app's next deploy.",
 		action: func(m *model, _ string) tea.Cmd {
 			return tea.Batch(

@@ -33,6 +33,10 @@ type runDoneMsg struct {
 // GitHub needs.
 type addResult struct {
 	app string
+	// host is the address CI should dial: what KOMIZO_URL is set to. Carried
+	// on the result because the screen handing over the other two values is
+	// where someone is already copying from.
+	host string
 	// key is the private half, held in memory for as long as this screen is
 	// open and written nowhere. See keys.go.
 	key string
@@ -156,7 +160,7 @@ func (a addResult) view() string {
 	// the key is not on disk to be read back later either -- it exists in this
 	// process, until this screen is dismissed. Say so, because a value with no
 	// value under it otherwise reads as a page that failed to load.
-	b.WriteString(a.row(resultKey, "SSH_DEPLOY_KEY", dimStyle.Render("secret")))
+	b.WriteString(a.row(resultKey, "KOMIZO_DEPLOY_KEY", dimStyle.Render("secret")))
 	b.WriteString(gutter + "      " + dimStyle.Render("held in memory and not shown — press c to copy it") + "\n")
 	b.WriteString(gutter + "      " + dimStyle.Render("it is not saved anywhere; rotate the key to get another") + "\n")
 
@@ -166,15 +170,23 @@ func (a addResult) view() string {
 	// needs updating in GitHub when nothing does. They stay one keypress away
 	// on the server screen.
 	if a.rotated {
-		b.WriteString(para("\n"+gutter, "SSH_KNOWN_HOSTS is unchanged — the server's own keys did not\n"+
-			"move. Press k on the server screen if you need it again."))
+		b.WriteString(para("\n"+gutter, "KOMIZO_KNOWN_HOSTS and KOMIZO_URL are unchanged — the server did\n"+
+			"not move, and its own keys did not either."))
 	} else {
 		// Shown in full, unlike the key: a host key needs integrity, not
 		// secrecy, and masking it makes a mismatch unreadable in a CI log.
-		b.WriteString(a.row(resultHosts, "SSH_KNOWN_HOSTS", dimStyle.Render("variable, not a secret")))
+		b.WriteString(a.row(resultHosts, "KOMIZO_KNOWN_HOSTS", dimStyle.Render("variable, not a secret")))
 		for _, l := range strings.Split(a.knownHosts, "\n") {
 			b.WriteString(gutter + "      " + dimStyle.Render(l) + "\n")
 		}
+
+		// The third value, and the only one that is not produced here: it is
+		// simply the address you connected on. A variable rather than a line in
+		// the workflow, so moving an app to another box -- or reaching this one
+		// by another name while its DNS moves -- is a settings change.
+		b.WriteString("\n" + gutter + "  " + keyStyle.Render("KOMIZO_URL") + "  " +
+			dimStyle.Render("variable") + "\n")
+		b.WriteString(gutter + "      " + dimStyle.Render(a.host) + "\n")
 	}
 
 	if a.copyErr != "" {

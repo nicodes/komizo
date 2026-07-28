@@ -48,7 +48,7 @@ const rule = "------------------------------------------------------------------
 func printNextSteps(o addOpts, t target, knownHosts, key string) {
 	fmt.Printf("\n%s\n Add these under Settings -> Secrets and variables -> Actions\n%s\n", rule, rule)
 
-	fmt.Printf("\n 1. SECRET    SSH_DEPLOY_KEY\n\n")
+	fmt.Printf("\n 1. SECRET    KOMIZO_DEPLOY_KEY\n\n")
 	if o.keyPath != "" {
 		// The VALUE is the file's contents. Spelled out because "cat <path>" on
 		// a line of its own reads like a value, and pasting that literal string
@@ -67,18 +67,24 @@ func printNextSteps(o addOpts, t target, knownHosts, key string) {
 		}
 		fmt.Printf("\n        Pass --key PATH to write it somewhere instead of printing it.\n")
 	}
-	fmt.Printf("\n 2. VARIABLE  SSH_KNOWN_HOSTS\n\n")
+	fmt.Printf("\n 2. VARIABLE  KOMIZO_KNOWN_HOSTS\n\n")
 	for _, ln := range strings.Split(knownHosts, "\n") {
 		fmt.Printf("        %s\n", ln)
 	}
 	fmt.Printf("\n    A variable, not a secret: it needs integrity, not secrecy, and leaving\n" +
 		"    it unmasked keeps a host-key mismatch readable in the log.\n")
+
+	// The address CI dials, as a variable rather than a line in the workflow.
+	// Moving an app to another box, or reaching this one by a different name
+	// while its public DNS is mid-cutover, is then a settings change instead of
+	// a commit and a deploy.
+	fmt.Printf("\n 3. VARIABLE  KOMIZO_URL\n\n        %s\n", t.knownHostsField())
 	fmt.Printf("\n%s\n", rule)
 
 	if o.rotateKey {
 		fmt.Printf("\n The old key stopped working the moment this ran -- keys are matched on\n" +
 			" their comment, so the rotation replaced it rather than adding a second.\n" +
-			" Update SSH_DEPLOY_KEY before your next deploy.\n\n")
+			" Update KOMIZO_DEPLOY_KEY before your next deploy.\n\n")
 		return
 	}
 
@@ -99,11 +105,12 @@ func printNextSteps(o addOpts, t target, knownHosts, key string) {
  (deploy/ by convention) and add a workflow. Your deploy step:
 
    - uses: nicodes/komizo-actions/deploy@v0
+     env:
+          KOMIZO_DEPLOY_KEY: ${{ secrets.KOMIZO_DEPLOY_KEY }}
+          KOMIZO_KNOWN_HOSTS: ${{ vars.KOMIZO_KNOWN_HOSTS }}
      with:
           version: ${{ github.sha }}%s
           host: %s%s
-          key: ${{ secrets.SSH_DEPLOY_KEY }}
-          known-hosts: ${{ vars.SSH_KNOWN_HOSTS }}
           config-context: deploy
           config-image: %s
           registry-user: ${{ github.actor }}
