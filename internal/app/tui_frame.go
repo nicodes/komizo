@@ -300,11 +300,11 @@ func (m model) crumb() string {
 	case screenLogin:
 		return "login"
 	case screenLogs:
-		// Same shape as the charts crumb: app / container / what. The proxy
+		// Same shape as the monitor crumb: app / container / what. The proxy
 		// belongs to no app and names itself.
 		return crumbPath(m.logsApp, m.logsSvc, m.logsLabel, "logs")
-	case screenCharts:
-		return crumbPath(m.chartsOf, m.chartsSvc, m.chartsOf, "requests")
+	case screenMonitor:
+		return crumbPath(m.monitorOf, m.monitorSvc, m.monitorOf, "monitor")
 
 	case screenSetup:
 		return "setup"
@@ -357,8 +357,8 @@ func (m model) pageBody() string {
 		return viewIndex(m)
 	case screenLogs:
 		return m.viewLogs()
-	case screenCharts:
-		return m.viewCharts()
+	case screenMonitor:
+		return m.viewMonitor()
 	case screenSetup:
 		return m.viewSetup()
 	}
@@ -475,8 +475,8 @@ func (m model) footerKeys() string {
 		return m.helpLines()
 	case screenLogs:
 		return m.logsKeys()
-	case screenCharts:
-		return m.chartsKeys()
+	case screenMonitor:
+		return m.monitorKeys()
 	case screenSetup:
 		return helpLine(m.width, "←→", "choose", "enter", "select", "q", "quit")
 	case screenLogin:
@@ -526,7 +526,7 @@ func (m model) centred(lines ...string) string {
 func (m model) loadingPane() string {
 	// The logs screen keeps its header, so the pane under it is the spinner and
 	// nothing else -- the brand would be the same word the corner already says.
-	if m.scr == screenLogs || m.scr == screenCharts {
+	if m.scr == screenLogs || m.scr == screenMonitor {
 		return m.centred(spinner(m.spin), "", dimStyle.Render("loading..."))
 	}
 	lines := append(m.brandBlock(), "", spinner(m.spin))

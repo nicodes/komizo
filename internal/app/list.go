@@ -36,6 +36,18 @@ else
 	printf 'server\tbare\t\n'
 fi
 
+# What komizo itself has installed here, as the stamp it wrote at the time.
+#
+# Read back rather than assumed. The alternative is for the interface to print
+# what it WOULD install, which is a fact about the laptop rather than about the
+# server -- and would read as up to date on a box that had never been touched.
+#
+# In the inventory rather than in the probe: the probe is shared with the
+# sampler, and the sampler has no business reporting its own version to a log.
+if [ -f /var/lib/komizo/version ]; then
+	printf 'komizo\t%s\n' "$(head -n 1 /var/lib/komizo/version 2>/dev/null)"
+fi
+` + systemProbe + `
 # Every container on the box, once, so the per-app loop below can look one up
 # without another docker call each time. Read here rather than per app because
 # 'docker ps' is the slow part of this script over a slow link, and one call is
@@ -128,6 +140,13 @@ for bin in /usr/local/bin/deploy-*; do
 			cports="$(container_ports "$cpid")"
 			printf '%s\n' "$allc" | awk -F'\t' -v id="$cid" -v app="$app" -v ts="$ts" -v pt="$cports" '
 				$1 == id { printf "container\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", app, $5, $2, $3, $4, ts, $6, pt }'
+			# Its own record rather than more fields on the one above. That row is
+			# what the container IS and changes when it is redeployed; this is what
+			# it is spending and changes every five seconds. Keeping them apart
+			# means a reading this could not take leaves the row alone.
+			cst="$(container_stat "$cpid")"
+			printf '%s\n' "$allc" | awk -F'\t' -v id="$cid" -v app="$app" -v st="$cst" '
+				$1 == id { printf "cstat\t%s\t%s\t%s\n", app, $5, st }'
 		done
 	fi
 	printf 'app\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$app" "${usr:-?}" "$dir" "${ver:-none}" "$running" "$img" "$kas"
@@ -153,6 +172,18 @@ for bin in /usr/local/bin/deploy-*; do
 		sites="$(sed 's/#.*//' "$dir/hostnames" | tr -d '\r' |
 			awk 'NF { printf "%s%s", sep, $1; sep = "," }')"
 		[ -n "$sites" ] && printf 'route\t%s\t%s\t%s-gateway\t80\n' "$app" "$sites" "$app"
+		# And one record per name WITH what the app said serves it.
+		#
+		# The line above deliberately drops the annotation, because the app's own
+		# row lists what the box answers on and an arrow in that is noise. Here
+		# it is the whole point: it is the only thing on this machine that knows
+		# which container a hostname reaches, and without it every name lands on
+		# the gateway -- which is true of the first hop and useless as an answer.
+		sed 's/#.*//' "$dir/hostnames" | tr -d '\r' | awk -v a="$app" 'NF {
+			svc = ""
+			if (NF >= 3 && $2 == "->") svc = $3
+			printf "host\t%s\t%s\t%s\n", a, $1, svc
+		}'
 	fi
 done
 
@@ -214,6 +245,10 @@ type appRow struct {
 	name, user, dir, version, running, image string
 	containers                               []containerRow
 	routes                                   []routeRow
+	// hosts is every name this app answers on, with the container the app said
+	// serves it. Read for display and for attributing requests; routing uses
+	// the name alone, so a wrong arrow mislabels a row and cannot misroute.
+	hosts []hostRow
 }
 
 // routeRow is what an app publishes: the hostnames it declared, and the gateway
@@ -246,11 +281,56 @@ func (r routeRow) hostnames() []string { return strings.Split(r.sites, ",") }
 // bare <service>. Both forms are what komizo's docs tell people to write, and a
 // fragment naming something else simply matches nothing -- which is the same
 // answer the alias lookup gives, arrived at without pretending.
+// hostRow is one name the app answers on, and the container the app says serves
+// it. The service is empty when the app did not say.
+type hostRow struct {
+	app, name, service string
+}
+
+// routesByContainer is which names reach which container.
+//
+// From what the APP declared, first. Since every app fronts itself with its own
+// gateway, the proxy's upstream is always <app>-gateway -- so matching on that
+// puts every hostname on the gateway row, which is true of the first hop and no
+// use at all as an answer to "what serves this domain".
+//
+// The arrow in deploy/hostnames is the only thing on this machine that knows the
+// rest, because what happens after the gateway is inside the app, in config
+// komizo neither reads nor could parse if the gateway were nginx.
+//
+// Names with no arrow fall back to the upstream match, which lands them on the
+// gateway. That is the honest answer for them: the app did not say, and the
+// gateway is genuinely where the request goes.
 func (a appRow) routesByContainer(n netRow) map[string][]string {
 	byContainer := map[string][]string{}
+	byService := map[string]string{}
+	for _, c := range a.containers {
+		byService[c.service] = c.name
+	}
+	claimed := map[string]bool{}
+	for _, h := range a.hosts {
+		if h.service == "" {
+			continue
+		}
+		cn, ok := byService[h.service]
+		if !ok {
+			// The app named a container it does not have -- a typo, or a
+			// service it has since renamed. Left for the fallback rather than
+			// dropped, so the name still appears somewhere.
+			continue
+		}
+		byContainer[cn] = append(byContainer[cn], h.name)
+		claimed[h.name] = true
+	}
 	for _, r := range a.routes {
-		if cn := a.containerFor(r, n); cn != "" {
-			byContainer[cn] = append(byContainer[cn], r.hostnames()...)
+		cn := a.containerFor(r, n)
+		if cn == "" {
+			continue
+		}
+		for _, h := range r.hostnames() {
+			if !claimed[h] {
+				byContainer[cn] = append(byContainer[cn], h)
+			}
 		}
 	}
 	return byContainer
@@ -463,7 +543,11 @@ type serverRow struct {
 	// gives it. The field exists so that reading /etc/os-release on the host is
 	// a change to the script and this struct, and not to every place that shows
 	// it.
-	os       string
+	os string
+	// komizo is the stamp of what komizo last installed here, read back from the
+	// box. Empty on a server that has never had it, or one set up by a komizo
+	// old enough not to have written one.
+	komizo   string
 	hostKeys [][2]string // {type, base64}
 }
 
@@ -639,11 +723,14 @@ func RunList(args []string) error {
 func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, net netRow, orphans []string) {
 	var containers []containerRow
 	var routes []routeRow
+	var hosts []hostRow
 	for _, ln := range strings.Split(out, "\n") {
 		f := strings.Split(ln, "\t")
 		switch {
 		case len(f) == 3 && f[0] == "server":
 			srv.state, srv.docker = f[1], f[2]
+		case len(f) == 2 && f[0] == "komizo":
+			srv.komizo = f[1]
 		case len(f) == 3 && f[0] == "hostkey":
 			srv.hostKeys = append(srv.hostKeys, [2]string{f[1], f[2]})
 		case len(f) == 8 && f[0] == "app":
@@ -660,6 +747,8 @@ func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, n
 			containers = append(containers, c)
 		case len(f) == 5 && f[0] == "route":
 			routes = append(routes, routeRow{app: f[1], sites: f[2], upstream: f[3], port: f[4]})
+		case len(f) == 4 && f[0] == "host":
+			hosts = append(hosts, hostRow{app: f[1], name: f[2], service: f[3]})
 		case len(f) == 8 && f[0] == "proxy":
 			proxy = proxyRow{installed: true, state: f[1], network: f[2],
 				image: f[3], status: f[4]}
@@ -692,6 +781,11 @@ func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, n
 		for _, r := range routes {
 			if r.app == apps[i].name {
 				apps[i].routes = append(apps[i].routes, r)
+			}
+		}
+		for _, h := range hosts {
+			if h.app == apps[i].name {
+				apps[i].hosts = append(apps[i].hosts, h)
 			}
 		}
 	}

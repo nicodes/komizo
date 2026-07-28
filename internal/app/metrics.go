@@ -23,17 +23,17 @@ import (
 // accessLog is where the generated site blocks write. See alpine.sh.
 const accessLog = "/srv/_proxy/logs/access.log"
 
-// metricsScript totals the last `minutes` minutes of requests, per app.
+// metricsScript totals the requests in a range, per app.
 //
-// The window is applied on the host so the answer is small and roughly constant
-// however big the log has grown. Reading is bounded by BYTES as well: a rolled
+// The range is applied on the host so the answer is small and roughly constant
+// however big the log has grown, and however wide a range is asked for. Reading is bounded by BYTES as well: a rolled
 // 10MB log must not become a 10MB scan every five seconds, and the tail is the
 // end anyone is asking about.
 //
 // A partial first line from cutting mid-file is not a special case -- none of
 // the three patterns match it, so it is skipped like any line that is not a
 // request.
-func metricsScript(minutes int) string {
+func metricsScript(r timeRange) string {
 	return fmt.Sprintf(`
 # --- request counts, per app, per minute ---------------------------------
 if [ -f %[1]s ]; then
@@ -57,7 +57,7 @@ if [ -f %[1]s ]; then
 			}'
 		done
 		tail -c 4000000 %[1]s 2>/dev/null
-	} | awk -v now="$(date +%%s)" -v win=%[2]d '
+	} | awk -v from=%[2]d -v to=%[3]d '
 		/^MAP\t/ { split($0, m, "\t"); map[m[2]] = m[3]; svc[m[2]] = m[4]; next }
 
 		{
@@ -104,6 +104,7 @@ if [ -f %[1]s ]; then
 		}
 
 		END {
+			if (oldest > 0) printf "mspan\t%%d\t%%d\n", oldest, newest
 			for (k in seen) {
 				split(k, f, "\t")
 				printf "metric\t%%s\t%%s\t%%s\t%%d\t%%d\t%%d\t%%d\n",
@@ -112,7 +113,7 @@ if [ -f %[1]s ]; then
 		}
 	'
 fi
-`, accessLog, minutes)
+`, accessLog, r.from, r.to)
 }
 
 // metricRow is one minute of one app's traffic, split by status class.
@@ -166,6 +167,51 @@ func parseMetrics(out string) []metricRow {
 		return rows[i].service < rows[j].service
 	})
 	return rows
+}
+
+// parseMetricSpan is how far back the access log itself reaches, which is not
+// the same as the range asked for.
+//
+// The log is rotated by size, so it holds hours to a day at a small site's
+// traffic. A range wider than that is answered with what exists, and the charts
+// have to stop where the record does rather than run a flat line along zero
+// across it -- which is the difference between "nothing was served" and "nobody
+// wrote it down".
+func parseMetricSpan(out string) (timeRange, bool) {
+	for _, ln := range strings.Split(out, "\n") {
+		f := strings.Split(strings.TrimRight(ln, "\r"), "\t")
+		if len(f) != 3 || f[0] != "mspan" {
+			continue
+		}
+		from, err1 := strconv.ParseInt(f[1], 10, 64)
+		to, err2 := strconv.ParseInt(f[2], 10, 64)
+		if err1 != nil || err2 != nil || from <= 0 {
+			continue
+		}
+		return timeRange{from: from, to: to}, true
+	}
+	return timeRange{}, false
+}
+
+// blankOutside marks the minutes the record does not cover as unknown.
+//
+// NOT narrowed to them, which was the first attempt. Every chart on the page
+// shares one x axis -- the range you asked for -- because four charts of the
+// same moment on four different axes is a page you cannot read across, and
+// reading across is the entire reason they are on one screen.
+//
+// So the axis stays put and the DATA stops. A minute inside the log with no
+// requests is a real zero and charts as one; a minute before the log begins is
+// not plotted at all. The difference matters: a flat line along zero says
+// "nothing was served", and the truth there is "nobody wrote it down".
+func (s *series) blankOutside(have timeRange) {
+	for i := range s.total {
+		at := s.from + int64(i)*60
+		if at < have.from || at > have.to {
+			s.total[i] = math.NaN()
+			s.errors[i] = math.NaN()
+		}
+	}
 }
 
 // series is one app's counts over a window, as two parallel slices ready to
@@ -250,19 +296,6 @@ func servesAnyHostname(rows []metricRow, app, service string) bool {
 	return false
 }
 
-// rate is the most recent full minute's request count, and errs the 5xx in it.
-//
-// The LAST bucket is deliberately not used: it is the minute in progress, which
-// is always partial and always reads low. A number that dips every time you
-// look at it is worse than no number.
-func (s series) rate() (rate int, errs int) {
-	if len(s.total) < 2 {
-		return 0, 0
-	}
-	i := len(s.total) - 2
-	return int(s.total[i]), int(s.errors[i])
-}
-
 // any reports whether this window saw a single request, so the view can say
 // "nothing yet" rather than draw a flat line along zero and imply silence is a
 // measurement.
@@ -319,11 +352,27 @@ func trailingBaseline(v []float64) baseline {
 	}
 	nan := math.NaN()
 	for i := range v {
-		if i < baselineWindow {
+		if i < baselineWindow || math.IsNaN(v[i]) {
 			b.centre[i], b.spread[i], b.score[i] = nan, nan, nan
 			continue
 		}
-		win := append([]float64(nil), v[i-baselineWindow:i]...)
+		// Minutes with no reading are dropped from the window rather than
+		// treated as values. Requests never produce one -- a quiet minute is a
+		// real zero -- but a resource series can: nothing was sampled, which is
+		// not the same as nothing was happening, and a NaN sorted into a median
+		// would poison the baseline for the next half hour rather than for the
+		// one minute it belongs to.
+		win := make([]float64, 0, baselineWindow)
+		for _, x := range v[i-baselineWindow : i] {
+			if !math.IsNaN(x) {
+				win = append(win, x)
+			}
+		}
+		if len(win) < baselineWindow/2 {
+			// Too little of the window survived to call anything normal.
+			b.centre[i], b.spread[i], b.score[i] = nan, nan, nan
+			continue
+		}
 		med := medianOf(win)
 		dev := make([]float64, len(win))
 		for j, x := range win {

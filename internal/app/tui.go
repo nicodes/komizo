@@ -20,10 +20,10 @@ type screen int
 const (
 	screenLogin screen = iota // no host given: ask which one
 	screenLoading
-	screenSetup  // connected, but the server has nothing installed
-	screenIndex  // the apps on this box
-	screenLogs   // one log, full window
-	screenCharts // one app's request rate over time
+	screenSetup   // connected, but the server has nothing installed
+	screenIndex   // the apps on this box
+	screenLogs    // one log, full window
+	screenMonitor // requests over time, for the box, an app, or a container
 )
 
 type model struct {
@@ -100,14 +100,48 @@ type model struct {
 	// Request counts off the proxy's access log.
 	//
 	// metrics rides along on the inventory poll and covers a short window --
-	// enough for the sparkline on an app's row. charts is the deeper window the
-	// chart screen fetches for itself on entry, because reading hours of log
+	// enough for the sparkline on an app's row. monitor is the deeper window the
+	// monitor screen fetches for itself on entry, because reading hours of log
 	// every five seconds to move a line one column is a waste of the box.
-	metrics     []metricRow
-	charts      []metricRow
-	chartsOf    string // which app, so a late fetch for another one is dropped
-	chartsSvc   string // which container within it, or "" for the whole app
-	chartsReady bool
+	metrics []metricRow
+	monitor []metricRow
+
+	// What the box and its containers are spending.
+	//
+	// sys is the last raw reading and sysHave says there has been one; sysPts
+	// is the derived history, one point per PAIR of readings.
+	//
+	// The history lives here and nowhere else. Nothing on the box records it --
+	// /proc reports now and only now -- so this covers the time komizo has been
+	// connected and no further back, and is gone when it exits. That is a much
+	// weaker claim than the request charts make, and the screen says so rather
+	// than letting a chart imply otherwise.
+	sys        sysSample
+	sysHave    bool
+	sysSamples []sysSample
+	// sysLog is the same thing read back from the box, covering hours rather
+	// than this session. Fetched with the monitor, because it is only ever
+	// looked at there.
+	sysLog []sysSample
+	// vols is the app's disk use, fetched with the monitor because du is far
+	// too expensive to put on a five-second poll.
+	vols         []volRow
+	monitorOf    string // which app, so a late fetch for another one is dropped
+	monitorSvc   string // which container within it, or "" for the whole app
+	monitorReady bool
+	// span is how far back the proxy's access log reaches, reported with the
+	// counts. What the charts can show is the range asked for narrowed to this.
+	span    timeRange
+	hasSpan bool
+	// monitorRange is what the charts are looking at. Zero means the default,
+	// which is the last few hours and is resolved fresh on every read -- a
+	// default window has to still mean "the last four hours" after the page has
+	// been open for twenty minutes, while a range somebody chose stays put.
+	monitorRange timeRange
+
+	// mouseOn is set while this interface is asking the terminal for mouse
+	// events, which it does NOT do by default. See toggleMouse.
+	mouseOn bool
 
 	// freeScroll is set while the page is being driven by the wheel rather than
 	// by the cursor. Cleared the moment a key moves the selection, so the two
@@ -365,6 +399,13 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "ctrl+c" && !m.running() {
 			return m, tea.Quit
 		}
+		// Selecting text works on every screen, including the ones with their
+		// own key handling. Handled here rather than per screen because the one
+		// you most want to copy from is the log window, which has the fewest
+		// keys of its own.
+		if msg.String() == "s" && !m.running() && !m.typing() {
+			return m.toggleMouse()
+		}
 		// Any key hands the page back to the cursor.
 		m.freeScroll = false
 		return m.handleKey(msg)
@@ -388,6 +429,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.apps, m.srv, m.proxy, m.net, m.err = msg.apps, msg.srv, msg.proxy, msg.net, nil
 		m.metrics = msg.metrics
+		m.takeSample(msg.sys)
 		// This snapshot covers every row, so anything waiting on one is now
 		// current. Rows still mid-command keep their own spinner via busy.
 		m.settling = nil
@@ -456,18 +498,19 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.run.append(string(msg))
 		return m, m.run.wait()
 
-	case chartsMsg:
+	case monitorMsg:
 		// Dropped if another app's chart was asked for while this was in
 		// flight, the same guard logsMsg needs and for the same reason.
-		if msg.app != m.chartsOf {
+		if msg.app != m.monitorOf {
 			return m, nil
 		}
-		m.chartsReady = true
+		m.monitorReady = true
 		if msg.err != nil {
 			m.status, m.statusErr = "could not read the proxy's access log", true
 			return m, nil
 		}
-		m.charts = msg.rows
+		m.monitor, m.vols, m.sysLog = msg.rows, msg.vols, msg.hist
+		m.span, m.hasSpan = msg.span, msg.hasSpan
 		return m, nil
 
 	case logsMsg:
@@ -569,8 +612,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleLoginKey(msg)
 	case screenLogs:
 		return m.handleLogsKey(msg)
-	case screenCharts:
-		return m.handleChartsKey(msg)
+	case screenMonitor:
+		return m.handleMonitorKey(msg)
 	case screenSetup:
 		return m.handleSetupKey(msg)
 	}
@@ -582,6 +625,7 @@ type focusKind int
 
 const (
 	focusServer    focusKind = iota // the box itself: docker and the network
+	focusKomizo                     // what komizo has installed on it
 	focusProxy                      // the shared reverse proxy
 	focusApp                        // one app
 	focusContainer                  // one container belonging to an app
@@ -615,6 +659,10 @@ func (m model) focusItems() []focusItem {
 	if m.proxy.installed {
 		out = append(out, focusItem{kind: focusProxy, app: -1, ctr: -1})
 	}
+	// komizo above docker, and both selectable. They are updated separately on
+	// purpose: a box can want a newer Docker without wanting komizo's own
+	// scripts rewritten, and far more often the other way round.
+	out = append(out, focusItem{kind: focusKomizo, app: -1, ctr: -1})
 	out = append(out, focusItem{kind: focusServer, app: -1, ctr: -1})
 	for i, a := range m.apps {
 		out = append(out, focusItem{kind: focusApp, app: i, ctr: -1})
@@ -757,21 +805,22 @@ func (m model) handleIndexKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "m":
-		// An app, or one container inside it. Not the proxy: its traffic is
-		// every app's added together, which is a number with no owner.
+		// The box, an app, or one container inside it.
 		switch f := m.focused(); f.kind {
-		case focusProxy:
-			// Everything on the box, which is what the proxy is: every request
-			// to every app passes through it, and it is the only thing here
-			// that can be asked about all of them at once.
-			return m.openCharts("", "")
+		case focusServer, focusKomizo, focusProxy:
+			// The whole machine, from either of the two rows that ARE the whole
+			// machine. The server row owns what it is spending; the proxy row
+			// sees every request to every app, and is the only thing here that
+			// can be asked about all of them at once. Both questions are on one
+			// screen, so both rows open it.
+			return m.openMonitor("", "")
 		case focusApp:
 			if f.app >= 0 {
-				return m.openCharts(m.apps[f.app].name, "")
+				return m.openMonitor(m.apps[f.app].name, "")
 			}
 		case focusContainer:
 			if c := m.focusedContainer(); c != nil {
-				return m.openCharts(c.app, c.service)
+				return m.openMonitor(c.app, c.service)
 			}
 		}
 		return m, nil
@@ -854,6 +903,10 @@ func (m model) primaryAction() (tea.Model, tea.Cmd) {
 	switch f := m.focused(); f.kind {
 	case focusServer:
 		m = m.ask(m.updateServerPrompt())
+		return m, nil
+
+	case focusKomizo:
+		m = m.ask(m.updateKomizoPrompt())
 		return m, nil
 
 	case focusProxy:
@@ -967,7 +1020,7 @@ func (m *model) begin(key, cmd string) tea.Cmd {
 // spinning reports whether any row is mid-action or waiting for the refresh
 // that follows one.
 func (m model) spinning() bool {
-	if m.scr == screenCharts && !m.chartsReady {
+	if m.scr == screenMonitor && !m.monitorReady {
 		return true
 	}
 	return len(m.busy)+len(m.settling) > 0 || m.running() ||
@@ -1014,12 +1067,32 @@ func (m model) installProxyPrompt() prompt {
 	}
 }
 
+// updateKomizoPrompt refreshes what komizo itself put on the box.
+//
+// Separate from the Docker update, and from the proxy. The three are updated on
+// different occasions: Docker when the distribution has a new one, the proxy
+// when Caddy does, and this whenever the komizo you are running has learned to
+// read something the box is not yet recording. Bundling them would mean a
+// routine Docker update rewrote scripts nobody asked it to touch.
+func (m model) updateKomizoPrompt() prompt {
+	return prompt{
+		question: "Update komizo on " + m.tgt.host + "?",
+		detail: "Rewrites the resource sampler and its schedule. Nothing that is " +
+			"running is touched, and the history already recorded is kept.",
+		action: func(m *model, _ string) tea.Cmd {
+			return tea.Batch(
+				m.startOp("Updating komizo on "+m.tgt.host),
+				m.startKomizoUpdate())
+		},
+	}
+}
+
 func (m model) updateServerPrompt() prompt {
-	q := "Re-run server setup on " + m.tgt.host + "?"
+	q := "Update Docker on " + m.tgt.host + "?"
 	return prompt{
 		question: q,
-		detail: "Installs any Docker updates. Your apps keep running, the proxy is not " +
-			"touched either way, and nothing is deleted.",
+		detail: "Installs any Docker updates. Your apps keep running, the proxy and " +
+			"komizo's own scripts are not touched, and nothing is deleted.",
 		action: func(m *model, _ string) tea.Cmd {
 			return tea.Batch(
 				m.startOp("Re-running setup on "+m.tgt.host),
@@ -1033,7 +1106,7 @@ func (m model) updateServerPrompt() prompt {
 // probing, offering to accept an unseen host key -- happens inside the program
 // instead, as a command and a question in the footer. See connect.
 func RunLoginTUI() error {
-	p := tea.NewProgram(newLoginModel(), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(newLoginModel(), tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
@@ -1069,7 +1142,51 @@ func RunTUI(hostArg string, port int, portExplicit bool, assumeYes bool) error {
 		}
 	}
 
-	p := tea.NewProgram(newModel(tgt), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(newModel(tgt), tea.WithAltScreen())
 	_, err = p.Run()
 	return err
+}
+
+// toggleMouse asks the terminal for mouse events, and gives them back.
+//
+// OFF by default, which is the whole point. A program that asks for mouse
+// events is a program the terminal stops using them on: drags go to the
+// application instead of selecting text, so wheel scrolling costs you the
+// ability to highlight anything on any screen. That is a bad trade to make on
+// someone's behalf. Selecting and copying is something every terminal already
+// does, it works the same everywhere, and it is what people reach for without
+// being told.
+//
+// So the wheel is opt-in, for the long pages where it earns its keep -- a log,
+// or a monitor with four charts on it -- and pressing s again gives selection
+// back. Keyboard scrolling works throughout either way.
+//
+// (Most terminals let you hold shift to bypass mouse reporting. That is worth
+// knowing and is neither universal nor discoverable, which is a reason to have
+// this key rather than a reason not to need it.)
+func (m model) toggleMouse() (tea.Model, tea.Cmd) {
+	m.mouseOn = !m.mouseOn
+	if m.mouseOn {
+		m.status, m.statusErr = "wheel scrolling on — s to select text again", false
+		return m, tea.EnableMouseCellMotion
+	}
+	m.status, m.statusErr = "", false
+	return m, tea.DisableMouse
+}
+
+// typing reports whether a keystroke belongs to a field rather than to the
+// page. Every printable key does while a form or an input prompt is open, so
+// the select toggle must not eat "s" out of a hostname.
+func (m model) typing() bool {
+	if m.scr == screenLogin {
+		return true
+	}
+	if m.prompt == nil {
+		return false
+	}
+	switch m.prompt.kind {
+	case promptTypeWord, promptInput, promptForm:
+		return true
+	}
+	return false
 }

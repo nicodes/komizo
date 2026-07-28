@@ -120,6 +120,7 @@ func (m model) viewLogs() string {
 // esc goes back and q quits, which is what those keys do everywhere else. They
 // used to both go back, while the footer claimed q quit.
 func (m model) logsKeys() string {
-	return helpLine(m.width, "↑↓", "scroll", "shift+↑↓", "ends",
-		"c", "copy", "esc", "back", "q", "quit")
+	keys := append([]string{"↑↓", "scroll", "shift+↑↓", "ends", "c", "copy"},
+		m.selectKey()...)
+	return helpLine(m.width, append(keys, "esc", "back", "q", "quit")...)
 }

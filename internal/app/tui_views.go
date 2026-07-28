@@ -67,14 +67,20 @@ func viewIndex(m model) string {
 		// clipped away entirely, on a box that was serving traffic.
 		rows = append(rows, treeRow{idx: idx, cells: []string{
 			m.rowDot("app:"+a.name, appDot(a)),
-			named(a.name, shortText(a.version)),
+			dimStyle.Render(a.name),
 			dimStyle.Render(a.stateText()),
+			// The deployed commit, in a column of its own rather than in
+			// brackets after the name. Bracketed, it pushed the name's width
+			// around: a long SHA on one app and none on the next left the
+			// column ragged, and the thing the eye is scanning down is the
+			// name.
+			short(a.version),
 			// The last half hour of requests, and the last complete minute's
 			// rate. Dots rather than a flat line when nothing has arrived: a
 			// line along zero claims a measurement, and "nobody has asked this
 			// box for anything" is a different statement from "zero requests".
 			m.sparkFor(a.name),
-			m.rateFor(a.name),
+			m.errSparkFor(a.name),
 			dimStyle.Render(a.image),
 		}})
 		// Each container under its app, with the hostnames that reach IT.
@@ -97,12 +103,17 @@ func viewIndex(m model) string {
 		for _, c := range a.containers {
 			kids = append(kids, child{idx: idx, cells: []string{
 				m.rowDot(c.name, stateDot(c.state)),
-				named(c.service, c.portsList()),
+				dimStyle.Render(c.service),
 				// Docker's wording goes in the app's uptime column rather than
 				// beside it. It is the same measurement in another format, so a
 				// placeholder to keep them apart would only be an empty column
 				// down the middle of the block.
 				dimStyle.Render(c.stateText()),
+				// The app's version column, holding what this container is
+				// listening on. Both answer "which one is this", and neither is
+				// wide, so they share a column rather than each having one that
+				// is empty on the other kind of row.
+				dimStyle.Render(c.portsList()),
 				// What this container is listening on, read out of its own
 				// network namespace. Not the image, which after naming a
 				// service after it says the same word twice.
@@ -111,8 +122,12 @@ func viewIndex(m model) string {
 				// proxy DIALLED, which is a declaration and could be wrong.
 				// Apps ship no fragment now, and the port is observed instead:
 				// strictly better information from a source that cannot drift.
-				"",
-				"",
+				// The same two columns the app row uses, for the requests this
+				// container served. Attribution comes from the app's own
+				// hostnames file, so a container nobody named there gets a
+				// BLANK rather than dots -- see sparkForService.
+				m.sparkForService(c.app, c.service),
+				m.errSparkForService(c.app, c.service),
 				m.routesCell(c, byContainer[c.name]),
 			}})
 			idx++
@@ -202,8 +217,16 @@ func (m model) boxSection() string {
 	// Not m.cursor == 0 any more. The proxy row is above it now, so the index
 	// has to come from the focus list rather than from where this row used to
 	// be -- which is the bug that pairing hardcodes a number with a layout.
+	// komizo above docker: it is the one of the two that this interface can
+	// actually be wrong about, and the one you are more often here to fix.
+	b.WriteString(kvSel("komizo", m.komizoLine(), m.cursor == m.rowIndex(focusKomizo)))
 	b.WriteString(kvSel("docker", dimStyle.Render(orDash(m.srv.docker)),
 		m.cursor == m.rowIndex(focusServer)))
+	// What the machine is spending, under the row that IS the machine. Three
+	// bars, for the box and nothing smaller -- the one question worth asking
+	// before reading anything below is whether the thing it all runs on is in
+	// trouble.
+	b.WriteString(m.serverUsage())
 	// No known_hosts row. The value is per app -- the keys are the box's, the
 	// names are the repo's -- so it is copied from the app it belongs to.
 	return b.String()
@@ -294,6 +317,12 @@ func (m model) helpLines() string {
 		rest = append(rest, k[i], k[i+1])
 	}
 	pairs = append(pairs, rest...)
+	// Not the select key. This row already carries every action the selected
+	// row has, and adding a utility to it pushes "remove" off the end at an
+	// ordinary width -- a key that acts on the server losing its place to one
+	// that only affects your mouse. It is advertised on the log and monitor
+	// screens, which have room and are where text is worth copying, and it
+	// works here regardless.
 	return helpLine(m.width, append(pairs, "q", "quit")...)
 }
 
@@ -314,25 +343,28 @@ func (m model) contextKeys() []string {
 func (m model) rowKeys() []string {
 	switch f := m.focused(); f.kind {
 	case focusServer:
-		return []string{"enter", "update server"}
+		return []string{"enter", "update docker", "m", "monitor"}
+
+	case focusKomizo:
+		return []string{"enter", "update komizo"}
 
 	case focusProxy:
 		return []string{"enter", startStop(m.proxy.running()),
-			"l", "logs", "m", "requests", "p", "reinstall"}
+			"l", "logs", "m", "monitor", "p", "reinstall"}
 
 	case focusApp:
 		if f.app < 0 {
 			return nil
 		}
 		a := m.apps[f.app]
-		return append([]string{"enter", startStop(a.up()), "l", "logs", "m", "requests"},
+		return append([]string{"enter", startStop(a.up()), "l", "logs", "m", "monitor"},
 			appActions()...)
 
 	case focusContainer:
 		// No app actions here. They are app-wide, and offering them beside one
 		// container's name reads as though they apply to that container.
 		c := m.focusedContainer()
-		return []string{"enter", startStop(c.up()), "l", "logs", "m", "requests"}
+		return []string{"enter", startStop(c.up()), "l", "logs", "m", "monitor"}
 
 	case focusAdd:
 		return []string{"enter", "add an app"}
@@ -351,6 +383,28 @@ func (m model) rowKeys() []string {
 // used to name it -- "config image", "rotate key", and "l ormos log" naming the
 // selected app -- which repeated the cursor back at you and cost the width that
 // keeps the whole line on an eighty-column window.
+// komizoLine is what komizo has installed on this box, and whether it matches
+// what this komizo would install.
+//
+// Compared by stamp rather than announced as a version. "Up to date" is not a
+// property of a release number, it is the answer to "would running the update
+// change anything" -- and a hash of what gets written is the only thing that
+// answers that without somebody remembering to bump a constant.
+func (m model) komizoLine() string {
+	switch {
+	case m.srv.komizo == "":
+		// Either never installed, or installed by a komizo old enough not to
+		// have left a stamp. Both are fixed the same way, so they read the same.
+		return dimStyle.Render("—  ") + warnStyle.Render("not installed") +
+			dimStyle.Render("  · enter to install")
+	case m.srv.komizo != komizoStamp():
+		return dimStyle.Render(shortText(m.srv.komizo)+"  ") +
+			warnStyle.Render("out of date") +
+			dimStyle.Render("  · enter to update")
+	}
+	return dimStyle.Render(shortText(m.srv.komizo))
+}
+
 func appActions() []string {
 	return []string{"h", "hosts", "c", "config", "r", "rotate", "x", "remove"}
 }
@@ -483,4 +537,16 @@ func routesOrNone(routes []string) string {
 		return dimStyle.Render("—")
 	}
 	return dimStyle.Render(strings.Join(routes, ", "))
+}
+
+// selectKey names what pressing s would GET you, not what it turns off.
+//
+// The mouse belongs to the terminal by default, so most of the time this offers
+// the wheel. Once the wheel is on it offers selection back, because that is the
+// thing you have lost and the thing you are looking for a way to get.
+func (m model) selectKey() []string {
+	if m.mouseOn {
+		return []string{"s", "select"}
+	}
+	return []string{"s", "wheel"}
 }

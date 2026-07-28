@@ -68,6 +68,12 @@ func RunInit(args []string) error {
 		return fmt.Errorf("the server-side script failed -- see the output above")
 	}
 
+	step("Installing the resource sampler")
+	if err := tgt.runScript(samplerScript(), nil); err != nil {
+		return fmt.Errorf("the server is ready, but the resource sampler failed -- " +
+			"resource history will be empty until it is fixed")
+	}
+
 	step("Installing the shared reverse proxy")
 	if err := tgt.runScript(scripts.AlpineProxyScript, proxyEnv(proxyOpts{
 		network: o.network,

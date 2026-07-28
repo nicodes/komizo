@@ -168,9 +168,9 @@ func TestCursorReachesTheBoxRowsAndEveryContainer(t *testing.T) {
 	for _, f := range m.focusItems() {
 		kinds = append(kinds, f.kind)
 	}
-	// Page order, and the page draws the proxy above the docker row now. The
-	// cursor is an index into this list, so the two have to agree.
-	want := []focusKind{focusProxy, focusServer, focusApp, focusContainer, focusApp, focusAdd}
+	// Page order: proxy, then komizo above docker, then the apps. The cursor is
+	// an index into this list, so the two have to agree.
+	want := []focusKind{focusProxy, focusKomizo, focusServer, focusApp, focusContainer, focusApp, focusAdd}
 	if len(kinds) != len(want) {
 		t.Fatalf("focus list = %v, want %v", kinds, want)
 	}
@@ -183,7 +183,10 @@ func TestCursorReachesTheBoxRowsAndEveryContainer(t *testing.T) {
 	// A container row is not an app row: the app-wide keys must not fire from
 	// it, or "remove" beside one container's name reads as removing that
 	// container.
-	m.cursor = 3
+	// Found by kind rather than by a hardcoded index: the box rows above these
+	// have changed twice now, and each time this test failed for a reason that
+	// had nothing to do with what it is checking.
+	m.cursor = m.rowIndex(focusContainer)
 	if got := m.selectedApp(); got != -1 {
 		t.Errorf("a container row must not select an app, got %d", got)
 	}
@@ -191,7 +194,7 @@ func TestCursorReachesTheBoxRowsAndEveryContainer(t *testing.T) {
 		t.Errorf("focusedContainer did not find the container: %+v", c)
 	}
 	// An app row is not a container.
-	m.cursor = 2
+	m.cursor = m.rowIndex(focusApp)
 	if m.focusedContainer() != nil {
 		t.Error("an app row must not report a focused container")
 	}
@@ -970,8 +973,8 @@ func TestUpdatingTheServerDoesNotAskAboutTheProxy(t *testing.T) {
 	if !strings.Contains(d, "Docker") {
 		t.Error("the question should say what it actually does")
 	}
-	if !strings.Contains(d, "proxy is not touched") {
-		t.Error("it should say the proxy is left alone, since that is the surprise it prevents")
+	if !strings.Contains(d, "proxy and komizo's own scripts are not touched") {
+		t.Error("it should say what it leaves alone, since that is the surprise it prevents")
 	}
 	if !strings.Contains(d, "apps keep running") {
 		t.Error("it should say apps are unaffected")
@@ -2001,9 +2004,10 @@ func TestHelpFollowsTheCursor(t *testing.T) {
 		want   string
 	}{
 		{0, "stop"},          // proxy, running -- drawn first, so selected first
-		{1, "update server"}, // the box
-		{2, "stop"},          // app, running
-		{3, "stop"},          // container, running
+		{1, "update komizo"}, // what komizo installed, above docker
+		{2, "update docker"}, // the box
+		{3, "stop"},          // app, running
+		{4, "stop"},          // container, running
 	} {
 		m.cursor = c.cursor
 		if got := m.enterLabel(); got != c.want {
@@ -2277,27 +2281,30 @@ func TestNoRowIsWiderThanTheWindow(t *testing.T) {
 		}
 	}
 
-	// The charts screen has the same obligation and is the likeliest to break
+	// The monitor screen has the same obligation and is the likeliest to break
 	// it: a chart is drawn to a width it computes rather than to whatever the
 	// text happens to be, and the frame CLIPS rather than wraps -- so getting
 	// this wrong silently cuts off the right-hand end, which is now.
 	for _, w := range []int{60, 80, 120} {
-		c := testModel()
-		c.scr, c.chartsOf, c.chartsReady = screenCharts, "blog", true
+		// With resource readings too: the bars are fixed-width and sit after a
+		// padded label, so a narrow window is where they would push a row past
+		// the edge and lose its right-hand end to the clip.
+		c := sysModel("blog", "")
+		c.monitorReady = true
 		now := time.Now().Unix() / 60 * 60
 		for i := 0; i < 120; i++ {
-			c.charts = append(c.charts, metricRow{
+			c.monitor = append(c.monitor, metricRow{
 				minute: now - int64(119-i)*60, app: "blog", c2: 10 + i, c5: i % 7})
 		}
 		c.width, c.height = w, 24
 		c.reflow()
 		cl := strings.Split(stripANSI(c.View()), "\n")
 		if len(cl) != c.height {
-			t.Errorf("charts at width %d: rendered %d lines into %d", w, len(cl), c.height)
+			t.Errorf("the monitor at width %d: rendered %d lines into %d", w, len(cl), c.height)
 		}
 		for i, ln := range cl {
 			if got := lipglossWidth(ln); got > c.width {
-				t.Errorf("charts at width %d: row %d is %d columns", w, i, got)
+				t.Errorf("the monitor at width %d: row %d is %d columns", w, i, got)
 			}
 		}
 	}
@@ -3469,7 +3476,7 @@ func TestAPollDoesNotMoveYouBetweenScreens(t *testing.T) {
 	// appsMsg used to set the screen unconditionally, which was harmless when
 	// the only way to trigger one was pressing R on the list. A poll arriving
 	// every five seconds would now throw you out of whatever you were reading.
-	for _, scr := range []screen{screenLogs, screenCharts} {
+	for _, scr := range []screen{screenLogs, screenMonitor} {
 		m := testModel()
 		m.loaded, m.scr = true, scr
 		next, _ := m.Update(appsMsg{apps: m.apps, srv: m.srv, proxy: m.proxy})
@@ -3797,28 +3804,6 @@ func TestQuietMinutesChartAsZeroNotAsAGap(t *testing.T) {
 	}
 }
 
-// The rate reads the last COMPLETE minute. The final bucket is the one in
-// progress, and a number that dips every time you look at it is worse than no
-// number.
-func TestRateIgnoresTheMinuteInProgress(t *testing.T) {
-	rows := []metricRow{
-		{minute: 600, app: "blog", c2: 50, c5: 2},
-		{minute: 660, app: "blog", c2: 3}, // partial: only a few seconds in
-	}
-	s := seriesFor(rows, "blog", 600, 660)
-	rate, errs := s.rate()
-	if rate != 52 || errs != 2 {
-		t.Errorf("rate = %d/%d err, want the last full minute (52/2)", rate, errs)
-	}
-
-	// And a window too short to have a complete minute reports nothing rather
-	// than reporting the partial one.
-	short := seriesFor(rows, "blog", 660, 660)
-	if r, _ := short.rate(); r != 0 {
-		t.Errorf("a single partial bucket should report 0, got %d", r)
-	}
-}
-
 // Downsampling averages rather than samples: picking every kth minute drops the
 // spike that is the whole reason anyone looked.
 func TestBucketingKeepsSpikes(t *testing.T) {
@@ -3837,22 +3822,22 @@ func TestBucketingKeepsSpikes(t *testing.T) {
 	}
 }
 
-// `m` opens the chart screen for an app, and offers itself on no other row.
-func TestChartsOpenOnAnAppOnly(t *testing.T) {
+// `m` opens the monitor for an app, and offers itself on no other row.
+func TestTheMonitorOpensOnAnAppOnly(t *testing.T) {
 	m := netModel()
 	m.width, m.height = 100, 30
 	m.cursor = rowOf(m, focusApp)
 	next, cmd := sendCmd(m, "m")
-	if next.scr != screenCharts {
-		t.Fatalf("m on an app should open charts, got %v", next.scr)
+	if next.scr != screenMonitor {
+		t.Fatalf("m on an app should open the monitor, got %v", next.scr)
 	}
 	if cmd == nil {
 		t.Error("it should fetch the counts")
 	}
-	if next.chartsOf != m.apps[0].name {
-		t.Errorf("charts are for %q, want %q", next.chartsOf, m.apps[0].name)
+	if next.monitorOf != m.apps[0].name {
+		t.Errorf("the monitor is for %q, want %q", next.monitorOf, m.apps[0].name)
 	}
-	if next.chartsReady {
+	if next.monitorReady {
 		t.Error("it should not claim to be ready before the fetch lands")
 	}
 	if back := send(next, "esc"); back.scr != screenIndex {
@@ -3865,19 +3850,19 @@ func TestChartsOpenOnAnAppOnly(t *testing.T) {
 	p.width, p.height = 100, 30
 	p.cursor = rowOf(p, focusProxy)
 	box, cmd := sendCmd(p, "m")
-	if box.scr != screenCharts {
+	if box.scr != screenMonitor {
 		t.Fatalf("m on the proxy should open the box's requests, got %v", box.scr)
 	}
 	if cmd == nil {
 		t.Error("it should fetch")
 	}
-	if box.chartsOf != "" || box.chartsSvc != "" {
-		t.Errorf("the box's chart names no app: got %q/%q", box.chartsOf, box.chartsSvc)
+	if box.monitorOf != "" || box.monitorSvc != "" {
+		t.Errorf("the box's chart names no app: got %q/%q", box.monitorOf, box.monitorSvc)
 	}
 	// Its crumb nests under nothing -- the host in front of it already names
 	// the machine.
-	if got := box.crumb(); got != "requests" {
-		t.Errorf("box crumb = %q, want \"requests\"", got)
+	if got := box.crumb(); got != "monitor" {
+		t.Errorf("box crumb = %q, want \"monitor\"", got)
 	}
 }
 
@@ -3885,15 +3870,15 @@ func TestChartsOpenOnAnAppOnly(t *testing.T) {
 // window needs.
 func TestALateChartFetchIsIgnored(t *testing.T) {
 	m := netModel()
-	m.chartsOf, m.chartsReady = "blog", false
-	next, _ := m.Update(chartsMsg{app: "shop", rows: []metricRow{{minute: 60, app: "shop", c2: 1}}})
+	m.monitorOf, m.monitorReady = "blog", false
+	next, _ := m.Update(monitorMsg{app: "shop", rows: []metricRow{{minute: 60, app: "shop", c2: 1}}})
 	m = next.(model)
-	if m.chartsReady || len(m.charts) != 0 {
+	if m.monitorReady || len(m.monitor) != 0 {
 		t.Error("a chart for another app should be dropped, not shown")
 	}
-	next, _ = m.Update(chartsMsg{app: "blog", rows: []metricRow{{minute: 60, app: "blog", c2: 1}}})
+	next, _ = m.Update(monitorMsg{app: "blog", rows: []metricRow{{minute: 60, app: "blog", c2: 1}}})
 	m = next.(model)
-	if !m.chartsReady || len(m.charts) != 1 {
+	if !m.monitorReady || len(m.monitor) != 1 {
 		t.Error("the one that was asked for should land")
 	}
 }
@@ -4020,7 +4005,7 @@ func TestRequestsAttributeToAContainerWhenTheAppSaysSo(t *testing.T) {
 // m works on a container row too, and the breadcrumb says which container --
 // otherwise a container's chart and its app's are indistinguishable, and the
 // difference is the whole reason to open one.
-func TestChartsOpenForAContainer(t *testing.T) {
+func TestTheMonitorOpensForAContainer(t *testing.T) {
 	m := testModel()
 	m.width, m.height = 110, 30
 	m.apps[0].containers = []containerRow{
@@ -4029,14 +4014,14 @@ func TestChartsOpenForAContainer(t *testing.T) {
 	m.cursor = rowOf(m, focusContainer)
 
 	next, cmd := sendCmd(m, "m")
-	if next.scr != screenCharts {
-		t.Fatalf("m on a container should open charts, got %v", next.scr)
+	if next.scr != screenMonitor {
+		t.Fatalf("m on a container should open the monitor, got %v", next.scr)
 	}
 	if cmd == nil {
 		t.Error("it should fetch")
 	}
-	if next.chartsOf != "blog" || next.chartsSvc != "api" {
-		t.Errorf("charts are for %q/%q, want blog/api", next.chartsOf, next.chartsSvc)
+	if next.monitorOf != "blog" || next.monitorSvc != "api" {
+		t.Errorf("the monitor is for %q/%q, want blog/api", next.monitorOf, next.monitorSvc)
 	}
 	if got := next.crumb(); !strings.Contains(got, "blog") || !strings.Contains(got, "api") {
 		t.Errorf("crumb = %q, want it to name both app and container", got)
@@ -4046,8 +4031,8 @@ func TestChartsOpenForAContainer(t *testing.T) {
 	a := testModel()
 	a.cursor = rowOf(a, focusApp)
 	app, _ := sendCmd(a, "m")
-	if app.chartsSvc != "" {
-		t.Errorf("an app chart should carry no container, got %q", app.chartsSvc)
+	if app.monitorSvc != "" {
+		t.Errorf("an app chart should carry no container, got %q", app.monitorSvc)
 	}
 	if strings.Contains(app.crumb(), "/ api /") {
 		t.Errorf("crumb = %q, should not name a container", app.crumb())
@@ -4090,12 +4075,12 @@ func TestCrumbsNameTheWholePath(t *testing.T) {
 		t.Errorf("proxy log crumb = %q, want \"proxy / logs\"", got)
 	}
 
-	// Requests take the same shape, so the two screens read alike.
+	// The monitor takes the same shape, so the two screens read alike.
 	r := m
 	r.cursor = rowOf(r, focusContainer)
 	r, _ = sendCmd(r, "m")
-	if got := r.crumb(); got != "blog / api / requests" {
-		t.Errorf("container requests crumb = %q", got)
+	if got := r.crumb(); got != "blog / api / monitor" {
+		t.Errorf("container monitor crumb = %q", got)
 	}
 }
 
@@ -4242,6 +4227,16 @@ func TestTheUnusualLineIsGraded(t *testing.T) {
 		if got := bandUpOnly(c.score); got != c.want {
 			t.Errorf("bandUpOnly(%v) = %s, want %s", c.score, got, c.want)
 		}
+	}
+}
+
+// ntcharts draws data sets in sorted name order and each overwrites whole
+// cells, so where two bands meet the one sorting LAST is the one you see. That
+// must be the worse of the two: a crossing into red is the event the chart
+// exists to show, and green painting over it hides exactly that.
+func TestAWorseBandIsDrawnOverALesserOne(t *testing.T) {
+	if !(bandOK < bandWarn && bandWarn < bandErr) {
+		t.Errorf("bands must sort by severity, got %q, %q, %q", bandOK, bandWarn, bandErr)
 	}
 }
 

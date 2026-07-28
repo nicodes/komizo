@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -20,7 +21,10 @@ type appsMsg struct {
 	proxy   proxyRow
 	net     netRow
 	metrics []metricRow
-	err     error
+	// sys is one reading of the box's resources, not a rate. Rates are derived
+	// against the previous reading, which only the model has.
+	sys sysSample
+	err error
 }
 
 type runOutputMsg string
@@ -100,12 +104,20 @@ func fetchApps(t target) tea.Cmd {
 		// fresh SSH connection, and that -- not the awk -- is the expensive
 		// part. A second ticker would double the connection rate against the
 		// box to draw a line that moves one column.
-		out, err := t.runCapture(inventoryScript + "\n" + metricsScript(sparkWindow))
+		// A window relative to now, always: the sparkline on a row is "the last
+		// half hour" and has to stay that whatever range the monitor is showing.
+		now := time.Now().Unix()
+		out, err := t.runCapture(inventoryScript + "\n" +
+			metricsScript(timeRange{from: now - sparkWindow*60, to: now}))
 		if err != nil {
 			return appsMsg{err: fmt.Errorf("could not read the server's inventory: %w", err)}
 		}
 		apps, srv, proxy, net, _ := parseInventory(out)
-		return appsMsg{apps: apps, srv: srv, proxy: proxy, net: net, metrics: parseMetrics(out)}
+		// Stamped on arrival rather than on the box. The interval that matters
+		// is the one between two readings landing HERE, and the two clocks need
+		// not agree for that to be measured correctly.
+		return appsMsg{apps: apps, srv: srv, proxy: proxy, net: net,
+			metrics: parseMetrics(out), sys: parseSystem(out, time.Now())}
 	}
 }
 
@@ -292,13 +304,17 @@ func (m model) startInit(o initOpts) tea.Cmd {
 			ch <- runDoneMsg{err: fmt.Errorf("could not set the server up -- see the output above")}
 			return
 		}
+		if err := streamSampler(ch, t); err != nil {
+			ch <- runDoneMsg{err: err}
+			return
+		}
 		ch <- runOutputMsg("")
 		ch <- runOutputMsg("installing the shared reverse proxy...")
 		pc := exec.Command("ssh", t.sshArgs(envPrefix(proxyEnv(proxyOpts{
 			network: o.network, image: o.image,
 		}))+"sh -s")...)
 		if err := stream(ch, pc, scripts.AlpineProxyScript); err != nil {
-			ch <- runDoneMsg{err: fmt.Errorf("the server is ready, but the proxy failed -- press s to retry it")}
+			ch <- runDoneMsg{err: fmt.Errorf("the server is ready, but the proxy failed -- press p to retry it")}
 			return
 		}
 		ch <- runDoneMsg{}
@@ -400,4 +416,21 @@ func runAddPlan(p addPlan, ch chan tea.Msg) (*addResult, error) {
 		c := exec.Command("ssh", t.sshArgs(envPrefix(env)+"sh -s")...)
 		return stream(ch, c, script)
 	})
+}
+
+// streamSampler installs the per-minute resource sampler.
+//
+// Its own step, after the server itself is ready, and NOT fatal to what came
+// before it in the caller's eyes: a box whose Docker install worked but whose
+// sampler did not is a working server that is missing a chart. The distinction
+// matters because this runs on every "update server", which people press to fix
+// unrelated things.
+func streamSampler(ch chan tea.Msg, t target) error {
+	ch <- runOutputMsg("")
+	ch <- runOutputMsg("installing the resource sampler...")
+	c := exec.Command("ssh", t.sshArgs("sh -s")...)
+	if err := stream(ch, c, samplerScript()); err != nil {
+		return fmt.Errorf("the server is ready, but the resource sampler failed -- resource history will be empty")
+	}
+	return nil
 }

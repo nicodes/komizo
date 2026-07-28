@@ -150,9 +150,10 @@ func containerCmd(name, verb string) string {
 	return fmt.Sprintf("docker %s '%s'", verb, name)
 }
 
-// startServerUpdate re-runs the server half only. Deliberately not the proxy:
-// bundling them would mean a routine Docker update could install a proxy on a
-// box that chose not to have one.
+// startServerUpdate re-runs the Docker half only. Deliberately not the proxy,
+// and deliberately not komizo's own scripts: bundling them would mean a routine
+// Docker update installed a proxy on a box that chose not to have one, and
+// rewrote scripts nobody asked it to touch.
 func (m model) startServerUpdate() tea.Cmd {
 	ch := m.run.ch
 	t := m.tgt
@@ -210,4 +211,24 @@ func orDash(s string) string {
 		return dimStyle.Render("—")
 	}
 	return s
+}
+
+// startKomizoUpdate rewrites what komizo installs on the box: the sampler and
+// its schedule.
+//
+// The only thing komizo owns here besides the proxy. Everything else it runs on
+// a server -- the inventory, the request counts, the cgroup reads -- is piped
+// over SSH on every poll and installed nowhere, so it updates the moment you run
+// a newer komizo. This exists because a cron job cannot work that way.
+func (m model) startKomizoUpdate() tea.Cmd {
+	ch := m.run.ch
+	t := m.tgt
+	go func() {
+		if err := streamSampler(ch, t); err != nil {
+			ch <- runDoneMsg{err: err}
+			return
+		}
+		ch <- runDoneMsg{}
+	}()
+	return m.run.wait()
 }
