@@ -52,7 +52,7 @@ const gutter = "  "
 // tagline is the line under the name, wherever the name appears centred. One
 // string, so the login screen, the loader and the setup page cannot drift into
 // three different descriptions of the same tool.
-const tagline = "Server ops for your health"
+const tagline = "Devops for your health"
 
 // lipglossWidth is the visible width of a styled string, in columns.
 func lipglossWidth(s string) int { return lipgloss.Width(s) }
