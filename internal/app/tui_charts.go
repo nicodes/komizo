@@ -45,8 +45,8 @@ const (
 
 // openCharts is the same shape as openLogs: reset, mark not-ready, start the
 // fetch, and start the spinner only if one is not already running.
-func (m model) openCharts(app string) (tea.Model, tea.Cmd) {
-	m.chartsOf, m.chartsReady, m.charts = app, false, nil
+func (m model) openCharts(app, service string) (tea.Model, tea.Cmd) {
+	m.chartsOf, m.chartsSvc, m.chartsReady, m.charts = app, service, false, nil
 	m.scroll = 0
 	m.status, m.statusErr = "", false
 	wasSpinning := m.spinning()
@@ -83,7 +83,7 @@ func (m model) handleChartsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.status, m.statusErr = "", false
 		return m, nil
 	case "r":
-		return m.openCharts(m.chartsOf)
+		return m.openCharts(m.chartsOf, m.chartsSvc)
 	}
 	return m, nil
 }
@@ -163,7 +163,24 @@ func (m model) viewCharts() string {
 		return m.loadingPane()
 	}
 	now := time.Now().Unix()
-	s := seriesFor(m.charts, m.chartsOf, now-chartWindow*60, now)
+	var s series
+	if m.chartsSvc == "" {
+		s = seriesFor(m.charts, m.chartsOf, now-chartWindow*60, now)
+	} else {
+		// A container nobody pointed a hostname at is not idle -- it is
+		// unmeasurable from here, and a chart of zeros would say the first
+		// thing while meaning the second.
+		if !servesAnyHostname(m.charts, m.chartsOf, m.chartsSvc) {
+			return m.centred(
+				dimStyle.Render("no hostname declares "+m.chartsSvc),
+				"",
+				dimStyle.Render("requests reach this app's gateway and are routed inside it;"),
+				dimStyle.Render("the shared proxy cannot see which container served them"),
+				"",
+				dimStyle.Render("name it in deploy/hostnames to chart it:  api.example.com -> "+m.chartsSvc))
+		}
+		s = seriesForService(m.charts, m.chartsOf, m.chartsSvc, now-chartWindow*60, now)
+	}
 	if !s.any() {
 		return m.centred(
 			dimStyle.Render("no requests in the last "+fmt.Sprintf("%dh", chartWindow/60)),

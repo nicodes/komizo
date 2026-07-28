@@ -3741,11 +3741,11 @@ func TestPortsAreObservedPerContainer(t *testing.T) {
 func TestMetricsParseAndAttribute(t *testing.T) {
 	out := strings.Join([]string{
 		"app\tblog\tkomizo-blog\t/srv/blog\ta1b2c3d\t1\tghcr.io/you/blog-config\t",
-		"metric\t1785225600\tblog\t10\t1\t2\t3",
-		"metric\t1785225660\tblog\t20\t0\t0\t0",
-		"metric\t1785225660\tshop\t5\t0\t0\t0",
+		"metric\t1785225600\tblog\t\t10\t1\t2\t3",
+		"metric\t1785225660\tblog\tapi\t20\t0\t0\t0",
+		"metric\t1785225660\tshop\t\t5\t0\t0\t0",
 		"garbage that is not a record",
-		"metric\tnotanumber\tblog\t1\t1\t1\t1",
+		"metric\tnotanumber\tblog\t\t1\t1\t1\t1",
 	}, "\n")
 
 	rows := parseMetrics(out)
@@ -3947,5 +3947,93 @@ func TestAFlatBaselineDeclinesToScore(t *testing.T) {
 	// And a value equal to the flat baseline is exactly normal, which IS sayable.
 	if got := b.score[baselineWindow]; got != 0 {
 		t.Errorf("matching a flat baseline is 0 deviations, got %v", got)
+	}
+}
+
+// Requests can be attributed to a container, but only because the app said so.
+// komizo cannot work it out: the shared proxy only ever talks to the app's
+// gateway, and what happens after that is inside the app.
+func TestRequestsAttributeToAContainerWhenTheAppSaysSo(t *testing.T) {
+	out := strings.Join([]string{
+		"metric\t600\tblog\tapi\t10\t0\t0\t2",
+		"metric\t600\tblog\tdb\t4\t0\t0\t0",
+		"metric\t600\tblog\t\t6\t0\t0\t0", // a hostname with no annotation
+	}, "\n")
+	rows := parseMetrics(out)
+	if len(rows) != 3 {
+		t.Fatalf("expected 3 rows, got %d", len(rows))
+	}
+
+	// The app is the sum over every container, including the unannotated one.
+	// Total is every class, 5xx included: a failed request is still a request.
+	whole := seriesFor(rows, "blog", 600, 600)
+	if whole.total[0] != 22 {
+		t.Errorf("app total = %v, want (10+2)+4+6", whole.total[0])
+	}
+	if whole.errors[0] != 2 {
+		t.Errorf("app 5xx = %v, want 2", whole.errors[0])
+	}
+
+	// One container is only its own.
+	api := seriesForService(rows, "blog", "api", 600, 600)
+	if api.total[0] != 12 || api.errors[0] != 2 {
+		t.Errorf("api = %v/%v, want 12/2", api.total[0], api.errors[0])
+	}
+	db := seriesForService(rows, "blog", "db", 600, 600)
+	if db.total[0] != 4 {
+		t.Errorf("db total = %v, want 4", db.total[0])
+	}
+
+	// "" is a real bucket -- this app declared a hostname and did not say what
+	// serves it -- not a sentinel for "everything".
+	un := seriesForService(rows, "blog", "", 600, 600)
+	if un.total[0] != 6 {
+		t.Errorf("unannotated = %v, want 6", un.total[0])
+	}
+
+	// A container no hostname names is unmeasurable, not idle. The view has to
+	// be able to tell those apart.
+	if !servesAnyHostname(rows, "blog", "api") {
+		t.Error("api is named by a hostname")
+	}
+	if servesAnyHostname(rows, "blog", "worker") {
+		t.Error("worker is named by no hostname and must not look measured")
+	}
+}
+
+// m works on a container row too, and the breadcrumb says which container --
+// otherwise a container's chart and its app's are indistinguishable, and the
+// difference is the whole reason to open one.
+func TestChartsOpenForAContainer(t *testing.T) {
+	m := testModel()
+	m.width, m.height = 110, 30
+	m.apps[0].containers = []containerRow{
+		{app: "blog", service: "api", name: "blog-api-1", state: "running"},
+	}
+	m.cursor = rowOf(m, focusContainer)
+
+	next, cmd := sendCmd(m, "m")
+	if next.scr != screenCharts {
+		t.Fatalf("m on a container should open charts, got %v", next.scr)
+	}
+	if cmd == nil {
+		t.Error("it should fetch")
+	}
+	if next.chartsOf != "blog" || next.chartsSvc != "api" {
+		t.Errorf("charts are for %q/%q, want blog/api", next.chartsOf, next.chartsSvc)
+	}
+	if got := next.crumb(); !strings.Contains(got, "blog") || !strings.Contains(got, "api") {
+		t.Errorf("crumb = %q, want it to name both app and container", got)
+	}
+
+	// The app's own chart names no container.
+	a := testModel()
+	a.cursor = rowOf(a, focusApp)
+	app, _ := sendCmd(a, "m")
+	if app.chartsSvc != "" {
+		t.Errorf("an app chart should carry no container, got %q", app.chartsSvc)
+	}
+	if strings.Contains(app.crumb(), "/ api /") {
+		t.Errorf("crumb = %q, should not name a container", app.crumb())
 	}
 }

@@ -369,9 +369,19 @@ fi
 #
 # Optional. An app with no hostnames publishes nothing and is reachable only
 # from inside its own network -- a worker, a cron job, a queue consumer.
+#
+# A line may name where the hostname goes -- "api.example.com -> api" -- which
+# is metadata for the interface and NOTHING ELSE. Routing reads the first field
+# and ignores the rest, so the shared proxy is still pointed at <app>-gateway
+# whatever the arrow says: a wrong annotation mislabels a chart, it cannot
+# misroute a request. The app is the only thing that knows which of its
+# containers serves a name, and this is the only way it can say so without
+# shipping config the server loads.
 hostnames=""
+hostmap=""
 if [ -f "\$staging/hostnames" ]; then
-	hostnames="\$(sed 's/#.*//' "\$staging/hostnames" | tr -d '\\r' | tr -s ' \\t' '\\n' | sed '/^\$/d')"
+	hostmap="\$(sed 's/#.*//' "\$staging/hostnames" | tr -d '\\r' | awk 'NF { print }')"
+	hostnames="\$(printf '%s\\n' "\$hostmap" | awk '{ print \$1 }' | sed '/^\$/d')"
 fi
 
 # Swap everything in, then validate. A broken config must not be left behind
@@ -461,7 +471,9 @@ if [ -n "\$hostnames" ]; then
 		done
 	done
 
-	printf '%s\n' "\$hostnames" > hostnames
+	# Recorded WITH annotations: the interface reads this file to attribute
+	# requests, and the arrows are the only place that mapping exists.
+	printf '%s\n' "\$hostmap" > hostnames
 
 	# Wildcards get their OWN site block, because `tls { on_demand }` applies to
 	# every name in the block it sits in. Folded together with the concrete

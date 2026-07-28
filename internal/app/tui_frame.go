@@ -290,7 +290,13 @@ func (m model) crumb() string {
 	case screenLogs:
 		return m.logsLabel + " logs"
 	case screenCharts:
-		return m.chartsOf + " requests"
+		// app / container / requests, so the crumb says exactly what is being
+		// counted. A container's chart and its app's look identical otherwise,
+		// and the difference between them is the whole reason to open one.
+		if m.chartsSvc != "" {
+			return m.chartsOf + " / " + m.chartsSvc + " / requests"
+		}
+		return m.chartsOf + " / requests"
 	case screenSetup:
 		return "setup"
 	case screenMonitor:

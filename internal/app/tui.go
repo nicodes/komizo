@@ -102,6 +102,7 @@ type model struct {
 	metrics     []metricRow
 	charts      []metricRow
 	chartsOf    string // which app, so a late fetch for another one is dropped
+	chartsSvc   string // which container within it, or "" for the whole app
 	chartsReady bool
 
 	width, height int
@@ -725,12 +726,17 @@ func (m model) handleMonitorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "m":
-		// Only an app has a chart. The proxy's own traffic is every app's
-		// traffic added up, and a single container's share of a hostname is
-		// not something this box knows -- what happens after the gateway is
-		// inside the app.
-		if f := m.focused(); f.kind == focusApp && f.app >= 0 {
-			return m.openCharts(m.apps[f.app].name)
+		// An app, or one container inside it. Not the proxy: its traffic is
+		// every app's added together, which is a number with no owner.
+		switch f := m.focused(); f.kind {
+		case focusApp:
+			if f.app >= 0 {
+				return m.openCharts(m.apps[f.app].name, "")
+			}
+		case focusContainer:
+			if c := m.focusedContainer(); c != nil {
+				return m.openCharts(c.app, c.service)
+			}
 		}
 		return m, nil
 	case "p":

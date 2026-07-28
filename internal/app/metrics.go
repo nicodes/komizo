@@ -47,14 +47,18 @@ if [ -f %[1]s ]; then
 		for h in /srv/*/hostnames; do
 			[ -f "$h" ] || continue
 			a="${h%%/hostnames}"; a="${a##*/}"
-			sed 's/#.*//' "$h" | tr -d '\r' | while read -r n; do
-				[ -n "$n" ] || continue
-				printf 'MAP\t%%s\t%%s\n' "$n" "$a"
-			done
+			# name [-> service]. The service is what the app says serves that
+			# name; blank when it did not say, which is the honest default --
+			# nothing on this box can work it out otherwise.
+			sed 's/#.*//' "$h" | tr -d '\r' | awk -v a="$a" 'NF {
+				svc = ""
+				if (NF >= 3 && $2 == "->") svc = $3
+				printf "MAP\t%%s\t%%s\t%%s\n", $1, a, svc
+			}'
 		done
 		tail -c 4000000 %[1]s 2>/dev/null
 	} | awk -v now="$(date +%%s)" -v win=%[2]d '
-		/^MAP\t/ { split($0, m, "\t"); map[m[2]] = m[3]; next }
+		/^MAP\t/ { split($0, m, "\t"); map[m[2]] = m[3]; svc[m[2]] = m[4]; next }
 
 		{
 			# The three fields that matter, pulled by pattern rather than by
@@ -83,9 +87,15 @@ if [ -f %[1]s ]; then
 				app = map[host]
 			}
 			if (app == "") next
+			s = svc[host]
 
+			# Keyed by app AND the container the app said serves this name.
+			# Summing over the second gives the app; filtering on it gives the
+			# container. A name with no annotation lands under "", which is a
+			# real bucket meaning "this app, container unstated" rather than a
+			# missing one.
 			bucket = int(ts / 60) * 60
-			k = bucket "\t" app
+			k = bucket "\t" app "\t" s
 			seen[k] = 1
 			if (st >= 500)      c5[k]++
 			else if (st >= 400) c4[k]++
@@ -96,8 +106,8 @@ if [ -f %[1]s ]; then
 		END {
 			for (k in seen) {
 				split(k, f, "\t")
-				printf "metric\t%%s\t%%s\t%%d\t%%d\t%%d\t%%d\n",
-					f[1], f[2], c2[k], c3[k], c4[k], c5[k]
+				printf "metric\t%%s\t%%s\t%%s\t%%d\t%%d\t%%d\t%%d\n",
+					f[1], f[2], f[3], c2[k], c3[k], c4[k], c5[k]
 			}
 		}
 	'
@@ -113,10 +123,15 @@ fi
 type metricRow struct {
 	minute int64 // unix seconds, truncated to the minute
 	app    string
-	c2     int // 2xx
-	c3     int // 3xx
-	c4     int // 4xx
-	c5     int // 5xx
+	// service is the container the app said serves the hostname these counts
+	// came from, or empty when it said nothing. komizo cannot work this out --
+	// the shared proxy only ever talks to the app's gateway, and what happens
+	// after that is inside the app.
+	service string
+	c2      int // 2xx
+	c3      int // 3xx
+	c4      int // 4xx
+	c5      int // 5xx
 }
 
 func (r metricRow) total() int { return r.c2 + r.c3 + r.c4 + r.c5 }
@@ -127,25 +142,28 @@ func parseMetrics(out string) []metricRow {
 	var rows []metricRow
 	for _, ln := range strings.Split(out, "\n") {
 		f := strings.Split(strings.TrimRight(ln, "\r"), "\t")
-		if len(f) != 7 || f[0] != "metric" {
+		if len(f) != 8 || f[0] != "metric" {
 			continue
 		}
 		min, err := strconv.ParseInt(f[1], 10, 64)
 		if err != nil {
 			continue
 		}
-		r := metricRow{minute: min, app: f[2]}
-		fmt.Sscanf(f[3], "%d", &r.c2)
-		fmt.Sscanf(f[4], "%d", &r.c3)
-		fmt.Sscanf(f[5], "%d", &r.c4)
-		fmt.Sscanf(f[6], "%d", &r.c5)
+		r := metricRow{minute: min, app: f[2], service: f[3]}
+		fmt.Sscanf(f[4], "%d", &r.c2)
+		fmt.Sscanf(f[5], "%d", &r.c3)
+		fmt.Sscanf(f[6], "%d", &r.c4)
+		fmt.Sscanf(f[7], "%d", &r.c5)
 		rows = append(rows, r)
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].minute != rows[j].minute {
 			return rows[i].minute < rows[j].minute
 		}
-		return rows[i].app < rows[j].app
+		if rows[i].app != rows[j].app {
+			return rows[i].app < rows[j].app
+		}
+		return rows[i].service < rows[j].service
 	})
 	return rows
 }
@@ -163,6 +181,11 @@ type series struct {
 	errors   []float64 // 5xx only: the ones that are this box's fault
 }
 
+// seriesFor totals an app, over every container. seriesForService narrows to
+// one; they are separate functions rather than one with a sentinel because
+// "" is a real service value -- the app declared a hostname and did not say
+// what serves it -- and a sentinel that collides with real data is a bug
+// waiting for the first app that ships an unannotated name.
 func seriesFor(rows []metricRow, app string, from, to int64) series {
 	from, to = from/60*60, to/60*60
 	if to < from {
@@ -179,6 +202,28 @@ func seriesFor(rows []metricRow, app string, from, to int64) series {
 		s.errors[i] += float64(r.c5)
 	}
 	return s
+}
+
+func seriesForService(rows []metricRow, app, service string, from, to int64) series {
+	var mine []metricRow
+	for _, r := range rows {
+		if r.app == app && r.service == service {
+			mine = append(mine, r)
+		}
+	}
+	return seriesFor(mine, app, from, to)
+}
+
+// servesAnyHostname reports whether the app ever declared a hostname pointing at
+// this container. Distinguishes "nothing reaches it" from "nobody said", which
+// must not both render as an empty chart.
+func servesAnyHostname(rows []metricRow, app, service string) bool {
+	for _, r := range rows {
+		if r.app == app && r.service == service {
+			return true
+		}
+	}
+	return false
 }
 
 // rate is the most recent full minute's request count, and errs the 5xx in it.

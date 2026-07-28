@@ -334,7 +334,7 @@ func (m model) rowKeys() []string {
 		// No app actions here. They are app-wide, and offering them beside one
 		// container's name reads as though they apply to that container.
 		c := m.focusedContainer()
-		return []string{"enter", startStop(c.up()), "l", "logs"}
+		return []string{"enter", startStop(c.up()), "l", "logs", "m", "requests"}
 
 	case focusAdd:
 		return []string{"enter", "add an app"}
