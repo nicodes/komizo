@@ -463,30 +463,41 @@ if [ -n "\$hostnames" ]; then
 
 	printf '%s\n' "\$hostnames" > hostnames
 
-	# One site block for all of them, pointing at the app's gateway. The
-	# upstream is derived from the app name rather than declared, so it cannot
-	# collide with another app's and cannot be pointed at one.
+	# Wildcards get their OWN site block, because `tls { on_demand }` applies to
+	# every name in the block it sits in. Folded together with the concrete
+	# names, one wildcard would put the whole app behind the certificate gate --
+	# and the gate exists to approve preview hostnames, so it says no to the
+	# app's own front page. That failed as a TLS handshake error on names that
+	# had worked for months, which is a long way from the cause.
+	plain=""
+	wild=""
+	for h in \$hostnames; do
+		case "\$h" in
+			\\*.*) [ -n "\$wild" ] && wild="\$wild, "; wild="\$wild\$h" ;;
+			*) [ -n "\$plain" ] && plain="\$plain, "; plain="\$plain\$h" ;;
+		esac
+	done
+
+	# The upstream is derived from the app name rather than declared, so it
+	# cannot collide with another app's and cannot be pointed at one.
 	{
 		printf '# Written by komizo from %s.\n' "\$ref"
 		printf '# Edits here are lost on the next deploy.\n'
-		sites=""
-		for h in \$hostnames; do
-			[ -n "\$sites" ] && sites="\$sites, "
-			sites="\$sites\$h"
-		done
-		printf '%s {\n' "\$sites"
-		# A wildcard cannot get an ordinary certificate, so on-demand is the
-		# only thing that works for one. It needs the ask endpoint the server
-		# is configured with -- see 'komizo proxy --tls-ask'.
-		for h in \$hostnames; do
-			case "\$h" in
-				\\*.*)
-					printf '\\ttls {\n\\t\\ton_demand\n\\t}\n'
-					break ;;
-			esac
-		done
-		printf '\\treverse_proxy %s-gateway:80\n' "\$APP_NAME"
-		printf '}\n'
+		if [ -n "\$plain" ]; then
+			printf '%s {\n' "\$plain"
+			printf '\\treverse_proxy %s-gateway:80\n' "\$APP_NAME"
+			printf '}\n'
+		fi
+		if [ -n "\$wild" ]; then
+			[ -n "\$plain" ] && printf '\n'
+			# A wildcard cannot get an ordinary certificate, so on-demand is the
+			# only thing that works for one. It needs the ask endpoint the
+			# server is configured with -- see 'komizo proxy --tls-ask'.
+			printf '%s {\n' "\$wild"
+			printf '\\ttls {\n\\t\\ton_demand\n\\t}\n'
+			printf '\\treverse_proxy %s-gateway:80\n' "\$APP_NAME"
+			printf '}\n'
+		fi
 	} > caddy/app.caddy
 fi
 chown -R root:root caddy
