@@ -1491,8 +1491,8 @@ func TestInventoryAttachesContainersToTheirApp(t *testing.T) {
 	out := strings.Join([]string{
 		"server\tready\tDocker version 26.1.3",
 		"app\tblog\tkomizo-blog\t/srv/blog\ta1b2c3d\t2\tghcr.io/you/blog-config\t",
-		"container\tblog\tweb\tblog-web-1\trunning\tUp 3 hours\t2026-07-27T09:00:00.123456789Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-web:a1b2c3d",
-		"container\tblog\tdb\tblog-db-1\texited\tExited (1) 2 minutes ago\t2026-07-27T08:00:00Z\t2026-07-27T09:30:00Z\t1\tghcr.io/you/blog-db:a1b2c3d",
+		"container\tblog\tweb\tblog-web-1\trunning\tUp 3 hours\t2026-07-27T09:00:00.123456789Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-web:a1b2c3d\t8080",
+		"container\tblog\tdb\tblog-db-1\texited\tExited (1) 2 minutes ago\t2026-07-27T08:00:00Z\t2026-07-27T09:30:00Z\t1\tghcr.io/you/blog-db:a1b2c3d\t",
 		"route\tblog\tblog.example.com,www.blog.example.com\tblog-web\t8080",
 		"app\tshop\tkomizo-shop\t/srv/shop\tnone\t0\tghcr.io/you/shop-config\t",
 	}, "\n")
@@ -3620,8 +3620,8 @@ func TestHostnamesLandOnTheGatewayRow(t *testing.T) {
 	out := strings.Join([]string{
 		"server\tready\tDocker version 26.1.3",
 		"app\tblog\tkomizo-blog\t/srv/blog\ta1b2c3d\t2\tghcr.io/you/blog-config\t",
-		"container\tblog\tblog-gateway\tblog-blog-gateway-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-gateway:a1b2c3d",
-		"container\tblog\tblog-api\tblog-blog-api-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-api:a1b2c3d",
+		"container\tblog\tblog-gateway\tblog-blog-gateway-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-gateway:a1b2c3d\t80",
+		"container\tblog\tblog-api\tblog-blog-api-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-api:a1b2c3d\t9090",
 		"route\tblog\tblog.example.com,www.blog.example.com\tblog-gateway\t80",
 	}, "\n")
 
@@ -3654,10 +3654,57 @@ func TestHostnamesLandOnTheGatewayRow(t *testing.T) {
 	if !strings.Contains(v, "blog.example.com") {
 		t.Errorf("the hostnames should be on screen:\n%s", v)
 	}
-	// The image is back where the port was. A komizo app publishes no ports and
-	// no longer ships the caddy fragment the port used to be read from, so a
-	// port column would have nothing behind it.
-	if !strings.Contains(v, "blog-gateway") {
-		t.Errorf("the image column should name the image:\n%s", v)
+	// The port is observed from the container's own namespace, so it is there
+	// for every running container -- including the ones behind the gateway,
+	// which publish nothing and are named by no route.
+	if !strings.Contains(v, ":80") {
+		t.Errorf("the gateway's listening port should be on screen:\n%s", v)
+	}
+	if !strings.Contains(v, ":9090") {
+		t.Errorf("a service behind the gateway still shows what it listens on:\n%s", v)
+	}
+}
+
+// A container's listening ports are observed, not declared -- so they are there
+// for services nothing routes to, and absent for a container with no network
+// namespace to read.
+func TestPortsAreObservedPerContainer(t *testing.T) {
+	out := strings.Join([]string{
+		"server\tready\tDocker version 26.1.3",
+		"app\tblog\tkomizo-blog\t/srv/blog\ta1b2c3d\t2\tghcr.io/you/blog-config\t",
+		"container\tblog\tblog-gateway\tblog-gw-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-gateway:a1b2c3d\t80",
+		"container\tblog\tblog-worker\tblog-worker-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-worker:a1b2c3d\t",
+		"container\tblog\tblog-db\tblog-db-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-db:a1b2c3d\t5432,9187",
+		"route\tblog\tblog.example.com\tblog-gateway\t80",
+	}, "\n")
+	apps, _, _, _, _ := parseInventory(out)
+	byName := map[string]containerRow{}
+	for _, c := range apps[0].containers {
+		byName[c.name] = c
+	}
+
+	if got := byName["blog-gw-1"].portsText(); got != ":80" {
+		t.Errorf("gateway port = %q, want \":80\"", got)
+	}
+	// Several listeners are all shown: a database and its exporter is a normal
+	// shape, and picking one of them would be picking arbitrarily.
+	if got := byName["blog-db-1"].portsText(); got != ":5432, :9187" {
+		t.Errorf("multi-port = %q, want \":5432, :9187\"", got)
+	}
+	// A worker binds nothing. An em dash, not blank -- blank reads as a column
+	// that failed to load.
+	if got := byName["blog-worker-1"].portsText(); got != "—" {
+		t.Errorf("a worker that listens on nothing = %q, want an em dash", got)
+	}
+
+	m := testModel()
+	m.width, m.height = 120, 30
+	m.apps = apps
+	v := stripANSI(m.View())
+	// The database is behind the gateway and no route names it, but its port is
+	// still known -- which is the whole point of observing rather than parsing
+	// what the proxy was told to dial.
+	if !strings.Contains(v, ":5432") {
+		t.Errorf("a container no route names should still show its port:\n%s", v)
 	}
 }

@@ -62,10 +62,39 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
 	ids="$(docker ps -aq --no-trunc 2>/dev/null || true)"
 	if [ -n "$ids" ]; then
 		starts="$(docker inspect $ids \
-			--format '{{.Id}}	{{.State.StartedAt}}	{{.State.FinishedAt}}	{{.State.ExitCode}}' \
+			--format '{{.Id}}	{{.State.StartedAt}}	{{.State.FinishedAt}}	{{.State.ExitCode}}	{{.State.Pid}}' \
 			2>/dev/null || true)"
 	fi
 fi
+
+# The ports a container is actually listening on.
+#
+# /proc/<pid>/net/tcp IS that container's network namespace, so this is read
+# from the host with no exec, no ss, and no cooperation from the image -- which
+# matters because most of these images have no shell tools in them at all.
+#
+# Observed, not declared. The port used to be parsed out of the app's caddy
+# fragment, which said where the proxy DIALLED rather than where the process
+# listens; and EXPOSE is inherited from base images, so a Caddy gateway
+# "exposes" 443 and 2019 it never binds.
+#
+# State 0A is LISTEN. The address field is hex, and busybox awk has no
+# strtonum, so the shell converts. Ports in the ephemeral range are dropped:
+# they are a runtime's private business, not something anything dials on
+# purpose.
+container_ports() {
+	_pid="$1"
+	[ -n "$_pid" ] && [ "$_pid" != "0" ] || return 0
+	_out=""
+	for _h in $(awk '$4 == "0A" { split($2, a, ":"); print a[2] }' \
+		"/proc/$_pid/net/tcp" "/proc/$_pid/net/tcp6" 2>/dev/null | sort -u); do
+		_p=$(printf '%d' "0x$_h" 2>/dev/null) || continue
+		[ "$_p" -ge 32768 ] && [ "$_p" -le 60999 ] && continue
+		_out="$_out$_p
+"
+	done
+	printf '%s' "$_out" | sort -un | tr '\n' ',' | sed 's/,$//'
+}
 
 for bin in /usr/local/bin/deploy-*; do
 	[ -f "$bin" ] || continue
@@ -95,8 +124,10 @@ for bin in /usr/local/bin/deploy-*; do
 		# own containers.
 		for cid in $(docker compose -f "$dir/compose.yml" --project-directory "$dir" ps -aq 2>/dev/null); do
 			ts="$(printf '%s\n' "$starts" | awk -F'\t' -v id="$cid" '$1 == id { printf "%s\t%s\t%s", $2, $3, $4; exit }')"
-			printf '%s\n' "$allc" | awk -F'\t' -v id="$cid" -v app="$app" -v ts="$ts" '
-				$1 == id { printf "container\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", app, $5, $2, $3, $4, ts, $6 }'
+			cpid="$(printf '%s\n' "$starts" | awk -F'\t' -v id="$cid" '$1 == id { print $5; exit }')"
+			cports="$(container_ports "$cpid")"
+			printf '%s\n' "$allc" | awk -F'\t' -v id="$cid" -v app="$app" -v ts="$ts" -v pt="$cports" '
+				$1 == id { printf "container\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", app, $5, $2, $3, $4, ts, $6, pt }'
 		done
 	fi
 	printf 'app\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$app" "${usr:-?}" "$dir" "${ver:-none}" "$running" "$img" "$kas"
@@ -276,6 +307,19 @@ type containerRow struct {
 	startedAt  time.Time
 	finishedAt time.Time
 	exitCode   int
+	// ports is what this container is LISTENING on, comma-joined, read from its
+	// network namespace rather than declared anywhere. Empty for a stopped
+	// container, which has no namespace to read.
+	ports string
+}
+
+// portsText is the listening ports as a cell: ":8090", ":80,:443", or an em
+// dash when there are none -- a worker, or a container that is not running.
+func (c containerRow) portsText() string {
+	if c.ports == "" {
+		return "—"
+	}
+	return ":" + strings.ReplaceAll(c.ports, ",", ", :")
 }
 
 // imageText is the container's image, trimmed to the part that differs between
@@ -592,11 +636,12 @@ func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, n
 				name: f[1], user: f[2], dir: f[3], version: f[4],
 				running: f[5], image: f[6], knownAs: splitNames(f[7]),
 			})
-		case len(f) == 10 && f[0] == "container":
+		case len(f) == 11 && f[0] == "container":
 			c := containerRow{app: f[1], service: f[2], name: f[3], state: f[4], status: f[5]}
 			c.startedAt, c.finishedAt = parseStamp(f[6]), parseStamp(f[7])
 			fmt.Sscanf(f[8], "%d", &c.exitCode)
 			c.image = f[9]
+			c.ports = f[10]
 			containers = append(containers, c)
 		case len(f) == 5 && f[0] == "route":
 			routes = append(routes, routeRow{app: f[1], sites: f[2], upstream: f[3], port: f[4]})

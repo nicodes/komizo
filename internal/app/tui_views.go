@@ -89,15 +89,15 @@ func viewMonitor(m model) string {
 				// placeholder to keep them apart would only be an empty column
 				// down the middle of the block.
 				dimStyle.Render(c.stateText()),
-				// The image is back in this column and the port is gone. The
-				// port was only ever readable from the app's caddy fragment,
-				// and apps no longer ship one -- what a request meets after the
-				// gateway is inside the app, which this tool does not see into.
+				// What this container is listening on, read out of its own
+				// network namespace. Not the image, which after naming a
+				// service after it says the same word twice.
 				//
-				// The image is the honest thing to show instead: it is the one
-				// fact about a container komizo can still state exactly, and a
-				// tag that is not this app's version is worth noticing.
-				dimStyle.Render(c.imageText(a.version)),
+				// This used to come from the app's caddy fragment -- where the
+				// proxy DIALLED, which is a declaration and could be wrong.
+				// Apps ship no fragment now, and the port is observed instead:
+				// strictly better information from a source that cannot drift.
+				dimStyle.Render(c.portsText()),
 				m.routesCell(c, byContainer[c.name]),
 			}})
 			idx++
