@@ -1834,34 +1834,40 @@ func TestExactlyOneRowIsEverMarked(t *testing.T) {
 	}
 }
 
-func TestCopiedValuesHaveNoStrayNewline(t *testing.T) {
-	// Both of these are pasted into a text field in a browser, where a trailing
-	// newline is a blank last line that gets saved with the value.
+func TestNothingIsCopiedWithATrailingNewline(t *testing.T) {
+	// Everything this copies is pasted into a text field in a browser, where a
+	// trailing newline is a blank last line that gets saved as part of the
+	// value. Trimmed at the clipboard rather than at each call site, so no
+	// future copy path can put one back.
 	//
-	// The host keys carry none. A known_hosts FILE ends with one, but ssh
-	// parses the last line with or without it, and this is not going into a
-	// file -- it is going into a variable.
-	//
-	// The key keeps exactly one, because that one is the PEM terminator rather
-	// than decoration: it is what ssh-keygen writes and what every reader
-	// expects after -----END OPENSSH PRIVATE KEY-----.
+	// The private key included. The newline after the PEM terminator is what a
+	// FILE wants, and the deploy action writes the secret out with
+	// printf '%s\n', which supplies exactly one on the way back.
 	kp, err := newKeypair(keyComment("komizo-blog", "box"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasSuffix(kp.private, "-----\n") {
-		t.Error("the private key should end with the PEM terminator and its newline")
+		t.Error("the generated key should end with the PEM terminator and its newline")
 	}
-	if strings.HasSuffix(kp.private, "\n\n") {
-		t.Error("one newline, not two")
+	for name, s := range map[string]string{
+		"a private key":  kp.private,
+		"host keys":      "box ssh-ed25519 AAAA\nbox ssh-rsa BBBB\n",
+		"several blanks": "value\n\n\n",
+		"a log":          "line one\nline two\n",
+	} {
+		if got := clipboardText(s); strings.HasSuffix(got, "\n") {
+			t.Errorf("%s: copied with a trailing newline: %q", name, got[len(got)-20:])
+		}
+	}
+	// Only at the end: the newlines that separate lines are the value.
+	if got := clipboardText("a\nb\n"); got != "a\nb" {
+		t.Errorf("interior newlines must survive, got %q", got)
 	}
 
 	hosts := formatKnownHosts(target{host: "box", port: 22}, [][2]string{
 		{"ssh-ed25519", "AAAA"}, {"ssh-rsa", "BBBB"},
 	})
-	if strings.HasSuffix(hosts, "\n") {
-		t.Errorf("the host keys should not end with a newline: %q", hosts)
-	}
 	if lines := strings.Split(hosts, "\n"); len(lines) != 2 {
 		t.Errorf("expected one line per key, got %d: %q", len(lines), hosts)
 	}

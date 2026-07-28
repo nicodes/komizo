@@ -56,8 +56,23 @@ func clipboardCmd() []string {
 
 func clipboardAvailable() bool { return clipboardCmd() != nil }
 
-// copyToClipboard puts text on the clipboard.
+// clipboardText is what actually goes on the clipboard: the value with any
+// trailing newlines taken off.
+func clipboardText(s string) string { return strings.TrimRight(s, "\n") }
+
+// copyToClipboard puts text on the clipboard, without a trailing newline.
+//
+// Trimmed here rather than at each call site, so no future copy can put one
+// back. Everything this tool copies is pasted into a text field in a browser,
+// where a trailing newline is a blank last line that gets saved as part of the
+// value -- and the deploy action writes both values out with printf '%s\n',
+// which puts exactly one back where a file wants one.
+//
+// That includes the private key. The newline after -----END OPENSSH PRIVATE
+// KEY----- is the PEM terminator and the FILE needs it; the GitHub secret does
+// not, because the action supplies it on the way out.
 func copyToClipboard(text string) error {
+	text = clipboardText(text)
 	argv := clipboardCmd()
 	if argv == nil {
 		return fmt.Errorf("no clipboard tool found (looked for wl-copy, pbcopy, xclip, xsel, clip.exe)")
