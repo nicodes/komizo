@@ -145,7 +145,13 @@ for bin in /usr/local/bin/deploy-*; do
 	# goes after the gateway is inside the app now; this cannot see it and does
 	# not guess.
 	if [ -n "$dir" ] && [ -f "$dir/hostnames" ]; then
-		sites="$(tr '\n' ',' < "$dir/hostnames" | sed 's/,$//')"
+		# The NAME only. A line may say which container serves it -- "a.example
+		# .com -> api" -- which is for attributing requests, not for display:
+		# the routes column lists what the app answers on, and an arrow in it is
+		# an implementation detail leaking into the one column that is supposed
+		# to read like a list of addresses.
+		sites="$(sed 's/#.*//' "$dir/hostnames" | tr -d '\r' |
+			awk 'NF { printf "%s%s", sep, $1; sep = "," }')"
 		[ -n "$sites" ] && printf 'route\t%s\t%s\t%s-gateway\t80\n' "$app" "$sites" "$app"
 	fi
 done
