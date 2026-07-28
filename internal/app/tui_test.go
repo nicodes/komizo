@@ -4159,3 +4159,41 @@ func TestTheWheelMovesThePageNotTheCursor(t *testing.T) {
 		t.Error("a keypress should return the page to the cursor")
 	}
 }
+
+// Failures need their own baseline. A median has no scale on a series of zeros,
+// so the robust version declines to score and the line never draws -- correct,
+// and useless. Counts have a spread a median does not capture.
+func TestFailuresScoreAgainstAPoissonBaseline(t *testing.T) {
+	// A window that normally sees four failures a minute.
+	v := make([]float64, baselineWindow+2)
+	for i := range v {
+		v[i] = 4
+	}
+	v[len(v)-1] = 16
+
+	// The robust baseline cannot score this: every value identical means no
+	// spread at all.
+	if got := trailingBaseline(v).score[len(v)-1]; !math.IsNaN(got) {
+		t.Errorf("a flat median baseline should decline, got %v", got)
+	}
+	// Poisson can: variance equals the mean, so the unit is sqrt(4) = 2, and
+	// sixteen against a mean of four is six of them.
+	p := trailingPoisson(v)
+	if got := p.score[len(v)-1]; math.Abs(got-6) > 0.001 {
+		t.Errorf("poisson score = %v, want (16-4)/sqrt(4) = 6", got)
+	}
+
+	// Quiet stays quiet: zero failures against a baseline of zero is exactly
+	// normal, and must not read as an event.
+	z := make([]float64, baselineWindow+2)
+	if got := trailingPoisson(z).score[len(z)-1]; got != 0 {
+		t.Errorf("no failures against no failures = %v, want 0", got)
+	}
+
+	// And the first failure after a clean window is off the scale, not at some
+	// point on it -- there is no spread to measure it against.
+	z[len(z)-1] = 1
+	if got := trailingPoisson(z).score[len(z)-1]; got != devLimit {
+		t.Errorf("first failure after a clean window = %v, want the ceiling (%d)", got, devLimit)
+	}
+}

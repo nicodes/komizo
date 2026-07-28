@@ -210,15 +210,14 @@ func (m model) viewCharts() string {
 	// for a precision nobody acts on.
 	b.WriteString(section(fmt.Sprintf(
 		"Requests   \u00b7   how unusual  (\u00b1%d\u03c3, flat line is normal)", devLimit)))
-	b.WriteString(m.combinedChart(s.total, base, s.from, s.to, w, chartHeight))
+	b.WriteString(m.combinedChart(s.total, base, s.from, s.to, w, chartHeight, keyStyle))
 
-	// No baseline on failures, deliberately. 5xx is zero almost always, so the
-	// trailing spread is zero and every non-zero minute divides by it. Any
-	// number here would be a clamp invented to avoid the division, not a
-	// measurement -- and the thing worth seeing is that the line left the floor,
-	// which it already shows.
-	b.WriteString(section("Failures (5xx)"))
-	b.WriteString(m.chartBlock(s.errors, s.from, s.to, w, panelHeight, errStyle))
+	// Failures get the same overlay, against a baseline of their own. See
+	// trailingPoisson: a median has no scale on a series of zeros, so the line
+	// would never draw at all.
+	b.WriteString(section(fmt.Sprintf(
+		"Failures (5xx)   \u00b7   how unusual  (\u00b1%d\u03c3, flat line is normal)", devLimit)))
+	b.WriteString(m.combinedChart(s.errors, trailingPoisson(s.errors), s.from, s.to, w, panelHeight, errStyle))
 
 	rate, errs := s.rate()
 	b.WriteString(section("Now"))
@@ -250,7 +249,7 @@ func (m model) chartBlock(vals []float64, from, to int64, w, h int, style lipglo
 // The deviation is mapped onto the chart's range so both share one canvas: -4
 // sits on the floor, 0 halfway up, +4 at the ceiling. The two series are not
 // comparable in value and were never meant to be -- only in shape and in x.
-func (m model) combinedChart(vals []float64, base baseline, from, to int64, w, h int) string {
+func (m model) combinedChart(vals []float64, base baseline, from, to int64, w, h int, style lipgloss.Style) string {
 	yMax := 0.0
 	for _, v := range vals {
 		if v > yMax {
@@ -266,7 +265,7 @@ func (m model) combinedChart(vals []float64, base baseline, from, to int64, w, h
 	c.SetYRange(0, yMax)
 	c.SetViewYRange(0, yMax)
 	c.SetDataSetStyle("normal", dimStyle)
-	c.SetDataSetStyle("requests", keyStyle)
+	c.SetDataSetStyle("series", style)
 	c.SetDataSetStyle("unusual", warnStyle)
 
 	// Where "not unusual" sits, so the second series has a zero to be read
@@ -276,7 +275,7 @@ func (m model) combinedChart(vals []float64, base baseline, from, to int64, w, h
 
 	for i, v := range vals {
 		at := time.Unix(from+int64(i)*60, 0)
-		c.PushDataSet("requests", timeserieslinechart.TimePoint{Time: at, Value: v})
+		c.PushDataSet("series", timeserieslinechart.TimePoint{Time: at, Value: v})
 		d := base.score[i]
 		if math.IsNaN(d) {
 			// No baseline yet, or a flat one with no scale. Skipped rather than

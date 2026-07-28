@@ -334,3 +334,52 @@ func medianOf(v []float64) float64 {
 	}
 	return (s[n/2-1] + s[n/2]) / 2
 }
+
+// trailingPoisson is the same idea as trailingBaseline, for counts that are
+// usually zero.
+//
+// Failures need their own baseline because median and MAD have nothing to work
+// with here. 5xx is zero almost every minute, so the trailing median is zero AND
+// the trailing MAD is zero -- no scale at all, so trailingBaseline correctly
+// declines to score and the line never draws. Correct, and useless.
+//
+// Counts have a natural spread that a median does not capture: for a Poisson
+// process the variance equals the mean, so the unit is sqrt(mean). That is the
+// right yardstick for "three errors in a minute that normally sees one".
+//
+// And when the mean is genuinely zero, a single error is not some number of
+// deviations from it -- the question has no answer. It is OFF the scale, which
+// is a different statement from "very far up it", and the chart draws it at the
+// ceiling for exactly that reason rather than because a formula produced a
+// number there.
+func trailingPoisson(v []float64) baseline {
+	b := baseline{
+		centre: make([]float64, len(v)),
+		spread: make([]float64, len(v)),
+		score:  make([]float64, len(v)),
+	}
+	nan := math.NaN()
+	for i := range v {
+		if i < baselineWindow {
+			b.centre[i], b.spread[i], b.score[i] = nan, nan, nan
+			continue
+		}
+		var sum float64
+		for _, x := range v[i-baselineWindow : i] {
+			sum += x
+		}
+		mean := sum / float64(baselineWindow)
+		b.centre[i], b.spread[i] = mean, math.Sqrt(mean)
+		switch {
+		case mean > 0:
+			b.score[i] = (v[i] - mean) / math.Sqrt(mean)
+		case v[i] == 0:
+			b.score[i] = 0
+		default:
+			// Nothing has failed in the whole window and now something has.
+			// Off the scale rather than at some point on it.
+			b.score[i] = devLimit
+		}
+	}
+	return b
+}
