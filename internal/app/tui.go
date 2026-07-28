@@ -20,10 +20,10 @@ type screen int
 const (
 	screenLogin screen = iota // no host given: ask which one
 	screenLoading
-	screenSetup   // connected, but the server has nothing installed
-	screenMonitor // the apps on this box
-	screenLogs    // one log, full window
-	screenCharts  // one app's request rate over time
+	screenSetup  // connected, but the server has nothing installed
+	screenIndex  // the apps on this box
+	screenLogs   // one log, full window
+	screenCharts // one app's request rate over time
 )
 
 type model struct {
@@ -301,7 +301,7 @@ func pollTick() tea.Cmd {
 // corrupt an answer: prompts capture the app they act on by value, and an
 // operation in flight owns no rows.
 func (m *model) poll() tea.Cmd {
-	if m.scr != screenMonitor || m.fetching || len(m.busy) > 0 || len(m.settling) > 0 {
+	if m.scr != screenIndex || m.fetching || len(m.busy) > 0 || len(m.settling) > 0 {
 		return nil
 	}
 	return m.fetch()
@@ -355,7 +355,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.loaded {
 				return m, nil
 			}
-			m.scr = screenMonitor
+			m.scr = screenIndex
 			return m, nil
 		}
 
@@ -386,7 +386,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.srv.ready() {
 				m.scr = screenSetup
 			} else {
-				m.scr = screenMonitor
+				m.scr = screenIndex
 			}
 		}
 		return m, nil
@@ -516,7 +516,7 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.prompt = nil
 		m.status, m.statusErr = "done", false
 		// A box that has just been set up is a different box: the setup screen
-		// has to give way to the monitor, and only a fresh read can say so.
+		// has to give way to the index, and only a fresh read can say so.
 		if m.scr == screenSetup {
 			return m, m.beginLoading(m.fetch())
 		}
@@ -536,8 +536,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch m.scr {
-	case screenMonitor:
-		return m.handleMonitorKey(msg)
+	case screenIndex:
+		return m.handleIndexKey(msg)
 	case screenLogin:
 		return m.handleLoginKey(msg)
 	case screenLogs:
@@ -643,7 +643,7 @@ func (m model) focusedContainer() *containerRow {
 	return &m.apps[f.app].containers[f.ctr]
 }
 
-// handleMonitorKey drives the one screen there is.
+// handleIndexKey drives the one screen there is.
 //
 // The box used to have a page of its own, reached with "s". It is now the block
 // above the app list, because the two were never separable questions: "is my
@@ -655,7 +655,7 @@ func (m model) focusedContainer() *containerRow {
 // The cost is that the server's actions moved onto keys the list had spare, so
 // "l" and "h" no longer duplicate enter and esc. They were aliases for keys
 // that already existed; the proxy's log had nowhere else to go.
-func (m model) handleMonitorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleIndexKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "esc":
 		return m, tea.Quit
@@ -692,7 +692,7 @@ func (m model) handleMonitorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// a container's name would say it belonged to the container.
 		//
 		// "h" rather than "k", which is already up. It is one of the two keys
-		// the monitor freed when it stopped offering vim aliases for enter and
+		// the index freed when it stopped offering vim aliases for enter and
 		// esc, and the other one -- "l" -- is logs.
 		if i := m.selectedApp(); i >= 0 {
 			m = m.copyKnownHosts(m.apps[i])

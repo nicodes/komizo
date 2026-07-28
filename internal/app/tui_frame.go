@@ -276,7 +276,9 @@ func (m model) brandBlock() []string {
 	return []string{brandStyle.Render("komizo"), "", dimStyle.Render(tagline)}
 }
 
-// crumb is where you are, for the header: komizo / monitor.
+// crumb is where you are under the host: which app, which container inside
+// it, and what you are looking at. Empty on the index, which is not anywhere
+// you went.
 //
 // It is what the log window's own title line used to be, moved up beside the
 // brand. That line sat at the top of the body, which meant reading to the
@@ -295,8 +297,12 @@ func (m model) crumb() string {
 		return crumbPath(m.chartsOf, m.chartsSvc, m.chartsOf, "requests")
 	case screenSetup:
 		return "setup"
-	case screenMonitor:
-		return "monitor"
+	case screenIndex:
+		// Nothing. This is the page the tool opens on -- everything else is
+		// somewhere you navigated TO, and the crumb exists to say how to get
+		// back. "komizo / box" is already the whole answer for the index; a
+		// word after it would only be a name for "here".
+		return ""
 	}
 	return ""
 }
@@ -331,8 +337,8 @@ func (m model) pageBody() string {
 		return m.loginPane()
 	case screenLoading:
 		return m.loadingPane()
-	case screenMonitor:
-		return viewMonitor(m)
+	case screenIndex:
+		return viewIndex(m)
 	case screenLogs:
 		return m.viewLogs()
 	case screenCharts:
@@ -449,7 +455,7 @@ func (m model) footerKeys() string {
 		return m.promptView()
 	}
 	switch m.scr {
-	case screenMonitor:
+	case screenIndex:
 		return m.helpLines()
 	case screenLogs:
 		return m.logsKeys()

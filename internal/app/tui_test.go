@@ -14,7 +14,7 @@ import (
 func testModel() model {
 	m := newModel(target{user: "root", host: "box.example.com", port: 22})
 	m.width, m.height = 100, 40
-	m.scr = screenMonitor
+	m.scr = screenIndex
 	m.apps = []appRow{
 		{name: "blog", user: "komizo-blog", dir: "/srv/blog", version: "a1b2c3d4e5f6a7b8", running: "3", image: "ghcr.io/you/blog-config",
 			routes: []routeRow{{app: "blog", sites: "blog.example.com", upstream: "blog-web"}}},
@@ -234,7 +234,7 @@ func TestAddFormValidatesBeforeRunning(t *testing.T) {
 	if m.prompt == nil || m.prompt.kind != promptForm {
 		t.Fatalf("the add row did not open the form, got %v", m.prompt)
 	}
-	if m.scr != screenMonitor {
+	if m.scr != screenIndex {
 		t.Errorf("the form should not take over the screen, got %v", m.scr)
 	}
 	// A tag in the config image is the mistake most worth catching, since the
@@ -273,7 +273,7 @@ func TestTheAddFormKeepsTheListInView(t *testing.T) {
 	}
 	// esc puts the keys back without leaving the list.
 	back := send(m, "esc")
-	if back.prompt != nil || back.scr != screenMonitor {
+	if back.prompt != nil || back.scr != screenIndex {
 		t.Error("esc should close the form and leave you on the list")
 	}
 }
@@ -298,7 +298,7 @@ func TestRemoveRequiresTypingTheAppName(t *testing.T) {
 	if m.prompt == nil {
 		t.Fatal("'x' did not ask anything")
 	}
-	if m.scr != screenMonitor {
+	if m.scr != screenIndex {
 		t.Errorf("the question should not leave the list, got %v", m.scr)
 	}
 	v := m.View()
@@ -344,7 +344,7 @@ func TestRotateDoesNotRequireTyping(t *testing.T) {
 	if !next.running() {
 		t.Error("y should answer a plain confirmation and start the work")
 	}
-	if next.scr != screenMonitor {
+	if next.scr != screenIndex {
 		t.Errorf("rotating should not leave the list, got %v", next.scr)
 	}
 }
@@ -359,7 +359,7 @@ func TestAnOperationRunsInTheFooter(t *testing.T) {
 	m.cursor = rowOf(m, focusApp)
 	m = send(m, "r", "y")
 
-	if !m.running() || m.scr != screenMonitor {
+	if !m.running() || m.scr != screenIndex {
 		t.Fatalf("rotating should run in the footer over the list, got %v", m.scr)
 	}
 	v := stripANSI(m.View())
@@ -442,7 +442,7 @@ func TestAFailedOperationKeepsItsOutput(t *testing.T) {
 func TestEscLeavesEveryScreen(t *testing.T) {
 	for _, open := range []string{"x", "r", "c"} {
 		m := send(testModel(), open, "esc")
-		if m.scr != screenMonitor || m.prompt != nil {
+		if m.scr != screenIndex || m.prompt != nil {
 			t.Errorf("esc from %q did not close the question, got %v", open, m.scr)
 		}
 	}
@@ -690,7 +690,7 @@ func TestReadyServerGoesStraightToTheList(t *testing.T) {
 	m := newModel(target{user: "root", host: "box", port: 22})
 	m.width, m.height = 100, 40
 	next, _ := m.Update(appsMsg{srv: serverRow{state: "ready"}})
-	if next.(model).scr != screenMonitor {
+	if next.(model).scr != screenIndex {
 		t.Error("a ready server should go straight to the app list")
 	}
 }
@@ -760,7 +760,7 @@ func TestALogGetsTheWholeWindow(t *testing.T) {
 	}
 
 	// And esc returns to the list.
-	if back := send(m, "esc"); back.scr != screenMonitor {
+	if back := send(m, "esc"); back.scr != screenIndex {
 		t.Errorf("esc should go back, got %v", back.scr)
 	}
 }
@@ -1404,7 +1404,7 @@ func TestConfigImageIsEditable(t *testing.T) {
 	if m.prompt == nil || m.prompt.kind != promptInput {
 		t.Fatal("'c' should open an input in the footer")
 	}
-	if m.scr != screenMonitor {
+	if m.scr != screenIndex {
 		t.Errorf("editing a setting should not leave the list, got %v", m.scr)
 	}
 	// Pre-filled, and the row it came from is still visible above it.
@@ -1433,7 +1433,7 @@ func TestUnchangedConfigImageDoesNothing(t *testing.T) {
 	if m.prompt != nil {
 		t.Error("enter should close the question")
 	}
-	if m.scr != screenMonitor {
+	if m.scr != screenIndex {
 		t.Errorf("an unchanged value should just go back, got %v", m.scr)
 	}
 }
@@ -1596,7 +1596,7 @@ func TestListNestsContainersWithoutMovingTheCursor(t *testing.T) {
 	// land on shop -- the container rows are focusable now, so this is about
 	// the view and the key handling agreeing on the same index.
 	m.cursor = m.firstAppRow() + 3
-	got := stripANSI(viewMonitor(m))
+	got := stripANSI(viewIndex(m))
 
 	var selected string
 	for _, ln := range strings.Split(got, "\n") {
@@ -1742,7 +1742,7 @@ func TestRotationCopiesItselfAndComesBack(t *testing.T) {
 	// A rotation produces one value: the host keys did not move, so the deploy
 	// key is the only thing to choose between, and a screen offering one choice
 	// asks you to press a key it already knows the answer to. It goes to the
-	// clipboard and the monitor comes back with a line saying so.
+	// clipboard and the index comes back with a line saying so.
 	if !clipboardAvailable() {
 		t.Skip("no clipboard tool")
 	}
@@ -1762,8 +1762,8 @@ func TestRotationCopiesItselfAndComesBack(t *testing.T) {
 	if after.prompt != nil {
 		t.Error("a rotation should not leave a screen to dismiss")
 	}
-	if after.scr != screenMonitor {
-		t.Errorf("it should come back to the monitor, got %v", after.scr)
+	if after.scr != screenIndex {
+		t.Errorf("it should come back to the index, got %v", after.scr)
 	}
 	if !strings.Contains(after.status, "copied") || after.statusErr {
 		t.Errorf("it should say the key was copied, got %q", after.status)
@@ -1871,7 +1871,7 @@ func TestExactlyOneRowIsEverMarked(t *testing.T) {
 			},
 		},
 	} {
-		m.scr = screenMonitor
+		m.scr = screenIndex
 		m.tgt = target{user: "root", host: "box.example.com", port: 22}
 		m.width, m.height = 100, 40
 		for cursor := range m.focusItems() {
@@ -2056,7 +2056,7 @@ func TestStartStopRunsInlineWithoutConfirming(t *testing.T) {
 		t.Fatal("start/stop should ask before acting")
 	}
 	m, cmd := sendCmd(m, "y")
-	if m.scr != screenMonitor {
+	if m.scr != screenIndex {
 		t.Fatalf("start/stop must not leave the list, got %v", m.scr)
 	}
 	if !m.busy[proxyContainer] {
@@ -2114,7 +2114,7 @@ func TestUpdateServerHasNoGlobalKey(t *testing.T) {
 	// "u" was a second route to what enter on the docker row already does.
 	m := testModel()
 	m.cursor = rowOf(m, focusApp) // deliberately NOT the docker row
-	if next := send(m, "u"); next.scr != screenMonitor {
+	if next := send(m, "u"); next.scr != screenIndex {
 		t.Errorf("'u' should no longer do anything, got %v", next.scr)
 	}
 	if strings.Contains(m.View(), "update server") {
@@ -2136,13 +2136,13 @@ func TestAppKeysOnlyOfferedWithAnAppSelected(t *testing.T) {
 	}
 	// And pressing them does nothing rather than acting on some other app.
 	for _, k := range []string{"c", "r", "x"} {
-		if next := send(m, k); next.scr != screenMonitor {
+		if next := send(m, k); next.scr != screenIndex {
 			t.Errorf("%q with no app selected should do nothing, got %v", k, next.scr)
 		}
 	}
 	// Adding is not among them at all now: it is its own row under the list,
 	// so it needs no key and cannot be pressed by accident from an app.
-	if next := send(m, "a"); next.scr != screenMonitor {
+	if next := send(m, "a"); next.scr != screenIndex {
 		t.Errorf("'a' should no longer do anything, got %v", next.scr)
 	}
 
@@ -2167,7 +2167,7 @@ func TestAppKeysOnlyOfferedWithAnAppSelected(t *testing.T) {
 		}
 	}
 	for _, k := range []string{"c", "r", "x"} {
-		if next := send(m, k); next.scr != screenMonitor {
+		if next := send(m, k); next.scr != screenIndex {
 			t.Errorf("%q on a container row should do nothing, got %v", k, next.scr)
 		}
 	}
@@ -2337,10 +2337,10 @@ func TestAddIsGlobalButTheDestructiveKeysAreNot(t *testing.T) {
 				t.Errorf("%v: %q must not be offered with no app selected", k, gone)
 			}
 		}
-		if next := send(m, "x"); next.scr != screenMonitor {
+		if next := send(m, "x"); next.scr != screenIndex {
 			t.Errorf("%v: 'x' must do nothing with no app selected", k)
 		}
-		if next := send(m, "r"); next.scr != screenMonitor {
+		if next := send(m, "r"); next.scr != screenIndex {
 			t.Errorf("%v: 'r' must do nothing with no app selected", k)
 		}
 	}
@@ -2420,7 +2420,7 @@ func TestAQuestionTakesTheKeysWhileItIsOpen(t *testing.T) {
 
 	before := m.cursor
 	m = send(m, "a", "down", "up")
-	if m.scr != screenMonitor {
+	if m.scr != screenIndex {
 		t.Errorf("keys must not reach the list while a question is open, got %v", m.scr)
 	}
 	if m.cursor != before {
@@ -2435,7 +2435,7 @@ func TestAQuestionTakesTheKeysWhileItIsOpen(t *testing.T) {
 	if m.prompt != nil {
 		t.Error("esc should close the question")
 	}
-	if m.scr != screenMonitor {
+	if m.scr != screenIndex {
 		t.Error("and leave the list exactly where it was")
 	}
 }
@@ -2446,7 +2446,7 @@ func TestQuestionsNeverLeaveTheList(t *testing.T) {
 	m.cursor = rowOf(m, focusApp)
 	for _, k := range []string{"c", "r", "x", "p"} {
 		next := send(m, k)
-		if next.scr != screenMonitor {
+		if next.scr != screenIndex {
 			t.Errorf("%q left the list for %v", k, next.scr)
 		}
 		if next.prompt == nil {
@@ -2458,7 +2458,7 @@ func TestQuestionsNeverLeaveTheList(t *testing.T) {
 	}
 	// And the server row's question behaves the same.
 	m.cursor = rowOf(m, focusServer)
-	if next := send(m, "enter"); next.scr != screenMonitor || next.prompt == nil {
+	if next := send(m, "enter"); next.scr != screenIndex || next.prompt == nil {
 		t.Error("updating the server should ask in the footer too")
 	}
 }
@@ -2850,9 +2850,14 @@ func TestWaitsShowASpinner(t *testing.T) {
 }
 
 func TestTheHeaderSaysWhereYouAre(t *testing.T) {
-	// komizo / root@box / monitor: the tool, which box, where in it. The brand
-	// keeps the accent and the bold; the crumbs are plain, so the eye lands on
-	// the tool first and the parts that change read as the parts that change.
+	// komizo / root@box / astry / api / logs: the tool, which box, and where in
+	// it. The brand keeps the accent and the bold; the crumbs are plain, so the
+	// eye lands on the tool first and the parts that change read as the parts
+	// that change.
+	//
+	// The index has no crumb of its own. It is the page the tool opens on, not
+	// somewhere you navigated to, and a word after the host would only be a
+	// name for "here".
 	//
 	// The address is a crumb rather than a row in the Server section because it
 	// is not a property of the box the way its docker version is -- it is WHICH
@@ -2867,7 +2872,7 @@ func TestTheHeaderSaysWhereYouAre(t *testing.T) {
 		set  func(*model)
 		want string
 	}{
-		"the list": {func(m *model) {}, "komizo / box.example.com / monitor"},
+		"the index": {func(m *model) {}, "komizo / box.example.com"},
 		"a log": {func(m *model) {
 			m.scr, m.logsLabel, m.logsOf, m.logsReady = screenLogs, "blog-web-1", "x", true
 			m.logsApp, m.logsSvc = "blog", "blog-web-1"
@@ -3476,7 +3481,7 @@ func TestAPollDoesNotMoveYouBetweenScreens(t *testing.T) {
 	m := testModel()
 	m.scr = screenLoading
 	next, _ := m.Update(appsMsg{apps: m.apps, srv: m.srv, proxy: m.proxy})
-	if got := next.(model).scr; got != screenMonitor {
+	if got := next.(model).scr; got != screenIndex {
 		t.Errorf("the first read should land on the list, got %v", got)
 	}
 }
@@ -3850,7 +3855,7 @@ func TestChartsOpenOnAnAppOnly(t *testing.T) {
 	if next.chartsReady {
 		t.Error("it should not claim to be ready before the fetch lands")
 	}
-	if back := send(next, "esc"); back.scr != screenMonitor {
+	if back := send(next, "esc"); back.scr != screenIndex {
 		t.Error("esc should go back to the list")
 	}
 
@@ -3859,7 +3864,7 @@ func TestChartsOpenOnAnAppOnly(t *testing.T) {
 	p := netModel()
 	p.width, p.height = 100, 30
 	p.cursor = rowOf(p, focusProxy)
-	if next := send(p, "m"); next.scr != screenMonitor {
+	if next := send(p, "m"); next.scr != screenIndex {
 		t.Error("m must do nothing with the proxy selected")
 	}
 	if strings.Contains(stripANSI(p.pageFooter()), "metrics") {

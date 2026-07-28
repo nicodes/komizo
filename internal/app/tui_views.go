@@ -4,14 +4,14 @@ import (
 	"strings"
 )
 
-// viewMonitor is the whole interface: the box, then what is running on it.
+// viewIndex is the whole interface: the box, then what is running on it.
 //
 // The box had a page of its own once, behind "s". The two are not separable
 // questions -- an app being up and anything being able to reach it have the
 // same answer most of the time -- and a stopped proxy stayed invisible for as
 // long as it took someone to think of looking. State you have to navigate to is
 // state you learn about late.
-func viewMonitor(m model) string {
+func viewIndex(m model) string {
 	var b strings.Builder
 	b.WriteString(m.boxSection())
 

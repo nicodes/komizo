@@ -53,7 +53,7 @@ func (m model) handleLogsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "esc":
-		m.scr = screenMonitor
+		m.scr = screenIndex
 		m.status, m.statusErr = "", false
 		return m, nil
 

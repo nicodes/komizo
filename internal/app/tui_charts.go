@@ -21,7 +21,7 @@ import (
 // hedged in ways the rest of the app never needs to be, and the code says so
 // where it does the hedging.
 
-// chartWindow is how far back the chart screen asks for. The monitor's
+// chartWindow is how far back the chart screen asks for. The index page's
 // sparklines use a shorter one: they ride on the inventory poll, which runs
 // every five seconds, and reading four hours of log that often is a waste of the
 // box's CPU to move a line by one column.
@@ -79,7 +79,7 @@ func (m model) handleChartsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "q":
 		return m, tea.Quit
 	case "esc":
-		m.scr = screenMonitor
+		m.scr = screenIndex
 		m.status, m.statusErr = "", false
 		return m, nil
 	case "r":

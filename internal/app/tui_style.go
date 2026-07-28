@@ -67,7 +67,8 @@ func pad(s string, w int) string {
 	return s
 }
 
-// header is the tool, then where in it you are: komizo / monitor.
+// header is the tool, then which box, then where in it you are:
+// komizo / root@box / astry / api / logs.
 //
 // A breadcrumb rather than a bare name, because the pages stopped announcing
 // themselves. The log window used to write its own title into the body and the
@@ -84,7 +85,7 @@ func pad(s string, w int) string {
 // A second rule six lines above it separated the title from the content, which
 // were never in danger of being confused.
 //
-// The address is the first crumb: komizo / root@box / monitor. It spent a while
+// The address is the first crumb: komizo / root@box. It spent a while
 // as a row in the Server section instead, on the grounds that it was one fact
 // among the others -- but it is not one of the others. Everything else in that
 // section is a property of the box; the address is WHICH box, and every row on

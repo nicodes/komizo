@@ -263,7 +263,7 @@ func (m model) handleSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// thing anyone wants from the page is whether it is still going -- and
 		// leaving the description up behind a spinner reads as though it is
 		// still asking. The box is re-read when it finishes, and that read
-		// decides where you land: the monitor, or back here if it did not take.
+		// decides where you land: the index, or back here if it did not take.
 		cmd := m.startOp("Setting up " + m.tgt.host)
 		m.scr = screenLoading
 		return m, tea.Batch(cmd,
