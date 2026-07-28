@@ -635,14 +635,12 @@ func TestFreshServerGetsTheInitScreen(t *testing.T) {
 	if m.scr != screenSetup {
 		t.Fatalf("a bare server should open the init screen, got %v", m.scr)
 	}
-	// What it says is what the person deciding needs: that the box is bare,
-	// roughly what will happen to it, and that it is reversible enough to try.
-	// It used to name the three things being installed in a table, one line
-	// each -- a list of implementation for someone who has not decided to use
-	// the tool yet, and the shared network in particular is a detail they
-	// cannot act on and will never think about again.
+	// The state of the box, a line about what it is for, and the question.
+	// What gets installed is in docs/server.md; this screen used to list it
+	// piece by piece, which is implementation detail for someone who has not
+	// decided to use the tool yet.
 	v := strings.ToLower(m.View())
-	for _, want := range []string{"not set up yet", "docker", "https", "safe to run again"} {
+	for _, want := range []string{"not set up yet", "secured", "start", "cancel"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("setup screen is missing %q", want)
 		}
@@ -944,19 +942,11 @@ func TestUpdatingTheServerDoesNotAskAboutTheProxy(t *testing.T) {
 	}
 }
 
-func TestFirstRunStillAsksAboutTheProxy(t *testing.T) {
-	// On a bare box the question belongs: you are defining the shape of it.
-	m := newModel(target{user: "root", host: "box", port: 22})
-	m.width, m.height = 100, 40
-	next, _ := m.Update(appsMsg{srv: serverRow{state: "bare"}})
-	m = next.(model)
-	if m.scr != screenSetup {
-		t.Fatalf("a bare server should still open the init form, got %v", m.scr)
-	}
-	if !strings.Contains(m.View(), "reverse proxy") {
-		t.Error("first run should still ask whether to install a proxy")
-	}
-}
+// The proxy used to be a question of its own on this screen, and the test that
+// lived here checked it was still asked about on a bare box. It is not asked
+// about at all any more -- every box gets one, since an app nobody can reach is
+// not a deployment -- and TestInitAlwaysInstallsTheProxy covers that the
+// defaults still carry it.
 
 // --- rendering ------------------------------------------------------------
 
@@ -1126,7 +1116,7 @@ func TestInitAsksOneThingOnly(t *testing.T) {
 	v := m.View()
 	// One decision, and it is on the page rather than in the footer: two
 	// buttons, yes selected.
-	for _, want := range []string{"yes", "no", "enter", "select"} {
+	for _, want := range []string{"start", "cancel", "enter", "select"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("the setup screen should show %q:\n%s", want, v)
 		}
@@ -1162,17 +1152,18 @@ func TestSetupHasTwoButtons(t *testing.T) {
 	m.width, m.height = 76, 20
 	m.scr = screenSetup
 
-	// Yes to start with: someone who reached this screen connected to a server
-	// on purpose, and defaulting to no makes the common case the extra press.
-	if m.setupNo {
-		t.Error("yes should be selected first")
+	// Start to start with: someone who reached this screen connected to a
+	// server on purpose, and defaulting to cancel makes the common case the
+	// extra press.
+	if m.setupCancel {
+		t.Error("start should be selected first")
 	}
 	// Either arrow moves between them, and the pair keeps its width so the
 	// line does not slide sideways under the key that moved it.
 	wide := lipglossWidth(m.setupButtons())
 	for _, k := range []string{"right", "left", "tab"} {
 		next := send(m, k)
-		if next.setupNo == m.setupNo {
+		if next.setupCancel == m.setupCancel {
 			t.Errorf("%q should move between the buttons", k)
 		}
 		if got := lipglossWidth(next.setupButtons()); got != wide {
@@ -1180,18 +1171,18 @@ func TestSetupHasTwoButtons(t *testing.T) {
 		}
 	}
 
-	// Enter on yes starts the work; enter on no leaves, because setting the
+	// Enter on start does the work; enter on cancel leaves, because setting the
 	// server up is the only thing this screen does.
-	if yes := send(m, "enter"); !yes.running() || yes.scr != screenLoading {
-		t.Error("enter on yes should start the setup")
+	if go_ := send(m, "enter"); !go_.running() || go_.scr != screenLoading {
+		t.Error("enter on start should begin the setup")
 	}
-	no := send(m, "right")
-	next, cmd := no.Update(key("enter"))
+	cancel := send(m, "right")
+	next, cmd := cancel.Update(key("enter"))
 	if next.(model).running() {
-		t.Error("enter on no should not start anything")
+		t.Error("enter on cancel should not start anything")
 	}
 	if cmd == nil {
-		t.Error("enter on no should quit rather than leave you on a page with no next step")
+		t.Error("cancel should quit rather than leave you on a page with no next step")
 	}
 }
 

@@ -246,15 +246,15 @@ func (m model) handleSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "left", "right", "tab":
 		// Two buttons, so one key that moves is enough and either arrow does
 		// it. Nothing here is a list where direction carries meaning.
-		m.setupNo = !m.setupNo
+		m.setupCancel = !m.setupCancel
 		return m, nil
 
 	case "enter":
-		if m.setupNo {
-			// The honest answer to "no" on the one screen whose only action is
-			// setting the server up: there is nothing else to do here, and
-			// leaving someone on a page with no next step is worse than
-			// closing it.
+		if m.setupCancel {
+			// Cancel closes the program. It is the honest end on the one screen
+			// whose only action is setting the server up: there is nothing else
+			// to do here, and leaving someone on a page with no next step is
+			// worse than closing it.
 			return m, tea.Quit
 		}
 		// Straight to the loading screen. What is about to be installed was
@@ -291,20 +291,24 @@ func (m model) viewSetup() string {
 			"")
 	}
 
-	body := "komizo will install Docker and start a reverse proxy that handles " +
-		"HTTPS for everything you deploy here. It takes a minute, leaves the " +
-		"rest of the machine alone, and is safe to run again later."
-	var wrapped []string
-	for _, ln := range wrap(body, textWidth(m.width)) {
-		wrapped = append(wrapped, dimStyle.Render(ln))
+	// Centred line by line, not aligned to a common left edge. A block edge is
+	// what a table or a list wants; a sentence under a centred title wants to
+	// sit under the middle of it.
+	for _, ln := range wrap("Your server & keys secured", textWidth(m.width)) {
+		lines = append(lines, dimStyle.Render(ln))
 	}
-	lines = append(lines, alignBlock(wrapped)...)
 
-	lines = append(lines, "", titleStyle.Render("Set it up?"), "", m.setupButtons())
+	lines = append(lines, "", "", m.setupButtons())
 	return m.centred(lines...)
 }
 
 // setupButtons is the decision, at the end of what there is to read.
+//
+// Verbs, not answers. "yes" and "no" need a question above them to mean
+// anything, and the question was a line saying "Set it up?" over a screen whose
+// title already says the server is not set up -- the same sentence twice, once
+// as a statement and once as a question. A button that says what it does needs
+// nothing above it.
 //
 // Marked with the same accent bar the app list uses for its cursor, rather than
 // a box or reverse video: a selection should look the same wherever it is on
@@ -315,11 +319,11 @@ func (m model) setupButtons() string {
 	// and a pair that changed width would shift under the key that moved it.
 	button := func(label string, selected bool) string {
 		if selected {
-			return barStyle.Render(cursorBar) + " " + pad(selStyle.Render(label), 4)
+			return barStyle.Render(cursorBar) + " " + pad(selStyle.Render(label), 6)
 		}
-		return "  " + pad(dimStyle.Render(label), 4)
+		return "  " + pad(dimStyle.Render(label), 6)
 	}
-	return button("yes", !m.setupNo) + "    " + button("no", m.setupNo)
+	return button("start", !m.setupCancel) + "    " + button("cancel", m.setupCancel)
 }
 
 // --- the prompts, shared -----------------------------------------------------

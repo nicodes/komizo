@@ -454,20 +454,6 @@ func (m model) centred(lines ...string) string {
 	return b.String()
 }
 
-// alignBlock pads lines to a common width, so centring them gives the block one
-// left edge instead of staggering every line by its own length.
-func alignBlock(lines []string) []string {
-	w := 0
-	for _, ln := range lines {
-		w = max(w, lipglossWidth(ln))
-	}
-	out := make([]string, len(lines))
-	for i, ln := range lines {
-		out[i] = pad(ln, w)
-	}
-	return out
-}
-
 // loadingPane is the one thing this interface shows while it waits: a spinner
 // with the word under it, in the middle of whatever space the page has.
 //
