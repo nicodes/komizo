@@ -83,9 +83,12 @@ func (a addResult) items() int {
 
 func (a addResult) copySelected() error {
 	if a.cursor == resultKey {
+		// The key keeps its trailing newline: it is the PEM terminator, part of
+		// the format rather than decoration, and it is what ssh-keygen writes.
 		return copyToClipboard(a.key)
 	}
-	return copyToClipboard(a.knownHosts + "\n")
+	// The host keys do not. See copyKnownHosts.
+	return copyToClipboard(a.knownHosts)
 }
 
 func fetchApps(t target) tea.Cmd {

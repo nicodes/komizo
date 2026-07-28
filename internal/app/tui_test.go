@@ -1731,6 +1731,39 @@ func TestRotationDoesNotOfferHostKeys(t *testing.T) {
 	}
 }
 
+func TestCopiedValuesHaveNoStrayNewline(t *testing.T) {
+	// Both of these are pasted into a text field in a browser, where a trailing
+	// newline is a blank last line that gets saved with the value.
+	//
+	// The host keys carry none. A known_hosts FILE ends with one, but ssh
+	// parses the last line with or without it, and this is not going into a
+	// file -- it is going into a variable.
+	//
+	// The key keeps exactly one, because that one is the PEM terminator rather
+	// than decoration: it is what ssh-keygen writes and what every reader
+	// expects after -----END OPENSSH PRIVATE KEY-----.
+	kp, err := newKeypair(keyComment("komizo-blog", "box"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(kp.private, "-----\n") {
+		t.Error("the private key should end with the PEM terminator and its newline")
+	}
+	if strings.HasSuffix(kp.private, "\n\n") {
+		t.Error("one newline, not two")
+	}
+
+	hosts := formatKnownHosts(target{host: "box", port: 22}, [][2]string{
+		{"ssh-ed25519", "AAAA"}, {"ssh-rsa", "BBBB"},
+	})
+	if strings.HasSuffix(hosts, "\n") {
+		t.Errorf("the host keys should not end with a newline: %q", hosts)
+	}
+	if lines := strings.Split(hosts, "\n"); len(lines) != 2 {
+		t.Errorf("expected one line per key, got %d: %q", len(lines), hosts)
+	}
+}
+
 func TestKnownHostsIsCopiedPerApp(t *testing.T) {
 	// The KEYS belong to the box and every app pins the same ones; the NAMES
 	// belong to the repo, because known_hosts is matched on the exact string

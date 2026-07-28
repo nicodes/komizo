@@ -711,7 +711,11 @@ func (m model) copyKnownHosts(a appRow) model {
 	if len(names) == 0 {
 		m.status, m.statusErr = "no names recorded for "+a.name+"; using "+m.tgt.host, true
 	}
-	if err := copyToClipboard(formatKnownHosts(m.tgt.namedFor(names), m.srv.hostKeys) + "\n"); err != nil {
+	// No trailing newline. A known_hosts FILE ends with one, but this is going
+	// into a text field in a browser, where it shows up as a blank last line
+	// and gets pasted back into the variable. ssh does not need it: the last
+	// line parses with or without it.
+	if err := copyToClipboard(formatKnownHosts(m.tgt.namedFor(names), m.srv.hostKeys)); err != nil {
 		m.status, m.statusErr = err.Error(), true
 	} else if !m.statusErr {
 		m.status, m.statusErr = a.name+" known_hosts copied", false
