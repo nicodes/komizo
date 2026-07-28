@@ -109,6 +109,12 @@ type model struct {
 	chartsSvc   string // which container within it, or "" for the whole app
 	chartsReady bool
 
+	// freeScroll is set while the page is being driven by the wheel rather than
+	// by the cursor. Cleared the moment a key moves the selection, so the two
+	// never fight: the wheel moves the page, the arrows move the selection and
+	// take the page with them.
+	freeScroll bool
+
 	width, height int
 }
 
@@ -276,6 +282,11 @@ func typedText(msg tea.KeyMsg) string {
 // box you are looking at, which is the only time this runs.
 type pollMsg struct{}
 
+// wheelRows is how far one notch moves the page. Three is the common default
+// and reads as a nudge; one is imperceptible on a long page, and a screenful
+// loses your place.
+const wheelRows = 3
+
 func pollTick() tea.Cmd {
 	return tea.Tick(5*time.Second, func(time.Time) tea.Msg { return pollMsg{} })
 }
@@ -334,12 +345,28 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		return m, nil
 
+	case tea.MouseMsg:
+		// The wheel moves the PAGE and never the selection. Scrolling to look
+		// at something is not choosing it, and a wheel that moved the cursor
+		// would arm every key in the footer against whatever drifted under it.
+		switch msg.Type {
+		case tea.MouseWheelUp:
+			m.freeScroll = true
+			m.scroll -= wheelRows
+		case tea.MouseWheelDown:
+			m.freeScroll = true
+			m.scroll += wheelRows
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		// Ctrl+C always leaves, whatever is on screen -- except mid-operation,
 		// where quitting would abandon a half-applied change on the server.
 		if msg.String() == "ctrl+c" && !m.running() {
 			return m, tea.Quit
 		}
+		// Any key hands the page back to the cursor.
+		m.freeScroll = false
 		return m.handleKey(msg)
 
 	case appsMsg:
@@ -1001,7 +1028,7 @@ func (m model) updateServerPrompt() prompt {
 // probing, offering to accept an unseen host key -- happens inside the program
 // instead, as a command and a question in the footer. See connect.
 func RunLoginTUI() error {
-	p := tea.NewProgram(newLoginModel(), tea.WithAltScreen())
+	p := tea.NewProgram(newLoginModel(), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
 	return err
 }
@@ -1037,7 +1064,7 @@ func RunTUI(hostArg string, port int, portExplicit bool, assumeYes bool) error {
 		}
 	}
 
-	p := tea.NewProgram(newModel(tgt), tea.WithAltScreen())
+	p := tea.NewProgram(newModel(tgt), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err = p.Run()
 	return err
 }

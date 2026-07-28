@@ -128,8 +128,18 @@ func (m *model) reflow() {
 	body := rowsOf(m.pageBody())
 
 	switch i := anchorOf(body); {
-	case m.scr == screenLogs:
-		// The user drives it.
+	case m.scr == screenLogs || m.freeScroll:
+		// The user drives it. Nothing is dragged back to the cursor until they
+		// move the cursor again -- a page that snaps back the instant you let
+		// go of the wheel cannot be scrolled at all.
+
+	case m.cursor == 0 && i >= 0:
+		// The first selectable row, so there is nothing selectable above it --
+		// only headings and the box's own facts. Snap to the very top rather
+		// than stopping at the cursor, or those rows scroll away once and never
+		// come back: reflow will not go above the cursor, and no keypress moves
+		// the cursor higher.
+		m.scroll = 0
 
 	case i >= 0:
 		// Scroll the minimum that puts the cursor back on screen, so moving one

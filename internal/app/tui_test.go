@@ -4089,3 +4089,73 @@ func TestCrumbsNameTheWholePath(t *testing.T) {
 		t.Errorf("container requests crumb = %q", got)
 	}
 }
+
+// Content above the first selectable row must stay reachable. reflow will not
+// scroll above the cursor, and no keypress moves the cursor higher than its
+// first item -- so without a rule for that case, the box's own facts scroll away
+// once and never come back.
+func TestTheTopOfTheIndexStaysReachable(t *testing.T) {
+	m := testModel()
+	m.width, m.height = 90, 14
+	m.apps = nil
+	for _, n := range []string{"alpha", "bravo", "charlie", "delta", "echo"} {
+		m.apps = append(m.apps, appRow{name: n, running: "1", version: "abc", image: "ghcr.io/x/" + n,
+			containers: []containerRow{{app: n, service: "api", name: n + "-api-1", state: "running"}}})
+	}
+	m.reflow()
+
+	// Away from the top, then all the way back.
+	for i := 0; i < 20; i++ {
+		m = send(m, "down")
+	}
+	if m.scroll == 0 {
+		t.Fatal("the fixture is too short to scroll; the test proves nothing")
+	}
+	for i := 0; i < 30; i++ {
+		m = send(m, "up")
+	}
+	if m.scroll != 0 {
+		t.Errorf("back at the first row, scroll = %d, want 0", m.scroll)
+	}
+	if v := stripANSI(m.View()); !strings.Contains(v, "alpine") {
+		t.Errorf("the first row of the page should be visible again:\n%s", v)
+	}
+}
+
+// The wheel moves the page and never the selection: scrolling to look at
+// something is not choosing it. And the page must not snap back to the cursor
+// while the wheel is driving, or it cannot be scrolled at all.
+func TestTheWheelMovesThePageNotTheCursor(t *testing.T) {
+	m := testModel()
+	m.width, m.height = 90, 14
+	m.apps = nil
+	for _, n := range []string{"alpha", "bravo", "charlie", "delta", "echo"} {
+		m.apps = append(m.apps, appRow{name: n, running: "1", version: "abc", image: "ghcr.io/x/" + n,
+			containers: []containerRow{{app: n, service: "api", name: n + "-api-1", state: "running"}}})
+	}
+	m.reflow()
+	cursor := m.cursor
+
+	next, _ := m.Update(tea.MouseMsg{Type: tea.MouseWheelDown})
+	m = next.(model)
+	if m.cursor != cursor {
+		t.Errorf("the wheel moved the selection: %d -> %d", cursor, m.cursor)
+	}
+	if m.scroll == 0 {
+		t.Error("the wheel did not move the page")
+	}
+
+	// It keeps moving rather than being dragged back to the cursor.
+	was := m.scroll
+	next, _ = m.Update(tea.MouseMsg{Type: tea.MouseWheelDown})
+	m = next.(model)
+	if m.scroll <= was {
+		t.Errorf("a second notch did not advance: %d -> %d", was, m.scroll)
+	}
+
+	// A key hands the page back to the cursor.
+	m = send(m, "down")
+	if m.freeScroll {
+		t.Error("a keypress should return the page to the cursor")
+	}
+}
