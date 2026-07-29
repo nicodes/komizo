@@ -12,6 +12,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"strings"
 )
 
@@ -29,6 +30,35 @@ var ErrSilent = errors.New("")
 // startup, which is where the linker can reach it.
 var Version = "dev"
 
+// versionText is the version, and the point at which "dev" gets a second
+// chance to be something better.
+//
+// The release workflow bakes a version in with -X, which covers the archives
+// people download. It does NOT cover `go install module@v0.0.1`, which
+// compiles from source with no linker flags of ours -- so every install that
+// way reported "dev", which is exactly the answer nobody needs when they are
+// trying to say which build is misbehaving.
+//
+// The module version is in the binary either way: the toolchain records it in
+// the build info for anything installed by version, and for a build from a
+// working tree it stamps a pseudo-version from the VCS instead --
+// 0.0.0-<date>-<sha>, with +dirty when the tree does not match the commit.
+// That is more use than the word "dev", so it is passed through as it is.
+//
+// "dev" survives only where there is nothing better: no build info at all, or
+// VCS stamping turned off, which reports "(devel)" and says no more than "dev"
+// does with fewer characters.
+func versionText() string {
+	if Version != "dev" {
+		return Version
+	}
+	bi, ok := debug.ReadBuildInfo()
+	if !ok || bi.Main.Version == "" || bi.Main.Version == "(devel)" {
+		return Version
+	}
+	return strings.TrimPrefix(bi.Main.Version, "v")
+}
+
 func Main(args []string) error {
 	// `komizo` on its own is the interface with nothing to connect to yet: it
 	// opens and asks for an address. It used to print the usage and exit 2,
@@ -44,7 +74,7 @@ func Main(args []string) error {
 	// tool misbehaves is which build of it they are running, and that answer
 	// must not depend on a server being reachable or a flag parsing.
 	case "--version", "-v", "version":
-		fmt.Println("komizo " + Version)
+		fmt.Println("komizo " + versionText())
 		return nil
 	case "init":
 		err = RunInit(args[1:])
