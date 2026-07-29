@@ -41,6 +41,10 @@ var (
 	barStyle   = lipgloss.NewStyle().Foreground(cAccent)
 	brandStyle = lipgloss.NewStyle().Foreground(cAccent).Bold(true)
 
+	// A mixed minute in a sparkline: the successful share as a block in the
+	// traffic colour, failures as the background above it. See spark.
+	stackedStyle = lipgloss.NewStyle().Foreground(cAccent).Background(cErr)
+
 	// The breadcrumb: the terminal's own foreground, unstyled. Not bold, and
 	// not the accent -- both belong to the brand beside it, and a crumb wearing
 	// either would compete with the word it is hanging off.
@@ -369,6 +373,10 @@ type treeRow struct {
 	// explicitly rather than counted here, so the highlight is driven by the
 	// same list the keys act on.
 	idx int
+	// spark is the index of the sparkline cell, or 0 for rows without one --
+	// 0 is a safe sentinel because cell 0 is always the status glyph. Named by
+	// the row that builds the cells, because only it knows the layout.
+	spark int
 }
 
 // tree lays the app list out in one set of columns, every row aligned.
@@ -421,13 +429,21 @@ func tree(rows []treeRow, selected int) string {
 		// which made the selection appear to step sideways the moment it
 		// reached the app list.
 		if r.idx >= 0 && r.idx == selected {
-			// The first cell is the status glyph and is left exactly as it is;
-			// everything after it goes bright. Brightening the glyph too would
-			// mean stripping its colour, and there is no way to put back which
-			// colour it was once every state is the same circle.
-			glyph, rest := cells[0], strings.Join(cells[1:], "  ")
-			b.WriteString(barStyle.Render("▍") + " " + glyph + "  " +
-				brighten(strings.TrimRight(rest, " ")) + "\n")
+			// The status glyph and the sparkline are left exactly as they are;
+			// everything else goes bright. Brightening either would mean
+			// stripping colours that ARE the data -- the glyph's state, and
+			// the strip's blue-under-red -- and there is no way to put back
+			// which colour it was once every cell is the same white.
+			out := make([]string, len(cells))
+			for i, c := range cells {
+				if i == 0 || (r.spark > 0 && i == r.spark) {
+					out[i] = c
+					continue
+				}
+				out[i] = brighten(c)
+			}
+			b.WriteString(barStyle.Render("▍") + " " +
+				strings.TrimRight(strings.Join(out, "  "), " ") + "\n")
 			continue
 		}
 		b.WriteString(gutter + line + "\n")

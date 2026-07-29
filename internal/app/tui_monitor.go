@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/NimbleMarkets/ntcharts/linechart/timeserieslinechart"
-	"github.com/NimbleMarkets/ntcharts/sparkline"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -30,23 +29,26 @@ const (
 	sparkWindow  = 30     // minutes
 	sparkColumns = 16
 
-	// Braille packs four dots to a cell vertically, so a seven-row chart had
-	// twenty-eight steps to place a whole day's range in -- enough to draw a
-	// line, not enough to see its shape. These are the thing the screen is for;
-	// the page scrolls if they do not fit, which is the frame's job.
-	// Chart heights. Braille packs four dots to a cell vertically, so a short
-	// chart has very few steps to place a whole window's range in -- enough to
-	// draw a line, not enough to see its shape.
+	// One chart height for the whole page. Braille packs four dots to a cell
+	// vertically, so a short chart has very few steps to place a window's
+	// range in -- enough to draw a line, not enough to see its shape. These
+	// are the thing the screen is for; the page scrolls if they do not fit,
+	// which is the frame's job.
 	//
-	// Traffic gets more of the page than resources: it is what the screen is
-	// named for, and there are two of those charts against three of the others.
-	netPanelHeight = 14
-	sysChartHeight = 11
+	// Twelve is LOAD-BEARING for the how-unusual charts: two rows go to the
+	// axis and its labels, and the ten left over span the ten deviations of
+	// the sigma axis -- one row per deviation, so every y label is exact.
+	// ntcharts labels a row with the value at its top edge, and any height
+	// that does not divide the range evenly rounds those labels into small
+	// lies: at fourteen rows the zero line sat on a row labelled 1.
+	chartHeight = 12
 
-	// How far out the deviation panel draws before clamping. Beyond this the
-	// exact number stops mattering: four robust deviations from normal is
-	// "look at this", and so is forty.
-	devLimit = 4
+	// How far out the deviation charts draw before clamping, and the top of
+	// their axis. Beyond this the exact number stops mattering: five robust
+	// deviations from normal is "look at this", and so is forty -- and the
+	// first failure after a clean window, which is off the scale rather than
+	// on it, draws at the very top for exactly that reason.
+	devLimit = 5
 )
 
 // openMonitor is the same shape as openLogs: reset, mark not-ready, start the
@@ -107,11 +109,66 @@ func (m model) handleMonitorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.scr = screenIndex
 		m.status, m.statusErr = "", false
 		return m, nil
+
+	// The same keys the log window answers to: the page is taller than a
+	// terminal -- five rows of charts -- and a page you cannot scroll shows
+	// whichever charts happen to fit.
+	case "up":
+		m.scroll--
+	case "down":
+		m.scroll++
+	case "shift+up":
+		m.scroll = 0
+	case "shift+down":
+		m.scroll = m.maxScroll()
+
+	case "l":
+		return m.openSubjectLogs()
 	case "r":
 		return m.openMonitor(m.monitorOf, m.monitorSvc)
 	case "t":
 		return m.ask(m.rangePrompt()), nil
 	}
+	// Unclamped here, like the log window: Update clamps it on the way out,
+	// against a viewport this keypress may have just changed the height of.
+	return m, nil
+}
+
+// openSubjectLogs is the log of what the monitor is looking at, so a shape in
+// a chart and the lines behind it are one keypress apart rather than a trip
+// back through the list.
+//
+// For the box that is the proxy's log: it is where this page's box-wide
+// numbers come from, and the only box-wide log there is. A box with no proxy
+// has no such log, and the key does nothing rather than fetch a log for a
+// container that does not exist.
+func (m model) openSubjectLogs() (tea.Model, tea.Cmd) {
+	switch {
+	case m.monitorOf == "":
+		if !m.proxy.installed {
+			return m, nil
+		}
+		return m.openLogs(proxyContainer, "proxy", "", "", containerLogCmd(proxyContainer))
+	case m.monitorSvc == "":
+		for _, a := range m.apps {
+			if a.name == m.monitorOf {
+				return m.openLogs("app:"+a.name, a.name, a.name, "", stackLogCmd(a))
+			}
+		}
+	default:
+		for _, a := range m.apps {
+			if a.name != m.monitorOf {
+				continue
+			}
+			for _, c := range a.containers {
+				if c.service == m.monitorSvc {
+					return m.openLogs(c.name, c.service, c.app, c.service, containerLogCmd(c.name))
+				}
+			}
+		}
+	}
+	// The subject has left the inventory since this screen opened. Nothing to
+	// fetch, and the page itself already shows what is going on.
 	return m, nil
 }
 
@@ -158,7 +215,14 @@ func (m *model) reopenMonitor() tea.Cmd {
 }
 
 func (m model) monitorKeys() string {
-	keys := append([]string{"t", "range", "r", "refresh"}, m.selectKey()...)
+	keys := []string{"↑↓", "scroll", "shift+↑↓", "ends"}
+	// The log key is only offered when pressing it would open one: the box's
+	// log is the proxy's, and a box with no proxy has nothing to show.
+	if m.monitorOf != "" || m.proxy.installed {
+		keys = append(keys, "l", "logs")
+	}
+	keys = append(keys, "t", "range", "r", "refresh")
+	keys = append(keys, m.selectKey()...)
 	return helpLine(m.width, append(keys, "esc", "back", "q", "quit")...)
 }
 
@@ -166,24 +230,7 @@ func (m model) monitorKeys() string {
 // with no axis and no scale. It says "busy, quiet, or something changed" and
 // nothing more precise, which is all a single row has space to mean.
 func (m model) sparkFor(app string) string {
-	return spark(m.window(app, ""), false)
-}
-
-// errSparkFor is the same window, failures only.
-//
-// Its own column beside the requests one, at the same width, so the two line up
-// in TIME: a bar in the errors strip sits directly under the traffic it came
-// out of. Different widths would put the same minute in two places and make the
-// pair unreadable together, which is the only reason to have them side by side.
-func (m model) errSparkFor(app string) string {
-	return spark(m.window(app, ""), true)
-}
-
-func (m model) errSparkForService(app, service string) string {
-	if !servesAnyHostname(m.metrics, app, service) {
-		return ""
-	}
-	return spark(m.window(app, service), true)
+	return spark(m.window(app, ""))
 }
 
 // window is the last half hour for a subject, which is what a row has room to
@@ -196,32 +243,86 @@ func (m model) window(app, service string) series {
 	return seriesForService(m.metrics, app, service, now-sparkWindow*60, now)
 }
 
-// spark is the little chart itself.
+// spark is the little chart itself: one strip carrying both questions. Each
+// minute is a column whose height is every request it served, drawn blue with
+// the 5xx share stacked red on top -- blue under red, so the eye reads "how
+// busy" along the strip and "is any of it failing" as red arriving at the top.
 //
-// Zeros draw as blanks, which is the sparkline's own encoding rather than a
-// special case: a minute with no failures has no bar, exactly as a minute with
-// no requests would. So an app serving happily has an empty errors strip, and
-// that is a measurement -- the dots are the "nothing was measured" state, and
-// they are only used when nothing reached the app at all.
-func spark(s series, errsOnly bool) string {
+// A terminal cell is one glyph in one foreground on one background, and the
+// stack is built from exactly that: a clean minute is a blue block, a minute
+// of nothing but failures is a red one, and a mixed minute draws its
+// successful share as a blue block against a red background. In that last
+// case the red reads to the top of the cell rather than to the bar's own
+// height -- overstated on purpose, because the alternative was not drawing the
+// stack at all in a one-cell-tall strip. Red still only ever appears on a
+// minute in which something actually failed.
+//
+// Zeros draw the floor: a dim one-eighth baseline, so a quiet minute reads as
+// part of one connected strip rather than a hole in it. The dots are the
+// "nothing was measured" state, only used when nothing reached the app at all.
+func spark(s series) string {
 	if !s.any() {
 		return dimStyle.Render(strings.Repeat("·", sparkColumns))
 	}
-	// Blue for traffic, red for failures. The colour is the label here: the two
-	// strips sit side by side with nothing between them, and at sixteen columns
-	// there is no room to write which is which.
-	//
-	// A permanently red strip would normally be saying "wrong" about every
-	// minute -- but this one is BLANK on a healthy app, because zero draws no
-	// bar. Red only ever appears when there is something red to say.
-	vals, style := s.total, barStyle
-	if errsOnly {
-		vals, style = s.errors, errStyle
+	tot := bucketTo(s.total, sparkColumns)
+	errs := bucketTo(s.errors, sparkColumns)
+	var top float64
+	for _, v := range tot {
+		if v > top {
+			top = v
+		}
 	}
-	sl := sparkline.New(sparkColumns, 1, sparkline.WithStyle(style))
-	sl.PushAll(bucketTo(vals, sparkColumns))
-	sl.Draw()
-	return sl.View()
+	var b strings.Builder
+	for i, t := range tot {
+		g, style := sparkCell(t, errs[i], top)
+		b.WriteString(style.Render(g))
+	}
+	return b.String()
+}
+
+// sparkCell is one minute of the strip: which block, in which colouring. Split
+// from spark so the stacking arithmetic is testable without reading colours
+// back out of a rendered string.
+func sparkCell(t, e, top float64) (string, lipgloss.Style) {
+	blocks := []rune("▁▂▃▄▅▆▇█")
+	if !(t > 0) || top <= 0 {
+		// A measured minute with nothing in it draws the FLOOR, not a hole: a
+		// blank cell between bars read as a gap in the record, and a mostly
+		// quiet strip fell apart into disjointed stubs. Dim, so it reads as
+		// the line the bars stand on rather than as a bar -- this only ever
+		// draws inside a window that measured something, where zero is a real
+		// measurement. "Nothing measured at all" is still dots, and a
+		// container nobody can measure is still blank.
+		return "▁", dimStyle
+	}
+	// Ceil, so one request in a busy window is a sliver rather than nothing.
+	h := int(math.Ceil(t / top * 8))
+	var r int
+	if e > 0 {
+		// At least one eighth of red for any failure at all -- the strip
+		// exists to make failures visible, and rounding one away would hide it
+		// exactly where it is rarest. A blue base survives when anything
+		// succeeded, except in a one-eighth column, where the failure is the
+		// news.
+		r = int(math.Round(e / t * float64(h)))
+		if r < 1 {
+			r = 1
+		}
+		if r > h {
+			r = h
+		}
+		if e < t && r == h && h > 1 {
+			r = h - 1
+		}
+	}
+	switch blue := h - r; {
+	case r == 0:
+		return string(blocks[h-1]), barStyle
+	case blue == 0:
+		return string(blocks[h-1]), errStyle
+	default:
+		return string(blocks[blue-1]), stackedStyle
+	}
 }
 
 // sparkForService is the same little chart for one container.
@@ -240,7 +341,7 @@ func (m model) sparkForService(app, service string) string {
 	if !servesAnyHostname(m.metrics, app, service) {
 		return ""
 	}
-	return spark(m.window(app, service), false)
+	return spark(m.window(app, service))
 }
 
 // bucketTo averages a series down to n points.
@@ -288,7 +389,7 @@ func (m model) viewMonitor() string {
 	// The blank line between the rows does the grouping a heading was doing.
 	b.WriteString("\n")
 	if net := m.networkPanels(); len(net) > 0 {
-		b.WriteString(m.grid(net, 2, netPanelHeight))
+		b.WriteString(m.grid(net, 2, chartHeight))
 	} else {
 		b.WriteString(m.noTrafficNote())
 	}
@@ -328,13 +429,9 @@ func (m model) noTrafficNote() string {
 		rangeText(m.monitorRange, time.Now())))
 }
 
-// networkPanels is requests and failures, or nothing at all when there is no
-// traffic to draw -- which the caller says in words instead.
-// The how-unusual line is not named in any subtitle. It is on nearly every
-// chart here, so saying so on each of them is a word repeated four times to
-// distinguish nothing -- and its absence is visible without being labelled,
-// because a chart that is not scored has ONE line rather than a green one. A
-// missing line is not a reassuring line.
+// networkPanels is requests and failures -- each a row of two charts, the
+// series and its how-unusual partner -- or nothing at all when there is no
+// traffic to draw, which the caller says in words instead.
 func (m model) networkPanels() []panel {
 	// The full range, on every chart. Data that does not exist is not plotted;
 	// the axis is not moved to fit it.
@@ -371,30 +468,27 @@ func (m model) networkPanels() []panel {
 		scored: true,
 		sub:    "req/min",
 		draw: func(w, h int) string {
-			return m.combinedChart(r, times, s.total, trailingBaseline(s.total), w, h, keyStyle, 0)
+			return m.seriesChart(r, times, s.total, w, h, keyStyle, 0)
 		},
-	}, {
+	}, unusualPanel("Requests", func(w, h int) string {
+		return m.sigmaChart(r, times, trailingBaseline(s.total), w, h)
+	}), {
 		title:  "Failures (5xx)",
 		scored: true,
 		sub:    "5xx/min",
 		draw: func(w, h int) string {
-			return m.combinedChart(r, times, s.errors, trailingPoisson(s.errors), w, h, keyStyle, 0)
+			return m.seriesChart(r, times, s.errors, w, h, keyStyle, 0)
 		},
-	}}
+	}, unusualPanel("Failures", func(w, h int) string {
+		return m.sigmaChart(r, times, trailingPoisson(s.errors), w, h)
+	})}
 }
 
-// combinedChart draws a series and, over it, how unusual each point was.
-//
-// The deviation is mapped onto the chart's range so both share one canvas: -4
-// sits on the floor, 0 halfway up, +4 at the ceiling. The two series are not
-// comparable in value and were never meant to be -- only in shape and in x.
-//
-// One colour, read for shape: the line lifting off the reference is the whole
-// signal, and how far it lifts is how unusual. An earlier version coloured it
-// green, amber and red by how far -- but braille packs eight dots into one
-// character cell and a cell holds one colour, so every crossing recoloured its
-// neighbours' dots and the line read as broken rather than graded.
-func (m model) combinedChart(axis timeRange, times []time.Time, vals []float64, base baseline, w, h int, style lipgloss.Style, fixedMax float64) string {
+// seriesChart draws one series and nothing else. Its how-unusual chart sits
+// beside it on the same row -- the two used to share a canvas, and two lines
+// in different units crossing each other read as a relationship they do not
+// have.
+func (m model) seriesChart(axis timeRange, times []time.Time, vals []float64, w, h int, style lipgloss.Style, fixedMax float64) string {
 	if len(times) == 0 {
 		return ""
 	}
@@ -410,59 +504,78 @@ func (m model) combinedChart(axis timeRange, times []time.Time, vals []float64, 
 		yMax = 1
 	}
 	// The axis is the range the page is showing, NOT the extent of this series.
-	// Four charts of the same moment on four different axes is a page you cannot
-	// read across, and reading across is why they are on one screen.
+	// Charts of the same moment on different axes is a page you cannot read
+	// across, and reading across is why they are on one screen.
 	from, to := axis.from, axis.to
 	if to <= from {
 		to = from + 1
 	}
-	place := func(d float64) float64 { return (d + devLimit) / (2 * devLimit) * yMax }
+	c := m.newChart(from, to, w, h)
+	c.SetYRange(0, yMax)
+	c.SetViewYRange(0, yMax)
+	c.SetDataSetStyle("series", style)
+	for i, v := range vals {
+		// A reading that could not be taken is skipped, not drawn. Zero would be
+		// a measurement: a dive to the floor, which is what a dead service looks
+		// like. The line bridges the gap instead, which claims less.
+		if !math.IsNaN(v) {
+			c.PushDataSet("series", timeserieslinechart.TimePoint{Time: times[i], Value: v})
+		}
+	}
+	c.DrawBrailleAll()
+	return c.View()
+}
 
+// sigmaChart is how unusual each point of a series was, on its own canvas to
+// the right of the series it scores: a flat dim line where "not unusual" is,
+// and the score lifting off it by however far past ordinary the minute went.
+//
+// Its y axis is deviations, -5 to +5, one chart row per deviation -- see
+// chartHeight, which is what makes that arithmetic hold. It has to hold
+// EXACTLY: ntcharts labels a row with the value at its top edge, and a range
+// that does not divide the rows evenly rounds the labels into small lies --
+// an earlier height put the zero line on a row labelled 1, which is worse
+// than no label, because it will be believed.
+func (m model) sigmaChart(axis timeRange, times []time.Time, base baseline, w, h int) string {
+	if len(times) == 0 {
+		return ""
+	}
+	from, to := axis.from, axis.to
+	if to <= from {
+		to = from + 1
+	}
 	// Drawn from the quietened score, not the raw one. See quietened: the raw
 	// series is correct and reads as noise, because ordinary jitter is about
 	// one deviation wide on traffic like this.
 	score := quietened(base.score)
 
 	c := m.newChart(from, to, w, h)
-	c.SetYRange(0, yMax)
-	c.SetViewYRange(0, yMax)
+	c.SetYRange(-devLimit, devLimit)
+	c.SetViewYRange(-devLimit, devLimit)
 	c.SetDataSetStyle("normal", dimStyle)
-	c.SetDataSetStyle("series", style)
 
-	// Where "not unusual" sits, so the overlaid series has a zero to be read
-	// against. Without it that line is a shape with no origin.
-	//
-	// Drawn across the DATA, not across the axis. The axis is the range the page
-	// is showing and can reach back further than this series does; a reference
-	// line ruled across the empty part would be the one thing plotted where
-	// there is nothing to plot.
-	if a, b, ok := extent(vals); ok {
-		c.PushDataSet("normal", timeserieslinechart.TimePoint{Time: times[a], Value: place(0)})
-		c.PushDataSet("normal", timeserieslinechart.TimePoint{Time: times[b], Value: place(0)})
+	// Where "not unusual" sits, so the score has a zero to be read against.
+	// Without it the line is a shape with no origin. Drawn across the SCORED
+	// stretch, not across the axis: the axis is the range the page is showing,
+	// and a reference ruled across minutes nothing scored would be the one
+	// thing plotted where there is nothing to plot.
+	if a, b, ok := extent(score); ok {
+		c.PushDataSet("normal", timeserieslinechart.TimePoint{Time: times[a], Value: 0})
+		c.PushDataSet("normal", timeserieslinechart.TimePoint{Time: times[b], Value: 0})
 	}
 
 	// Each contiguous SCORED stretch is its own data set, numbered as it
 	// starts. ntcharts joins every point in a set to the point pushed after
 	// it, whatever lies between -- so one set for the whole line would rule a
-	// bridge straight across any unscored gap in it. The names sort after
-	// "series", so where the two lines share a cell the overlay's colour wins,
-	// and the crossing the chart exists to show is not painted over.
+	// bridge straight across any unscored gap in it.
 	run, runs := "", 0
-	for i, v := range vals {
-		at := times[i]
-		// A reading that could not be taken is skipped, not drawn. Zero would be
-		// a measurement: a dive to the floor, which is what a dead service looks
-		// like. The line bridges the gap instead, which claims less.
-		if !math.IsNaN(v) {
-			c.PushDataSet("series", timeserieslinechart.TimePoint{Time: at, Value: v})
-		}
-		d := score[i]
+	for i, d := range score {
 		if math.IsNaN(d) {
 			// No baseline yet, or a flat one with no scale. Skipped rather than
 			// drawn at zero: "we cannot say" and "exactly normal" are different
-			// statements and must not share a shape. And the line BREAKS here,
-			// unlike the series above it: bridging the gap would rule a line
-			// across a stretch this very point says nothing can be said about.
+			// statements and must not share a shape. And the line BREAKS here:
+			// bridging would rule a line across a stretch this very point says
+			// nothing can be said about.
 			run = ""
 			continue
 		}
@@ -476,10 +589,19 @@ func (m model) combinedChart(axis timeRange, times []time.Time, vals []float64, 
 			run = fmt.Sprintf("unusual.%03d", runs)
 			c.SetDataSetStyle(run, okStyle)
 		}
-		c.PushDataSet(run, timeserieslinechart.TimePoint{Time: at, Value: place(d)})
+		c.PushDataSet(run, timeserieslinechart.TimePoint{Time: times[i], Value: d})
 	}
 	c.DrawBrailleAll()
 	return c.View()
+}
+
+// unusualPanel is the how-unusual chart's panel, beside the chart it scores
+// and named after it: "Requests σ" says which series and what kind of chart
+// in two words. A generic "how unusual" on all four said only the second, and
+// left the first to be inferred from position -- which holds on a wide
+// terminal and stops holding the moment the pairs zip into one column.
+func unusualPanel(of string, draw func(w, h int) string) panel {
+	return panel{title: of + " σ", sub: "deviations from normal", draw: draw}
 }
 
 func (m model) newChart(from, to int64, w, h int, extra ...timeserieslinechart.Option) timeserieslinechart.Model {

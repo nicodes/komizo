@@ -65,7 +65,9 @@ func viewIndex(m model) string {
 		// The sparkline learnt this the hard way: put after the routes column,
 		// it started past the right edge of a 132-column terminal and was
 		// clipped away entirely, on a box that was serving traffic.
-		rows = append(rows, treeRow{idx: idx, cells: []string{
+		// spark names the strip's cell so the selection highlight can leave
+		// its colours alone; see tree.
+		rows = append(rows, treeRow{idx: idx, spark: 4, cells: []string{
 			m.rowDot("app:"+a.name, appDot(a)),
 			dimStyle.Render(a.name),
 			dimStyle.Render(a.stateText()),
@@ -75,12 +77,12 @@ func viewIndex(m model) string {
 			// column ragged, and the thing the eye is scanning down is the
 			// name.
 			short(a.version),
-			// The last half hour of requests, and the last complete minute's
-			// rate. Dots rather than a flat line when nothing has arrived: a
-			// line along zero claims a measurement, and "nobody has asked this
-			// box for anything" is a different statement from "zero requests".
+			// The last half hour of requests, failures stacked red on top of
+			// the blue. Dots rather than a flat line when nothing has arrived:
+			// a line along zero claims a measurement, and "nobody has asked
+			// this box for anything" is a different statement from "zero
+			// requests".
 			m.sparkFor(a.name),
-			m.errSparkFor(a.name),
 			dimStyle.Render(a.image),
 		}})
 		// Each container under its app, with the hostnames that reach IT.
@@ -122,12 +124,11 @@ func viewIndex(m model) string {
 				// proxy DIALLED, which is a declaration and could be wrong.
 				// Apps ship no fragment now, and the port is observed instead:
 				// strictly better information from a source that cannot drift.
-				// The same two columns the app row uses, for the requests this
+				// The same strip the app row carries, for the requests this
 				// container served. Attribution comes from the app's own
 				// hostnames file, so a container nobody named there gets a
 				// BLANK rather than dots -- see sparkForService.
 				m.sparkForService(c.app, c.service),
-				m.errSparkForService(c.app, c.service),
 				m.routesCell(c, byContainer[c.name]),
 			}})
 			idx++
@@ -138,7 +139,7 @@ func viewIndex(m model) string {
 				join = "└ "
 			}
 			k.cells[1] = dimStyle.Render(join) + k.cells[1]
-			rows = append(rows, treeRow{idx: k.idx, cells: k.cells})
+			rows = append(rows, treeRow{idx: k.idx, spark: 4, cells: k.cells})
 		}
 	}
 	b.WriteString(tree(rows, m.cursor))
@@ -207,65 +208,51 @@ func (m model) boxSection() string {
 	// the block into the header above it: the labels went, the structure they
 	// marked did not.
 	b.WriteString("\n")
-	// What the box runs, above the things running on it.
-	b.WriteString(kv("os", dimStyle.Render(m.srv.osName())))
-	b.WriteString(m.proxyRows())
-	// Docker last: it is the least of the three. The proxy and its network are
-	// what break, and what you came to look at; the docker version changes when
-	// someone changes it.
+	// What the box IS, then what it is DOING. The facts first -- os, komizo,
+	// docker -- because they change when someone changes them; then, set off by
+	// a blank line, the live block: the proxy every request passes through and
+	// the three bars of what the machine is spending. The proxy sits directly
+	// above the bars because it is read the same way they are -- a glance at
+	// "is anything wrong with the thing it all runs through".
 	//
-	// Not m.cursor == 0 any more. The proxy row is above it now, so the index
-	// has to come from the focus list rather than from where this row used to
-	// be -- which is the bug that pairing hardcodes a number with a layout.
 	// komizo above docker: it is the one of the two that this interface can
 	// actually be wrong about, and the one you are more often here to fix.
+	b.WriteString(kv("os", dimStyle.Render(m.srv.osName())))
 	b.WriteString(kvSel("komizo", m.komizoLine(), m.cursor == m.rowIndex(focusKomizo)))
 	b.WriteString(kvSel("docker", dimStyle.Render(orDash(m.srv.docker)),
 		m.cursor == m.rowIndex(focusServer)))
-	// What the machine is spending, under the row that IS the machine. Three
-	// bars, for the box and nothing smaller -- the one question worth asking
-	// before reading anything below is whether the thing it all runs on is in
-	// trouble.
+	b.WriteString("\n")
+	b.WriteString(m.proxyRows())
 	b.WriteString(m.serverUsage())
 	// No known_hosts row. The value is per app -- the keys are the box's, the
 	// names are the repo's -- so it is copied from the app it belongs to.
 	return b.String()
 }
 
-// proxyRows are the shared reverse proxy, under the Server heading rather than
-// one of their own. A heading for two rows was a heading earning its keep on
-// grouping alone, and there was nothing else to group them against: the proxy
-// is a fact about this box the same way its docker version is.
+// proxyRows is the shared reverse proxy, one row, network included.
 //
-// They stay directly under the server and above the apps, which is what they
-// are: the thing every app on the box reaches the outside through, and the
-// first suspect when one of them is up and still not answering.
+// The network used to be a row of its own. It is not a thing anyone acts on --
+// it is created by setup and every app names it -- and a full row gave a
+// permanent line to a fact whose only interesting state is "missing", which
+// the proxy row can carry in the one sentence that state needs.
 //
 // It had a settings page once, with a field for the network and one for the
 // image. Two questions to reach a button that almost always wanted the values
-// already on screen -- so the values are simply shown, in the same label/value
-// rows the Server section uses, and changing either is a flag on the command
-// line where it belongs for something you do once.
+// already on screen -- so the values are simply shown, and changing either is
+// a flag on the command line where it belongs for something you do once.
+//
+// No image either. It is the one fact here that cannot change without someone
+// deciding it should: status and network are things to check, and an image
+// pinned by a flag on a command run once is a thing to confirm -- which is
+// not what this page is for. `komizo list` still prints it, and reinstalling
+// names it in the question.
 func (m model) proxyRows() string {
-	var b strings.Builder
-	pg, pt := m.proxyLine()
-	ng, nt := m.networkLine()
 	// "proxy", not "status". Under its own heading the row could be called that
-	// and be unambiguous; under Server it would read as the server's status,
-	// which is a different thing and one this page does not claim to know.
-	if !m.proxy.installed {
-		b.WriteString(kvDot("proxy", pg, pt, false))
-		b.WriteString(kvDot("network", ng, nt, false))
-		return b.String()
-	}
-	b.WriteString(kvDot("proxy", pg, pt, m.cursor == m.rowIndex(focusProxy)))
-	b.WriteString(kvDot("network", ng, nt, false))
-	// No image row. It is the one fact here that cannot change without someone
-	// deciding it should: status and network are things to check, and an image
-	// pinned by a flag on a command run once is a thing to confirm -- which is
-	// not what this page is for. `komizo list` still prints it, and reinstalling
-	// names it in the question.
-	return b.String()
+	// and be unambiguous; here it would read as the server's status, which is a
+	// different thing and one this page does not claim to know.
+	pg, pt := m.proxyLine()
+	return kvDot("proxy", pg, pt,
+		m.proxy.installed && m.cursor == m.rowIndex(focusProxy))
 }
 
 // startStop names the direction enter will go, so one key for both is not a
@@ -277,12 +264,12 @@ func startStop(running bool) string {
 	return "start"
 }
 
-// enterLabel is what enter will do to the selected row, for anything that wants
+// keyLabel is what a key will do to the selected row, for anything that wants
 // it outside the help line.
-func (m model) enterLabel() string {
+func (m model) keyLabel(key string) string {
 	k := m.contextKeys()
 	for i := 0; i+1 < len(k); i += 2 {
-		if k[i] == "enter" {
+		if k[i] == key {
 			return k[i+1]
 		}
 	}
@@ -317,12 +304,10 @@ func (m model) helpLines() string {
 		rest = append(rest, k[i], k[i+1])
 	}
 	pairs = append(pairs, rest...)
-	// Not the select key. This row already carries every action the selected
-	// row has, and adding a utility to it pushes "remove" off the end at an
-	// ordinary width -- a key that acts on the server losing its place to one
-	// that only affects your mouse. It is advertised on the log and monitor
-	// screens, which have room and are where text is worth copying, and it
-	// works here regardless.
+	// Not the select-mode toggle. On this screen s belongs to the row -- it
+	// starts and stops the thing selected -- and the toggle is advertised on
+	// the log and monitor screens, which have room and are where text is
+	// worth copying.
 	return helpLine(m.width, append(pairs, "q", "quit")...)
 }
 
@@ -343,28 +328,28 @@ func (m model) contextKeys() []string {
 func (m model) rowKeys() []string {
 	switch f := m.focused(); f.kind {
 	case focusServer:
-		return []string{"enter", "update docker", "m", "monitor"}
+		return []string{"enter", "monitor", "u", "update docker"}
 
 	case focusKomizo:
-		return []string{"enter", "update komizo"}
+		return []string{"enter", "monitor", "u", "update komizo"}
 
 	case focusProxy:
-		return []string{"enter", startStop(m.proxy.running()),
-			"l", "logs", "m", "monitor", "p", "reinstall"}
+		return []string{"enter", "monitor", "s", startStop(m.proxy.running()),
+			"l", "logs", "p", "reinstall"}
 
 	case focusApp:
 		if f.app < 0 {
 			return nil
 		}
 		a := m.apps[f.app]
-		return append([]string{"enter", startStop(a.up()), "l", "logs", "m", "monitor"},
+		return append([]string{"enter", "monitor", "s", startStop(a.up()), "l", "logs"},
 			appActions()...)
 
 	case focusContainer:
 		// No app actions here. They are app-wide, and offering them beside one
 		// container's name reads as though they apply to that container.
 		c := m.focusedContainer()
-		return []string{"enter", startStop(c.up()), "l", "logs", "m", "monitor"}
+		return []string{"enter", "monitor", "s", startStop(c.up()), "l", "logs"}
 
 	case focusAdd:
 		return []string{"enter", "add an app"}
@@ -396,11 +381,11 @@ func (m model) komizoLine() string {
 		// Either never installed, or installed by a komizo old enough not to
 		// have left a stamp. Both are fixed the same way, so they read the same.
 		return dimStyle.Render("—  ") + warnStyle.Render("not installed") +
-			dimStyle.Render("  · enter to install")
+			dimStyle.Render("  · u to install")
 	case m.srv.komizo != komizoStamp():
 		return dimStyle.Render(shortText(m.srv.komizo)+"  ") +
 			warnStyle.Render("out of date") +
-			dimStyle.Render("  · enter to update")
+			dimStyle.Render("  · u to update")
 	}
 	return dimStyle.Render(shortText(m.srv.komizo))
 }

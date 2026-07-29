@@ -36,10 +36,10 @@ func (m model) logLines() []string {
 	return strings.Split(strings.TrimRight(m.logs, "\n"), "\n")
 }
 
-// Five keys, and the footer names all five. There were eleven: g/G and
-// home/end and pgup/pgdn and space and f and b, plus left and h as second ways
-// to go back -- a vi mode and a pager mode layered over a window that shows one
-// screenful of text.
+// A handful of keys, and the footer names every one. There were eleven: g/G
+// and home/end and pgup/pgdn and space and f and b, plus left and h as second
+// ways to go back -- a vi mode and a pager mode layered over a window that
+// shows one screenful of text.
 //
 // Shift with the arrow you are already using replaces both jump pairs. It is
 // the same gesture for "further" that every list has, so there is nothing extra
@@ -53,7 +53,14 @@ func (m model) handleLogsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "esc":
-		m.scr = screenIndex
+		// Back to wherever the log was opened from -- the monitor, when it
+		// was. The list is the fallback rather than the zero value of the
+		// field, which is the login screen and never where anyone came from.
+		if m.logsBack == screenMonitor {
+			m.scr = screenMonitor
+		} else {
+			m.scr = screenIndex
+		}
 		m.status, m.statusErr = "", false
 		return m, nil
 
@@ -65,6 +72,14 @@ func (m model) handleLogsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.scroll = 0
 	case "shift+down":
 		m.scroll = m.maxScroll()
+
+	case "m":
+		// The monitor of what this log belongs to -- the reverse of l on the
+		// monitor, so the lines and the shape they explain are one keypress
+		// apart in both directions. The proxy's log carries no app, and its
+		// monitor is the whole box: the box-wide numbers are read off this
+		// very log.
+		return m.openMonitor(m.logsApp, m.logsSvc)
 
 	case "c":
 		if m.logs == "" {
@@ -120,7 +135,7 @@ func (m model) viewLogs() string {
 // esc goes back and q quits, which is what those keys do everywhere else. They
 // used to both go back, while the footer claimed q quit.
 func (m model) logsKeys() string {
-	keys := append([]string{"↑↓", "scroll", "shift+↑↓", "ends", "c", "copy"},
+	keys := append([]string{"↑↓", "scroll", "shift+↑↓", "ends", "m", "monitor", "c", "copy"},
 		m.selectKey()...)
 	return helpLine(m.width, append(keys, "esc", "back", "q", "quit")...)
 }

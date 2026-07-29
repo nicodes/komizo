@@ -151,38 +151,46 @@ func (m model) startServerUpdate() tea.Cmd {
 	return m.run.wait()
 }
 
-func (m model) networkLine() (string, string) {
-	n := m.net
-	if n.name == "" {
-		// The fix is re-running setup, which lives on the docker row -- named
-		// here because "u" used to do it and no longer exists.
-		return dot("err"), "none — apps cannot reach each other; re-run setup on the docker row"
-	}
-	meta := n.driver
-	if n.subnet != "" {
-		meta += ", " + n.subnet
-	}
-	return dot("ok"), n.name + "  " + meta
-}
-
+// proxyLine is the proxy's state and the network it fronts, one line: the two
+// are read together -- "can anything reach the apps" -- and the network's only
+// interesting state of its own is being missing.
 func (m model) proxyLine() (string, string) {
 	p := m.proxy
 	if m.busy[proxyContainer] || m.settling[proxyContainer] {
 		return spinner(m.spin), "working…"
 	}
+	var g, t string
 	switch {
 	case !p.installed:
-		return dot(""), "not installed — apps publish their own ports"
+		g, t = dot(""), "not installed — apps publish their own ports"
 	// The word stays here, unlike on a container row. This row is LABELLED
-	// "status", and a bare duration under that label answers a question nobody
+	// "proxy", and a bare duration under that label answers a question nobody
 	// asked -- five minutes of what? On a container the dot and the columns
 	// around it already say, which is why the word is redundant there and not
 	// here.
 	case !p.running():
-		return dot("err"), "stopped  " + since(p.finishedAt)
+		g, t = dot("err"), "stopped  "+since(p.finishedAt)
 	default:
-		return dot("ok"), "running  " + since(p.startedAt)
+		g, t = dot("ok"), "running  "+since(p.startedAt)
 	}
+	// The network, after whatever the proxy has to say. A missing one outranks
+	// the proxy's own dot: a running proxy on a box whose apps cannot reach
+	// each other is not a green row. The fix is re-running setup, which lives
+	// on the docker row.
+	if m.net.name == "" {
+		// Short enough to survive a narrow terminal: the frame cuts rows, and
+		// a hint that gets cut is no hint. The consequence -- apps cannot
+		// reach each other -- is what the red dot is for.
+		return dot("err"), t + "  ·  no shared network — re-run setup on the docker row"
+	}
+	net := m.net.name
+	if m.net.driver != "" {
+		net += ", " + m.net.driver
+	}
+	if m.net.subnet != "" {
+		net += ", " + m.net.subnet
+	}
+	return g, t + "  ·  " + net
 }
 
 func orDash(s string) string {

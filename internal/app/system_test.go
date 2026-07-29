@@ -9,13 +9,16 @@ import (
 )
 
 // A sample as the host script actually emits it: the three box records, two
-// filesystems that turn out to be one, and a container per line.
+// filesystems that turn out to be one, and a container per line. The two disk
+// records carry different mount points and the same device, which is what a
+// box that bind-mounts /var/lib/docker onto itself reports -- the shape that
+// folding by mount point got wrong.
 const sysSampleOut = "server\tready\tDocker version 26\n" +
 	"sys\tcpu\t100000\t90000\n" +
 	"sys\tcores\t2\t0\n" +
 	"sys\tmem\t2000000000\t500000000\n" +
-	"disk\t/\t3000000000\t10000000000\n" +
-	"disk\t/\t3000000000\t10000000000\n" +
+	"disk\t/\t/dev/vda1\t3000000000\t10000000000\n" +
+	"disk\t/var/lib/docker\t/dev/vda1\t3000000000\t10000000000\n" +
 	"cstat\tblog\tapi\t1000000\t50000000\t268435456\n" +
 	"cstat\tblog\tdb\t2000000\t90000000\tmax\n" +
 	"app\tblog\tdeploy-blog\t/srv/blog\tv1\t2\timg\t\n"
@@ -34,7 +37,8 @@ func TestSystemRecordsAreReadOutOfTheSameOutput(t *testing.T) {
 	}
 
 	// / and /var/lib/docker are asked about separately and are usually the same
-	// filesystem. Listing it twice would read as twice the disk.
+	// filesystem -- here under two names, which the shared device says. Listing
+	// it twice would read as twice the disk.
 	if len(s.disks) != 1 || s.disks[0].mount != "/" {
 		t.Fatalf("disks = %+v, want one entry for /", s.disks)
 	}
@@ -722,14 +726,20 @@ func rollupModel(app, svc string) model {
 // rows, so a layout that assumed width would lose its right-hand panel entirely
 // on a narrow terminal -- silently, which is the failure this whole screen is
 // built to avoid.
+//
+// Down to the drawable floor, that is. Below minPanelWidth a chart stops being
+// one, so the grid renders at the floor and lets the frame clip -- a degraded
+// chart beats a four-column ribbon pretending to be data.
 func TestTheGridGivesUpColumnsRatherThanWidth(t *testing.T) {
-	for _, w := range []int{200, 120, 96, 70, 50, 34} {
+	for _, w := range []int{200, 120, 96, 70, minPanelWidth + len(gutter), 34} {
 		m := rollupModel("blog", "api")
 		m.width, m.height = w, 60
 		body := stripANSI(m.pageBody())
-		for i, ln := range strings.Split(body, "\n") {
-			if got := lipglossWidth(ln); got > w {
-				t.Errorf("width %d: row %d is %d columns:\n%s", w, i, got, ln)
+		if w >= minPanelWidth+len(gutter) {
+			for i, ln := range strings.Split(body, "\n") {
+				if got := lipglossWidth(ln); got > w {
+					t.Errorf("width %d: row %d is %d columns:\n%s", w, i, got, ln)
+				}
 			}
 		}
 		// Whatever the width, every chart is still on the page somewhere.
@@ -779,6 +789,60 @@ func testModelAt(w int) model {
 	m := testModel()
 	m.width = w
 	return m
+}
+
+// The monitor is taller than a terminal -- five rows of charts -- and scrolls
+// with the same keys the log window uses. It had no scroll keys at first, and
+// a page you cannot scroll shows whichever charts happen to fit.
+func TestTheMonitorScrolls(t *testing.T) {
+	m := rollupModel("blog", "api")
+	m.width, m.height = 100, 30
+	next := send(m, "down")
+	if next.scroll != 1 {
+		t.Fatalf("down should scroll the page, got offset %d", next.scroll)
+	}
+	if next = send(next, "up"); next.scroll != 0 {
+		t.Errorf("up should scroll back, got offset %d", next.scroll)
+	}
+	if next = send(next, "shift+down"); next.scroll == 0 {
+		t.Error("shift+down should jump to the end")
+	}
+	if next = send(next, "shift+up"); next.scroll != 0 {
+		t.Errorf("shift+up should jump to the top, got offset %d", next.scroll)
+	}
+}
+
+// On a narrow terminal the pairs zip into one column: the chart, then its
+// how-unusual chart under it, then the next chart -- the reading order the
+// rows already had, just folded.
+func TestNarrowTerminalsZipThePairsIntoOneColumn(t *testing.T) {
+	m := rollupModel("blog", "api")
+	m.width, m.height = 80, 60
+	lines := strings.Split(stripANSI(m.pageBody()), "\n")
+	at := func(want string) int {
+		for i, ln := range lines {
+			if strings.Contains(ln, want) {
+				return i
+			}
+		}
+		return -1
+	}
+	req, sig, fail := at("Requests"), at("Requests σ"), at("Failures")
+	if !(req >= 0 && req < sig && sig < fail) {
+		t.Errorf("requests=%d sigma=%d failures=%d; want the chart, its sigma below it, then the next chart", req, sig, fail)
+	}
+
+	// And a wide terminal keeps each pair on one row.
+	m.width = 140
+	for _, ln := range strings.Split(stripANSI(m.pageBody()), "\n") {
+		if strings.Contains(ln, "Requests") {
+			if !strings.Contains(ln, "Requests σ") {
+				t.Errorf("at 140 columns the pair should share a row: %q", ln)
+			}
+			return
+		}
+	}
+	t.Error("no Requests heading at 140 columns")
 }
 
 // A title too long for its column is cut with a marker, never wrapped: the
@@ -985,14 +1049,13 @@ func TestTheStampFollowsWhatIsActuallyInstalled(t *testing.T) {
 	}
 }
 
-// Docker and komizo are updated on different occasions and by different keys.
-// Bundling them would mean a routine Docker update rewrote scripts nobody asked
-// it to touch.
+// Docker and komizo are updated on different occasions and from different
+// rows. Bundling them would mean a routine Docker update rewrote scripts
+// nobody asked it to touch.
 func TestDockerAndKomizoAreUpdatedSeparately(t *testing.T) {
 	m := testModel()
 	m.cursor = m.rowIndex(focusServer)
-	next, _ := m.primaryAction()
-	d := next.(model).prompt
+	d := send(m, "u").prompt
 	if d == nil || !strings.Contains(d.question+d.detail, "Docker") {
 		t.Fatalf("the docker row should ask about Docker, got %+v", d)
 	}
@@ -1001,8 +1064,7 @@ func TestDockerAndKomizoAreUpdatedSeparately(t *testing.T) {
 	}
 
 	m.cursor = m.rowIndex(focusKomizo)
-	next, _ = m.primaryAction()
-	k := next.(model).prompt
+	k := send(m, "u").prompt
 	if k == nil || !strings.Contains(k.question, "Update komizo") {
 		t.Fatalf("the komizo row should ask about komizo, got %+v", k)
 	}
@@ -1041,18 +1103,9 @@ func TestTheSparklineColumnTellsQuietFromUnmeasurable(t *testing.T) {
 	if got := stripANSI(m.sparkForService("blog", "db")); !strings.Contains(got, "·") {
 		t.Errorf("a quiet container should read as dots, got %q", got)
 	}
-	// Both strips read the same for it: nothing arrived, so nothing arrived to
-	// fail either. Dots in both, rather than dots beside a blank -- a blank
-	// errors strip means "measured, none", and nothing was measured here.
-	if got := stripANSI(m.errSparkForService("blog", "db")); !strings.Contains(got, "·") {
-		t.Errorf("a quiet container's errors = %q, want dots", got)
-	}
 	// Unmeasurable: blank. Dots would claim a measurement nobody took.
 	if got := m.sparkForService("blog", "worker"); got != "" {
 		t.Errorf("an unnamed container should be blank, got %q", got)
-	}
-	if got := m.errSparkForService("blog", "worker"); got != "" {
-		t.Errorf("an unnamed container's errors should be blank, got %q", got)
 	}
 
 	// And the app row is its containers added up, so the column reads down.
@@ -1097,35 +1150,38 @@ func TestAPanelHeadingIsOneLine(t *testing.T) {
 	}
 }
 
-// The how-unusual line is not named on any chart: it is on nearly all of them,
-// so saying so four times distinguishes nothing. Its absence stays visible
-// without a label, because an unscored chart has ONE line rather than a green
-// one -- a missing line is not a reassuring line.
-func TestNoChartNamesTheOverlayInItsSubtitle(t *testing.T) {
+// Every scored chart has its how-unusual chart directly beside it, named
+// after it, and only those: the row reads "the thing, then how far from
+// normal the thing is". Storage carries no partner -- it creeps in one
+// direction, so a trailing median would read ordinary growth as permanently
+// unusual.
+func TestEveryScoredChartHasItsSigmaBesideIt(t *testing.T) {
 	m := rollupModel("blog", "api")
 	m.width, m.height = 160, 60
 	hist, sampledHere := m.resourceHistory()
 
-	var scored, unscored []string
-	for _, p := range append(m.networkPanels(), m.systemPanels(hist, sampledHere)...) {
-		if strings.Contains(p.sub, "unusual") || strings.Contains(p.title, "unusual") {
-			t.Errorf("%q still names the overlay: %q", p.title, p.sub)
-		}
+	panels := append(m.networkPanels(), m.systemPanels(hist, sampledHere)...)
+	var scored []string
+	for i, p := range panels {
 		if p.scored {
 			scored = append(scored, p.title)
-		} else {
-			unscored = append(unscored, p.title)
+			// The partner is named after its series: "Requests σ" beside
+			// "Requests", "Failures σ" beside "Failures (5xx)".
+			if i+1 >= len(panels) || !strings.HasSuffix(panels[i+1].title, " σ") ||
+				!strings.HasPrefix(p.title, strings.TrimSuffix(panels[i+1].title, " σ")) {
+				t.Errorf("%q has no how-unusual chart beside it", p.title)
+			}
+		}
+		// A how-unusual chart never stands alone: it scores its left neighbour.
+		if strings.HasSuffix(p.title, " σ") && (i == 0 || !panels[i-1].scored) {
+			t.Errorf("panel %d (%q) is a how-unusual chart with nothing to score", i, p.title)
 		}
 	}
-	// The rule the label used to carry, asserted instead of printed.
 	if len(scored) != 4 {
 		t.Errorf("scored = %v, want requests, failures, processor and memory", scored)
 	}
-	if len(unscored) != 1 || unscored[0] != "Storage" {
-		t.Errorf("unscored = %v, want storage alone", unscored)
-	}
-	if out := stripANSI(m.pageBody()); strings.Contains(out, "how unusual") {
-		t.Errorf("the phrase survives on the page:\n%s", out)
+	if last := panels[len(panels)-1]; last.title != "Storage" || last.scored {
+		t.Errorf("the last panel = %q scored=%v, want Storage with no partner", last.title, last.scored)
 	}
 }
 
@@ -1365,12 +1421,56 @@ func TestTheVersionAndPortsHaveTheirOwnColumn(t *testing.T) {
 	}
 }
 
-// Two strips per row: traffic in blue, failures in red, at the same width so a
-// bar in one sits directly under the minute it came from in the other.
-//
-// The numbers that used to sit beside them are gone. A rate is one minute of a
-// window the chart already draws, and the chart says more in the same space.
-func TestTheErrorsStripIsBesideTheTrafficOne(t *testing.T) {
+// Selecting a row brightens it -- except the sparkline, whose colours ARE its
+// data: blue under red must not turn white the moment you look at it.
+func TestSelectionLeavesTheSparklineItsColours(t *testing.T) {
+	styled := "\x1b[31m▂\x1b[0m"
+	dim := "\x1b[2mname\x1b[0m"
+	v := tree([]treeRow{{idx: 0, spark: 2, cells: []string{"●", dim, styled, "img"}}}, 0)
+	if !strings.Contains(v, styled) {
+		t.Errorf("the spark cell lost its styling: %q", v)
+	}
+	if strings.Contains(v, dim) {
+		t.Errorf("the other cells should be restyled bright: %q", v)
+	}
+}
+
+// One strip, both questions: each minute's bar is every request it served,
+// blue, with the 5xx share stacked red on top. Blue always under red.
+// The numbers that used to sit beside it are gone: a rate is one minute of a
+// window the strip already draws, and the strip says more in the same space.
+func TestFailuresStackRedOnTopOfTheTraffic(t *testing.T) {
+	// A clean minute is all traffic colour.
+	if g, style := sparkCell(20, 0, 20); g != "█" || style.GetBackground() != barStyle.GetBackground() || style.GetForeground() != cAccent {
+		t.Errorf("clean minute = %q %v, want a full blue block", g, style)
+	}
+	// A mixed minute keeps its height in blue and carries the failures as the
+	// red above: one eighth of 8 here, so the blue block is seven eighths.
+	if g, style := sparkCell(20, 3, 20); g != "▇" || style.GetForeground() != cAccent || style.GetBackground() != cErr {
+		t.Errorf("mixed minute = %q, want seven eighths of blue under red", g)
+	}
+	// Any failure at all is at least one eighth of red -- the strip exists to
+	// make failures visible, and rounding one away hides it where it is rarest.
+	if _, style := sparkCell(100, 1, 100); style.GetBackground() != cErr {
+		t.Errorf("one failure in a hundred should still show red")
+	}
+	// Anything succeeding keeps a blue base -- a bar must not read as all
+	// failures when most of the minute served.
+	if g, style := sparkCell(20, 19, 20); g == "█" || style.GetBackground() != cErr {
+		t.Errorf("a mostly-failing minute = %q, want a blue base under red", g)
+	}
+	// A minute of nothing but failures is red outright, at the bar's height.
+	if g, style := sparkCell(5, 5, 20); g != "▂" || style.GetForeground() != cErr {
+		t.Errorf("an all-failures minute = %q %v, want a red quarter block", g, style)
+	}
+	// A quiet minute draws the floor -- dim, one eighth -- so the strip stays
+	// one connected line instead of falling apart into stubs.
+	if g, style := sparkCell(0, 0, 20); g != "▁" || style.GetForeground() != cMuted {
+		t.Errorf("a quiet minute = %q, want a dim baseline", g)
+	}
+
+	// And through the whole strip: traffic with a failing stretch renders bars,
+	// while the healthy container's strip carries no red anywhere.
 	m := testModel()
 	m.scr, m.width, m.height = screenIndex, 140, 30
 	m.apps[0].containers = []containerRow{
@@ -1392,28 +1492,12 @@ func TestTheErrorsStripIsBesideTheTrafficOne(t *testing.T) {
 			metricRow{minute: mn, app: "blog", service: "api", c2: 20, c5: errs},
 			metricRow{minute: mn, app: "blog", service: "web", c2: 5})
 	}
-
 	bars := "▁▂▃▄▅▆▇█"
-	// Failing: bars in both strips.
 	if got := stripANSI(m.sparkForService("blog", "api")); !strings.ContainsAny(got, bars) {
-		t.Errorf("api traffic strip = %q", got)
+		t.Errorf("api strip = %q, want bars", got)
 	}
-	if got := stripANSI(m.errSparkForService("blog", "api")); !strings.ContainsAny(got, bars) {
-		t.Errorf("api errors strip = %q, want bars", got)
-	}
-	// Healthy: traffic, and an EMPTY errors strip. Zero draws no bar, which is
-	// the sparkline's own encoding rather than a special case -- so a healthy
-	// app is quiet in the column that exists to be noticed.
 	if got := stripANSI(m.sparkForService("blog", "web")); !strings.ContainsAny(got, bars) {
-		t.Errorf("web traffic strip = %q", got)
-	}
-	if got := stripANSI(m.errSparkForService("blog", "web")); strings.ContainsAny(got, bars) {
-		t.Errorf("web has no failures but its strip has bars: %q", got)
-	}
-	// Both strips are the same width, or the same minute is in two places.
-	if a, b := lipglossWidth(stripANSI(m.sparkForService("blog", "api"))),
-		lipglossWidth(stripANSI(m.errSparkForService("blog", "api"))); a != b {
-		t.Errorf("strips are %d and %d columns wide", a, b)
+		t.Errorf("web strip = %q, want bars", got)
 	}
 	// And no per-minute number survives anywhere on the page.
 	if body := stripANSI(m.pageBody()); strings.Contains(body, "/min") {
@@ -1485,6 +1569,52 @@ func TestSelectingDoesNotStealSFromATextField(t *testing.T) {
 	l.width, l.height = 100, 30
 	if lit, _ := sendCmd(l, "s"); lit.mouseOn {
 		t.Error("s on the login screen is a letter")
+	}
+}
+
+// Two genuinely distinct filesystems chart as two bars, both labelled "disk",
+// with the mount after the sizes -- a path in the label column pushed every
+// bar on the page out of line with the others.
+func TestTwoRealFilesystemsAreTwoBarsNamedInTheDetail(t *testing.T) {
+	out := "disk\t/\t/dev/vda1\t3000000000\t10000000000\n" +
+		"disk\t/var/lib/docker\t/dev/vdb1\t5000000000\t20000000000\n"
+	m := testModel()
+	m.takeSample(parseSystem(out, time.Unix(1000, 0)))
+	v := stripANSI(m.serverUsage())
+	if strings.Contains(v, "disk /") {
+		t.Errorf("the mount must not be in the label:\n%s", v)
+	}
+	for _, want := range []string{"2.8G of 9.3G  /", "4.7G of 19G  /var/lib/docker"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("missing %q:\n%s", want, v)
+		}
+	}
+
+	// The record shape before the device was reported still parses: the box's
+	// system.log is full of it.
+	legacy := parseSystem("disk\t/\t3000000000\t10000000000\n", time.Unix(1000, 0))
+	if len(legacy.disks) != 1 || legacy.disks[0].used != 3000000000 {
+		t.Errorf("legacy disks = %+v, want one entry for /", legacy.disks)
+	}
+}
+
+// BusyBox awk clamps printf %d to 32 bits. A disk over 2GB printed as
+// -2147483648, the reader refused the negative byte count, and the index drew
+// no disk bar at all -- on every box whose disk was bigger than 2GB, which is
+// every box. Anything in the probe that can pass 2^31 -- byte counts,
+// cumulative jiffies, cumulative microseconds -- must print with %.0f, which
+// is exact to 2^53.
+func TestTheProbeNeverPrintsAClampableNumber(t *testing.T) {
+	for i, ln := range strings.Split(systemProbe, "\n") {
+		if !strings.Contains(ln, "%d") || strings.HasPrefix(strings.TrimSpace(ln), "#") {
+			continue
+		}
+		// The core count is the one number here that cannot reach 2^31.
+		if strings.Contains(ln, "cores") {
+			continue
+		}
+		t.Errorf("probe line %d prints with %%d, which BusyBox awk clamps to 32 bits:\n%s",
+			i+1, strings.TrimSpace(ln))
 	}
 }
 

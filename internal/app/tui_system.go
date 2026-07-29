@@ -2,11 +2,9 @@ package app
 
 import (
 	"fmt"
-	"math"
 	"strings"
 	"time"
 
-	"github.com/NimbleMarkets/ntcharts/linechart/timeserieslinechart"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -82,25 +80,29 @@ func (m model) serverUsage() string {
 	// Every filesystem asked about, because the one that fills is usually not
 	// the one being watched: images and volumes go under /var/lib/docker, and a
 	// full docker filesystem stops deploys on a box whose / looks fine.
+	//
+	// The mount rides in the detail, after the sizes, rather than in the label:
+	// the label column is sized for one word, and a path there pushed every bar
+	// on the page out of line with the others.
 	for _, d := range s.disks {
-		label := "disk"
+		detail := bytesText(d.used) + " of " + bytesText(d.size)
 		if len(s.disks) > 1 {
-			label = "disk " + d.mount
+			detail += "  " + d.mount
 		}
-		b.WriteString(usageRow(label, d.frac(),
-			bytesText(d.used)+" of "+bytesText(d.size)))
+		b.WriteString(usageRow("disk", d.frac(), detail))
 	}
 	return b.String()
 }
 
-// viewSystem is the resource half of the monitor: three charts in a row, then
-// the list of what the app is holding on disk.
+// viewSystem is the resource half of the monitor: one row per resource, the
+// series on the left and its how-unusual chart on the right, then the list of
+// what the app is holding on disk.
 //
-// Three because that is what there is to say about a machine -- processor,
-// memory, disk -- and because at any usable terminal width three of them fit
-// side by side, which is the width at which they can be read against each
-// other. A spike in one and a step in another at the same x is the whole reason
-// to have them on one screen.
+// Two to a row, like the traffic charts above, so every row on the page has
+// the same shape: the thing, then how far from normal the thing is. The
+// resources with no how-unusual chart -- disk and storage -- pair with each
+// other, which suits them: they are the two disk questions, easy to confuse
+// and worth reading side by side.
 func (m model) viewSystem() string {
 	hist, sampledHere := m.resourceHistory()
 	panels := m.systemPanels(hist, sampledHere)
@@ -116,7 +118,7 @@ func (m model) viewSystem() string {
 	if note := m.provenanceNote(sampledHere); note != "" {
 		b.WriteString(gutter + dimStyle.Render(cut(note, m.width-len(gutter))) + "\n")
 	}
-	b.WriteString(m.grid(panels, 4, sysChartHeight))
+	b.WriteString(m.grid(panels, 2, chartHeight))
 	b.WriteString(m.storageList())
 	return b.String()
 }
@@ -136,19 +138,41 @@ func (m model) systemPanels(hist []sysSample, sampledHere bool) []panel {
 			// would be a flat line along the floor of a chart drawn to 100 --
 			// unreadable precisely when the question is whether it just moved.
 			sub:  "% of the machine",
-			draw: func(w, h int) string { return m.resourceChart(cpu, w, h, sampledHere, 0) },
+			draw: func(w, h int) string { return m.plainChart(cpu, w, h, keyStyle, 0) },
 		})
+		out = m.appendSigma(out, "Processor", cpu, sampledHere)
 	}
 	if mem := memSeries(hist, m.monitorOf, m.monitorSvc); mem.any() {
 		out = append(out, panel{
 			title:  "Memory",
 			scored: !sampledHere,
 			sub:    "MB",
-			draw:   func(w, h int) string { return m.resourceChart(mem, w, h, sampledHere, 0) },
+			draw:   func(w, h int) string { return m.plainChart(mem, w, h, keyStyle, 0) },
 		})
+		out = m.appendSigma(out, "Memory", mem, sampledHere)
 	}
 	out = append(out, m.diskPanels(hist)...)
 	return out
+}
+
+// appendSigma adds a resource's how-unusual chart beside it, when the history
+// can support one.
+//
+// The box's own record only: a session-sampled history is minutes old, and a
+// trailing baseline needs half an hour BEFORE each point. The value chart
+// simply has no partner then, which reads as what it is.
+//
+// The score swings BOTH ways, like requests. A service that suddenly stops
+// using processor has stalled, and memory that falls off a cliff was restarted
+// or killed -- both are events, and both sit below the reference line where a
+// chart that only looked up would miss them.
+func (m model) appendSigma(out []panel, title string, r resSeries, sampledHere bool) []panel {
+	if sampledHere {
+		return out
+	}
+	return append(out, unusualPanel(title, func(w, h int) string {
+		return m.sigmaChart(m.monitorRange.orDefault(), r.times, trailingBaseline(r.vals), w, h)
+	}))
 }
 
 // diskPanels is what "disk" means for this subject.
@@ -402,47 +426,9 @@ func (m model) provenanceNote(sampledHere bool) string {
 	return "sampled by this session — update komizo on the box to keep it"
 }
 
-// resourceChart draws one series, with the how-unusual overlay when the history
-// is long enough to support one.
-//
-// The overlay swings BOTH ways, like requests. A service that suddenly stops
-// using processor has stalled, and memory that falls off a cliff was restarted
-// or killed -- both are events, and both sit below the reference line where a
-// chart that only looked up would miss them.
-func (m model) resourceChart(r resSeries, w, h int, sampledHere bool, yMax float64) string {
-	if sampledHere {
-		return m.plainChart(r, w, h, keyStyle, yMax)
-	}
-	return m.combinedChart(m.monitorRange.orDefault(), r.times, r.vals,
-		trailingBaseline(r.vals), w, h, keyStyle, yMax)
-}
-
-// plainChart is one series, no overlay, drawn at the times it was taken.
+// plainChart is one series drawn at the times it was taken, on the page's
+// shared axis -- the range being shown, not this series' own extent: a series
+// that covers less of it simply stops.
 func (m model) plainChart(r resSeries, w, h int, style lipgloss.Style, yMax float64) string {
-	if len(r.times) == 0 {
-		return ""
-	}
-	// The page's range, not this series' own extent. Every chart here shares one
-	// x axis; a series that covers less of it simply stops.
-	axis := m.monitorRange.orDefault()
-	from, to := axis.from, axis.to
-	if to <= from {
-		to = from + 1
-	}
-	c := m.newChart(from, to, w, h)
-	c.SetStyle(style)
-	if yMax > 0 {
-		c.SetYRange(0, yMax)
-		c.SetViewYRange(0, yMax)
-	}
-	for i, t := range r.times {
-		if math.IsNaN(r.vals[i]) {
-			// A reading that could not be taken. Skipped rather than drawn at
-			// zero, which is what a dead machine looks like.
-			continue
-		}
-		c.Push(timeserieslinechart.TimePoint{Time: t, Value: r.vals[i]})
-	}
-	c.DrawBraille()
-	return c.View()
+	return m.seriesChart(m.monitorRange.orDefault(), r.times, r.vals, w, h, style, yMax)
 }
