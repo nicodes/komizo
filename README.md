@@ -8,6 +8,12 @@ go install github.com/nicodes/komizo-cli/cmd/komizo@latest
 komizo root@your-server
 ```
 
+Or run it without installing anything:
+
+```sh
+go run github.com/nicodes/komizo-cli/cmd/komizo@latest root@your-server
+```
+
 That opens the interface. Everything is done from there — the flag-driven
 subcommands remain for scripting, but nobody should have to learn them to set a
 box up.
