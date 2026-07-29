@@ -1487,3 +1487,71 @@ func TestSelectingDoesNotStealSFromATextField(t *testing.T) {
 		t.Error("s on the login screen is a letter")
 	}
 }
+
+// The raw score is correct and reads as noise: ordinary jitter is about one
+// deviation wide on traffic like this, so the line swings across the chart
+// every minute and the colour changes while nothing is happening.
+func TestTheDeviationLineIsQuietWhenNothingIsHappening(t *testing.T) {
+	quiet := make([]float64, 120)
+	for i := range quiet {
+		quiet[i] = float64(26 + (i%17)/2 + i/40) // a slow rise, with jitter
+	}
+	changes := func(score []float64) (flips int, peak float64) {
+		prev := ""
+		for _, s := range score {
+			if math.IsNaN(s) {
+				continue
+			}
+			if a := math.Abs(s); a > peak {
+				peak = a
+			}
+			if b := bandBothWays(s); prev != "" && b != prev {
+				flips++
+			} else if prev == "" {
+				prev = bandBothWays(s)
+			} else {
+				prev = b
+			}
+		}
+		return
+	}
+	raw := trailingBaseline(quiet).score
+	rawFlips, _ := changes(raw)
+	quietFlips, quietPeak := changes(quietened(raw))
+	if rawFlips < 5 {
+		t.Fatalf("the raw score is meant to be noisy here; got %d changes", rawFlips)
+	}
+	if quietFlips != 0 {
+		t.Errorf("quiet traffic changed colour %d times", quietFlips)
+	}
+	if quietPeak > 1 {
+		t.Errorf("quiet traffic reached %.1f deviations, should stay inside one", quietPeak)
+	}
+
+	// And an incident still shouts. Twenty deviations is not a subtle signal.
+	incident := append([]float64(nil), quiet...)
+	for i := 70; i < 88; i++ {
+		incident[i] = 96
+	}
+	_, peak := changes(quietened(trailingBaseline(incident).score))
+	if peak < 10 {
+		t.Errorf("an incident only reached %.1f deviations", peak)
+	}
+}
+
+// Ordinary variation draws as FLAT, which is the whole point: the line lifting
+// off the reference is itself the signal, before any colour is read.
+func TestOrdinaryVariationIsPinnedToTheReference(t *testing.T) {
+	in := []float64{0, 0.4, -0.7, 1, -1, 0.9}
+	for i, got := range quietened(in) {
+		if got != 0 {
+			t.Errorf("score %v drew at %v, want flat", in[i], got)
+		}
+	}
+	// Past a deviation it lifts off by the excess, not by the whole score --
+	// so the colours move out by one, which is the documented trade.
+	out := quietened([]float64{3, 3, 3, 3})
+	if out[3] != 2 {
+		t.Errorf("a 3-sigma minute drew at %v, want 2", out[3])
+	}
+}
