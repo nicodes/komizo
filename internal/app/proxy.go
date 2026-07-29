@@ -49,9 +49,6 @@ func RunProxy(args []string) error {
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))
 	}
-	if o.host == "" {
-		return fmt.Errorf("--host is required, e.g. --host root@myapp.example.com")
-	}
 	if err := validateNetworkName(o.network); err != nil {
 		return err
 	}
@@ -62,14 +59,8 @@ func RunProxy(args []string) error {
 		return err
 	}
 
-	tgt, err := parseTarget(o.host)
+	tgt, err := resolveTarget(fs, o.host, o.port)
 	if err != nil {
-		return err
-	}
-	tgt.port = o.port
-	tgt.portExplicit = portWasSet(fs)
-	tgt.resolvePort()
-	if err := validateHost(tgt.host); err != nil {
 		return err
 	}
 

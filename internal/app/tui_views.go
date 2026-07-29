@@ -426,24 +426,6 @@ func shortText(v string) string {
 	return v
 }
 
-// named is a row's name with the one fact that belongs to it rather than to a
-// column: an app's deployed version, a container's listening ports.
-//
-// Beside the name rather than in a column of their own because they are not
-// comparable down the page -- every row's version is a different string and
-// every row's ports a different number, so a column of them is a column nothing
-// lines up in. Next to the name they read as what they are: this app, at this
-// version.
-//
-// Nothing in parentheses when there is nothing to say. "api ()" and "api (—)"
-// both claim a fact is missing; the name alone claims nothing.
-func named(name, detail string) string {
-	if detail == "" {
-		return dimStyle.Render(name)
-	}
-	return dimStyle.Render(name + " (" + detail + ")")
-}
-
 // rowDot is a row's status, or a spinner when that row has an action running.
 //
 // The spinner replaces the dot in place rather than appearing beside it: they

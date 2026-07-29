@@ -139,10 +139,10 @@ container_stat() {
 container_stats_all() {
 	command -v docker >/dev/null 2>&1 || return 0
 	docker info >/dev/null 2>&1 || return 0
-	for _bin in /usr/local/bin/deploy-*; do
-		[ -f "$_bin" ] || continue
-		_app="${_bin#/usr/local/bin/deploy-}"
-		_dir="$(sed -n 's/^cd "\(.*\)"$/\1/p' "$_bin" | head -n 1)"
+	for _state in /var/lib/komizo/apps/*.env; do
+		[ -f "$_state" ] || continue
+		_app="${_state##*/}"; _app="${_app%.env}"
+		_dir="$(komizo_state "$_state" APP_DIR)"
 		[ -n "$_dir" ] && [ -f "$_dir/compose.yml" ] || continue
 		for _cid in $(docker compose -f "$_dir/compose.yml" --project-directory "$_dir" ps -q 2>/dev/null); do
 			# One inspect for both fields: this runs per container per minute,
@@ -232,6 +232,7 @@ func (c cgroupStat) key() string { return csKey(c.app, c.service) }
 func parseSystem(out string, at time.Time) sysSample {
 	s := sysSample{at: at}
 	byKey := map[string]int{}
+	out = scrub(out)
 	for _, ln := range strings.Split(out, "\n") {
 		f := strings.Split(strings.TrimRight(ln, "\r"), "\t")
 		switch {
@@ -591,11 +592,11 @@ const volumeProbe = `
 volumes_all() {
 	_only="${1:-}"
 	command -v docker >/dev/null 2>&1 || return 0
-	for _bin in /usr/local/bin/deploy-*; do
-		[ -f "$_bin" ] || continue
-		_app="${_bin#/usr/local/bin/deploy-}"
+	for _state in /var/lib/komizo/apps/*.env; do
+		[ -f "$_state" ] || continue
+		_app="${_state##*/}"; _app="${_app%.env}"
 		[ -z "$_only" ] || [ "$_app" = "$_only" ] || continue
-		_dir="$(sed -n 's/^cd "\(.*\)"$/\1/p' "$_bin" | head -n 1)"
+		_dir="$(komizo_state "$_state" APP_DIR)"
 		[ -n "$_dir" ] && [ -f "$_dir/compose.yml" ] || continue
 		_ids="$(docker compose -f "$_dir/compose.yml" --project-directory "$_dir" ps -aq 2>/dev/null)"
 		[ -n "$_ids" ] || continue
@@ -633,7 +634,7 @@ volumes_all() {
 // which is the only figure on this screen that cannot be read from a counter.
 // So it runs once, when the monitor is opened, for the one app being looked at.
 func storageScript(app string) string {
-	return volumeProbe + fmt.Sprintf("\nvolumes_all %q\n", app)
+	return stateHelper + volumeProbe + fmt.Sprintf("\nvolumes_all %q\n", app)
 }
 
 // volRow is one volume, as much of the box's disk as one app can account for.
@@ -646,6 +647,7 @@ type volRow struct {
 func parseVolumes(out string) []volRow {
 	var rows []volRow
 	seen := map[string]bool{}
+	out = scrub(out)
 	for _, ln := range strings.Split(out, "\n") {
 		f := strings.Split(strings.TrimRight(ln, "\r"), "\t")
 		if len(f) != 5 || f[0] != "vol" {
@@ -807,7 +809,7 @@ func komizoStamp() string {
 
 // samplerFile is the script cron runs, exactly as it lands on the box.
 func samplerFile() string {
-	return fmt.Sprintf(samplerTemplate, systemLog, systemProbe+volumeProbe,
+	return fmt.Sprintf(samplerTemplate, systemLog, stateHelper+systemProbe+volumeProbe,
 		systemLogMax, systemLogKeep, volEveryMinutes, systemLog+".lock")
 }
 

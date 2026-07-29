@@ -3,6 +3,7 @@ package app
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"time"
@@ -263,7 +264,19 @@ func stream(ch chan tea.Msg, c *exec.Cmd, stdin string) error {
 	sc := bufio.NewScanner(pipe)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
-		ch <- runOutputMsg(sc.Text())
+		ch <- runOutputMsg(scrub(sc.Text()))
+	}
+	// A scan that stopped early -- a line longer than the buffer, most likely a
+	// container logging one enormous JSON blob -- leaves the pipe undrained.
+	// The child then blocks writing to a full pipe, Wait never returns, and
+	// because every key is disabled while an operation is in flight the whole
+	// interface hangs with no way out but killing the terminal.
+	//
+	// So say what happened and keep reading. The output is already truncated at
+	// that point; the alternative is to lose the operation as well.
+	if err := sc.Err(); err != nil {
+		ch <- runOutputMsg(fmt.Sprintf("[output truncated: %v]", err))
+		_, _ = io.Copy(io.Discard, pipe)
 	}
 	return c.Wait()
 }

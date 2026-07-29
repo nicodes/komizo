@@ -25,13 +25,27 @@ case "$APP_NAME" in
 	*[!A-Za-z0-9_-]*) echo "error: APP_NAME must be letters, digits, underscore or hyphen" >&2; exit 1 ;;
 esac
 
+# What komizo recorded when this app was set up. Read FIRST, so an app given a
+# custom account or directory is removed by its real values rather than by the
+# defaults -- removing by the default left a stray account and a live doas rule
+# behind for exactly the apps that had been set up most deliberately.
+STATE_DIR=/var/lib/komizo/apps
+STATE_FILE="$STATE_DIR/$APP_NAME.env"
+state() {
+	[ -f "$STATE_FILE" ] || return 0
+	sed -n "s/^$1=//p" "$STATE_FILE" | head -n 1
+}
+
+CI_USER="${CI_USER:-$(state CI_USER)}"
 CI_USER="${CI_USER:-komizo-$APP_NAME}"
+APP_DIR="${APP_DIR:-$(state APP_DIR)}"
 APP_DIR="${APP_DIR:-/srv/$APP_NAME}"
 KEEP_DATA="${KEEP_DATA:-0}"
 DEPLOY_BIN="/usr/local/bin/deploy-$APP_NAME"
 SECRET_BIN="/usr/local/bin/set-secret-$APP_NAME"
-PROJECT_MARKERS='(komizo|ncicd|cicd|alpine-server-scripts|boot\.sh)'
+PROJECT_MARKER=komizo
 PROXY_CONTAINER=komizo-proxy
+ROUTE_FILE="/srv/_proxy/routes/$APP_NAME.caddy"
 
 log() { printf '\n==> %s\n' "$*"; }
 
@@ -59,14 +73,14 @@ fi
 
 # --- 1b. the reverse-proxy route -------------------------------------------
 # Done here, immediately after the containers stop, and done even with
-# KEEP_DATA=1. The shared Caddy imports /srv/*/caddy/app.caddy, so a route left
-# behind keeps advertising a hostname whose containers are gone -- the domain
-# would answer with a 502 instead of going quiet, and Caddy would keep renewing
-# a certificate for it forever.
+# KEEP_DATA=1. The shared Caddy imports every file in its routes directory, so
+# a route left behind keeps advertising a hostname whose containers are gone --
+# the domain would answer with a 502 instead of going quiet, and Caddy would
+# keep renewing a certificate for it forever.
 
-if [ -d "$APP_DIR/caddy" ]; then
+if [ -f "$ROUTE_FILE" ]; then
 	log "Removing the reverse-proxy route for '$APP_NAME'"
-	rm -rf "$APP_DIR/caddy"
+	rm -f "$ROUTE_FILE" "$ROUTE_FILE.prev"
 	# The hostname list beside it, so nothing on the box still records this app
 	# as the owner of those names -- another app claiming one must not be told
 	# it collides with an app that is gone.
@@ -89,7 +103,7 @@ fi
 log "Removing doas rules for '$CI_USER'"
 if [ -f /etc/doas.conf ]; then
 	cp /etc/doas.conf /etc/doas.conf.bak.remove
-	sed -i -E "/^# $PROJECT_MARKERS: $CI_USER BEGIN\$/,/^# $PROJECT_MARKERS: $CI_USER END\$/d" /etc/doas.conf
+	sed -i -E "/^# $PROJECT_MARKER: $CI_USER BEGIN\$/,/^# $PROJECT_MARKER: $CI_USER END\$/d" /etc/doas.conf
 	if ! doas -C /etc/doas.conf >/dev/null 2>&1; then
 		mv /etc/doas.conf.bak.remove /etc/doas.conf
 		echo "error: removing the doas rules left an invalid config -- reverted" >&2
@@ -108,7 +122,7 @@ conf=/etc/ssh/sshd_config
 if [ -f "$conf" ]; then
 	cp "$conf" "$conf.bak.remove"
 	sed -i -E \
-		-e "/^# $PROJECT_MARKERS: sshd $CI_USER BEGIN\$/,/^# $PROJECT_MARKERS: sshd $CI_USER END\$/d" \
+		-e "/^# $PROJECT_MARKER: sshd $CI_USER BEGIN\$/,/^# $PROJECT_MARKER: sshd $CI_USER END\$/d" \
 		"$conf"
 	if sshd -t >/dev/null 2>&1; then
 		rm -f "$conf.bak.remove"
@@ -127,6 +141,12 @@ if id "$CI_USER" >/dev/null 2>&1; then
 	deluser --remove-home "$CI_USER" >/dev/null 2>&1 || deluser "$CI_USER" >/dev/null 2>&1 || true
 fi
 
+# The key list lives outside the home directory -- root's, not the account's --
+# so removing the home does not take it with it. A file left here would
+# authorise a key for an account that no longer exists, and would silently
+# authorise it again the moment a future app reused the name.
+rm -f "/etc/ssh/authorized_keys.d/$CI_USER"
+
 # --- 5. the directory ------------------------------------------------------
 
 if [ "$KEEP_DATA" = "1" ]; then
@@ -142,6 +162,12 @@ else
 	esac
 	rm -rf "$APP_DIR"
 fi
+
+# --- 6. what komizo knew about it ------------------------------------------
+# Last, because everything above reads it. Removing this is what makes the app
+# gone as far as the inventory is concerned.
+
+rm -f "$STATE_FILE"
 
 log "Removed '$APP_NAME'"
 cat <<EOF

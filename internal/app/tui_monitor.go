@@ -52,16 +52,13 @@ const (
 // openMonitor is the same shape as openLogs: reset, mark not-ready, start the
 // fetch, and start the spinner only if one is not already running.
 func (m model) openMonitor(app, service string) (tea.Model, tea.Cmd) {
-	m.monitorOf, m.monitorSvc, m.monitorReady, m.monitor = app, service, false, nil
-	m.scroll = 0
-	m.status, m.statusErr = "", false
-	wasSpinning := m.spinning()
-	m.scr = screenMonitor
-	cmds := []tea.Cmd{fetchMonitor(m.tgt, app, m.monitorRange.orDefault())}
-	if !wasSpinning {
-		cmds = append(cmds, spinTick())
-	}
-	return m, tea.Batch(cmds...)
+	cmd := m.withSpin(func() {
+		m.monitorOf, m.monitorSvc, m.monitorReady, m.monitor = app, service, false, nil
+		m.scroll = 0
+		m.status, m.statusErr = "", false
+		m.scr = screenMonitor
+	}, fetchMonitor(m.tgt, app, m.monitorRange.orDefault()))
+	return m, cmd
 }
 
 type monitorMsg struct {
@@ -154,14 +151,10 @@ func (m model) rangePrompt() prompt {
 
 // reopenMonitor refetches for the range now set, without moving anything else.
 func (m *model) reopenMonitor() tea.Cmd {
-	m.monitorReady, m.monitor, m.sysLog = false, nil, nil
-	m.scroll = 0
-	wasSpinning := m.spinning()
-	cmds := []tea.Cmd{fetchMonitor(m.tgt, m.monitorOf, m.monitorRange.orDefault())}
-	if !wasSpinning {
-		cmds = append(cmds, spinTick())
-	}
-	return tea.Batch(cmds...)
+	return m.withSpin(func() {
+		m.monitorReady, m.monitor, m.sysLog = false, nil, nil
+		m.scroll = 0
+	}, fetchMonitor(m.tgt, m.monitorOf, m.monitorRange.orDefault()))
 }
 
 func (m model) monitorKeys() string {
@@ -276,13 +269,6 @@ func bucketTo(v []float64, n int) []float64 {
 		out[i] = sum / float64(b-a)
 	}
 	return out
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // viewMonitor is the whole page: what is being asked of this thing, then what

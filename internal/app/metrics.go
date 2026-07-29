@@ -70,7 +70,20 @@ if [ -f %[1]s ]; then
 			# flat, which looks exactly like no traffic.
 			if (!match($0, /"ts":[ ]*[0-9.]+/)) next
 			ts = substr($0, RSTART + 5, RLENGTH - 5) + 0
-			if (ts < now - win * 60) next
+
+			# What the log actually covers, measured over every request line
+			# in the tail -- INCLUDING the ones outside the asked-for range,
+			# which is the whole point. It is the difference between "nothing
+			# was served in this minute" and "nobody was writing this down
+			# yet", and only the lines the range excludes can establish where
+			# that boundary is.
+			if (oldest == 0 || ts < oldest) oldest = ts
+			if (ts > newest) newest = ts
+
+			# The range, applied HERE rather than by the caller, so the answer
+			# is small and roughly constant however wide a range is asked for
+			# and however big the log has grown.
+			if (ts < from || ts > to) next
 
 			if (!match($0, /"host":[ ]*"[^"]+"/)) next
 			host = substr($0, RSTART, RLENGTH)
@@ -104,6 +117,9 @@ if [ -f %[1]s ]; then
 		}
 
 		END {
+			# How far back the log itself goes. Without it every minute
+			# before the log started charts as zero -- a confident claim that
+			# nothing was served, drawn over a stretch nobody recorded.
 			if (oldest > 0) printf "mspan\t%%d\t%%d\n", oldest, newest
 			for (k in seen) {
 				split(k, f, "\t")
@@ -141,6 +157,7 @@ func (r metricRow) total() int { return r.c2 + r.c3 + r.c4 + r.c5 }
 // everything else -- the same output also carries the inventory.
 func parseMetrics(out string) []metricRow {
 	var rows []metricRow
+	out = scrub(out)
 	for _, ln := range strings.Split(out, "\n") {
 		f := strings.Split(strings.TrimRight(ln, "\r"), "\t")
 		if len(f) != 8 || f[0] != "metric" {
@@ -151,10 +168,12 @@ func parseMetrics(out string) []metricRow {
 			continue
 		}
 		r := metricRow{minute: min, app: f[2], service: f[3]}
-		fmt.Sscanf(f[4], "%d", &r.c2)
-		fmt.Sscanf(f[5], "%d", &r.c3)
-		fmt.Sscanf(f[6], "%d", &r.c4)
-		fmt.Sscanf(f[7], "%d", &r.c5)
+		// Atoi rather than Sscanf: this runs over every row of every poll, and
+		// Sscanf reflects on a format string to do what Atoi does directly.
+		r.c2, _ = strconv.Atoi(f[4])
+		r.c3, _ = strconv.Atoi(f[5])
+		r.c4, _ = strconv.Atoi(f[6])
+		r.c5, _ = strconv.Atoi(f[7])
 		rows = append(rows, r)
 	}
 	sort.Slice(rows, func(i, j int) bool {
@@ -227,12 +246,19 @@ type series struct {
 	errors   []float64 // 5xx only: the ones that are this box's fault
 }
 
-// seriesFor totals an app, over every container. seriesForService narrows to
-// one; they are separate functions rather than one with a sentinel because
-// "" is a real service value -- the app declared a hostname and did not say
-// what serves it -- and a sentinel that collides with real data is a bug
-// waiting for the first app that ships an unannotated name.
-func seriesFor(rows []metricRow, app string, from, to int64) series {
+// seriesWhere totals the rows a predicate accepts, one bucket per minute.
+//
+// One body, three callers. The subject -- an app, a container, the whole box --
+// is the only thing that differs, and it differs by which rows count. Written
+// three times it was three copies of the same minute arithmetic, and the
+// windowing header had already been fixed twice in two places.
+//
+// Deliberately NOT one function taking an app and a service with "" meaning
+// "any": "" is a real service value -- the app declared a hostname and did not
+// say what serves it -- so a sentinel that collides with real data would be a
+// bug waiting for the first app that ships an unannotated name. A predicate
+// cannot collide with anything.
+func seriesWhere(rows []metricRow, from, to int64, keep func(metricRow) bool) series {
 	from, to = from/60*60, to/60*60
 	if to < from {
 		to = from
@@ -240,7 +266,7 @@ func seriesFor(rows []metricRow, app string, from, to int64) series {
 	n := int((to-from)/60) + 1
 	s := series{from: from, to: to, total: make([]float64, n), errors: make([]float64, n)}
 	for _, r := range rows {
-		if r.app != app || r.minute < from || r.minute > to {
+		if r.minute < from || r.minute > to || !keep(r) {
 			continue
 		}
 		i := int((r.minute - from) / 60)
@@ -248,6 +274,11 @@ func seriesFor(rows []metricRow, app string, from, to int64) series {
 		s.errors[i] += float64(r.c5)
 	}
 	return s
+}
+
+// seriesFor totals an app, over every container.
+func seriesFor(rows []metricRow, app string, from, to int64) series {
+	return seriesWhere(rows, from, to, func(r metricRow) bool { return r.app == app })
 }
 
 // seriesForBox totals every app on the machine.
@@ -257,31 +288,14 @@ func seriesFor(rows []metricRow, app string, from, to int64) series {
 // a number built by attribution: a scanner on the raw IP, or somebody else's
 // DNS pointed here, never appears.
 func seriesForBox(rows []metricRow, from, to int64) series {
-	from, to = from/60*60, to/60*60
-	if to < from {
-		to = from
-	}
-	n := int((to-from)/60) + 1
-	s := series{from: from, to: to, total: make([]float64, n), errors: make([]float64, n)}
-	for _, r := range rows {
-		if r.minute < from || r.minute > to {
-			continue
-		}
-		i := int((r.minute - from) / 60)
-		s.total[i] += float64(r.total())
-		s.errors[i] += float64(r.c5)
-	}
-	return s
+	return seriesWhere(rows, from, to, func(metricRow) bool { return true })
 }
 
+// seriesForService narrows to one container.
 func seriesForService(rows []metricRow, app, service string, from, to int64) series {
-	var mine []metricRow
-	for _, r := range rows {
-		if r.app == app && r.service == service {
-			mine = append(mine, r)
-		}
-	}
-	return seriesFor(mine, app, from, to)
+	return seriesWhere(rows, from, to, func(r metricRow) bool {
+		return r.app == app && r.service == service
+	})
 }
 
 // servesAnyHostname reports whether the app ever declared a hostname pointing at

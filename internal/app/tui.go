@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -149,6 +150,20 @@ type model struct {
 	// take the page with them.
 	freeScroll bool
 
+	// bodyRows is the page as reflow last rendered it, for View to slice.
+	//
+	// Rendering the body is by far the most expensive thing this program does
+	// -- on the monitor it is a trailing median per point per panel and then
+	// braille rasterisation for six charts, and a wide range makes that tens of
+	// thousands of points -- and it was being done TWICE for every message:
+	// once by reflow to find the cursor and count rows, then again by View to
+	// draw it. Nothing between them can change it, because Update is the only
+	// thing that changes state and reflow is the last thing Update does.
+	//
+	// Nil means nobody has reflowed yet, which is the first frame and any test
+	// that renders a model straight off; View renders for itself there.
+	bodyRows []string
+
 	width, height int
 }
 
@@ -187,12 +202,29 @@ func (m model) Init() tea.Cmd {
 // begins on the loading screen, where something IS spinning, so the identical
 // code worked and the fault only appeared on the new path.
 func (m *model) beginLoading(next tea.Cmd) tea.Cmd {
+	return m.withSpin(func() { m.scr = screenLoading }, next)
+}
+
+// withSpin applies a state change and returns the commands that go with it,
+// leaving exactly one ticker driving the animation.
+//
+// The change is passed IN rather than made by the caller, and that is the whole
+// point. "Was anything already spinning" has to be asked before the change --
+// ask it after and a screen that just marked itself not-ready reads as already
+// spinning, so nothing is scheduled and the spinner freezes on one frame. Six
+// places wrote that check by hand and two of them wrote it in the wrong order,
+// which is a bug you cannot see in review because the correct and incorrect
+// versions are the same three lines.
+//
+// Taking the change makes the wrong order unwritable, and asking again
+// afterwards means a change that ends up needing no animation starts no ticker.
+func (m *model) withSpin(change func(), cmds ...tea.Cmd) tea.Cmd {
 	wasSpinning := m.spinning()
-	m.scr = screenLoading
-	if wasSpinning {
-		return next
+	change()
+	if !wasSpinning && m.spinning() {
+		cmds = append(cmds, spinTick())
 	}
-	return tea.Batch(next, spinTick())
+	return tea.Batch(cmds...)
 }
 
 // connectMsg is what a host turned out to be: reachable, never seen before, or
@@ -250,7 +282,7 @@ func (m model) handleLoginKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "backspace":
 		if m.login != "" {
-			m.login = m.login[:len(m.login)-1]
+			m.login = trimLastRune(m.login)
 			m.status, m.statusErr = "", false
 		}
 		return m, nil
@@ -279,6 +311,21 @@ func (m model) handleLoginKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 //
 // Alt chords are not text. Alt+a arrives as a rune with the Alt flag set, and
 // inserting "a" for it would put a letter in the field for a key nobody typed.
+// trimLastRune removes one CHARACTER from the end of a field, not one byte.
+//
+// Backspace used to slice a byte off, which is the same thing for everything
+// typed on a keyboard and wrong for everything pasted: an internationalised
+// hostname or a name with an accent in it would be cut mid-rune, leaving
+// invalid UTF-8 that renders as a replacement character and then fails
+// validation for a reason nothing on screen explains.
+func trimLastRune(s string) string {
+	if s == "" {
+		return s
+	}
+	_, n := utf8.DecodeLastRuneInString(s)
+	return s[:len(s)-n]
+}
+
 func typedText(msg tea.KeyMsg) string {
 	if msg.Alt {
 		return ""
@@ -876,17 +923,14 @@ func (m model) copyKnownHosts(a appRow) model {
 // something has happened to it is the common case, and showing yesterday's
 // scroll position in yesterday's text would be worse than a moment's wait.
 func (m model) openLogs(key, label, app, svc, cmd string) (tea.Model, tea.Cmd) {
-	m.logs, m.logsOf, m.logsLabel, m.logsCmd = "", key, label, cmd
-	m.logsApp, m.logsSvc = app, svc
-	m.logsReady, m.scroll = false, 0
-	m.status, m.statusErr = "", false
-	wasSpinning := m.spinning()
-	m.scr = screenLogs
-	cmds := []tea.Cmd{fetchLogs(m.tgt, key, cmd)}
-	if !wasSpinning {
-		cmds = append(cmds, spinTick())
-	}
-	return m, tea.Batch(cmds...)
+	cmd2 := m.withSpin(func() {
+		m.logs, m.logsOf, m.logsLabel, m.logsCmd = "", key, label, cmd
+		m.logsApp, m.logsSvc = app, svc
+		m.logsReady, m.scroll = false, 0
+		m.status, m.statusErr = "", false
+		m.scr = screenLogs
+	}, fetchLogs(m.tgt, key, cmd))
+	return m, cmd2
 }
 
 // primaryAction is what enter does, by row.
@@ -1001,20 +1045,16 @@ func (m *model) begin(key, cmd string) tea.Cmd {
 	if m.busy[key] {
 		return nil // already in flight; a second press must not queue another
 	}
-	// One ticker, however many rows are moving. Decided before the row is
-	// marked, because "was anything already spinning" is the question -- start
-	// a second and the animation runs at double speed.
-	wasSpinning := m.spinning()
-	if m.busy == nil {
-		m.busy = map[string]bool{}
-	}
-	m.busy[key] = true
-	m.status, m.statusErr = "", false
-	cmds := []tea.Cmd{runOp(m.tgt, key, cmd)}
-	if !wasSpinning {
-		cmds = append(cmds, spinTick())
-	}
-	return tea.Batch(cmds...)
+	// One ticker, however many rows are moving: withSpin asks whether anything
+	// was already spinning before the row is marked, because starting a second
+	// runs the animation at double speed.
+	return m.withSpin(func() {
+		if m.busy == nil {
+			m.busy = map[string]bool{}
+		}
+		m.busy[key] = true
+		m.status, m.statusErr = "", false
+	}, runOp(m.tgt, key, cmd))
 }
 
 // spinning reports whether any row is mid-action or waiting for the refresh

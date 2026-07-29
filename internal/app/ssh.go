@@ -6,9 +6,11 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // target is a server we can reach over SSH.
@@ -34,14 +36,45 @@ type target struct {
 }
 
 func parseTarget(s string) (target, error) {
+	orig := s
 	t := target{user: "root", port: 22}
 	if i := strings.Index(s, "@"); i >= 0 {
 		t.user, s = s[:i], s[i+1:]
 	}
 	if s == "" {
-		return t, fmt.Errorf("no hostname in %q", s)
+		// The ORIGINAL, not what is left of it: reporting the remainder means
+		// "root@" is rejected with `no hostname in ""`, which names nothing the
+		// user typed.
+		return t, fmt.Errorf("no hostname in %q", orig)
 	}
 	t.host = s
+	return t, nil
+}
+
+// resolveTarget turns a --host flag into a target with its port settled and its
+// hostname checked.
+//
+// Every command did these six steps in the same order, and a command that got
+// one wrong -- forgetting resolvePort, most likely -- would work perfectly
+// against a box on port 22 and write known_hosts entries that match nothing
+// against any other.
+func resolveTarget(fs *flag.FlagSet, host string, port int) (target, error) {
+	if host == "" {
+		return target{}, fmt.Errorf("--host is required, e.g. --host root@myapp.example.com")
+	}
+	t, err := parseTarget(host)
+	if err != nil {
+		return target{}, err
+	}
+	if port < 1 || port > 65535 {
+		return target{}, fmt.Errorf("--port must be 1-65535, got %d", port)
+	}
+	t.port = port
+	t.portExplicit = portWasSet(fs)
+	t.resolvePort()
+	if err := validateHost(t.host); err != nil {
+		return target{}, err
+	}
 	return t, nil
 }
 
@@ -112,7 +145,38 @@ func (t target) knownHostsNames() []string {
 func (t target) isIP() bool { return net.ParseIP(t.host) != nil }
 
 func (t target) sshArgs(extra ...string) []string {
-	args := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=10"}
+	args := []string{
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=10",
+
+		// One connection, reused by everything that follows.
+		//
+		// The interface polls the box every five seconds and every operation
+		// opens its own session, so without this each one paid a full TCP
+		// handshake, key exchange and authentication -- and wrote a line into
+		// the server's auth log for the privilege. The master persists briefly
+		// after the last session so a poll, a log fetch and an operation in
+		// quick succession share it, and a session that outlives the master is
+		// simply a new connection rather than an error.
+		//
+		// %C hashes the whole destination (host, port, user, proxy), so two
+		// targets cannot share a socket and the path stays short enough for the
+		// unix socket limit that %h would blow past on a long hostname.
+		//
+		// A connection that stalls mid-stream is not covered by ConnectTimeout,
+		// which only bounds the dial. Without these a poll against a box that
+		// dropped off the network hangs forever, and the interface stops
+		// refreshing with nothing on screen saying why.
+		"-o", "ServerAliveInterval=5",
+		"-o", "ServerAliveCountMax=3",
+	}
+	if p := controlPath(); p != "" {
+		args = append(args,
+			"-o", "ControlMaster=auto",
+			"-o", "ControlPath="+p,
+			"-o", "ControlPersist=60s",
+		)
+	}
 	// Only force a port when the user asked for one. Passing -p unconditionally
 	// would override a Port set in their ~/.ssh/config for this host, which is
 	// the opposite of deferring to their existing setup.
@@ -122,6 +186,29 @@ func (t target) sshArgs(extra ...string) []string {
 	args = append(args, t.addr())
 	return append(args, extra...)
 }
+
+// controlPath is where the shared connection's socket lives, or "" when there
+// is nowhere to put one.
+//
+// Under the user's own directory rather than /tmp: whoever can open that socket
+// gets the authenticated session behind it, and ~/.ssh is already the directory
+// whose permissions the user maintains for exactly that reason.
+//
+// Resolved once, and the directory created, because ssh does not fall back
+// quietly -- given a path it cannot bind, it complains on stderr for every
+// connection, which on a five-second poll is a permanent error message about
+// something that is not the user's problem. No directory, no multiplexing.
+var controlPath = sync.OnceValue(func() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "komizo-%C")
+})
 
 // resolvePort asks ssh what port it will actually use for this host, so the
 // known_hosts lines we build match. `ssh -G` prints the fully resolved
@@ -180,8 +267,13 @@ func (t target) runScript(script string, env map[string]string) error {
 }
 
 // envPrefix renders the environment as VAR='value' assignments in front of the
-// remote command. Values must already be safe to single-quote, which every
-// caller validates before connecting -- see validate.go.
+// remote command.
+//
+// Quoted by shQuote rather than by wrapping the value in quote characters and
+// trusting it not to contain any. Callers do validate -- see validate.go -- but
+// that made the safety of this line depend on a rule enforced three files away,
+// and a caller who forgot it got a shell injection rather than a bad error
+// message.
 //
 // Sorted so the command line is reproducible between runs, which matters when
 // the thing you are comparing is two transcripts of the same operation.
@@ -193,7 +285,7 @@ func envPrefix(env map[string]string) string {
 	sort.Strings(ks)
 	var b strings.Builder
 	for _, k := range ks {
-		fmt.Fprintf(&b, "%s='%s' ", k, env[k])
+		fmt.Fprintf(&b, "%s=%s ", k, shQuote(env[k]))
 	}
 	return b.String()
 }

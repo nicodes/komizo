@@ -240,6 +240,11 @@ func fingerprints(scan []byte) []string {
 //
 // Split out from acceptHostKey so the interface can use it: that function
 // prints to stdout, which inside a full-screen program paints over the page.
+//
+// Lines already in the file are skipped. Accepting the same host twice -- which
+// happens whenever a first connection is retried -- used to append the whole
+// scan again, so a file anybody might have to read by hand grew a duplicate
+// block per attempt.
 func writeKnownHosts(scan []byte) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -249,12 +254,35 @@ func writeKnownHosts(scan []byte) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(kh), 0o700); err != nil {
 		return "", err
 	}
+
+	have := map[string]bool{}
+	if b, err := os.ReadFile(kh); err == nil {
+		for _, ln := range strings.Split(string(b), "\n") {
+			if ln = strings.TrimSpace(ln); ln != "" {
+				have[ln] = true
+			}
+		}
+	}
+	var add strings.Builder
+	for _, ln := range strings.Split(string(scan), "\n") {
+		t := strings.TrimSpace(ln)
+		if t == "" || strings.HasPrefix(t, "#") || have[t] {
+			continue
+		}
+		have[t] = true
+		add.WriteString(t)
+		add.WriteString("\n")
+	}
+	if add.Len() == 0 {
+		return kh, nil
+	}
+
 	f, err := os.OpenFile(kh, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return "", err
 	}
 	defer f.Close()
-	if _, err := f.Write(scan); err != nil {
+	if _, err := f.WriteString(add.String()); err != nil {
 		return "", err
 	}
 	return kh, nil

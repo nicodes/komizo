@@ -97,11 +97,30 @@ func (m model) viewport() int {
 // maxScroll is the furthest down a page can go: enough to put its last row on
 // the bottom of the viewport, and no further. Scrolling into blank space past
 // the end is a way of losing the text you were reading.
+// Deliberately NOT reading reflow's cached rows. This is called from key
+// handlers, which run BEFORE the reflow that follows them, so the cache here
+// would be the previous frame's page -- right almost always, and wrong exactly
+// when a key changed what is on screen and then asked how far it can scroll.
+// It is one render per press of one key on one screen.
 func (m model) maxScroll() int {
 	if n := len(rowsOf(m.pageBody())) - m.viewport(); n > 0 {
 		return n
 	}
 	return 0
+}
+
+// body is the page as View should draw it: what reflow rendered a moment ago.
+//
+// Safe only because reflow is the last thing Update does and Update is the only
+// thing that changes state -- so between the two there is nothing that could
+// make this stale. The fallback is not a rare path: it is the first frame,
+// before any message has arrived, and every test that renders a model it built
+// by hand.
+func (m model) body() []string {
+	if m.bodyRows != nil {
+		return m.bodyRows
+	}
+	return rowsOf(m.pageBody())
 }
 
 // reflow keeps the scroll offset honest after anything that could change what
@@ -126,6 +145,9 @@ func (m model) maxScroll() int {
 func (m *model) reflow() {
 	avail := m.viewport()
 	body := rowsOf(m.pageBody())
+	// Kept for View, which would otherwise render the identical page again a
+	// moment later. See model.bodyRows.
+	m.bodyRows = body
 
 	switch i := anchorOf(body); {
 	case m.scr == screenLogs || m.freeScroll:
@@ -168,7 +190,7 @@ func (m *model) reflow() {
 func (m model) View() string {
 	head := rowsOf(m.headerLine())
 	foot := rowsOf(m.pageFooter())
-	body := rowsOf(m.pageBody())
+	body := m.body()
 
 	// No window size yet: the first frame, before Bubble Tea reports one. Render
 	// unframed rather than lay the page out against a height of zero.

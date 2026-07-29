@@ -56,6 +56,16 @@ func deployBin(app string) string { return "/usr/local/bin/deploy-" + app }
 
 func secretBin(app string) string { return "/usr/local/bin/set-secret-" + app }
 
+// stateFile is where the server records what komizo knows about an app: its
+// directory, its deploy account, its config image, the names CI dials it by.
+// It mirrors alpine.sh, which writes it.
+//
+// A record rather than code. Everything that needs these values reads this --
+// the inventory, the resource sampler, the volume probe, a key rotation --
+// where they used to be recovered by sed-ing them back out of the generated
+// deploy script, which made five readers depend on one generator's formatting.
+func stateFile(app string) string { return "/var/lib/komizo/apps/" + app + ".env" }
+
 func RunAdd(args []string) error {
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
 	fs.Usage = func() { UsageAdd(fs) }
@@ -68,9 +78,6 @@ func RunAdd(args []string) error {
 		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))
 	}
 
-	if o.host == "" {
-		return fmt.Errorf("--host is required, e.g. --host root@myapp.example.com")
-	}
 	if err := validateApp(o.app); err != nil {
 		return err
 	}
@@ -83,9 +90,6 @@ func RunAdd(args []string) error {
 	if err := validateAppDir(o.appDir); err != nil {
 		return err
 	}
-	if o.port < 1 || o.port > 65535 {
-		return fmt.Errorf("--port must be 1-65535, got %d", o.port)
-	}
 	// On a rotation the config image is read back off the box, so an empty value
 	// is only an error when setting an app up. A value that IS given is checked
 	// either way.
@@ -95,14 +99,8 @@ func RunAdd(args []string) error {
 		}
 	}
 
-	tgt, err := parseTarget(o.host)
+	tgt, err := resolveTarget(fs, o.host, o.port)
 	if err != nil {
-		return err
-	}
-	tgt.port = o.port
-	tgt.portExplicit = portWasSet(fs)
-	tgt.resolvePort()
-	if err := validateHost(tgt.host); err != nil {
 		return err
 	}
 	var knownAs []string
@@ -194,9 +192,11 @@ type addPlan struct {
 func performAdd(p addPlan, out progress, runner func(script string, env map[string]string) error) (*addResult, error) {
 	if p.rotate && p.config == "" {
 		// Rotating a key must not change what config the host trusts, so carry
-		// the existing value forward.
+		// the existing value forward. Read from the app's state file, which is
+		// what komizo records about it -- not back out of the generated deploy
+		// script, which is code that happens to contain the value.
 		got, err := p.tgt.quiet(fmt.Sprintf(
-			`sed -n 's/^CONFIG_IMAGE="\(.*\)"$/\1/p' %s 2>/dev/null`, deployBin(p.app)))
+			`sed -n 's/^CONFIG_IMAGE=//p' %s 2>/dev/null | head -n 1`, stateFile(p.app)))
 		if err != nil || strings.TrimSpace(got) == "" {
 			return nil, fmt.Errorf("could not read the current config image for %q off the\n"+
 				"    server -- is that app set up on this box?", p.app)
@@ -307,21 +307,4 @@ func boolEnv(b bool) string {
 		return "1"
 	}
 	return "0"
-}
-
-func fileExists(p string) bool {
-	st, err := os.Stat(p)
-	return err == nil && !st.IsDir()
-}
-
-func sanitize(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if strings.ContainsRune(appChars+".", r) {
-			b.WriteRune(r)
-		} else {
-			b.WriteByte('_')
-		}
-	}
-	return b.String()
 }

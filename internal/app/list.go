@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -11,12 +12,14 @@ import (
 
 // inventory runs on the server and emits one tab-separated record per app.
 //
-// It reads the generated deploy scripts rather than guessing from directory
-// names: those scripts are what actually define an app, and each one carries
-// its own APP_DIR and CONFIG_IMAGE. Anything in /srv without a matching script
-// is reported as an orphan, which is what a half-finished removal looks like.
+// It reads the state file komizo writes per app -- /var/lib/komizo/apps/<app>.env
+// -- rather than guessing from directory names or parsing values back out of
+// the generated deploy script. That script is code; this is the record. Anything
+// in /srv with no state file behind it is reported as an orphan, which is what a
+// half-finished removal looks like.
 const inventoryScript = `
 set -u
+` + stateHelper + `
 # Whether the server has been set up at all. Everything else here assumes
 # docker, so this is reported first and the caller checks it before reading the
 # rest -- an uninitialised box is a state to show, not an error.
@@ -108,20 +111,18 @@ container_ports() {
 	printf '%s' "$_out" | sort -un | tr '\n' ',' | sed 's/,$//'
 }
 
-for bin in /usr/local/bin/deploy-*; do
-	[ -f "$bin" ] || continue
-	app="${bin#/usr/local/bin/deploy-}"
-	dir="$(sed -n 's/^cd "\(.*\)"$/\1/p' "$bin" | head -n 1)"
-	img="$(sed -n 's/^CONFIG_IMAGE="\(.*\)"$/\1/p' "$bin" | head -n 1)"
-	# The names CI dials this app by, recorded when it was added. Empty for an
-	# app set up before they were kept, which the caller falls back for.
-	kas="$(sed -n 's/^KNOWN_AS="\(.*\)"$/\1/p' "$bin" | head -n 1)"
+for state in /var/lib/komizo/apps/*.env; do
+	[ -f "$state" ] || continue
+	app="${state##*/}"; app="${app%.env}"
+	dir="$(komizo_state "$state" APP_DIR)"
+	img="$(komizo_state "$state" CONFIG_IMAGE)"
+	# The names CI dials this app by, recorded when it was added.
+	kas="$(komizo_state "$state" KNOWN_AS)"
+	usr="$(komizo_state "$state" CI_USER)"
 	ver=""
 	[ -n "$dir" ] && [ -f "$dir/.env" ] && ver="$(sed -n 's/^APP_VERSION=//p' "$dir/.env" | head -n 1)"
-	usr="$(awk -v b="$bin" '$0 ~ "cmd " b "$" {print $3; exit}' /etc/doas.conf 2>/dev/null)"
 	running=0
 	if [ -n "$dir" ] && [ -f "$dir/compose.yml" ]; then
-		running="$(docker compose -f "$dir/compose.yml" --project-directory "$dir" ps -q 2>/dev/null | grep -c . || true)"
 		# The app's containers, named individually rather than only counted.
 		# A count says three are up; it cannot say WHICH of four is missing,
 		# and the missing one is the whole question when something 502s.
@@ -134,10 +135,17 @@ for bin in /usr/local/bin/deploy-*; do
 		# project name: compose derives that name from the directory and
 		# normalises it, so an app under a custom --app-dir would not match its
 		# own containers.
+		#
+		# ONE compose call, not two. The running count used to come from a
+		# second 'ps -q' beside this, and a compose invocation is the slow part
+		# of this script -- so a box with six apps paid for six round trips it
+		# could answer from the states it had already fetched.
 		for cid in $(docker compose -f "$dir/compose.yml" --project-directory "$dir" ps -aq 2>/dev/null); do
 			ts="$(printf '%s\n' "$starts" | awk -F'\t' -v id="$cid" '$1 == id { printf "%s\t%s\t%s", $2, $3, $4; exit }')"
 			cpid="$(printf '%s\n' "$starts" | awk -F'\t' -v id="$cid" '$1 == id { print $5; exit }')"
 			cports="$(container_ports "$cpid")"
+			cstate="$(printf '%s\n' "$allc" | awk -F'\t' -v id="$cid" '$1 == id { print $3; exit }')"
+			[ "$cstate" = "running" ] && running=$((running + 1))
 			printf '%s\n' "$allc" | awk -F'\t' -v id="$cid" -v app="$app" -v ts="$ts" -v pt="$cports" '
 				$1 == id { printf "container\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", app, $5, $2, $3, $4, ts, $6, pt }'
 			# Its own record rather than more fields on the one above. That row is
@@ -225,15 +233,31 @@ if docker network inspect "$net" >/dev/null 2>&1; then
 	done
 fi
 
-# Directories with no deploy script behind them -- usually a removal that did
-# not finish. Names starting with "_" are komizo's own and are skipped: they
-# never have a deploy script, so they would otherwise always look orphaned.
+# Directories with no state file behind them -- usually a removal that did not
+# finish. Names starting with "_" are komizo's own and are skipped: they never
+# have one, so they would otherwise always look orphaned.
 for d in /srv/*/; do
 	[ -d "$d" ] || continue
 	name="${d%/}"; name="${name##*/}"
 	case "$name" in _*) continue ;; esac
-	[ -f "/usr/local/bin/deploy-$name" ] || printf 'orphan\t%s\n' "$name"
+	[ -f "/var/lib/komizo/apps/$name.env" ] || printf 'orphan\t%s\n' "$name"
 done
+`
+
+// stateHelper reads one value out of an app's state file.
+//
+// Spliced into every script that needs it rather than written three times: the
+// inventory, the sampler's container walk and the volume probe all enumerate
+// apps, and all three used to sed the same values back out of the generated
+// deploy script -- five readers parsing komizo's own output as a database.
+//
+// The value is everything after the first "=", so a value containing one
+// survives. Comments and blank lines cannot match a KEY= prefix, so they need
+// no special case.
+const stateHelper = `
+komizo_state() {
+	sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n 1
+}
 `
 
 type appRow struct {
@@ -636,18 +660,8 @@ func RunList(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return ErrSilent
 	}
-	if host == "" {
-		return fmt.Errorf("--host is required, e.g. --host root@myapp.example.com")
-	}
-
-	tgt, err := parseTarget(host)
+	tgt, err := resolveTarget(fs, host, port)
 	if err != nil {
-		return err
-	}
-	tgt.port = port
-	tgt.portExplicit = portWasSet(fs)
-	tgt.resolvePort()
-	if err := validateHost(tgt.host); err != nil {
 		return err
 	}
 	if err := ensureReachable(tgt, acceptHostKey); err != nil {
@@ -724,47 +738,79 @@ func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, n
 	var containers []containerRow
 	var routes []routeRow
 	var hosts []hostRow
+	// Scrubbed once, here, rather than at each of the several dozen places a
+	// field ends up on screen. This is the boundary the values cross.
+	out = scrub(out)
 	for _, ln := range strings.Split(out, "\n") {
-		f := strings.Split(ln, "\t")
-		switch {
-		case len(f) == 3 && f[0] == "server":
-			srv.state, srv.docker = f[1], f[2]
-		case len(f) == 2 && f[0] == "komizo":
-			srv.komizo = f[1]
-		case len(f) == 3 && f[0] == "hostkey":
-			srv.hostKeys = append(srv.hostKeys, [2]string{f[1], f[2]})
-		case len(f) == 8 && f[0] == "app":
+		raw := strings.Split(ln, "\t")
+		if len(raw) < 2 {
+			continue
+		}
+		// Padded to the width the record is expected to have, rather than
+		// matched on an exact count.
+		//
+		// A field the box could not produce -- the timestamps of a container
+		// that has never run, the start time of a proxy that was never created
+		// -- used to make the whole row one field short, and an exact-length
+		// switch dropped it silently. An installed proxy then reported as no
+		// proxy at all, and the interface offered to install the one already
+		// there. Absent values now arrive as empty, which is what they are.
+		f := func(n int) []string {
+			if len(raw) >= n {
+				return raw[:n]
+			}
+			out := make([]string, n)
+			copy(out, raw)
+			return out
+		}
+		switch raw[0] {
+		case "server":
+			g := f(3)
+			srv.state, srv.docker = g[1], g[2]
+		case "komizo":
+			srv.komizo = raw[1]
+		case "hostkey":
+			g := f(3)
+			srv.hostKeys = append(srv.hostKeys, [2]string{g[1], g[2]})
+		case "app":
+			g := f(8)
 			apps = append(apps, appRow{
-				name: f[1], user: f[2], dir: f[3], version: f[4],
-				running: f[5], image: f[6], knownAs: splitNames(f[7]),
+				name: g[1], user: g[2], dir: g[3], version: g[4],
+				running: g[5], image: g[6], knownAs: splitNames(g[7]),
 			})
-		case len(f) == 11 && f[0] == "container":
-			c := containerRow{app: f[1], service: f[2], name: f[3], state: f[4], status: f[5]}
-			c.startedAt, c.finishedAt = parseStamp(f[6]), parseStamp(f[7])
-			fmt.Sscanf(f[8], "%d", &c.exitCode)
-			c.image = f[9]
-			c.ports = f[10]
+		case "container":
+			g := f(11)
+			c := containerRow{app: g[1], service: g[2], name: g[3], state: g[4], status: g[5]}
+			c.startedAt, c.finishedAt = parseStamp(g[6]), parseStamp(g[7])
+			c.exitCode, _ = strconv.Atoi(g[8])
+			c.image = g[9]
+			c.ports = g[10]
 			containers = append(containers, c)
-		case len(f) == 5 && f[0] == "route":
-			routes = append(routes, routeRow{app: f[1], sites: f[2], upstream: f[3], port: f[4]})
-		case len(f) == 4 && f[0] == "host":
-			hosts = append(hosts, hostRow{app: f[1], name: f[2], service: f[3]})
-		case len(f) == 8 && f[0] == "proxy":
-			proxy = proxyRow{installed: true, state: f[1], network: f[2],
-				image: f[3], status: f[4]}
-			proxy.startedAt, proxy.finishedAt = parseStamp(f[5]), parseStamp(f[6])
-		case len(f) == 4 && f[0] == "net":
-			net.name, net.driver, net.subnet = f[1], f[2], f[3]
-		case len(f) == 3 && f[0] == "netmember":
+		case "route":
+			g := f(5)
+			routes = append(routes, routeRow{app: g[1], sites: g[2], upstream: g[3], port: g[4]})
+		case "host":
+			g := f(4)
+			hosts = append(hosts, hostRow{app: g[1], name: g[2], service: g[3]})
+		case "proxy":
+			g := f(8)
+			proxy = proxyRow{installed: true, state: g[1], network: g[2],
+				image: g[3], status: g[4]}
+			proxy.startedAt, proxy.finishedAt = parseStamp(g[5]), parseStamp(g[6])
+		case "net":
+			g := f(4)
+			net.name, net.driver, net.subnet = g[1], g[2], g[3]
+		case "netmember":
+			g := f(3)
 			var al []string
-			for _, a := range strings.Split(f[2], ",") {
+			for _, a := range strings.Split(g[2], ",") {
 				if a != "" {
 					al = append(al, a)
 				}
 			}
-			net.members = append(net.members, netMember{container: f[1], aliases: al})
-		case len(f) == 2 && f[0] == "orphan":
-			orphans = append(orphans, f[1])
+			net.members = append(net.members, netMember{container: g[1], aliases: al})
+		case "orphan":
+			orphans = append(orphans, raw[1])
 		}
 	}
 

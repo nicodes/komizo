@@ -24,21 +24,12 @@ func RunRemove(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return ErrSilent
 	}
-	if host == "" {
-		return fmt.Errorf("--host is required")
-	}
 	if err := validateApp(app); err != nil {
 		return err
 	}
 
-	tgt, err := parseTarget(host)
+	tgt, err := resolveTarget(fs, host, port)
 	if err != nil {
-		return err
-	}
-	tgt.port = port
-	tgt.portExplicit = portWasSet(fs)
-	tgt.resolvePort()
-	if err := validateHost(tgt.host); err != nil {
 		return err
 	}
 

@@ -61,14 +61,11 @@ const (
 //
 // The output is still collected. It is just not shown unless something fails.
 func (m *model) startOp(title string) tea.Cmd {
-	wasSpinning := m.spinning()
-	m.run = newRunState(title)
-	m.prompt = &prompt{kind: promptRunning, question: title}
-	m.status, m.statusErr = "", false
-	if wasSpinning {
-		return nil
-	}
-	return spinTick()
+	return m.withSpin(func() {
+		m.run = newRunState(title)
+		m.prompt = &prompt{kind: promptRunning, question: title}
+		m.status, m.statusErr = "", false
+	})
 }
 
 // running reports whether an operation is in flight, which is when the keys
@@ -146,11 +143,18 @@ func (m model) handlePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		value := strings.TrimSpace(p.typed)
 		act := p.action
 		m.prompt = nil
-		return m, act(&m, value)
+		// Sequenced rather than written as `return m, act(&m, value)`. The
+		// action mutates m through that pointer, and Go does not specify
+		// whether the returned copy is read before or after the call -- so the
+		// spinner and busy flags an action sets could be present or lost at the
+		// compiler's discretion. It happened to work, which is the worst way
+		// for it to work.
+		cmd := act(&m, value)
+		return m, cmd
 
 	case "backspace":
 		if p.kind != promptConfirm && p.typed != "" {
-			p.typed = p.typed[:len(p.typed)-1]
+			p.typed = trimLastRune(p.typed)
 			p.problem = ""
 		}
 		return m, nil
@@ -161,7 +165,8 @@ func (m model) handlePromptKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if p.kind == promptConfirm {
 			act := p.action
 			m.prompt = nil
-			return m, act(&m, "")
+			cmd := act(&m, "")
+			return m, cmd
 		}
 	}
 

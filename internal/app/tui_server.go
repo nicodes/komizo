@@ -49,14 +49,17 @@ func fetchLogs(t target, key, cmd string) tea.Cmd {
 			return logsMsg{container: key,
 				err: fmt.Errorf("could not read that log -- is it created yet?")}
 		}
-		return logsMsg{container: key, lines: out}
+		// A log is the one thing on this screen an outsider can write into:
+		// anything an app records about a request carries whatever was in that
+		// request. Rendered raw, an escape sequence in it drives the terminal.
+		return logsMsg{container: key, lines: scrub(out)}
 	}
 }
 
 // containerLogCmd reads one container's log. The name came from the inventory,
 // which read it out of docker, so it is docker's own string.
 func containerLogCmd(name string) string {
-	return "docker logs --tail 40 '" + name + "'"
+	return "docker logs --tail 40 " + shQuote(name)
 }
 
 // stackLogCmd reads every service in an app at once, interleaved.
@@ -108,46 +111,22 @@ func runOp(t target, key, cmd string) tea.Cmd {
 	}
 }
 
-// startShell runs one command on the box, streaming its output to the run pane.
-// Kept for the long operations -- setup, install, removal -- where the output
-// is the point and a spinner would hide it.
-func (m model) startShell(cmd, title string) tea.Cmd {
-	ch := m.run.ch
-	t := m.tgt
-	go func() {
-		c := exec.Command("ssh", t.sshArgs("sh -s")...)
-		if err := stream(ch, c, "set -e\n"+cmd+"\n"); err != nil {
-			ch <- runDoneMsg{err: fmt.Errorf("could not %s -- see the output above", title)}
-			return
-		}
-		ch <- runDoneMsg{}
-	}()
-	return m.run.wait()
-}
-
-// startProxyAction runs one lifecycle command against the proxy stack.
-//
-// `up -d` rather than `start` for the start case: start fails on a container
-// that was removed rather than stopped, and recreating it is what someone
-// pressing "start" means either way.
-func (m model) startProxyAction(verb, title string) tea.Cmd {
-	return m.startShell("cd "+proxyDir+"\n"+proxyCompose(verb), title+" the proxy")
-}
-
 // stackCmd is one lifecycle verb against an app's whole compose project.
 //
-// Quoting is single-quote only, and that is sufficient here rather than lucky:
-// the directory comes from the app's own deploy script, which root wrote, and
-// the paths komizo generates are constrained to [A-Za-z0-9._/-] by validate.go
-// before they ever reach the box.
+// Quoted by shQuote rather than by wrapping in quote characters and relying on
+// the value not containing any. The directory does come from the box's own
+// state file, which root wrote, and komizo constrains it before it ever gets
+// there -- but that made the safety of this line a fact about two other files,
+// and every value here arrives from the far end.
 func stackCmd(a appRow, verb string) string {
-	return fmt.Sprintf("docker compose -f '%s/compose.yml' --project-directory '%s' %s",
-		a.dir, a.dir, verb)
+	dir := shQuote(a.dir)
+	return fmt.Sprintf("docker compose -f %s --project-directory %s %s",
+		shQuote(a.dir+"/compose.yml"), dir, verb)
 }
 
 // containerCmd acts on one container by the name docker itself reported.
 func containerCmd(name, verb string) string {
-	return fmt.Sprintf("docker %s '%s'", verb, name)
+	return fmt.Sprintf("docker %s %s", verb, shQuote(name))
 }
 
 // startServerUpdate re-runs the Docker half only. Deliberately not the proxy,

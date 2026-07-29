@@ -215,7 +215,7 @@ func (m model) handleFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "backspace":
 		v := f.fields[f.focus].value
 		if v != "" {
-			f.fields[f.focus].value = v[:len(v)-1]
+			f.fields[f.focus].value = trimLastRune(v)
 		}
 		f.problem = ""
 	default:
