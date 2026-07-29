@@ -1,0 +1,71 @@
+name: CI
+
+# Everything this repo ships is either Go or shell that Go embeds, and the
+# shell is the half that runs as root on somebody's server. Both are checked
+# here: the Go tests include ones that EXECUTE the generated deploy script
+# against a fake box, so a broken quoting change fails here rather than on a
+# machine at 2am.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # Read from go.mod rather than pinned here, so the version lives in
+          # one place and a bump cannot leave CI testing the old one.
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # Formatting first: it is the cheapest check and the one most likely to
+      # be the only thing wrong.
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt would change these files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      # -race because the TUI runs commands as goroutines writing to a channel
+      # the model reads, which is exactly the shape that fails only under load.
+      - name: go test
+        run: go test -race -timeout 5m ./...
+
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The embedded scripts are POSIX sh and run on Alpine's busybox ash, not
+      # bash. `sh -n` on ubuntu's dash is the closest cheap approximation of
+      # that parser, and it catches the class of error worth catching here: a
+      # heredoc left open, an unbalanced quote, a stray backtick closing a Go
+      # raw string early.
+      - name: parse the server scripts
+        run: |
+          fail=0
+          for f in scripts/*.sh; do
+            if ! sh -n "$f"; then
+              echo "::error file=$f::does not parse as POSIX sh"
+              fail=1
+            fi
+          done
+          exit $fail

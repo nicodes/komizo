@@ -8,7 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/nicodes/komizo-be/cli/scripts"
+	"github.com/nicodes/komizo-cli/scripts"
 )
 
 // The box itself: Docker, the shared network, the proxy, and what is wrong.

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nicodes/komizo-be/cli/scripts"
+	"github.com/nicodes/komizo-cli/scripts"
 )
 
 // The scripts this package ships are shell and awk held in Go strings, and

@@ -4,7 +4,7 @@ import (
 	"flag"
 	"fmt"
 
-	"github.com/nicodes/komizo-be/cli/scripts"
+	"github.com/nicodes/komizo-cli/scripts"
 )
 
 // runRemove is the non-interactive counterpart to the TUI's remove. It refuses
