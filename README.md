@@ -8,16 +8,16 @@ go install github.com/nicodes/komizo-cli/cmd/komizo@latest
 komizo root@your-server
 ```
 
+That opens the interface. Everything is done from there — the flag-driven
+subcommands remain for scripting, but nobody should have to learn them to set a
+box up.
+
 No Go? Take a binary from [releases](https://github.com/nicodes/komizo-cli/releases).
 It connects to your server as root, so verify it before you run it:
 
 ```sh
 gh attestation verify komizo_Linux_x86_64.tar.gz --repo nicodes/komizo-cli
 ```
-
-That opens the interface. Everything is done from there — the flag-driven
-subcommands remain for scripting, but nobody should have to learn them to set a
-box up.
 
 ## What it is
 
