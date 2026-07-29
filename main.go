@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/nicodes/komizo-cli/internal/app"
+	"github.com/nicodes/komizo/internal/app"
 )
 
 // version is the release this binary was built from, set at link time by the

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nicodes/komizo-cli/scripts"
+	"github.com/nicodes/komizo/scripts"
 )
 
 // deploy-<app> is the only thing on the box a leaked CI key can invoke, it runs
