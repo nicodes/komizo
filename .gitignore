@@ -5,3 +5,6 @@ bin/
 
 # Machine-local Claude Code settings.
 .claude/settings.local.json
+
+# Release artefacts, built by .github/actions/build.
+dist/

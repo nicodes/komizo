@@ -1,10 +1,18 @@
 name: CI
 
-# Everything this repo ships is either Go or shell that Go embeds, and the
-# shell is the half that runs as root on somebody's server. Both are checked
-# here: the Go tests include ones that EXECUTE the generated deploy script
-# against a fake box, so a broken quoting change fails here rather than on a
-# machine at 2am.
+# Every push and pull request: build, then test, on one runner.
+#
+# Nothing is published, so a green CI means one thing — this commit is good.
+#
+# One job, because a job is a machine: two would each pay their own checkout and
+# their own toolchain to split one green tick in two. The phases are separate
+# STEPS, so the log still shows which is which and a failure still says so.
+#
+# The steps are .github/actions/*, the same ones Release runs. There is one
+# definition of each, and it is the one guarding a release; two would drift in a
+# single direction, with the release-side copy trimmed for speed until it no
+# longer matched what people trust on a pull request.
+
 on:
   push:
     branches: [main]
@@ -14,8 +22,12 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  go:
+  ci:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,45 +39,10 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      # Formatting first: it is the cheapest check and the one most likely to
-      # be the only thing wrong.
-      - name: gofmt
-        run: |
-          unformatted="$(gofmt -l .)"
-          if [ -n "$unformatted" ]; then
-            echo "::error::gofmt would change these files:"
-            echo "$unformatted"
-            exit 1
-          fi
+      # Built first: a compile error should fail before a test suite spends
+      # five minutes reaching the same conclusion more slowly.
+      - name: Build
+        uses: ./.github/actions/build
 
-      - name: go vet
-        run: go vet ./...
-
-      - name: go build
-        run: go build ./...
-
-      # -race because the TUI runs commands as goroutines writing to a channel
-      # the model reads, which is exactly the shape that fails only under load.
-      - name: go test
-        run: go test -race -timeout 5m ./...
-
-  shell:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      # The embedded scripts are POSIX sh and run on Alpine's busybox ash, not
-      # bash. `sh -n` on ubuntu's dash is the closest cheap approximation of
-      # that parser, and it catches the class of error worth catching here: a
-      # heredoc left open, an unbalanced quote, a stray backtick closing a Go
-      # raw string early.
-      - name: parse the server scripts
-        run: |
-          fail=0
-          for f in scripts/*.sh; do
-            if ! sh -n "$f"; then
-              echo "::error file=$f::does not parse as POSIX sh"
-              fail=1
-            fi
-          done
-          exit $fail
+      - name: Test
+        uses: ./.github/actions/test

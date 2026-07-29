@@ -1,0 +1,90 @@
+name: Build
+description: >
+  Everything a release ships: the binary for every platform, archived, with
+  checksums.
+
+  A composite action rather than a reusable workflow so it runs in the caller's
+  job, under the caller's name — CI / build, Release / build — rather than as a
+  nested "caller / callee" check.
+
+  Shared by CI and Release so a pull request builds exactly what a release
+  builds, with no switches between them. The only difference is that one of them
+  goes on to publish.
+
+  NOTHING LEAVES THE RUNNER. The archives are left in ./dist. Creating the
+  release is a step the caller writes out, so nothing named "build" can publish
+  as a side effect of being reused — and it has no token to publish with.
+
+  Running this on pull requests is not ceremony. There are files behind build
+  tags here (clipboard_unix.go, clipboard_other.go), and a change to one and not
+  the other compiles perfectly on the runner's own platform. Without this, that
+  breaks first at release time, on the one build nobody is watching.
+
+  Assumes Go is already set up. See ../test.
+
+inputs:
+  version:
+    description: >
+      What the binary reports for `komizo version`, baked in with -X.
+
+      Defaults to "dev" rather than being required, because a pull request has
+      no version and should not have to invent one — and "dev" is the honest
+      answer for a binary built from a working tree that may match no tag.
+    required: false
+    default: dev
+
+runs:
+  using: composite
+  steps:
+    - name: Cross-compile
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        rm -rf dist
+        mkdir -p dist
+
+        build() {
+          goos="$1"; goarch="$2"; os_label="$3"; arch_label="$4"
+          name="komizo_${os_label}_${arch_label}"
+          out="dist/$name"
+          mkdir -p "$out"
+          # CGO off so the binary is static and runs on any distro; -trimpath so
+          # the archive does not carry the builder's paths.
+          GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build \
+            -trimpath -ldflags "-s -w -X main.version=$VERSION" \
+            -o "$out/komizo" ./cmd/komizo
+          cp README.md LICENSE "$out/"
+          tar -C "$out" -czf "dist/$name.tar.gz" komizo README.md LICENSE
+          echo "  $name"
+        }
+
+        # Where a person runs a terminal. The servers komizo manages are Alpine,
+        # but nothing of komizo is installed on them -- it is the workstation
+        # that needs a binary.
+        build linux  amd64 Linux  x86_64
+        build linux  arm64 Linux  arm64
+        build darwin amd64 Darwin x86_64
+        build darwin arm64 Darwin arm64
+
+        (cd dist && sha256sum -- *.tar.gz > checksums.txt)
+
+    # The archive is what people download, so the check is run against what came
+    # out of the archive rather than against the tree it was built from. Only
+    # the runner's own platform can be executed here; the others are proven to
+    # link by having compiled at all.
+    - name: The built binary reports its version
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        tmp="$(mktemp -d)"
+        tar -xzf dist/komizo_Linux_x86_64.tar.gz -C "$tmp"
+        got="$("$tmp/komizo" version)"
+        echo "$got"
+        if [ "$got" != "komizo $VERSION" ]; then
+          echo "::error::built binary reports '$got', expected 'komizo $VERSION'"
+          exit 1
+        fi
