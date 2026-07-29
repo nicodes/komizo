@@ -3828,6 +3828,87 @@ func TestBucketingKeepsSpikes(t *testing.T) {
 	}
 }
 
+// brailleInk reports whether any braille dot is drawn inside a rectangle of a
+// rendered chart, in character cells: lines y0..y1 of the view, columns x0..x1.
+// The blank braille cell U+2800 is not ink.
+func brailleInk(view string, x0, x1, y0, y1 int) bool {
+	lines := strings.Split(view, "\n")
+	for y := y0; y <= y1 && y < len(lines); y++ {
+		x := 0
+		for _, r := range lines[y] {
+			if x > x1 {
+				break
+			}
+			if x >= x0 && r > '⠀' && r <= '⣿' {
+				return true
+			}
+			x++
+		}
+	}
+	return false
+}
+
+// Two separate excursions must not be joined. ntcharts draws a line from every
+// point in a data set to the point pushed after it, whatever lies between --
+// an earlier form of the overlay fed disjoint stretches of the score into one
+// data set and ruled a chord from the end of one episode straight across the
+// chart to the start of the next, through an hour that was fine.
+func TestSeparateExcursionsAreNotJoinedByAChord(t *testing.T) {
+	const n = 120
+	from := int64(1_700_000_000) / 60 * 60
+	times := minuteTimes(from, n)
+	vals := make([]float64, n)
+	for i := range vals {
+		vals[i] = 4 // half the fixed ceiling: the series rides the reference line
+	}
+	// Three minutes each, so the median-of-three in quietened keeps them, both
+	// at the ceiling.
+	score := make([]float64, n)
+	score[20], score[21], score[22] = 5, 5, 5
+	score[100], score[101], score[102] = 5, 5, 5
+	view := model{}.combinedChart(timeRange{from: from, to: from + (n-1)*60},
+		times, vals, baseline{score: score}, 80, 12, keyStyle, 8)
+	// The stretch between the episodes, above the reference line. The score is
+	// flat normal there, so the line belongs at half height; a chord from the
+	// first episode's ceiling would cross the top rows of these columns.
+	if brailleInk(view, 30, 48, 0, 3) {
+		t.Errorf("ink between two separate excursions; the episodes are being joined by a chord:\n%s", view)
+	}
+}
+
+// A stretch with no score is a statement -- "we cannot say" -- and the line
+// must break across it, not bridge it. The series itself does bridge its gaps,
+// which is why the two must not share one behaviour. The gap here is flanked
+// by lifted scores: a bridge at that height is visible ink, where a bridge at
+// exactly normal would hide along the reference line.
+func TestTheScoreLineBreaksWhereNothingWasScored(t *testing.T) {
+	const n = 120
+	from := int64(1_700_000_000) / 60 * 60
+	times := minuteTimes(from, n)
+	vals := make([]float64, n)
+	for i := range vals {
+		vals[i] = 2 // a quarter height, well below where the score line sits
+	}
+	score := make([]float64, n)
+	for i := 20; i < 40; i++ {
+		score[i] = 3 // past the dead zone: lifted to three quarters height
+	}
+	for i := 40; i < 80; i++ {
+		score[i] = math.NaN()
+	}
+	for i := 80; i < 103; i++ {
+		score[i] = 3
+	}
+	view := model{}.combinedChart(timeRange{from: from, to: from + (n-1)*60},
+		times, vals, baseline{score: score}, 80, 12, keyStyle, 8)
+	// Inside the unscored stretch nothing sits in the upper rows: the series'
+	// own bridge is at a quarter height and the reference line at a half. Ink
+	// up there is the lifted line either side being joined across the gap.
+	if brailleInk(view, 35, 50, 0, 3) {
+		t.Errorf("ink across an unscored stretch; the score line must break there:\n%s", view)
+	}
+}
+
 // `m` opens the monitor for an app, and offers itself on no other row.
 func TestTheMonitorOpensOnAnAppOnly(t *testing.T) {
 	m := netModel()
@@ -4195,54 +4276,6 @@ func TestFailuresScoreAgainstAPoissonBaseline(t *testing.T) {
 	z[len(z)-1] = 1
 	if got := trailingPoisson(z).score[len(z)-1]; got != devLimit {
 		t.Errorf("first failure after a clean window = %v, want the ceiling (%d)", got, devLimit)
-	}
-}
-
-// The how-unusual line is coloured by how unusual it is, in the three states
-// this interface uses everywhere else -- and the two charts grade differently,
-// because their two directions do not mean the same thing.
-func TestTheUnusualLineIsGraded(t *testing.T) {
-	// Requests: either direction. A flood is an event and so is a sudden
-	// silence, which is usually the same incident from the other side.
-	for _, c := range []struct {
-		score float64
-		want  string
-	}{
-		{0, bandOK}, {1, bandOK}, {-1, bandOK},
-		{1.1, bandWarn}, {2, bandWarn}, {-1.5, bandWarn}, {-2, bandWarn},
-		{2.1, bandErr}, {4, bandErr}, {-3, bandErr},
-	} {
-		if got := bandBothWays(c.score); got != c.want {
-			t.Errorf("bandBothWays(%v) = %s, want %s", c.score, got, c.want)
-		}
-	}
-
-	// Failures: the up side only. Fewer failures than usual is the system
-	// working better than it normally does, and an interface that coloured that
-	// amber would be calling good news a warning.
-	for _, c := range []struct {
-		score float64
-		want  string
-	}{
-		{0, bandOK}, {1, bandOK},
-		{1.1, bandWarn}, {2, bandWarn},
-		{2.1, bandErr}, {4, bandErr},
-		// However far below normal, still green.
-		{-1.5, bandOK}, {-3, bandOK}, {-9, bandOK},
-	} {
-		if got := bandUpOnly(c.score); got != c.want {
-			t.Errorf("bandUpOnly(%v) = %s, want %s", c.score, got, c.want)
-		}
-	}
-}
-
-// ntcharts draws data sets in sorted name order and each overwrites whole
-// cells, so where two bands meet the one sorting LAST is the one you see. That
-// must be the worse of the two: a crossing into red is the event the chart
-// exists to show, and green painting over it hides exactly that.
-func TestAWorseBandIsDrawnOverALesserOne(t *testing.T) {
-	if !(bandOK < bandWarn && bandWarn < bandErr) {
-		t.Errorf("bands must sort by severity, got %q, %q, %q", bandOK, bandWarn, bandErr)
 	}
 }
 

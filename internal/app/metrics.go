@@ -415,27 +415,24 @@ func trailingBaseline(v []float64) baseline {
 // a few dozen requests a minute, jittering by a few -- the median absolute
 // deviation is about the size of the jitter, so routine noise scores a whole
 // sigma and the line swings across the chart every minute. Measured on quiet
-// data with no incident in it: 86 of 90 minutes off the reference line, and
-// fourteen changes of colour. A colour that changes fourteen times while
-// nothing is happening is not a warning, it is a texture.
+// data with no incident in it: 86 of 90 minutes off the reference line. A line
+// that is always off its reference is not a signal, it is a texture.
 //
 // Two things fix it, and only together.
 //
 // A median of three kills the single-minute spike, which is the shape most of
-// the noise takes. On its own it is nearly useless -- fourteen colour changes
-// become ten.
+// the noise takes. On its own it is nearly useless.
 //
 // The DEAD ZONE does the work. Inside one deviation the line is pinned to the
 // reference: ordinary variation draws as flat, because ordinary variation is
 // not news. Past that the line lifts off by however far it has gone beyond it.
-// Quiet data goes to zero colour changes; an incident still peaks above twenty
-// deviations, which is the number that matters.
+// Quiet data draws dead flat; an incident still peaks above twenty deviations,
+// which is the number that matters.
 //
-// The cost, stated plainly: the colours move out by one. The line lifts off
-// past one deviation, turns amber past two and red past three, rather than
-// green/amber/red at one/two. That is a stricter reading than the raw score,
-// deliberately -- the old thresholds fired constantly on data with nothing
-// wrong with it.
+// The cost, stated plainly: the line reads one deviation low. It lifts off
+// past one deviation rather than at it. That is a stricter reading than the
+// raw score, deliberately -- drawn raw, the line was off the reference nearly
+// every minute on data with nothing wrong with it.
 func quietened(score []float64) []float64 {
 	out := make([]float64, len(score))
 	copy(out, score)
