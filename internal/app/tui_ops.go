@@ -182,6 +182,12 @@ func (a addResult) view() string {
 	b.WriteString(a.row(resultKey, "KOMIZO_DEPLOY_KEY", dimStyle.Render("secret")))
 	b.WriteString(gutter + "      " + dimStyle.Render("held in memory and not shown — press c to copy it") + "\n")
 	b.WriteString(gutter + "      " + dimStyle.Render("it is not saved anywhere; rotate the key to get another") + "\n")
+	if a.onClipboard == resultKey {
+		// The key is a private credential sitting on the system clipboard, where a
+		// clipboard manager may persist it. Say so, so it gets pasted and then
+		// cleared rather than left there.
+		b.WriteString(gutter + "      " + warnStyle.Render("on your clipboard now — paste it into GitHub, then clear your clipboard") + "\n")
+	}
 
 	// --- 2. the host keys ----------------------------------------------------
 	// Rotating replaces the deploy KEYPAIR. The server's host keys are its own

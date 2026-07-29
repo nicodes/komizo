@@ -172,6 +172,20 @@ services:
     image: $PROXY_IMAGE
     container_name: $PROXY_CONTAINER
     restart: unless-stopped
+    # This is the one process on the box facing the internet, so give it the
+    # least it can run with. Drop every Linux capability and add back only the
+    # one it needs to bind 80/443, forbid privilege escalation, and run on a
+    # read-only root filesystem -- everything Caddy writes (certificates, its
+    # config store, access logs) is a named volume or the tmpfs below.
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    read_only: true
+    tmpfs:
+      - /tmp
     # The only container on this box that publishes a port. Apps are reached
     # over the '$SHARED_NETWORK' network by name, so they publish nothing.
     ports:

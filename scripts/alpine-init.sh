@@ -66,6 +66,40 @@ else
 	docker network create "$SHARED_NETWORK" >/dev/null
 fi
 
+# --- 3. keep containers off the cloud metadata endpoint --------------------
+# Every container can otherwise reach 169.254.169.254 -- the instance metadata
+# service, which on AWS/GCP hands IAM credentials to anything that asks from the
+# instance. An SSRF or RCE in any app would then read the box's cloud creds. A
+# DROP in DOCKER-USER (the chain Docker leaves for operator rules, evaluated
+# before its own forwarding) closes it for containers without touching host
+# traffic. Applied now, and re-applied at boot via /etc/local.d because Docker
+# rebuilds its chains on restart and iptables rules do not survive a reboot.
+#
+# NOTE: if an app on this box is MEANT to use an IAM role from the metadata
+# service, remove /etc/local.d/komizo-firewall.start and flush the rule.
+metadata_guard() {
+	command -v iptables >/dev/null 2>&1 || return 0
+	iptables -L DOCKER-USER >/dev/null 2>&1 || return 0
+	iptables -C DOCKER-USER -d 169.254.169.254/32 -j DROP 2>/dev/null \
+		|| iptables -I DOCKER-USER -d 169.254.169.254/32 -j DROP
+}
+log "Blocking container access to the cloud metadata endpoint (169.254.169.254)"
+metadata_guard || true
+
+mkdir -p /etc/local.d
+cat > /etc/local.d/komizo-firewall.start <<'EOF'
+#!/bin/sh
+# Written by komizo (alpine-init.sh). Re-applies the container metadata-endpoint
+# block at boot, because Docker rebuilds its iptables chains on start and the
+# rule does not otherwise persist a reboot. Remove this file to allow access.
+command -v iptables >/dev/null 2>&1 || exit 0
+iptables -L DOCKER-USER >/dev/null 2>&1 || exit 0
+iptables -C DOCKER-USER -d 169.254.169.254/32 -j DROP 2>/dev/null \
+	|| iptables -I DOCKER-USER -d 169.254.169.254/32 -j DROP
+EOF
+chmod 755 /etc/local.d/komizo-firewall.start
+rc-update add local default >/dev/null 2>&1 || true
+
 log "Done"
 cat <<EOF
 

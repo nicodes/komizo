@@ -47,6 +47,14 @@ func parseTarget(s string) (target, error) {
 		// user typed.
 		return t, fmt.Errorf("no hostname in %q", orig)
 	}
+	// The login user is validated here, at the one place every caller parses a
+	// target, because addr() hands `user@host` to ssh as a single argv element:
+	// an unchecked user beginning with '-' becomes an ssh option (ProxyCommand),
+	// i.e. local command execution. The host is validated by callers after the
+	// port is resolved.
+	if err := validateLoginUser(t.user); err != nil {
+		return t, err
+	}
 	t.host = s
 	return t, nil
 }
@@ -149,6 +157,15 @@ func (t target) sshArgs(extra ...string) []string {
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
 
+		// Never inherit a looser policy from the user's ssh config. With
+		// StrictHostKeyChecking left at the default, an operator who set
+		// `accept-new` (or `no`) would have komizo silently trust an unseen -- or
+		// even a CHANGED -- host key, and then read that key back over the
+		// connection as the value CI pins forever (hostkeys.go). The deliberate
+		// trust-on-first-use path (reach.go) writes known_hosts before it
+		// reconnects, so it still works with this set; nothing else should.
+		"-o", "StrictHostKeyChecking=yes",
+
 		// One connection, reused by everything that follows.
 		//
 		// The interface polls the box every five seconds and every operation
@@ -207,6 +224,11 @@ var controlPath = sync.OnceValue(func() string {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return ""
 	}
+	// MkdirAll leaves an existing directory's mode alone, so tighten it: whoever
+	// can open the control socket rides the authenticated session behind it.
+	// ssh binds the socket itself at 0600, so this is depth -- but 0700 is the
+	// mode ~/.ssh is meant to have anyway, and ssh refuses a looser one.
+	_ = os.Chmod(dir, 0o700)
 	return filepath.Join(dir, "komizo-%C")
 })
 

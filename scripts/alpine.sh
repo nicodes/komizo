@@ -58,6 +58,17 @@ esac
 # account across apps is possible with an explicit CI_USER, but then its doas
 # block covers all of them.
 CI_USER="${CI_USER:-komizo-$APP_NAME}"
+# Validated here, not only in the CLI: this script is documented as hand-runnable
+# with env vars, and CI_USER is written verbatim into doas.conf and an sshd Match
+# block, and used as a sed -E pattern below. A newline would inject a doas rule
+# (full root); a dot is a regex metacharacter that could match another account's
+# marker block. Letters, digits, underscore and hyphen is all a deploy account
+# needs. Also refuse root and any UID-0 account: setting it up would point sshd
+# at a key list holding only the deploy key, turning that key into a root login.
+case "$CI_USER" in
+	''|*[!A-Za-z0-9_-]*) echo "error: CI_USER must be letters, digits, underscore or hyphen" >&2; exit 1 ;;
+	root) echo "error: CI_USER must not be root -- the deploy account is a separate, unprivileged user" >&2; exit 1 ;;
+esac
 DEPLOY_BIN="/usr/local/bin/deploy-$APP_NAME"
 SECRET_BIN="/usr/local/bin/set-secret-$APP_NAME"
 
@@ -72,6 +83,31 @@ APP_DIR="${APP_DIR:-/srv/$APP_NAME}"
 # generator's formatting would break all of them at once.
 STATE_DIR=/var/lib/komizo/apps
 STATE_FILE="$STATE_DIR/$APP_NAME.env"
+
+# If this app was previously set up under a DIFFERENT deploy account, that old
+# account's key file, doas rule and sshd Match block would otherwise be orphaned
+# -- an invisible, still-privileged account that a key rotation never touches.
+# Note it now, before the state file is rewritten below, and remove it further
+# down. Skipped when the account is shared with another app (an explicit CI_USER
+# can be), since removing it would break those apps.
+OLD_CI_USER=""
+_old="$(sed -n 's/^CI_USER=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
+case "$_old" in
+	''|"$CI_USER") ;;                     # nothing recorded, or unchanged
+	*[!A-Za-z0-9_-]*) ;;                  # legacy/unreadable value -- leave it be
+	*)
+		OLD_CI_USER="$_old"
+		for _st in "$STATE_DIR"/*.env; do
+			[ -f "$_st" ] || continue
+			_a="${_st##*/}"; _a="${_a%.env}"
+			[ "$_a" = "$APP_NAME" ] && continue
+			if [ "$(sed -n 's/^CI_USER=//p' "$_st" | head -n 1)" = "$OLD_CI_USER" ]; then
+				OLD_CI_USER=""   # still in use by another app; do not touch it
+				break
+			fi
+		done
+		;;
+esac
 
 # The deploy account's key list, OUTSIDE its home directory.
 #
@@ -187,7 +223,12 @@ docker info >/dev/null 2>&1 \
 # --- 2. CI user ------------------------------------------------------------
 
 log "Creating user '$CI_USER'"
-if ! id "$CI_USER" >/dev/null 2>&1; then
+if id "$CI_USER" >/dev/null 2>&1; then
+	# An existing account is fine only if it is not privileged: pointing sshd at a
+	# key list of komizo's for a UID-0 account would turn the deploy key into a
+	# root login and could lock the operator out.
+	[ "$(id -u "$CI_USER")" -ne 0 ] || die "CI_USER '$CI_USER' is a UID-0 (root-equivalent) account -- refusing"
+else
 	# -D: no password (key-only login), -s: shell needed for SSH commands
 	adduser -D -s /bin/sh "$CI_USER"
 fi
@@ -217,6 +258,15 @@ mkdir -p "$KEYS_DIR"
 chown root:root "$KEYS_DIR"
 chmod 755 "$KEYS_DIR"
 
+# Retire the app's previous deploy account, if it was renamed (see OLD_CI_USER
+# above). Its doas and sshd marker blocks are removed alongside the current
+# account's, further down; here we drop its key file and the account itself.
+if [ -n "$OLD_CI_USER" ]; then
+	log "Removing this app's previous deploy account '$OLD_CI_USER'"
+	rm -f "$KEYS_DIR/$OLD_CI_USER"
+	deluser "$OLD_CI_USER" 2>/dev/null || true
+fi
+
 if [ -z "$CI_PUBKEY" ]; then
 	log "Keeping the deploy key already installed"
 else
@@ -241,12 +291,19 @@ log "Preparing $APP_DIR"
 # the host filesystem into a container, which is the same as being root.
 mkdir -p "$APP_DIR"
 chown root:root "$APP_DIR"
-chmod 755 "$APP_DIR"
+# 750, not 755: nothing but root reads under here (the deploy runs as root via
+# doas; the proxy mounts only its own routes directory). The deploy account has
+# an ordinary shell session, and a world-readable app dir let it read every
+# OTHER app's compose.yml -- which the app is told to keep non-secret settings
+# in, and which in practice accretes internal URLs and the like.
+chmod 750 "$APP_DIR"
 if [ ! -f "$APP_DIR/compose.yml" ]; then
 	printf 'services: {}\n' > "$APP_DIR/compose.yml"
 fi
 chown root:root "$APP_DIR/compose.yml"
-chmod 644 "$APP_DIR/compose.yml"
+# 600: compose.yml is root's to write and root's (docker, the deploy script) to
+# read; no other account has any business reading it.
+chmod 600 "$APP_DIR/compose.yml"
 # Two env files, split by who writes them and who may read them:
 #
 #   .env         APP_VERSION only. Compose reads this for ${APP_VERSION}
@@ -281,8 +338,11 @@ chmod 755 "$PROXY_DIR" "$ROUTES_DIR"
 log "Recording $STATE_FILE"
 mkdir -p "$STATE_DIR"
 chown root:root /var/lib/komizo "$STATE_DIR"
-chmod 755 /var/lib/komizo
-chmod 755 "$STATE_DIR"
+# 750, matching the sampler installer (system.go): the records name every app's
+# directory, deploy account and config-image path, readable only by root, which
+# is the only thing that reads them.
+chmod 750 /var/lib/komizo
+chmod 750 "$STATE_DIR"
 cat > "$STATE_FILE" <<EOF
 # Written by komizo. This is what komizo knows about this app; edit with
 # 'komizo add' rather than by hand.
@@ -293,7 +353,7 @@ CONFIG_IMAGE=$CONFIG_IMAGE
 KNOWN_AS=$KNOWN_AS
 EOF
 chown root:root "$STATE_FILE"
-chmod 644 "$STATE_FILE"
+chmod 640 "$STATE_FILE"
 
 # --- 3. Deploy path --------------------------------------------------------
 # The only privileged thing the CI user may do, besides setting a secret.
@@ -323,9 +383,16 @@ cat > "$DEPLOY_BIN.tmp" <<'KOMIZO_DEPLOY_EOF'
 #!/bin/sh
 # Written by komizo. Edits are lost the next time the app is set up.
 set -eu
+# No pathname expansion. Several loops below iterate $hostnames (whitespace-
+# separated, straight from the config image), and a hostname of "*" or "*.prev"
+# would otherwise glob into the files in this directory and be published as bogus
+# routes -- slipping past the wildcard check, which never sees a literal "*".
+# Re-enabled only around the one place a glob is intended (the state-file scan).
+set -f
 
 CONFIG_IMAGE="__CONFIG_IMAGE__"
 PROXY_CONTAINER="__PROXY_CONTAINER__"
+PROXY_DIR="__PROXY_DIR__"
 
 # Baked in rather than derived. The app's name decides the upstream the shared
 # proxy is pointed at (<app>-gateway), and its directory is where the hostnames
@@ -339,6 +406,13 @@ version="${1:-}"
 registry="${2:-}"
 registry_user="${3:-}"
 cd "$APP_DIR"
+
+# Clean up scratch however this exits. Several validation failures below exit
+# without reaching an explicit cleanup, and each would otherwise leave a
+# root-owned copy of the config image -- or the per-run registry credentials --
+# behind in /tmp.
+staging=""
+trap 'rm -rf "$staging" "${DOCKER_CONFIG:-}" 2>/dev/null || true' EXIT INT TERM
 
 # Tags and SHAs only: letters, digits, dot, underscore, hyphen. Required --
 # every deploy names a version, because the config for that version has to be
@@ -407,8 +481,8 @@ if [ -n "$registry" ]; then
 	esac
 	DOCKER_CONFIG="$(mktemp -d)"
 	export DOCKER_CONFIG
-	# Credentials must not outlive the deploy, so drop them however we exit.
-	trap 'rm -rf "$DOCKER_CONFIG"' EXIT INT TERM
+	# Credentials must not outlive the deploy; the EXIT trap set above drops both
+	# this directory and the staging dir however we leave.
 	if ! docker login "$registry" -u "$registry_user" --password-stdin >/dev/null; then
 		echo "deploy: could not authenticate to $registry as $registry_user" >&2
 		exit 1
@@ -441,8 +515,19 @@ docker cp "$cid:/config/." "$staging/" >/dev/null
 docker rm -v "$cid" >/dev/null
 
 if [ ! -f "$staging/compose.yml" ]; then
-	rm -rf "$staging"
 	echo "deploy: $ref has no /config/compose.yml" >&2
+	exit 1
+fi
+
+# A config image is data, not a way to make root read the host. `docker cp`
+# preserves symlinks, and the cat/sed below would follow one out of the staging
+# dir into an arbitrary host file. Refuse symlinks for the two files consumed.
+if [ -L "$staging/compose.yml" ]; then
+	echo "deploy: compose.yml in $ref is a symlink, which is not allowed" >&2
+	exit 1
+fi
+if [ -L "$staging/hostnames" ]; then
+	echo "deploy: hostnames in $ref is a symlink, which is not allowed" >&2
 	exit 1
 fi
 
@@ -591,6 +676,9 @@ if [ -n "$hostnames" ]; then
 	# /srv, because an app is not required to live there: --app-dir puts it
 	# anywhere, and such an app was neither checked against nor checked.
 	for h in $hostnames; do
+		# Pathname expansion is off (set -f) so $hostnames cannot glob; restore it
+		# just for this scan of the other apps' state files, then turn it back off.
+		set +f
 		for _st in __STATE_DIR__/*.env; do
 			[ -f "$_st" ] || continue
 			_other="${_st##*/}"; _other="${_other%.env}"
@@ -598,11 +686,13 @@ if [ -n "$hostnames" ]; then
 			_odir="$(sed -n 's/^APP_DIR=//p' "$_st" | head -n 1)"
 			[ -n "$_odir" ] && [ -f "$_odir/hostnames" ] || continue
 			if awk '{ print $1 }' "$_odir/hostnames" 2>/dev/null | grep -qxF "$h"; then
+				set -f
 				revert
 				echo "deploy: '$h' is already claimed by $_other" >&2
 				exit 1
 			fi
 		done
+		set -f
 	done
 
 	# Recorded WITH annotations: the interface reads this file to attribute
@@ -623,6 +713,19 @@ if [ -n "$hostnames" ]; then
 			*) [ -n "$plain" ] && plain="$plain, "; plain="$plain$h" ;;
 		esac
 	done
+
+	# A wildcard needs on-demand TLS, and on-demand TLS with no approval gate is a
+	# remote denial of service: anyone can open TLS connections with random SNIs
+	# and make the box attempt a certificate per name, exhausting its shared ACME
+	# rate limit and breaking renewal for every real certificate on it. Refuse
+	# rather than ship it -- the same "fail loudly" rule as dns/passthrough above.
+	if [ -n "$wild" ] && ! grep -q 'ask ' "$PROXY_DIR/Caddyfile" 2>/dev/null; then
+		revert
+		echo "deploy: '$wild' is a wildcard, which needs on-demand TLS with an approval gate." >&2
+		echo "deploy: the proxy has no gate configured, so this would let anyone exhaust the box's certificate rate limit." >&2
+		echo "deploy: configure one with 'komizo proxy --tls-ask <url>' first. See docs/tls-design.md" >&2
+		exit 1
+	fi
 
 	# Access logging, emitted into every site block this generates.
 	#
@@ -652,10 +755,21 @@ if [ -n "$hostnames" ]; then
 	{
 		printf '# Written by komizo from %s.\n' "$ref"
 		printf '# Edits here are lost on the next deploy.\n'
+		# HSTS on every site (komizo terminates TLS and redirects HTTP->HTTPS, so
+		# the header is always accurate), and the X-Forwarded-For handed upstream is
+		# RESET to the direct client rather than appended to: Caddy otherwise keeps
+		# a client-supplied value as the first entry, which is the one an app reads
+		# for allowlisting and rate limiting -- i.e. a spoofable one.
+		site() {
+			printf '\theader Strict-Transport-Security "max-age=31536000"\n'
+			access_log
+			printf '\treverse_proxy %s-gateway:80 {\n' "$APP_NAME"
+			printf '\t\theader_up X-Forwarded-For {remote_host}\n'
+			printf '\t}\n'
+		}
 		if [ -n "$plain" ]; then
 			printf '%s {\n' "$plain"
-			access_log
-			printf '\treverse_proxy %s-gateway:80\n' "$APP_NAME"
+			site
 			printf '}\n'
 		fi
 		if [ -n "$wild" ]; then
@@ -665,8 +779,7 @@ if [ -n "$hostnames" ]; then
 			# server is configured with -- see 'komizo proxy --tls-ask'.
 			printf '%s {\n' "$wild"
 			printf '\ttls {\n\t\ton_demand\n\t}\n'
-			access_log
-			printf '\treverse_proxy %s-gateway:80\n' "$APP_NAME"
+			site
 			printf '}\n'
 		fi
 	} > "$ROUTE_FILE"
@@ -732,13 +845,23 @@ rm -f compose.yml.prev hostnames.prev "$ROUTE_FILE.prev"
 # deploy that fails earlier leaves the box claiming the version it is actually
 # still running. Persisted so a later manual 'docker compose up -d' keeps this
 # commit instead of drifting back to :latest.
+# .env is read by the pull/up below for ${APP_VERSION} substitution, so it has
+# to be written first -- but a pull that then fails (a tag that exists for the
+# config image but not the app image) would leave .env claiming a version that
+# never started. Back it up and put it back on failure.
+cp .env .env.komizo.bak 2>/dev/null || true
 if grep -q '^APP_VERSION=' .env; then
 	sed -i "s|^APP_VERSION=.*|APP_VERSION=$version|" .env
 else
 	printf 'APP_VERSION=%s\n' "$version" >> .env
 fi
 
-docker compose pull
+if ! docker compose pull; then
+	mv -f .env.komizo.bak .env 2>/dev/null || rm -f .env.komizo.bak
+	echo "deploy: 'docker compose pull' failed -- .env restored, nothing restarted" >&2
+	exit 1
+fi
+rm -f .env.komizo.bak
 docker compose up -d --remove-orphans
 
 # Deliberately NOT pruning images here. 'docker image prune' is machine-wide,
@@ -782,6 +905,7 @@ sed -i \
 	-e "s|__APP_DIR__|$APP_DIR|g" \
 	-e "s|__CONFIG_IMAGE__|$CONFIG_IMAGE|g" \
 	-e "s|__PROXY_CONTAINER__|$PROXY_CONTAINER|g" \
+	-e "s|__PROXY_DIR__|$PROXY_DIR|g" \
 	-e "s|__ROUTES_DIR__|$ROUTES_DIR|g" \
 	-e "s|__STATE_DIR__|$STATE_DIR|g" \
 	"$DEPLOY_BIN.tmp"
@@ -861,6 +985,9 @@ touch /etc/doas.conf
 # know how many lines it spans.
 # Keyed on the project rather than this file, so adding a script for another
 # distro later does not orphan rules written by this one.
+# Drop the previous account's block too, if this app was renamed onto a new
+# account (OLD_CI_USER is set only when it is safe to retire the old one).
+[ -n "$OLD_CI_USER" ] && sed -i -E "/^# $PROJECT_MARKER: $OLD_CI_USER BEGIN\$/,/^# $PROJECT_MARKER: $OLD_CI_USER END\$/d" /etc/doas.conf
 sed -i -E "/^# $PROJECT_MARKER: $CI_USER BEGIN\$/,/^# $PROJECT_MARKER: $CI_USER END\$/d" /etc/doas.conf
 cat >> /etc/doas.conf <<-EOF
 	# komizo: $CI_USER BEGIN
@@ -892,6 +1019,17 @@ doas -C /etc/doas.conf || die "generated doas.conf is invalid"
 conf=/etc/ssh/sshd_config
 conf_bak="$conf.komizo.bak"
 cp "$conf" "$conf_bak"
+
+# Restore on ANY failure between here and a successful reload. A half-edited
+# sshd_config that lost the Match block would fall back to the account's own
+# ~/.ssh/authorized_keys -- which it can write -- reintroducing the very thing
+# the root-owned key list exists to prevent. The explicit reverts below stay for
+# their specific messages; this catches every other way out. Cleared on success.
+trap 'mv -f "$conf_bak" "$conf" 2>/dev/null || true' EXIT
+
+# Retire the previous account's Match block too, if this app was renamed onto a
+# new account (OLD_CI_USER is set only when it is safe to do so).
+[ -n "$OLD_CI_USER" ] && sed -i -E "/^# $PROJECT_MARKER: sshd $OLD_CI_USER BEGIN\$/,/^# $PROJECT_MARKER: sshd $OLD_CI_USER END\$/d" "$conf"
 
 # The deploy-user block is always removed, because it is always re-added
 # below. The global block is only removed when we are about to rewrite it --
@@ -953,6 +1091,7 @@ cat >> "$conf" <<-EOF
 	    PermitEmptyPasswords no
 	    AllowTcpForwarding no
 	    AllowAgentForwarding no
+	    AllowStreamLocalForwarding no
 	    PermitTunnel no
 	    GatewayPorts no
 	    X11Forwarding no
@@ -961,8 +1100,13 @@ EOF
 
 if sshd -t; then
 	rc-service sshd reload || rc-service sshd restart
+	# Success: stop guarding the file and drop the backup, so a re-run's "backup"
+	# is the pre-komizo config rather than one that already carries komizo's edits.
+	trap - EXIT
+	rm -f "$conf_bak"
 else
 	mv "$conf_bak" "$conf"
+	trap - EXIT
 	die "sshd config test failed, reverted -- nothing was restarted"
 fi
 
@@ -988,9 +1132,11 @@ EOF
 
 cat <<EOF
 
-NOTE on what this contains. '$CI_USER' can do exactly two things: deploy a tag
-that already exists in your registry, and set a secret it cannot read back. It
-cannot run docker, write anything under $APP_DIR, or introduce new code --
+NOTE on what this contains. As root, via doas, '$CI_USER' can do exactly two
+things: deploy a tag that already exists in your registry, and set a secret it
+cannot read back. It also gets an ordinary, unprivileged SSH shell session as
+itself -- deliberately, so a workflow can run a migration or a backup -- but it
+cannot run docker, write anything under $APP_DIR, or introduce new code:
 compose.yml arrives as a registry layer that root extracts, so changing the
 shape of the stack requires push access to the registry.
 

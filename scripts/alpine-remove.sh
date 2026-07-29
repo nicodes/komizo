@@ -38,9 +38,22 @@ state() {
 
 CI_USER="${CI_USER:-$(state CI_USER)}"
 CI_USER="${CI_USER:-komizo-$APP_NAME}"
+# Used as a sed -E pattern and in `rm`/`deluser`; constrain it (a dot is a regex
+# metacharacter, a newline could target another account's block).
+case "$CI_USER" in
+	''|*[!A-Za-z0-9_-]*) echo "error: CI_USER must be letters, digits, underscore or hyphen" >&2; exit 1 ;;
+esac
 APP_DIR="${APP_DIR:-$(state APP_DIR)}"
 APP_DIR="${APP_DIR:-/srv/$APP_NAME}"
+
+# The one irreversible flag, so it fails safe: anything but an explicit "keep"
+# deletes, and a typo (KEEP_DATA=ture) errors rather than silently wiping data.
 KEEP_DATA="${KEEP_DATA:-0}"
+case "$KEEP_DATA" in
+	1|yes|true) KEEP_DATA=1 ;;
+	0|no|false|'') KEEP_DATA=0 ;;
+	*) echo "error: KEEP_DATA must be 0 or 1" >&2; exit 1 ;;
+esac
 DEPLOY_BIN="/usr/local/bin/deploy-$APP_NAME"
 SECRET_BIN="/usr/local/bin/set-secret-$APP_NAME"
 PROJECT_MARKER=komizo
@@ -153,9 +166,23 @@ if [ "$KEEP_DATA" = "1" ]; then
 	log "Keeping $APP_DIR"
 else
 	log "Removing $APP_DIR"
-	# Guard against a mis-set APP_DIR taking something else with it.
+	# Guard against a mis-set APP_DIR taking something else with it. Normalise
+	# first, then refuse anything that is not plausibly an app directory.
 	case "$APP_DIR" in
-		/|/etc|/usr|/var|/home|/root|/srv) echo "error: refusing to remove $APP_DIR" >&2; exit 1 ;;
+		*[!A-Za-z0-9./_-]*) echo "error: refusing to remove APP_DIR with unexpected characters: $APP_DIR" >&2; exit 1 ;;
+		*..*) echo "error: refusing to remove APP_DIR containing '..': $APP_DIR" >&2; exit 1 ;;
+	esac
+	# Strip trailing slashes so "/etc/" cannot dodge the literal-path list below.
+	while [ "${APP_DIR%/}" != "$APP_DIR" ] && [ -n "${APP_DIR%/}" ]; do APP_DIR="${APP_DIR%/}"; done
+	case "$APP_DIR" in
+		# Top-level and known-sensitive directories: never.
+		/|/etc|/etc/ssh|/usr|/usr/local|/var|/var/lib|/home|/root|/root/.ssh|/srv|/boot) echo "error: refusing to remove $APP_DIR" >&2; exit 1 ;;
+		# Must be at least two components deep -- a bare "/foo" is almost certainly
+		# a mistake, and no komizo app lives there.
+		/*/*) ;;
+		*) echo "error: refusing to remove a top-level directory: $APP_DIR" >&2; exit 1 ;;
+	esac
+	case "$APP_DIR" in
 		# The shared proxy lives under /srv too, and taking it out through the
 		# app path would make every other app on the box unreachable.
 		/srv/_*) echo "error: refusing to remove $APP_DIR -- it belongs to komizo, not an app" >&2; exit 1 ;;
