@@ -335,10 +335,6 @@ func (m model) noTrafficNote() string {
 // distinguish nothing -- and its absence is visible without being labelled,
 // because a chart that is not scored has ONE line rather than a green one. A
 // missing line is not a reassuring line.
-//
-// What each grading means is in docs/monitor.md: requests and resources are
-// graded on size in both directions, failures on the up side only, and storage
-// not at all.
 func (m model) networkPanels() []panel {
 	// The full range, on every chart. Data that does not exist is not plotted;
 	// the axis is not moved to fit it.
@@ -375,64 +371,16 @@ func (m model) networkPanels() []panel {
 		scored: true,
 		sub:    "req/min",
 		draw: func(w, h int) string {
-			return m.combinedChart(r, times, s.total, trailingBaseline(s.total), w, h, keyStyle, bandBothWays, 0)
+			return m.combinedChart(r, times, s.total, trailingBaseline(s.total), w, h, keyStyle, 0)
 		},
 	}, {
-		title: "Failures (5xx)",
-		// Up only. Fewer failures than usual is the system working better than
-		// it normally does, and an interface that coloured that amber would be
-		// calling good news a warning.
+		title:  "Failures (5xx)",
 		scored: true,
 		sub:    "5xx/min",
 		draw: func(w, h int) string {
-			return m.combinedChart(r, times, s.errors, trailingPoisson(s.errors), w, h, keyStyle, bandUpOnly, 0)
+			return m.combinedChart(r, times, s.errors, trailingPoisson(s.errors), w, h, keyStyle, 0)
 		},
 	}}
-}
-
-// The bands the how-unusual line is coloured by. Within one deviation is
-// ordinary variation; past two is the thing you opened this screen to find.
-//
-// The numbers are load-bearing. ntcharts draws data sets in sorted name order
-// and each one overwrites whole cells -- so where two bands share a cell, the
-// one sorting last wins outright. Named plainly, "unusual-ok" sorted after
-// "unusual-err" and green painted over red at every crossing, hiding the
-// transition into the worst state on a chart whose only job is to show it.
-// Numbering makes severity the tiebreak: worse is drawn later and survives.
-const (
-	bandOK   = "unusual-1-ok"
-	bandWarn = "unusual-2-warn"
-	bandErr  = "unusual-3-err"
-)
-
-// bandBothWays grades on SIZE, ignoring direction. For request volume either
-// direction is worth seeing: a flood is an event and so is a sudden silence,
-// which is usually the same incident seen from the other side -- nothing is
-// reaching you because something in front of it is broken.
-func bandBothWays(d float64) string {
-	switch a := math.Abs(d); {
-	case a <= 1:
-		return bandOK
-	case a <= 2:
-		return bandWarn
-	default:
-		return bandErr
-	}
-}
-
-// bandUpOnly grades on the UP side only. For failures the two directions are
-// not symmetric: unusually many is the thing you are looking for, and unusually
-// few is the system working better than it normally does. Colouring that amber
-// would be an interface calling good news a warning.
-func bandUpOnly(d float64) string {
-	switch {
-	case d <= 1:
-		return bandOK
-	case d <= 2:
-		return bandWarn
-	default:
-		return bandErr
-	}
 }
 
 // combinedChart draws a series and, over it, how unusual each point was.
@@ -440,7 +388,13 @@ func bandUpOnly(d float64) string {
 // The deviation is mapped onto the chart's range so both share one canvas: -4
 // sits on the floor, 0 halfway up, +4 at the ceiling. The two series are not
 // comparable in value and were never meant to be -- only in shape and in x.
-func (m model) combinedChart(axis timeRange, times []time.Time, vals []float64, base baseline, w, h int, style lipgloss.Style, band func(float64) string, fixedMax float64) string {
+//
+// One colour, read for shape: the line lifting off the reference is the whole
+// signal, and how far it lifts is how unusual. An earlier version coloured it
+// green, amber and red by how far -- but braille packs eight dots into one
+// character cell and a cell holds one colour, so every crossing recoloured its
+// neighbours' dots and the line read as broken rather than graded.
+func (m model) combinedChart(axis timeRange, times []time.Time, vals []float64, base baseline, w, h int, style lipgloss.Style, fixedMax float64) string {
 	if len(times) == 0 {
 		return ""
 	}
@@ -469,21 +423,11 @@ func (m model) combinedChart(axis timeRange, times []time.Time, vals []float64, 
 	// one deviation wide on traffic like this.
 	score := quietened(base.score)
 
-	var prev *timeserieslinechart.TimePoint
-	prevBand := ""
-
 	c := m.newChart(from, to, w, h)
 	c.SetYRange(0, yMax)
 	c.SetViewYRange(0, yMax)
 	c.SetDataSetStyle("normal", dimStyle)
 	c.SetDataSetStyle("series", style)
-	// The how-unusual line is coloured by how unusual it is, in the three
-	// states this interface already uses for everything else: fine, worth a
-	// look, wrong. Colour carries meaning here and nothing else, so a line that
-	// changes colour is saying something rather than decorating itself.
-	c.SetDataSetStyle(bandOK, okStyle)
-	c.SetDataSetStyle(bandWarn, warnStyle)
-	c.SetDataSetStyle(bandErr, errStyle)
 
 	// Where "not unusual" sits, so the overlaid series has a zero to be read
 	// against. Without it that line is a shape with no origin.
@@ -497,6 +441,13 @@ func (m model) combinedChart(axis timeRange, times []time.Time, vals []float64, 
 		c.PushDataSet("normal", timeserieslinechart.TimePoint{Time: times[b], Value: place(0)})
 	}
 
+	// Each contiguous SCORED stretch is its own data set, numbered as it
+	// starts. ntcharts joins every point in a set to the point pushed after
+	// it, whatever lies between -- so one set for the whole line would rule a
+	// bridge straight across any unscored gap in it. The names sort after
+	// "series", so where the two lines share a cell the overlay's colour wins,
+	// and the crossing the chart exists to show is not painted over.
+	run, runs := "", 0
 	for i, v := range vals {
 		at := times[i]
 		// A reading that could not be taken is skipped, not drawn. Zero would be
@@ -509,7 +460,10 @@ func (m model) combinedChart(axis timeRange, times []time.Time, vals []float64, 
 		if math.IsNaN(d) {
 			// No baseline yet, or a flat one with no scale. Skipped rather than
 			// drawn at zero: "we cannot say" and "exactly normal" are different
-			// statements and must not share a shape.
+			// statements and must not share a shape. And the line BREAKS here,
+			// unlike the series above it: bridging the gap would rule a line
+			// across a stretch this very point says nothing can be said about.
+			run = ""
 			continue
 		}
 		if d > devLimit {
@@ -517,16 +471,12 @@ func (m model) combinedChart(axis timeRange, times []time.Time, vals []float64, 
 		} else if d < -devLimit {
 			d = -devLimit
 		}
-		pt := timeserieslinechart.TimePoint{Time: at, Value: place(d)}
-		b := band(d)
-		// The previous point joins this band too when the band changes, so the
-		// segment between them is drawn. Without it a line that crosses 1 or 2
-		// breaks at exactly the crossing -- the moment it is describing.
-		if prev != nil && b != prevBand {
-			c.PushDataSet(b, *prev)
+		if run == "" {
+			runs++
+			run = fmt.Sprintf("unusual.%03d", runs)
+			c.SetDataSetStyle(run, okStyle)
 		}
-		c.PushDataSet(b, pt)
-		prev, prevBand = &pt, b
+		c.PushDataSet(run, timeserieslinechart.TimePoint{Time: at, Value: place(d)})
 	}
 	c.DrawBrailleAll()
 	return c.View()

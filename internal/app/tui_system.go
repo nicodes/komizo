@@ -405,16 +405,16 @@ func (m model) provenanceNote(sampledHere bool) string {
 // resourceChart draws one series, with the how-unusual overlay when the history
 // is long enough to support one.
 //
-// Graded in BOTH directions, like requests and unlike failures. A service that
-// suddenly stops using processor has stalled, and memory that falls off a cliff
-// was restarted or killed -- both are events, and both are invisible to a rule
-// that only looks up.
+// The overlay swings BOTH ways, like requests. A service that suddenly stops
+// using processor has stalled, and memory that falls off a cliff was restarted
+// or killed -- both are events, and both sit below the reference line where a
+// chart that only looked up would miss them.
 func (m model) resourceChart(r resSeries, w, h int, sampledHere bool, yMax float64) string {
 	if sampledHere {
 		return m.plainChart(r, w, h, keyStyle, yMax)
 	}
 	return m.combinedChart(m.monitorRange.orDefault(), r.times, r.vals,
-		trailingBaseline(r.vals), w, h, keyStyle, bandBothWays, yMax)
+		trailingBaseline(r.vals), w, h, keyStyle, yMax)
 }
 
 // plainChart is one series, no overlay, drawn at the times it was taken.
