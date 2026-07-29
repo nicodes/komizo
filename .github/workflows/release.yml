@@ -74,42 +74,17 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
 
-      # The same suite CI runs, again, against the exact commit being released.
-      # CI passing on this SHA earlier is not the same claim: a release is the
-      # artefact people run, and it costs a minute.
+      # The same steps CI runs, from the same definition. Running them again
+      # against this exact commit is not redundant: CI passing on this SHA
+      # earlier is a claim about that run, and a release is the artefact people
+      # actually execute.
       - name: Test
-        run: go test -race -timeout 5m ./...
+        uses: ./.github/actions/test
 
       - name: Build
-        env:
-          VERSION: ${{ steps.release.outputs.version }}
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-
-          build() {
-            goos="$1"; goarch="$2"; os_label="$3"; arch_label="$4"
-            name="komizo_${os_label}_${arch_label}"
-            out="dist/$name"
-            mkdir -p "$out"
-            # CGO off so the binary is static and runs on any distro; -trimpath
-            # so the archive does not carry the builder's paths.
-            GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build \
-              -trimpath -ldflags "-s -w -X main.version=$VERSION" \
-              -o "$out/komizo" ./cmd/komizo
-            cp README.md LICENSE "$out/"
-            tar -C "$out" -czf "dist/$name.tar.gz" komizo README.md LICENSE
-          }
-
-          # Where a person runs a terminal. The servers komizo manages are
-          # Alpine, but nothing of komizo is installed on them -- it is the
-          # workstation that needs a binary.
-          build linux  amd64 Linux  x86_64
-          build linux  arm64 Linux  arm64
-          build darwin amd64 Darwin x86_64
-          build darwin arm64 Darwin arm64
-
-          (cd dist && sha256sum -- *.tar.gz > checksums.txt)
+        uses: ./.github/actions/build
+        with:
+          version: ${{ steps.release.outputs.version }}
 
       # This binary connects to your server AS ROOT and runs shell there, which
       # makes it worth tampering with. checksums.txt only says the archives

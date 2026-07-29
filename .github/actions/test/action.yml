@@ -1,0 +1,66 @@
+name: Test
+description: >
+  Is this commit good. Nothing is built for release here and nothing is
+  published; a failure means the code is wrong, not that the pipeline is.
+
+  A composite action rather than a reusable workflow so it runs in the caller's
+  job, under the caller's name — CI / test, Release / test — rather than as a
+  nested "caller / callee" check.
+
+  One definition, called by CI and by Release both. Two would drift in a single
+  direction: the copy guarding the release gets trimmed to make releases
+  faster, until it no longer matches the one people trust on a pull request.
+
+  Assumes Go is already set up. The caller does that, because the toolchain
+  version and its cache keys are a property of the job rather than of this
+  step, and two actions in one job would otherwise install it twice.
+
+runs:
+  using: composite
+  steps:
+    # Cheapest first, and the one most likely to be the only thing wrong.
+    - name: Go formatting
+      shell: bash
+      run: |
+        unformatted="$(gofmt -l .)"
+        if [ -n "$unformatted" ]; then
+          echo "::error::gofmt would change these files:"
+          echo "$unformatted"
+          exit 1
+        fi
+
+    - name: Go vet
+      shell: bash
+      run: go vet ./...
+
+    # -race because the TUI runs commands as goroutines writing to a channel the
+    # model reads, which is exactly the shape that fails only under load.
+    #
+    # -count=1 because a cached PASS from an earlier run is not evidence about
+    # this one, and the cache is keyed on inputs this suite deliberately reaches
+    # outside of: it shells out to sh, and writes and executes files in a temp
+    # directory.
+    - name: Go tests
+      shell: bash
+      run: go test -race -count=1 -timeout 5m ./...
+
+    # The embedded scripts are POSIX sh, run on Alpine's busybox ash. `sh -n` on
+    # the runner's dash is the closest cheap approximation of that parser, and it
+    # catches the class of error worth catching here: a heredoc left open, an
+    # unbalanced quote, a stray backtick closing a Go raw string early.
+    #
+    # Worth a step of its own because this is the half that runs as ROOT on
+    # somebody else's server, and it is the half Go cannot type-check. The Go
+    # tests above execute some of it against a fake box; this checks all of it
+    # at least parses.
+    - name: Server scripts parse
+      shell: bash
+      run: |
+        fail=0
+        for f in scripts/*.sh; do
+          if ! sh -n "$f"; then
+            echo "::error file=$f::does not parse as POSIX sh"
+            fail=1
+          fi
+        done
+        exit $fail
