@@ -1,0 +1,145 @@
+name: Release
+
+# Cut a release: bump the tag, cross-compile, publish archives with checksums
+# and build provenance.
+#
+# The tag is a PLAIN v0.0.1, not a prefixed one. This repository is the Go
+# module, so `go install github.com/nicodes/komizo-cli/cmd/komizo@v0.0.1` only
+# resolves if the tag is exactly that. A prefixed tag would publish a release
+# nobody could install by version, and `@latest` would go on resolving to a
+# pseudo-version of whatever main happened to be.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version bump
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions: {}
+
+concurrency: release-${{ github.repository }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the tag and the release
+      id-token: write # OIDC identity for build provenance
+      attestations: write # record the provenance attestation
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine release version
+        id: release
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo 'Run releases from the main branch.' >&2
+            exit 1
+          fi
+          git fetch --tags --force
+          latest="$(git tag --list 'v[0-9]*' | sed -E 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+          if [ -z "$latest" ]; then
+            version="0.0.1"
+          else
+            IFS=. read -r major minor patch <<< "$latest"
+            case "$BUMP" in
+              major) major=$((major + 1)); minor=0; patch=0 ;;
+              minor) minor=$((minor + 1)); patch=0 ;;
+              patch) patch=$((patch + 1)) ;;
+              *) echo "Unsupported bump: $BUMP" >&2; exit 1 ;;
+            esac
+            version="${major}.${minor}.${patch}"
+          fi
+          tag="v${version}"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "Tag already exists: $tag" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      # The same suite CI runs, again, against the exact commit being released.
+      # CI passing on this SHA earlier is not the same claim: a release is the
+      # artefact people run, and it costs a minute.
+      - name: Test
+        run: go test -race -timeout 5m ./...
+
+      - name: Build
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          build() {
+            goos="$1"; goarch="$2"; os_label="$3"; arch_label="$4"
+            name="komizo_${os_label}_${arch_label}"
+            out="dist/$name"
+            mkdir -p "$out"
+            # CGO off so the binary is static and runs on any distro; -trimpath
+            # so the archive does not carry the builder's paths.
+            GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build \
+              -trimpath -ldflags "-s -w -X main.version=$VERSION" \
+              -o "$out/komizo" ./cmd/komizo
+            cp README.md LICENSE "$out/"
+            tar -C "$out" -czf "dist/$name.tar.gz" komizo README.md LICENSE
+          }
+
+          # Where a person runs a terminal. The servers komizo manages are
+          # Alpine, but nothing of komizo is installed on them -- it is the
+          # workstation that needs a binary.
+          build linux  amd64 Linux  x86_64
+          build linux  arm64 Linux  arm64
+          build darwin amd64 Darwin x86_64
+          build darwin arm64 Darwin arm64
+
+          (cd dist && sha256sum -- *.tar.gz > checksums.txt)
+
+      # This binary connects to your server AS ROOT and runs shell there, which
+      # makes it worth tampering with. checksums.txt only says the archives
+      # match a file uploaded by whoever uploaded them; provenance ties them to
+      # this workflow, this repository and this commit, and `gh attestation
+      # verify` checks that against a public transparency log.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*.tar.gz
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cat > dist/notes.md <<NOTES
+          komizo $TAG
+
+          \`\`\`sh
+          go install github.com/nicodes/komizo-cli/cmd/komizo@$TAG
+          \`\`\`
+
+          Or take an archive below. This binary connects to your server as root,
+          so verify it first:
+
+          \`\`\`sh
+          gh attestation verify komizo_Linux_x86_64.tar.gz --repo $GITHUB_REPOSITORY
+          \`\`\`
+          NOTES
+          gh release create "$TAG" dist/*.tar.gz dist/checksums.txt \
+            --target "$GITHUB_SHA" --title "$TAG" --notes-file dist/notes.md
