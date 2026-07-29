@@ -267,3 +267,63 @@ func TestTheDeployRefusesAVersionItCannotSafelyUse(t *testing.T) {
 		}
 	}
 }
+
+// A hostname may say how its certificate is obtained. The mode is optional and
+// last, so every file written before it existed is still valid -- which is all
+// of them.
+func TestAHostnameMaySayHowItsCertificateIsObtained(t *testing.T) {
+	b := newDeployBox(t)
+	b.publishes(t, "services:\n  web:\n    image: x\n",
+		"blog.example.com -> web\n*.preview.blog.example.com -> web on-demand\nother.example.com on-demand\n")
+
+	out, err := b.deploy(t, "abc123")
+	if err != nil {
+		t.Fatalf("deploy failed: %v\n%s", err, out)
+	}
+	route := b.route(t)
+	// on-demand is what a wildcard already got, so saying it changes nothing.
+	if !strings.Contains(route, "on_demand") {
+		t.Errorf("the wildcard lost its on-demand issuance:\n%s", route)
+	}
+	// And the mode is no more part of the route than the arrow is.
+	for _, leaked := range []string{"on-demand", "-> web"} {
+		if strings.Contains(route, leaked) {
+			t.Errorf("%q leaked into the generated route:\n%s", leaked, route)
+		}
+	}
+}
+
+// Modes komizo accepts in a file but cannot yet serve are REFUSED, not ignored.
+// Falling back to on-demand would hand a name the certificate strategy it asked
+// not to have, and the reason to ask is usually that the other one is wrong for
+// it -- a DNS-01 wildcard exists precisely to avoid per-name issuance.
+func TestAModeKomizoCannotServeIsRefusedRatherThanIgnored(t *testing.T) {
+	for _, mode := range []string{"dns", "passthrough"} {
+		b := newDeployBox(t)
+		b.publishes(t, "services:\n  web:\n    image: x\n",
+			"blog.example.com -> web\n*.preview.blog.example.com -> web "+mode+"\n")
+
+		out, err := b.deploy(t, "abc123")
+		if err == nil {
+			t.Fatalf("%s was accepted:\n%s", mode, out)
+		}
+		if !strings.Contains(out, mode) || !strings.Contains(out, "tls-design") {
+			t.Errorf("%s: the refusal should name the mode and where the decision is written down:\n%s", mode, out)
+		}
+		// Refused before anything was written, like every other refusal here.
+		if r := b.route(t); r != "" {
+			t.Errorf("%s: a route was written despite the refusal:\n%s", mode, r)
+		}
+	}
+}
+
+// Anything else after the name is still a syntax error. The mode column widens
+// what a line may say; it does not make the file free-form.
+func TestSomethingThatIsNeitherAnArrowNorAModeIsStillRefused(t *testing.T) {
+	b := newDeployBox(t)
+	b.publishes(t, "services:\n  web:\n    image: x\n",
+		"blog.example.com -> web nonsense\n")
+	if out, err := b.deploy(t, "abc123"); err == nil {
+		t.Fatalf("junk after the arrow was accepted:\n%s", out)
+	}
+}

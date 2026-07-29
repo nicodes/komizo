@@ -515,14 +515,39 @@ if [ -n "$hostnames" ]; then
 	# line of prose -- or a name with a stray space in it -- had its first word
 	# quietly published as a hostname and the rest dropped. The CI action
 	# rejects those; the host, which is the side that has to be right, did not.
+	# A line is a name, optionally the container that serves it, optionally how
+	# its certificate is obtained:
+	#
+	#   example.com
+	#   api.example.com        -> api
+	#   *.preview.example.com  -> api  on-demand
+	#   *.preview.example.com         on-demand
+	#
+	# The mode is last so the arrow reads the way it did before, and so a file
+	# written without one is still valid -- which is every file written so far.
 	bad_line="$(printf '%s\n' "$hostmap" | awk '
+		function mode(m) { return m == "on-demand" || m == "dns" || m == "passthrough" }
 		NF == 0 { next }
 		NF == 1 { next }
+		NF == 2 && mode($2) { next }
 		NF == 3 && $2 == "->" && $3 ~ /^[A-Za-z0-9_-]+$/ { next }
+		NF == 4 && $2 == "->" && $3 ~ /^[A-Za-z0-9_-]+$/ && mode($4) { next }
 		{ print; exit }')"
 	if [ -n "$bad_line" ]; then
 		revert
-		echo "deploy: '$bad_line' is not a hostname optionally followed by '-> <container>'" >&2
+		echo "deploy: '$bad_line' is not a hostname, optionally '-> <container>', optionally one of: on-demand dns passthrough" >&2
+		exit 1
+	fi
+
+	# Modes komizo accepts in a file but cannot yet serve. Refused here rather
+	# than ignored: silently falling back to on-demand would hand a name the
+	# certificate strategy it asked NOT to have, and the reason to ask is
+	# usually that the other one is wrong for it. See docs/tls-design.md.
+	unsupported="$(printf '%s\n' "$hostmap" | awk '
+		{ for (i = 2; i <= NF; i++) if ($i == "dns" || $i == "passthrough") { print $1 " " $i; exit } }')"
+	if [ -n "$unsupported" ]; then
+		revert
+		echo "deploy: $unsupported is not supported yet -- komizo only obtains certificates on demand. See docs/tls-design.md" >&2
 		exit 1
 	fi
 
