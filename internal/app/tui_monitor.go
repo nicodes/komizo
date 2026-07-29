@@ -464,6 +464,11 @@ func (m model) combinedChart(axis timeRange, times []time.Time, vals []float64, 
 	}
 	place := func(d float64) float64 { return (d + devLimit) / (2 * devLimit) * yMax }
 
+	// Drawn from the quietened score, not the raw one. See quietened: the raw
+	// series is correct and reads as noise, because ordinary jitter is about
+	// one deviation wide on traffic like this.
+	score := quietened(base.score)
+
 	var prev *timeserieslinechart.TimePoint
 	prevBand := ""
 
@@ -500,7 +505,7 @@ func (m model) combinedChart(axis timeRange, times []time.Time, vals []float64, 
 		if !math.IsNaN(v) {
 			c.PushDataSet("series", timeserieslinechart.TimePoint{Time: at, Value: v})
 		}
-		d := base.score[i]
+		d := score[i]
 		if math.IsNaN(d) {
 			// No baseline yet, or a flat one with no scale. Skipped rather than
 			// drawn at zero: "we cannot say" and "exactly normal" are different
