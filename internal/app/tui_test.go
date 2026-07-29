@@ -4264,3 +4264,32 @@ func TestTheBoxChartSumsEveryApp(t *testing.T) {
 		t.Errorf("blog alone = %v, want 11", b.total[0])
 	}
 }
+
+// A container can hold the same alias twice. The proxy does: its compose
+// service name and its container_name are both "komizo-proxy", and docker
+// records each as an alias on the shared network.
+//
+// Counting mentions rather than containers reported that as a clash with
+// itself -- "komizo-proxy resolves to 2 containers (komizo-proxy,
+// komizo-proxy)" -- on a box with exactly one proxy. A warning that traffic is
+// splitting at random, about traffic that cannot split.
+func TestOneContainerHoldingAnAliasTwiceIsNotAClash(t *testing.T) {
+	n := netRow{name: "edge", members: []netMember{
+		{container: "komizo-proxy", aliases: []string{"komizo-proxy", "komizo-proxy"}},
+		{container: "ormos-ormos-gateway-1", aliases: []string{"ormos-gateway", "ormos-ormos-gateway-1"}},
+	}}
+	if d := n.duplicateAliases(); len(d) != 0 {
+		t.Errorf("reported a clash on a box with one proxy: %v", d)
+	}
+
+	// And the real fault still is one: two DIFFERENT containers claiming a
+	// name, which does split traffic and did take an app down once.
+	n.members = append(n.members, netMember{
+		container: "astry-astry-gateway-1",
+		aliases:   []string{"komizo-proxy", "astry-gateway"},
+	})
+	d := n.duplicateAliases()
+	if len(d["komizo-proxy"]) != 2 {
+		t.Errorf("two containers claiming one name should clash, got %v", d)
+	}
+}

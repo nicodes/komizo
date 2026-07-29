@@ -632,10 +632,23 @@ type netMember struct {
 func (n netRow) duplicateAliases() map[string][]string {
 	seen := map[string][]string{}
 	for _, m := range n.members {
+		// Distinct containers, not distinct mentions. A container can hold the
+		// same alias twice -- the proxy does, because its compose service name
+		// and its container_name are both "komizo-proxy" and docker records
+		// each as an alias -- and counting mentions reported that as a clash
+		// with itself: "komizo-proxy resolves to 2 containers (komizo-proxy,
+		// komizo-proxy)". One name, one container, no ambiguity, and a warning
+		// about traffic splitting at random that could not happen.
+		//
+		// The real fault this exists for is two DIFFERENT containers claiming
+		// one name on the shared network, which does split traffic and did take
+		// an app down once.
+		claimed := map[string]bool{}
 		for _, a := range m.aliases {
-			if a == "" {
+			if a == "" || claimed[a] {
 				continue
 			}
+			claimed[a] = true
 			seen[a] = append(seen[a], m.container)
 		}
 	}
