@@ -1349,6 +1349,12 @@ func TestCopyingTheSecondReplacesTheFirst(t *testing.T) {
 	// Both values are copied the same way now -- out of memory -- so this
 	// drives the mark rather than a failure: copying one must not leave the
 	// other still claiming to be on the clipboard.
+	//
+	// The clipboard itself is stubbed. A headless machine has no clipboard
+	// tool, so the real one fails and every mark lands on -1 -- which passed
+	// locally, failed on the first CI run, and would have gone on passing on
+	// the machine where nobody needed it to.
+	stubClipboard(t)
 	m := showResult(testModel(), &addResult{app: "a",
 		key: "-----BEGIN OPENSSH PRIVATE KEY-----\n", knownHosts: "h k b", onClipboard: -1})
 
@@ -4292,4 +4298,16 @@ func TestOneContainerHoldingAnAliasTwiceIsNotAClash(t *testing.T) {
 	if len(d["komizo-proxy"]) != 2 {
 		t.Errorf("two containers claiming one name should clash, got %v", d)
 	}
+}
+
+// stubClipboard replaces the system clipboard for one test, and puts it back.
+//
+// What is under test is the MARK -- which value the interface claims is on the
+// clipboard -- and that is komizo's own logic. Whether wl-copy is installed is
+// the machine's business and has no place deciding whether this passes.
+func stubClipboard(t *testing.T) {
+	t.Helper()
+	real := copyToClipboard
+	copyToClipboard = func(string) error { return nil }
+	t.Cleanup(func() { copyToClipboard = real })
 }
