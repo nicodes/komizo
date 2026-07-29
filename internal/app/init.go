@@ -4,7 +4,7 @@ import (
 	"flag"
 	"fmt"
 
-	"github.com/nicodes/komizo-be/cli/scripts"
+	"github.com/nicodes/komizo-cli/scripts"
 )
 
 // Setting a server up is its own command, not something that happens to a box

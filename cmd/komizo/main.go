@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/nicodes/komizo-be/cli/internal/app"
+	"github.com/nicodes/komizo-cli/internal/app"
 )
 
 func main() {

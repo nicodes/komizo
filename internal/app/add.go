@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/nicodes/komizo-be/cli/scripts"
+	"github.com/nicodes/komizo-cli/scripts"
 )
 
 type addOpts struct {
