@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/nicodes/komizo-cli/scripts"
+	"github.com/nicodes/komizo/scripts"
 )
 
 // The shared reverse proxy is per-SERVER, so it gets its own command rather

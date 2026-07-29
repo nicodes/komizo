@@ -4,7 +4,7 @@ name: Release
 # and build provenance.
 #
 # The tag is a PLAIN v0.0.1, not a prefixed one. This repository is the Go
-# module, so `go install github.com/nicodes/komizo-cli/cmd/komizo@v0.0.1` only
+# module, so `go install github.com/nicodes/komizo@v0.0.2` only
 # resolves if the tag is exactly that. A prefixed tag would publish a release
 # nobody could install by version, and `@latest` would go on resolving to a
 # pseudo-version of whatever main happened to be.
@@ -106,7 +106,7 @@ jobs:
           komizo $TAG
 
           \`\`\`sh
-          go install github.com/nicodes/komizo-cli/cmd/komizo@$TAG
+          go install github.com/nicodes/komizo@$TAG
           \`\`\`
 
           Or take an archive below. This binary connects to your server as root,

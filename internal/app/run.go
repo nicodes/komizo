@@ -22,7 +22,7 @@ var ErrSilent = errors.New("")
 
 // Main is the whole command line: which subcommand, or an address, or nothing.
 //
-// Here rather than in cmd/komizo so that main() is the one thing it should be --
+// Here rather than in the root main.go so that main() is the one thing it should be --
 // a call and an exit code. Everything this dispatches to is in this package,
 // and a dispatcher that lives apart from what it dispatches to is a file you
 // have to open twice.

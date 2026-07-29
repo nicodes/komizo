@@ -10,7 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/nicodes/komizo-cli/scripts"
+	"github.com/nicodes/komizo/scripts"
 )
 
 // Operations that touch the server run as tea.Cmds and stream their output

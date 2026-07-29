@@ -1,7 +1,7 @@
 # Built binaries. `go build` names its output after the directory it builds, so
 # an absent -o leaves a stray `komizo` next to the source.
 bin/
-/cmd/komizo/komizo
+/komizo
 
 # Machine-local Claude Code settings.
 .claude/settings.local.json

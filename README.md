@@ -1,28 +1,28 @@
-# komizo-cli
+# komizo
 
 The `komizo` command: set up a server, add apps to it, and watch what they are
 doing.
 
 ```sh
-go install github.com/nicodes/komizo-cli/cmd/komizo@latest
+go install github.com/nicodes/komizo@latest
 komizo root@your-server
 ```
 
 Or run it without installing anything:
 
 ```sh
-go run github.com/nicodes/komizo-cli/cmd/komizo@latest root@your-server
+go run github.com/nicodes/komizo@latest root@your-server
 ```
 
 That opens the interface. Everything is done from there — the flag-driven
 subcommands remain for scripting, but nobody should have to learn them to set a
 box up.
 
-No Go? Take a binary from [releases](https://github.com/nicodes/komizo-cli/releases).
+No Go? Take a binary from [releases](https://github.com/nicodes/komizo/releases).
 It connects to your server as root, so verify it before you run it:
 
 ```sh
-gh attestation verify komizo_Linux_x86_64.tar.gz --repo nicodes/komizo-cli
+gh attestation verify komizo_Linux_x86_64.tar.gz --repo nicodes/komizo
 ```
 
 ## What it is
@@ -30,7 +30,7 @@ gh attestation verify komizo_Linux_x86_64.tar.gz --repo nicodes/komizo-cli
 komizo deploys to your own server from GitHub Actions. This repository is the
 part that runs on **your machine**: the CLI, and the shell it pipes over SSH.
 
-- [**komizo**](https://github.com/nicodes/komizo-be) — the docs, and how the
+- [**komizo-be**](https://github.com/nicodes/komizo-be) — the docs, and how the
   whole thing fits together
 - [**komizo-actions**](https://github.com/nicodes/komizo-actions) — the GitHub
   Actions a deploying repository uses
@@ -55,7 +55,7 @@ proxy.
 ## Layout
 
 ```
-cmd/komizo/     the binary
+main.go         the binary
 internal/app/   everything: the TUI, the subcommands, the parsers
 scripts/        the shell that runs on the server, embedded with go:embed
 ```
@@ -67,7 +67,7 @@ is tested by being executed against a fake box rather than by being read. See
 ## Building
 
 ```sh
-go build -o bin/komizo ./cmd/komizo
+go build -o bin/komizo .
 go test ./...
 ```
 

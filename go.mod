@@ -1,4 +1,4 @@
-module github.com/nicodes/komizo-cli
+module github.com/nicodes/komizo
 
 go 1.26
 

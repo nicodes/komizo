@@ -54,7 +54,7 @@ runs:
           # the archive does not carry the builder's paths.
           GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 go build \
             -trimpath -ldflags "-s -w -X main.version=$VERSION" \
-            -o "$out/komizo" ./cmd/komizo
+            -o "$out/komizo" .
           cp README.md LICENSE "$out/"
           tar -C "$out" -czf "dist/$name.tar.gz" komizo README.md LICENSE
           echo "  $name"
