@@ -25,6 +25,10 @@ var ErrSilent = errors.New("")
 // a call and an exit code. Everything this dispatches to is in this package,
 // and a dispatcher that lives apart from what it dispatches to is a file you
 // have to open twice.
+// Version is what this binary reports for `komizo version`. Set from main at
+// startup, which is where the linker can reach it.
+var Version = "dev"
+
 func Main(args []string) error {
 	// `komizo` on its own is the interface with nothing to connect to yet: it
 	// opens and asks for an address. It used to print the usage and exit 2,
@@ -36,6 +40,12 @@ func Main(args []string) error {
 
 	var err error
 	switch args[0] {
+	// Asked before anything else can fail. The first thing anyone wants when a
+	// tool misbehaves is which build of it they are running, and that answer
+	// must not depend on a server being reachable or a flag parsing.
+	case "--version", "-v", "version":
+		fmt.Println("komizo " + Version)
+		return nil
 	case "init":
 		err = RunInit(args[1:])
 	case "add":
