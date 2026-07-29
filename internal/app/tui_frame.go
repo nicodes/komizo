@@ -135,7 +135,9 @@ func (m model) body() []string {
 //
 // A log follows nothing: it is the one page where scrolling is the reason you
 // are there, and a log that jumped somewhere on every repaint -- and there is
-// one every ten seconds -- would be unreadable.
+// one every ten seconds -- would be unreadable. The monitor is the same kind
+// of page: taller than a terminal, driven by its own scroll keys, and nothing
+// on it for a cursor to follow.
 //
 // A page with a cursor follows the cursor. A page without one follows its tail,
 // which is where output arrives and where a command that just failed says why.
@@ -150,7 +152,7 @@ func (m *model) reflow() {
 	m.bodyRows = body
 
 	switch i := anchorOf(body); {
-	case m.scr == screenLogs || m.freeScroll:
+	case m.scr == screenLogs || m.scr == screenMonitor || m.freeScroll:
 		// The user drives it. Nothing is dragged back to the cursor until they
 		// move the cursor again -- a page that snaps back the instant you let
 		// go of the wheel cannot be scrolled at all.

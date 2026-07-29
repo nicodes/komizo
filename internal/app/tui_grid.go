@@ -34,7 +34,14 @@ type panel struct {
 const (
 	// Narrower than this and a chart stops being one: four columns go to the y
 	// labels, and what is left has to hold enough braille to show a shape.
-	minPanelWidth = 30
+	//
+	// 45, not the 30 it was when four charts shared a row. Every row is now a
+	// pair -- a series and its how-unusual chart -- each carrying the page's
+	// whole time range, and forty-five columns is about where a four-hour
+	// window keeps a shape. Below twice that plus the gap, the pair ZIPS into
+	// one column: the chart, then its how-unusual chart under it, then the
+	// next chart -- the reading order the rows already had.
+	minPanelWidth = 45
 	panelGap      = 2
 )
 

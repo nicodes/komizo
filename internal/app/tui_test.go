@@ -51,6 +51,10 @@ func key(s string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyBackspace}
 	case "tab":
 		return tea.KeyMsg{Type: tea.KeyTab}
+	case "shift+up":
+		return tea.KeyMsg{Type: tea.KeyShiftUp}
+	case "shift+down":
+		return tea.KeyMsg{Type: tea.KeyShiftDown}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
@@ -168,9 +172,10 @@ func TestCursorReachesTheBoxRowsAndEveryContainer(t *testing.T) {
 	for _, f := range m.focusItems() {
 		kinds = append(kinds, f.kind)
 	}
-	// Page order: proxy, then komizo above docker, then the apps. The cursor is
-	// an index into this list, so the two have to agree.
-	want := []focusKind{focusProxy, focusKomizo, focusServer, focusApp, focusContainer, focusApp, focusAdd}
+	// Page order: the facts (komizo above docker), then the proxy at the head
+	// of the live block, then the apps. The cursor is an index into this list,
+	// so the two have to agree.
+	want := []focusKind{focusKomizo, focusServer, focusProxy, focusApp, focusContainer, focusApp, focusAdd}
 	if len(kinds) != len(want) {
 		t.Fatalf("focus list = %v, want %v", kinds, want)
 	}
@@ -617,8 +622,8 @@ func TestAStoppedProxyIsCalledOutWithoutNavigating(t *testing.T) {
 	// What it means for the apps is the red dot on every one of them, plus the
 	// proxy's own row saying stopped -- there is no summary block any more.
 	m.cursor = rowOf(m, focusProxy)
-	if got := m.enterLabel(); got != "start" {
-		t.Errorf("enter on a stopped proxy should offer to start, got %q", got)
+	if got := m.keyLabel("s"); got != "start" {
+		t.Errorf("s on a stopped proxy should offer to start, got %q", got)
 	}
 
 	m.proxy = proxyRow{}
@@ -819,9 +824,9 @@ func TestStoppedProxyIsShouted(t *testing.T) {
 	if !strings.Contains(stripANSI(v), "stopped") {
 		t.Error("it should say the proxy is stopped")
 	}
-	// With the proxy selected, enter offers to start it rather than stop it.
+	// With the proxy selected, s offers to start it rather than stop it.
 	m.cursor = rowOf(m, focusProxy)
-	if got := m.enterLabel(); got != "start" {
+	if got := m.keyLabel("s"); got != "start" {
 		t.Errorf("a stopped proxy should offer to start, got %q", got)
 	}
 }
@@ -921,13 +926,29 @@ func TestServerScreenWithNoNetwork(t *testing.T) {
 	m := netModel()
 	m.net = netRow{}
 	v := m.View()
-	if !strings.Contains(v, "none") {
+	if !strings.Contains(v, "no shared network") {
 		t.Error("a box with no network should say so")
 	}
 	// The fix is re-running setup. It used to say "press u"; that key is gone,
 	// and a hint naming a key that does nothing is worse than no hint.
 	if !strings.Contains(stripANSI(v), "docker row") {
 		t.Error("it should point at where the fix lives")
+	}
+}
+
+// The os row is read off the box -- PRETTY_NAME out of /etc/os-release --
+// rather than assumed. komizo installs Alpine, but it is pointed at existing
+// servers too, and "alpine" about a Debian box is wrong in the row whose whole
+// job is stating facts.
+func TestTheOSIsReadOffTheBox(t *testing.T) {
+	_, srv, _, _, _ := parseInventory("server\tready\tDocker version 26\nos\tAlpine Linux v3.20\n")
+	if srv.osName() != "Alpine Linux v3.20" {
+		t.Errorf("os = %q, want what the box reported", srv.osName())
+	}
+	// A box that reported nothing still names what komizo installs, rather
+	// than an empty row.
+	if got := (serverRow{}).osName(); got != "alpine" {
+		t.Errorf("fallback os = %q, want alpine", got)
 	}
 }
 
@@ -955,12 +976,12 @@ func TestParsesRealDockerOutput(t *testing.T) {
 
 func TestUpdatingTheServerDoesNotAskAboutTheProxy(t *testing.T) {
 	// The first-run form's only question is whether to install a proxy. Reusing
-	// it for a routine Docker update would mean a stray enter installs one on a
-	// box that deliberately has none.
+	// it for a routine Docker update would mean a stray keypress installs one
+	// on a box that deliberately has none.
 	m := testModel()
 	m.proxy = proxyRow{} // no proxy on this box, by choice
 	m.cursor = rowOf(m, focusServer)
-	m = send(m, "enter")
+	m = send(m, "u")
 	if m.scr == screenSetup {
 		t.Fatal("update must not reopen the first-run form; that would re-ask the proxy question")
 	}
@@ -1997,8 +2018,8 @@ func TestKnownHostsFormattingIsSharedWithWhatIsCopied(t *testing.T) {
 }
 
 func TestHelpFollowsTheCursor(t *testing.T) {
-	// Enter does the obvious thing to whatever is selected, which is only not a
-	// guessing game if the hint changes with it.
+	// The keys do the obvious thing to whatever is selected, which is only not
+	// a guessing game if the hint changes with it.
 	m := testModel()
 	m.srv.hostKeys = [][2]string{{"ssh-ed25519", "AAAA"}}
 	m.apps[0].containers = []containerRow{
@@ -2007,17 +2028,22 @@ func TestHelpFollowsTheCursor(t *testing.T) {
 
 	for _, c := range []struct {
 		cursor int
+		key    string
 		want   string
 	}{
-		{0, "stop"},          // proxy, running -- drawn first, so selected first
-		{1, "update komizo"}, // what komizo installed, above docker
-		{2, "update docker"}, // the box
-		{3, "stop"},          // app, running
-		{4, "stop"},          // container, running
+		{0, "u", "update komizo"}, // what komizo installed, above docker
+		{1, "u", "update docker"}, // the box
+		{2, "s", "stop"},          // proxy, at the head of the live block
+		{3, "s", "stop"},          // app, running
+		{4, "s", "stop"},          // container, running
 	} {
 		m.cursor = c.cursor
-		if got := m.enterLabel(); got != c.want {
-			t.Errorf("cursor %d: enter is labelled %q, want %q", c.cursor, got, c.want)
+		if got := m.keyLabel(c.key); got != c.want {
+			t.Errorf("cursor %d: %s is labelled %q, want %q", c.cursor, c.key, got, c.want)
+		}
+		// And enter is the monitor on every one of them.
+		if got := m.keyLabel("enter"); got != "monitor" {
+			t.Errorf("cursor %d: enter is labelled %q, want \"monitor\"", c.cursor, got)
 		}
 	}
 
@@ -2034,7 +2060,7 @@ func TestHelpFollowsTheCursor(t *testing.T) {
 	}
 }
 
-func TestEnterOnTheDockerRowUpdatesTheServer(t *testing.T) {
+func TestUOnTheDockerRowUpdatesTheServer(t *testing.T) {
 	// The action sits on the row showing the thing it changes: re-running setup
 	// is what moves that version, so the version is where you press it. There
 	// is no second way to reach it -- a global key as well would be two routes
@@ -2042,9 +2068,9 @@ func TestEnterOnTheDockerRowUpdatesTheServer(t *testing.T) {
 	m := netModel()
 	// By kind, not by index: the docker row is no longer the first one.
 	m.cursor = rowOf(m, focusServer)
-	m = send(m, "enter")
+	m = send(m, "u")
 	if m.prompt == nil {
-		t.Fatal("enter on the docker row should ask about an update")
+		t.Fatal("u on the docker row should ask about an update")
 	}
 	if !strings.Contains(m.prompt.detail, "Docker updates") {
 		t.Errorf("the question should say what it does: %q", m.prompt.detail)
@@ -2061,7 +2087,7 @@ func TestStartStopRunsInlineWithoutConfirming(t *testing.T) {
 	// is worse than not having it. The feedback is the spinner on the row.
 	m := netModel()
 	m.cursor = rowOf(m, focusProxy)
-	m = send(m, "enter") // asks first
+	m = send(m, "s") // asks first
 	if m.prompt == nil {
 		t.Fatal("start/stop should ask before acting")
 	}
@@ -2359,21 +2385,26 @@ func TestAddIsGlobalButTheDestructiveKeysAreNot(t *testing.T) {
 	}
 }
 func TestTheProxyIsPlainRowsUnderServer(t *testing.T) {
-	// Label/value rows under the Server heading, the same shape as the docker
-	// row above them. They had a heading of their own once; two rows is not a
-	// group, and the proxy is a fact about this box the way its docker version
-	// is.
+	// One label/value row, the same shape as the docker row above it, with the
+	// network on it rather than on a row of its own: the network is not a
+	// thing anyone acts on, and its only interesting state is "missing".
 	m := netModel()
 	v := stripANSI(m.View())
-	for _, want := range []string{"proxy", "network"} {
-		found := false
-		for _, ln := range strings.Split(v, "\n") {
-			if strings.HasPrefix(strings.TrimSpace(ln), want) {
-				found = true
-			}
+	var proxyLn string
+	for _, ln := range strings.Split(v, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(ln), "proxy") {
+			proxyLn = ln
 		}
-		if !found {
-			t.Errorf("the server section is missing a %q row:\n%s", want, v)
+	}
+	if proxyLn == "" {
+		t.Fatalf("the page is missing the proxy row:\n%s", v)
+	}
+	if !strings.Contains(proxyLn, "edge") {
+		t.Errorf("the proxy row should carry the network: %q", proxyLn)
+	}
+	for _, ln := range strings.Split(v, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(ln), "network") {
+			t.Errorf("the network must ride on the proxy row, not have one of its own: %q", ln)
 		}
 	}
 	// No image row. It is the one fact here that cannot change without someone
@@ -2471,7 +2502,7 @@ func TestQuestionsNeverLeaveTheList(t *testing.T) {
 	}
 	// And the server row's question behaves the same.
 	m.cursor = rowOf(m, focusServer)
-	if next := send(m, "enter"); next.scr != screenIndex || next.prompt == nil {
+	if next := send(m, "u"); next.scr != screenIndex || next.prompt == nil {
 		t.Error("updating the server should ask in the footer too")
 	}
 }
@@ -3038,9 +3069,9 @@ func TestStartStopAsksFirst(t *testing.T) {
 
 	for _, k := range []focusKind{focusProxy, focusApp, focusContainer} {
 		m.cursor = rowOf(m, k)
-		next := send(m, "enter")
+		next := send(m, "s")
 		if next.prompt == nil {
-			t.Fatalf("%v: enter should ask before starting or stopping", k)
+			t.Fatalf("%v: s should ask before starting or stopping", k)
 		}
 		if next.prompt.kind != promptConfirm {
 			t.Errorf("%v: it is reversible, so y/n is enough", k)
@@ -3057,7 +3088,7 @@ func TestStartStopAsksFirst(t *testing.T) {
 	// Stopping something that serves traffic names what goes quiet -- the fact
 	// that makes the answer obvious and the one the row does not show.
 	m.cursor = rowOf(m, focusApp)
-	if q := send(m, "enter").prompt; !strings.Contains(q.detail, "blog.example.com") {
+	if q := send(m, "s").prompt; !strings.Contains(q.detail, "blog.example.com") {
 		t.Errorf("the question should name the hostnames that stop answering: %q", q.detail)
 	}
 }
@@ -3078,15 +3109,15 @@ func TestTheMonitorHasNoHeadings(t *testing.T) {
 	if !strings.Contains(v, "komizo") {
 		t.Error("the header should still name the tool")
 	}
-	// Order still matters: what the box IS, then what every app depends on,
-	// then the apps. Docker is last of the three -- the proxy and its network
-	// are what break, and what you came to look at.
+	// Order still matters: what the box IS -- os, komizo, docker -- then the
+	// live block it is spending, led by the proxy every request passes
+	// through, then the apps.
 	iOS := strings.Index(v, "alpine")
-	iP := strings.Index(v, "proxy")
 	iD := strings.Index(v, "docker")
+	iP := strings.Index(v, "proxy")
 	iA := strings.Index(v, "blog")
-	if !(iOS < iP && iP < iD && iD < iA) {
-		t.Errorf("rows out of order: os=%d proxy=%d docker=%d apps=%d", iOS, iP, iD, iA)
+	if !(iOS < iD && iD < iP && iP < iA) {
+		t.Errorf("rows out of order: os=%d docker=%d proxy=%d apps=%d", iOS, iD, iP, iA)
 	}
 	// Named "proxy" rather than "status": with no heading over it, "status"
 	// would read as the server's status, which is a different claim.
@@ -3172,7 +3203,7 @@ func TestTheSpinnerHoldsUntilTheNewStateArrives(t *testing.T) {
 		},
 	}}
 	m.cursor = rowOf(m, focusContainer)
-	m = send(m, "enter", "y")
+	m = send(m, "s", "y")
 	if !m.busy["blog-web-1"] {
 		t.Fatal("the row should be busy once the action starts")
 	}
@@ -3828,6 +3859,24 @@ func TestBucketingKeepsSpikes(t *testing.T) {
 	}
 }
 
+// A processor rate needs a PAIR of readings and the poll interval is five
+// seconds -- without a quick second reading the bar is missing exactly while
+// the page is being looked at hardest.
+func TestTheFirstSampleSchedulesAQuickSecondReading(t *testing.T) {
+	m := testModel()
+	next, cmd := m.Update(appsMsg{apps: m.apps, srv: m.srv, proxy: m.proxy, net: m.net,
+		sys: parseSystem("sys\tcpu\t100000\t90000\n", time.Unix(1000, 0))})
+	if cmd == nil {
+		t.Fatal("the first sample should schedule a follow-up reading")
+	}
+	// Only the first. Once a pair exists the ordinary cadence is enough, and an
+	// extra tick per poll would compound into polling the box twice as often.
+	if _, cmd = next.Update(appsMsg{apps: m.apps, srv: m.srv, proxy: m.proxy, net: m.net,
+		sys: parseSystem("sys\tcpu\t200000\t180000\n", time.Unix(1005, 0))}); cmd != nil {
+		t.Error("a later sample should not schedule extra polls")
+	}
+}
+
 // brailleInk reports whether any braille dot is drawn inside a rectangle of a
 // rendered chart, in character cells: lines y0..y1 of the view, columns x0..x1.
 // The blank braille cell U+2800 is not ink.
@@ -3850,24 +3899,20 @@ func brailleInk(view string, x0, x1, y0, y1 int) bool {
 
 // Two separate excursions must not be joined. ntcharts draws a line from every
 // point in a data set to the point pushed after it, whatever lies between --
-// an earlier form of the overlay fed disjoint stretches of the score into one
+// an earlier form of this chart fed disjoint stretches of the score into one
 // data set and ruled a chord from the end of one episode straight across the
 // chart to the start of the next, through an hour that was fine.
 func TestSeparateExcursionsAreNotJoinedByAChord(t *testing.T) {
 	const n = 120
 	from := int64(1_700_000_000) / 60 * 60
 	times := minuteTimes(from, n)
-	vals := make([]float64, n)
-	for i := range vals {
-		vals[i] = 4 // half the fixed ceiling: the series rides the reference line
-	}
 	// Three minutes each, so the median-of-three in quietened keeps them, both
 	// at the ceiling.
 	score := make([]float64, n)
 	score[20], score[21], score[22] = 5, 5, 5
 	score[100], score[101], score[102] = 5, 5, 5
-	view := model{}.combinedChart(timeRange{from: from, to: from + (n-1)*60},
-		times, vals, baseline{score: score}, 80, 12, keyStyle, 8)
+	view := model{}.sigmaChart(timeRange{from: from, to: from + (n-1)*60},
+		times, baseline{score: score}, 80, 12)
 	// The stretch between the episodes, above the reference line. The score is
 	// flat normal there, so the line belongs at half height; a chord from the
 	// first episode's ceiling would cross the top rows of these columns.
@@ -3877,18 +3922,13 @@ func TestSeparateExcursionsAreNotJoinedByAChord(t *testing.T) {
 }
 
 // A stretch with no score is a statement -- "we cannot say" -- and the line
-// must break across it, not bridge it. The series itself does bridge its gaps,
-// which is why the two must not share one behaviour. The gap here is flanked
-// by lifted scores: a bridge at that height is visible ink, where a bridge at
-// exactly normal would hide along the reference line.
+// must break across it, not bridge it. The gap here is flanked by lifted
+// scores: a bridge at that height is visible ink, where a bridge at exactly
+// normal would hide along the reference line.
 func TestTheScoreLineBreaksWhereNothingWasScored(t *testing.T) {
 	const n = 120
 	from := int64(1_700_000_000) / 60 * 60
 	times := minuteTimes(from, n)
-	vals := make([]float64, n)
-	for i := range vals {
-		vals[i] = 2 // a quarter height, well below where the score line sits
-	}
 	score := make([]float64, n)
 	for i := 20; i < 40; i++ {
 		score[i] = 3 // past the dead zone: lifted to three quarters height
@@ -3899,24 +3939,24 @@ func TestTheScoreLineBreaksWhereNothingWasScored(t *testing.T) {
 	for i := 80; i < 103; i++ {
 		score[i] = 3
 	}
-	view := model{}.combinedChart(timeRange{from: from, to: from + (n-1)*60},
-		times, vals, baseline{score: score}, 80, 12, keyStyle, 8)
-	// Inside the unscored stretch nothing sits in the upper rows: the series'
-	// own bridge is at a quarter height and the reference line at a half. Ink
-	// up there is the lifted line either side being joined across the gap.
+	view := model{}.sigmaChart(timeRange{from: from, to: from + (n-1)*60},
+		times, baseline{score: score}, 80, 12)
+	// Inside the unscored stretch nothing sits in the upper rows: the
+	// reference line is at half height and nothing was scored here. Ink up
+	// there is the lifted line either side being joined across the gap.
 	if brailleInk(view, 35, 50, 0, 3) {
 		t.Errorf("ink across an unscored stretch; the score line must break there:\n%s", view)
 	}
 }
 
-// `m` opens the monitor for an app, and offers itself on no other row.
-func TestTheMonitorOpensOnAnAppOnly(t *testing.T) {
+// Enter opens the monitor for whatever is selected.
+func TestEnterOpensTheMonitor(t *testing.T) {
 	m := netModel()
 	m.width, m.height = 100, 30
 	m.cursor = rowOf(m, focusApp)
-	next, cmd := sendCmd(m, "m")
+	next, cmd := sendCmd(m, "enter")
 	if next.scr != screenMonitor {
-		t.Fatalf("m on an app should open the monitor, got %v", next.scr)
+		t.Fatalf("enter on an app should open the monitor, got %v", next.scr)
 	}
 	if cmd == nil {
 		t.Error("it should fetch the counts")
@@ -3936,9 +3976,9 @@ func TestTheMonitorOpensOnAnAppOnly(t *testing.T) {
 	p := netModel()
 	p.width, p.height = 100, 30
 	p.cursor = rowOf(p, focusProxy)
-	box, cmd := sendCmd(p, "m")
+	box, cmd := sendCmd(p, "enter")
 	if box.scr != screenMonitor {
-		t.Fatalf("m on the proxy should open the box's requests, got %v", box.scr)
+		t.Fatalf("enter on the proxy should open the box's requests, got %v", box.scr)
 	}
 	if cmd == nil {
 		t.Error("it should fetch")
@@ -4089,9 +4129,100 @@ func TestRequestsAttributeToAContainerWhenTheAppSaysSo(t *testing.T) {
 	}
 }
 
-// m works on a container row too, and the breadcrumb says which container --
-// otherwise a container's chart and its app's are indistinguishable, and the
-// difference is the whole reason to open one.
+// l on the monitor opens the log of what is being watched -- the proxy's for
+// the box, the app's for an app, the container's for a container -- and esc
+// from a log opened there goes back to the monitor, not the list.
+func TestTheMonitorOffersTheSubjectsLog(t *testing.T) {
+	m := testModel()
+	m.width, m.height = 100, 30
+	m.apps[0].containers = []containerRow{
+		{app: "blog", service: "web", name: "blog-web-1", state: "running"},
+	}
+
+	// An app.
+	m.cursor = rowOf(m, focusApp)
+	mon, _ := sendCmd(m, "enter")
+	logs, cmd := sendCmd(mon, "l")
+	if logs.scr != screenLogs || cmd == nil {
+		t.Fatalf("l on an app's monitor should fetch its log, got %v", logs.scr)
+	}
+	if logs.logsOf != "app:blog" || logs.logsApp != "blog" || logs.logsSvc != "" {
+		t.Errorf("the log is %q/%q/%q, want the app's", logs.logsOf, logs.logsApp, logs.logsSvc)
+	}
+	if back := send(logs, "esc"); back.scr != screenMonitor {
+		t.Errorf("esc should return to the monitor it came from, got %v", back.scr)
+	}
+
+	// A container.
+	m.cursor = rowOf(m, focusContainer)
+	mon, _ = sendCmd(m, "enter")
+	if logs, _ = sendCmd(mon, "l"); logs.logsOf != "blog-web-1" || logs.logsSvc != "web" {
+		t.Errorf("the log is %q/%q, want the container's", logs.logsOf, logs.logsSvc)
+	}
+
+	// The box: the proxy's log, which is the only box-wide one there is.
+	m.cursor = rowOf(m, focusProxy)
+	mon, _ = sendCmd(m, "enter")
+	if logs, _ = sendCmd(mon, "l"); logs.logsOf != proxyContainer {
+		t.Errorf("the box's log is %q, want the proxy's", logs.logsOf)
+	}
+
+	// A box with no proxy has no box-wide log: the key does nothing, and the
+	// footer does not offer it.
+	mon.proxy = proxyRow{}
+	if none := send(mon, "l"); none.scr != screenMonitor {
+		t.Errorf("l with no proxy should stay put, got %v", none.scr)
+	}
+	if strings.Contains(stripANSI(mon.monitorKeys()), "logs") {
+		t.Error("the footer should not offer a log that cannot be shown")
+	}
+
+	// And a log opened from the index still returns to the index.
+	m.cursor = rowOf(m, focusProxy)
+	fromIndex, _ := sendCmd(m, "l")
+	if back := send(fromIndex, "esc"); back.scr != screenIndex {
+		t.Errorf("esc from an index log should return to the list, got %v", back.scr)
+	}
+}
+
+// And the reverse: m on a log window jumps to the monitor of the same
+// subject, so the two screens are one keypress apart in both directions.
+func TestALogOffersItsSubjectsMonitor(t *testing.T) {
+	m := testModel()
+	m.width, m.height = 100, 30
+	m.apps[0].containers = []containerRow{
+		{app: "blog", service: "web", name: "blog-web-1", state: "running"},
+	}
+
+	// A container's log, from the index.
+	m.cursor = rowOf(m, focusContainer)
+	logs, _ := sendCmd(m, "l")
+	mon, cmd := sendCmd(logs, "m")
+	if mon.scr != screenMonitor || cmd == nil {
+		t.Fatalf("m on a container's log should open its monitor, got %v", mon.scr)
+	}
+	if mon.monitorOf != "blog" || mon.monitorSvc != "web" {
+		t.Errorf("the monitor is for %q/%q, want blog/web", mon.monitorOf, mon.monitorSvc)
+	}
+
+	// An app's log carries no container, and neither should its monitor.
+	m.cursor = rowOf(m, focusApp)
+	logs, _ = sendCmd(m, "l")
+	if mon, _ = sendCmd(logs, "m"); mon.monitorOf != "blog" || mon.monitorSvc != "" {
+		t.Errorf("the monitor is for %q/%q, want blog and no container", mon.monitorOf, mon.monitorSvc)
+	}
+
+	// The proxy's log names no app, and its monitor is the whole box.
+	m.cursor = rowOf(m, focusProxy)
+	logs, _ = sendCmd(m, "l")
+	if mon, _ = sendCmd(logs, "m"); mon.monitorOf != "" || mon.monitorSvc != "" {
+		t.Errorf("the proxy's log should open the box's monitor, got %q/%q", mon.monitorOf, mon.monitorSvc)
+	}
+}
+
+// Enter works on a container row too, and the breadcrumb says which container
+// -- otherwise a container's chart and its app's are indistinguishable, and
+// the difference is the whole reason to open one.
 func TestTheMonitorOpensForAContainer(t *testing.T) {
 	m := testModel()
 	m.width, m.height = 110, 30
@@ -4100,9 +4231,9 @@ func TestTheMonitorOpensForAContainer(t *testing.T) {
 	}
 	m.cursor = rowOf(m, focusContainer)
 
-	next, cmd := sendCmd(m, "m")
+	next, cmd := sendCmd(m, "enter")
 	if next.scr != screenMonitor {
-		t.Fatalf("m on a container should open the monitor, got %v", next.scr)
+		t.Fatalf("enter on a container should open the monitor, got %v", next.scr)
 	}
 	if cmd == nil {
 		t.Error("it should fetch")
@@ -4117,7 +4248,7 @@ func TestTheMonitorOpensForAContainer(t *testing.T) {
 	// The app's own chart names no container.
 	a := testModel()
 	a.cursor = rowOf(a, focusApp)
-	app, _ := sendCmd(a, "m")
+	app, _ := sendCmd(a, "enter")
 	if app.monitorSvc != "" {
 		t.Errorf("an app chart should carry no container, got %q", app.monitorSvc)
 	}
@@ -4165,7 +4296,7 @@ func TestCrumbsNameTheWholePath(t *testing.T) {
 	// The monitor takes the same shape, so the two screens read alike.
 	r := m
 	r.cursor = rowOf(r, focusContainer)
-	r, _ = sendCmd(r, "m")
+	r, _ = sendCmd(r, "enter")
 	if got := r.crumb(); got != "blog / api / monitor" {
 		t.Errorf("container monitor crumb = %q", got)
 	}

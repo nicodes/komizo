@@ -39,12 +39,16 @@ const systemProbe = `
 # one of them -- the caller keeps the previous sample and does the subtraction.
 # That also makes the interval explicit rather than assumed: a poll that arrived
 # late measures the longer gap it actually covered.
+# %.0f, never %d, for anything that can pass 2^31: BusyBox awk clamps %d to 32
+# bits, so a disk over 2GB printed as -2147483648 and the reader -- correctly
+# refusing a negative byte count -- dropped the line. Cumulative jiffies and
+# byte counts all cross 2^31 on ordinary boxes; %.0f is exact to 2^53.
 awk '$1 == "cpu" {
 	t = 0
 	for (i = 2; i <= NF; i++) t += $i
 	# Idle counts iowait with it. Waiting on a disk is not work, and counting it
 	# as busy makes a box that is merely reading from a slow disk look loaded.
-	printf "sys\tcpu\t%d\t%d\n", t, $5 + $6
+	printf "sys\tcpu\t%.0f\t%.0f\n", t, $5 + $6
 	exit
 }' /proc/stat 2>/dev/null
 awk '/^processor/ { n++ } END { if (n) printf "sys\tcores\t%d\t0\n", n }' /proc/cpuinfo 2>/dev/null
@@ -53,7 +57,7 @@ awk '/^processor/ { n++ } END { if (n) printf "sys\tcores\t%d\t0\n", n }' /proc/
 # reporting free as used is the classic way to make every server on earth look
 # seconds from death.
 awk '/^MemTotal:/ { t = $2 } /^MemAvailable:/ { a = $2 }
-	END { if (t > 0 && a != "") printf "sys\tmem\t%d\t%d\n", t * 1024, (t - a) * 1024 }' \
+	END { if (t > 0 && a != "") printf "sys\tmem\t%.0f\t%.0f\n", t * 1024, (t - a) * 1024 }' \
 	/proc/meminfo 2>/dev/null
 # Used and available, rather than the filesystem's raw size. df computes its own
 # percentage the same way, excluding the blocks reserved for root -- and a disk
@@ -62,11 +66,14 @@ awk '/^MemTotal:/ { t = $2 } /^MemAvailable:/ { a = $2 }
 #
 # Both paths, because the one that fills is usually not the one people watch:
 # images and volumes live under /var/lib/docker, which is frequently its own
-# filesystem. Identical mount points are folded by the caller.
+# filesystem. The device travels with the numbers so the caller can fold the
+# two when they are one filesystem -- by DEVICE, not mount point, because
+# docker setups routinely bind-mount /var/lib/docker onto itself, and df then
+# reports the same filesystem under two names.
 for p in / /var/lib/docker; do
 	[ -d "$p" ] || continue
 	df -k "$p" 2>/dev/null | awk 'NR > 1 && NF >= 4 {
-		printf "disk\t%s\t%d\t%d\n", $NF, $3 * 1024, ($3 + $4) * 1024
+		printf "disk\t%s\t%s\t%.0f\t%.0f\n", $NF, $1, $3 * 1024, ($3 + $4) * 1024
 		exit
 	}'
 done
@@ -106,7 +113,7 @@ container_stat() {
 		if [ -n "$_c1" ] && [ -f "/sys/fs/cgroup/cpuacct$_c1/cpuacct.usage" ]; then
 			# Nanoseconds there, microseconds under v2. Converted here so the
 			# caller never has to know which kind of box it is talking to.
-			_cpu="$(awk '{ printf "%d", $1 / 1000; exit }' "/sys/fs/cgroup/cpuacct$_c1/cpuacct.usage" 2>/dev/null)"
+			_cpu="$(awk '{ printf "%.0f", $1 / 1000; exit }' "/sys/fs/cgroup/cpuacct$_c1/cpuacct.usage" 2>/dev/null)"
 		fi
 		_m1="$(awk -F: '$2 ~ /(^|,)memory(,|$)/ { print $3; exit }' "/proc/$_pid/cgroup" 2>/dev/null)"
 		if [ -n "$_m1" ] && [ -f "/sys/fs/cgroup/memory$_m1/memory.usage_in_bytes" ]; then
@@ -196,7 +203,11 @@ type sysSample struct {
 }
 
 type diskUse struct {
-	mount      string
+	mount string
+	// dev is the filesystem's device, for folding two mount points that are one
+	// filesystem. Empty on records written before it was reported, which is
+	// most of any box's system.log.
+	dev        string
 	used, size uint64
 }
 
@@ -251,24 +262,38 @@ func parseSystem(out string, at time.Time) sysSample {
 				s.memTotal, s.memUsed, s.haveMem = a, b, true
 			}
 
-		case len(f) == 4 && f[0] == "disk":
-			used, errU := strconv.ParseUint(f[2], 10, 64)
-			size, errS := strconv.ParseUint(f[3], 10, 64)
-			if errU != nil || errS != nil || size == 0 {
+		case (len(f) == 4 || len(f) == 5) && f[0] == "disk":
+			// Two shapes: mount/used/size, and mount/device/used/size once the
+			// probe learned to report the device. The old one still parses
+			// because the box's system.log is full of it.
+			d := diskUse{mount: f[1]}
+			var errU, errS error
+			if len(f) == 5 {
+				d.dev = f[2]
+				d.used, errU = strconv.ParseUint(f[3], 10, 64)
+				d.size, errS = strconv.ParseUint(f[4], 10, 64)
+			} else {
+				d.used, errU = strconv.ParseUint(f[2], 10, 64)
+				d.size, errS = strconv.ParseUint(f[3], 10, 64)
+			}
+			if errU != nil || errS != nil || d.size == 0 {
 				continue
 			}
-			// Folded by mount point. Both / and /var/lib/docker are asked for,
-			// and on most boxes they are the same filesystem -- listing it twice
-			// would read as twice the disk.
+			// Folded when the two are one filesystem. Both / and /var/lib/docker
+			// are asked for, and on most boxes they are the same one -- listing
+			// it twice would read as twice the disk. The DEVICE is what says so:
+			// docker setups routinely bind-mount /var/lib/docker onto itself,
+			// which gives one filesystem two mount points, and folding by mount
+			// point drew that box's one disk as two identical bars.
 			dup := false
-			for _, d := range s.disks {
-				if d.mount == f[1] {
+			for _, x := range s.disks {
+				if x.mount == d.mount || (d.dev != "" && x.dev == d.dev) {
 					dup = true
 					break
 				}
 			}
 			if !dup {
-				s.disks = append(s.disks, diskUse{mount: f[1], used: used, size: size})
+				s.disks = append(s.disks, d)
 			}
 
 		case len(f) == 5 && f[0] == "vol":

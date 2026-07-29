@@ -94,6 +94,7 @@ type model struct {
 	logsApp   string // "" for the proxy
 	logsSvc   string // "" for a whole app
 	logsCmd   string
+	logsBack  screen // where esc returns: logs open from the index and the monitor
 	scroll    int
 	logsReady bool // the fetch has come back, even if it came back empty
 	run       runState
@@ -363,6 +364,10 @@ func typedText(msg tea.KeyMsg) string {
 // box you are looking at, which is the only time this runs.
 type pollMsg struct{}
 
+// warmupMsg is the one-off second reading after the first sample lands, so the
+// processor bar has its pair without waiting out a full poll interval.
+type warmupMsg struct{}
+
 // wheelRows is how far one notch moves the page. Three is the common default
 // and reads as a nudge; one is imperceptible on a long page, and a screenful
 // loses your place.
@@ -446,11 +451,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "ctrl+c" && !m.running() {
 			return m, tea.Quit
 		}
-		// Selecting text works on every screen, including the ones with their
-		// own key handling. Handled here rather than per screen because the one
-		// you most want to copy from is the log window, which has the fewest
-		// keys of its own.
-		if msg.String() == "s" && !m.running() && !m.typing() {
+		// Selecting text works on every screen except the index, where s
+		// starts and stops the selected row. Handled here rather than per
+		// screen because the one you most want to copy from is the log
+		// window, which has the fewest keys of its own.
+		if msg.String() == "s" && m.scr != screenIndex && !m.running() && !m.typing() {
 			return m.toggleMouse()
 		}
 		// Any key hands the page back to the cursor.
@@ -505,7 +510,18 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.scr = screenIndex
 			}
 		}
+		// A processor rate needs a PAIR of readings, and this was the first:
+		// one quick follow-up a second out, so the bar appears about when the
+		// page does rather than a full poll interval later. Its own message,
+		// not an early pollMsg -- pollMsg reschedules the ticker, and a second
+		// chain of five-second ticks would poll the box twice as often forever.
+		if len(m.sysSamples) == 1 {
+			return m, tea.Tick(time.Second, func(time.Time) tea.Msg { return warmupMsg{} })
+		}
 		return m, nil
+
+	case warmupMsg:
+		return m, m.poll()
 
 	case pollMsg:
 		// The tick is rescheduled whatever else happens, so a screen that skips
@@ -698,19 +714,19 @@ func (m model) focusItems() []focusItem {
 	var out []focusItem
 	// In page order. Every row that has something to do sits in this list, and
 	// the ones that are pure fact do not -- which is why the docker row is here
-	// (enter re-runs setup on it) and the network row is not.
+	// (u re-runs setup on it) and the os row is not. This list has to agree
+	// with the page: the cursor is an index into it, so a row that moves on
+	// screen and not here selects its neighbour.
 	//
-	// The proxy leads because it is drawn first, and this list has to agree with
-	// the page: the cursor is an index into it, so a row that moves on screen
-	// and not here selects its neighbour.
-	if m.proxy.installed {
-		out = append(out, focusItem{kind: focusProxy, app: -1, ctr: -1})
-	}
 	// komizo above docker, and both selectable. They are updated separately on
 	// purpose: a box can want a newer Docker without wanting komizo's own
 	// scripts rewritten, and far more often the other way round.
 	out = append(out, focusItem{kind: focusKomizo, app: -1, ctr: -1})
 	out = append(out, focusItem{kind: focusServer, app: -1, ctr: -1})
+	// The proxy sits below the facts, at the head of the live block it fronts.
+	if m.proxy.installed {
+		out = append(out, focusItem{kind: focusProxy, app: -1, ctr: -1})
+	}
 	for i, a := range m.apps {
 		out = append(out, focusItem{kind: focusApp, app: i, ctr: -1})
 		for j := range a.containers {
@@ -791,14 +807,53 @@ func (m model) handleIndexKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "enter":
-		// Enter is the primary action on whatever is selected. For the three
-		// things that RUN -- the proxy, an app, a container -- that is starting
-		// or stopping it, in the direction it is not currently in.
-		//
-		// One key for both directions, and the hint says which way it will go.
-		// Separate start and stop keys means eventually pressing the wrong one,
-		// and the wrong one here takes something off the internet.
-		return m.primaryAction()
+		// Enter is the monitor for everything that has one. It used to start
+		// and stop the things that run -- the "primary action" -- which put
+		// "take this off the internet" on the key pressed by reflex. Looking
+		// is the reflex; the lifecycle moved to s.
+		switch f := m.focused(); f.kind {
+		case focusServer, focusKomizo, focusProxy:
+			// The whole machine, from any of the rows that ARE the whole
+			// machine. The server row owns what it is spending; the proxy row
+			// sees every request to every app, and is the only thing here that
+			// can be asked about all of them at once. Both questions are on
+			// one screen, so all three rows open it.
+			return m.openMonitor("", "")
+		case focusApp:
+			if f.app >= 0 {
+				return m.openMonitor(m.apps[f.app].name, "")
+			}
+		case focusContainer:
+			if c := m.focusedContainer(); c != nil {
+				return m.openMonitor(c.app, c.service)
+			}
+		case focusAdd:
+			// Adding had a global "a" once, on the reasoning that it does not
+			// act on a selection so it should not need one. True, and beside
+			// the point: it is done a handful of times in a server's life, and
+			// a permanent line in the footer for something that rare crowds
+			// out the keys that are not. It is a row now, which is also where
+			// someone looks for it.
+			m.form = newAddForm(m.tgt)
+			return m.ask(m.addPrompt()), nil
+		}
+		return m, nil
+
+	case "s":
+		// Start or stop, in the direction the thing is not currently in. One
+		// key for both directions, and the hint says which way it will go --
+		// separate start and stop keys means eventually pressing the wrong
+		// one, and the wrong one here takes something off the internet.
+		return m.startStopAction()
+
+	case "u":
+		// Updating lives on the row that displays the version it changes.
+		switch m.focused().kind {
+		case focusServer:
+			m = m.ask(m.updateServerPrompt())
+		case focusKomizo:
+			m = m.ask(m.updateKomizoPrompt())
+		}
 
 	case "c":
 		// Changing which image the host trusts for its config. Re-running setup
@@ -851,26 +906,6 @@ func (m model) handleIndexKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "m":
-		// The box, an app, or one container inside it.
-		switch f := m.focused(); f.kind {
-		case focusServer, focusKomizo, focusProxy:
-			// The whole machine, from either of the two rows that ARE the whole
-			// machine. The server row owns what it is spending; the proxy row
-			// sees every request to every app, and is the only thing here that
-			// can be asked about all of them at once. Both questions are on one
-			// screen, so both rows open it.
-			return m.openMonitor("", "")
-		case focusApp:
-			if f.app >= 0 {
-				return m.openMonitor(m.apps[f.app].name, "")
-			}
-		case focusContainer:
-			if c := m.focusedContainer(); c != nil {
-				return m.openMonitor(c.app, c.service)
-			}
-		}
-		return m, nil
 	case "p":
 		// Installs the proxy, or reinstalls it in place. Re-running is how you
 		// pick up a newer Caddy, and it is not destructive: the certificate
@@ -928,31 +963,23 @@ func (m model) openLogs(key, label, app, svc, cmd string) (tea.Model, tea.Cmd) {
 		m.logsApp, m.logsSvc = app, svc
 		m.logsReady, m.scroll = false, 0
 		m.status, m.statusErr = "", false
+		// Where esc goes afterwards: back to the screen the log was opened
+		// from, because "back" that lands somewhere other than where you were
+		// is not back.
+		m.logsBack = m.scr
 		m.scr = screenLogs
 	}, fetchLogs(m.tgt, key, cmd))
 	return m, cmd2
 }
 
-// primaryAction is what enter does, by row.
-//
-// Every action reachable from this page is here or on a key that has nowhere
-// else to live. Updating the server had a global "u" as well as this, which is
-// two ways to do one thing and one of them redundant -- the docker row is where
-// the version it changes is displayed, so that is where it belongs.
+// startStopAction is what s does to the three things that run -- the proxy, an
+// app, a container -- in the direction the thing is not currently in.
 //
 // Stopping asks first; starting does not. The asymmetry is the point: starting
 // something that is already meant to be running is recoverable by definition,
 // and stopping takes a service off the internet.
-func (m model) primaryAction() (tea.Model, tea.Cmd) {
+func (m model) startStopAction() (tea.Model, tea.Cmd) {
 	switch f := m.focused(); f.kind {
-	case focusServer:
-		m = m.ask(m.updateServerPrompt())
-		return m, nil
-
-	case focusKomizo:
-		m = m.ask(m.updateKomizoPrompt())
-		return m, nil
-
 	case focusProxy:
 		return m.ask(m.lifecyclePrompt(
 			title(startStop(m.proxy.running()))+" the proxy?",
@@ -976,15 +1003,6 @@ func (m model) primaryAction() (tea.Model, tea.Cmd) {
 		return m.ask(m.lifecyclePrompt(
 			title(startStop(a.up()))+" "+a.name+"?", detail,
 			"app:"+a.name, stackCmd(a, verbFor(a.up())))), nil
-
-	case focusAdd:
-		// Adding had a global "a" once, on the reasoning that it does not act on
-		// a selection so it should not need one. True, and beside the point: it
-		// is done a handful of times in a server's life, and a permanent line in
-		// the footer for something that rare crowds out the keys that are not.
-		// It is a row now, which is also where someone looks for it.
-		m.form = newAddForm(m.tgt)
-		return m.ask(m.addPrompt()), nil
 
 	case focusContainer:
 		c := m.focusedContainer()

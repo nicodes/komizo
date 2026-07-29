@@ -50,6 +50,17 @@ fi
 if [ -f /var/lib/komizo/version ]; then
 	printf 'komizo\t%s\n' "$(head -n 1 /var/lib/komizo/version 2>/dev/null)"
 fi
+
+# What the box actually runs, as the distribution names itself. Read rather
+# than assumed: komizo installs Alpine, but it is pointed at existing servers
+# too, and a page that says "alpine" about a Debian box is wrong in the row
+# whose whole job is to state facts.
+awk -F= '$1 == "PRETTY_NAME" {
+	v = substr($0, index($0, "=") + 1)
+	gsub(/^"|"$/, "", v)
+	printf "os\t%s\n", v
+	exit
+}' /etc/os-release 2>/dev/null
 ` + systemProbe + `
 # Every container on the box, once, so the per-app loop below can look one up
 # without another docker call each time. Read here rather than per app because
@@ -562,11 +573,9 @@ func (a appRow) stateText() string {
 type serverRow struct {
 	state  string // ready | docker-stopped | bare
 	docker string
-	// os is the distribution the box runs. Not reported by the inventory yet --
-	// komizo installs Alpine and nothing else, so there is one answer and osName
-	// gives it. The field exists so that reading /etc/os-release on the host is
-	// a change to the script and this struct, and not to every place that shows
-	// it.
+	// os is the distribution as it names itself: PRETTY_NAME out of the box's
+	// /etc/os-release. Empty on a box whose shell never got that far, which
+	// osName papers over with what komizo installs.
 	os string
 	// komizo is the stamp of what komizo last installed here, read back from the
 	// box. Empty on a server that has never had it, or one set up by a komizo
@@ -782,6 +791,8 @@ func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, n
 			srv.state, srv.docker = g[1], g[2]
 		case "komizo":
 			srv.komizo = raw[1]
+		case "os":
+			srv.os = raw[1]
 		case "hostkey":
 			g := f(3)
 			srv.hostKeys = append(srv.hostKeys, [2]string{g[1], g[2]})
