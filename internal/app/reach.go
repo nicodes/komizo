@@ -202,6 +202,13 @@ func acceptHostKey(t target, assumeYes bool) error {
 		return err
 	}
 	note("added %s to %s", t.host, kh)
+	if assumeYes {
+		// --accept-host-key (or the scripted path) took the key without a person
+		// comparing the fingerprint. Say so plainly: it is only as trustworthy as
+		// the network between here and the box at this moment.
+		warn("accepted %s's host key without verification (--accept-host-key);\n"+
+			"    it came from the network, not the server's console -- trust the network accordingly", t.host)
+	}
 	return nil
 }
 

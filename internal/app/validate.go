@@ -103,15 +103,36 @@ func validateApp(s string) error {
 	return nil
 }
 
+// validateUser is the deploy account name. No dot: it is written verbatim into
+// doas.conf and an sshd Match block, and it is used as a sed -E delimiter body
+// on the server, where a dot is a regex metacharacter that could match an
+// unrelated account's block. Letters, digits, underscore and hyphen is all a
+// komizo-<app> account ever needs.
 func validateUser(s string) error {
-	if s == "" || !onlyChars(s, userChars) {
-		return fmt.Errorf("--user must be letters, digits, dot, underscore or hyphen; got %q", s)
+	if s == "" || !onlyChars(s, appChars) {
+		return fmt.Errorf("--user must be letters, digits, underscore or hyphen; got %q", s)
+	}
+	return nil
+}
+
+// validateLoginUser is the SSH login on the far end (usually root), the part
+// before the @ in --host. It is unvalidated nowhere else and ends up as one argv
+// element `user@host` handed to ssh -- so a value beginning with '-' is parsed
+// by OpenSSH as an option (-oProxyCommand=..., -F, -i), which is local command
+// execution. Reject a leading hyphen, and constrain the charset so no option can
+// be formed at all.
+func validateLoginUser(s string) error {
+	if s == "" || strings.HasPrefix(s, "-") || !onlyChars(s, userChars) {
+		return fmt.Errorf("login user contains characters that are not allowed: %q", s)
 	}
 	return nil
 }
 
 func validateHost(s string) error {
-	if s == "" || !onlyChars(s, hostChars) {
+	// A leading hyphen would let the hostname be read as an option by ssh or
+	// ssh-keyscan (`ssh-keyscan -f`), the same argv-injection class as the login
+	// user above. No real hostname begins with one.
+	if s == "" || strings.HasPrefix(s, "-") || !onlyChars(s, hostChars) {
 		return fmt.Errorf("hostname contains unexpected characters: %q", s)
 	}
 	return nil
@@ -126,6 +147,13 @@ func validateAppDir(s string) error {
 	}
 	if !onlyChars(s, pathChars) {
 		return fmt.Errorf("--app-dir contains characters that are not allowed: %q", s)
+	}
+	// No "..": the path is recorded and later handed to `rm -rf` on removal, and
+	// the removal guard refuses a fixed set of literal paths -- which /srv/../etc
+	// slips straight past. A traversal component also lets `chmod`/`chown` on the
+	// dir reach somewhere it was never meant to.
+	if s == ".." || strings.HasPrefix(s, "../") || strings.HasSuffix(s, "/..") || strings.Contains(s, "/../") {
+		return fmt.Errorf("--app-dir must not contain a \"..\" path component, got %q", s)
 	}
 	return nil
 }

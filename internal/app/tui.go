@@ -539,7 +539,11 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case opDoneMsg:
 		delete(m.busy, msg.key)
 		if msg.err != nil {
-			m.status, m.statusErr = msg.err.Error(), true
+			// scrub: an op's error carries the far end's stderr (docker's prose,
+			// image and container names chosen by whoever pushed the config), and
+			// this lands in the status line -- the one remote string that reached
+			// the terminal without going through the parse-boundary scrub.
+			m.status, m.statusErr = scrub(msg.err.Error()), true
 			// Re-read anyway. A failed `compose up` is not a no-op -- it can
 			// start two of three services and fail on the third -- so the rows
 			// are least trustworthy exactly when the command reports failure.

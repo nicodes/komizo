@@ -18,6 +18,15 @@ func warn(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, "warning: "+format+"\n", a...)
 }
 
+// stdoutIsTTY reports whether stdout is a terminal rather than a pipe, a file or
+// a CI log. `komizo add` uses it to refuse printing the private key anywhere it
+// would persist. A character device is what a terminal is; a redirected or
+// piped stdout is not.
+func stdoutIsTTY() bool {
+	fi, err := os.Stdout.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
 // progress is where a shared operation reports what it is doing. The CLI writes
 // to the terminal; the interface streams into its run pane. Having the two
 // differ only here is what lets `komizo add` and the interface's add be one

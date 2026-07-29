@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/nicodes/komizo/scripts"
 )
@@ -78,6 +79,15 @@ func RunAdd(args []string) error {
 		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))
 	}
 
+	// Refuse to print the private key into something that is not a terminal -- a
+	// CI log, a pipe, a file it gets redirected into -- where it would persist
+	// unencrypted. --key is the scripted path: it writes the key to a file of
+	// your choosing instead of stdout. Checked before anything touches the box.
+	if o.keyPath == "" && !stdoutIsTTY() {
+		return fmt.Errorf("refusing to print the private key to a non-terminal;\n" +
+			"    pass --key PATH to write it to a file instead")
+	}
+
 	if err := validateApp(o.app); err != nil {
 		return err
 	}
@@ -86,6 +96,13 @@ func RunAdd(args []string) error {
 	}
 	if err := validateUser(o.user); err != nil {
 		return err
+	}
+	// Never point the deploy account at root. Setting it up would rewrite root's
+	// key list to hold only the generated deploy key -- turning the key pasted
+	// into a GitHub secret into a root login and locking the operator out. The
+	// server script enforces this too, for any pre-existing account.
+	if o.user == "root" {
+		return fmt.Errorf("--user must not be root; the deploy account is a separate, unprivileged user")
 	}
 	if err := validateAppDir(o.appDir); err != nil {
 		return err
@@ -196,7 +213,7 @@ func performAdd(p addPlan, out progress, runner func(script string, env map[stri
 		// what komizo records about it -- not back out of the generated deploy
 		// script, which is code that happens to contain the value.
 		got, err := p.tgt.quiet(fmt.Sprintf(
-			`sed -n 's/^CONFIG_IMAGE=//p' %s 2>/dev/null | head -n 1`, stateFile(p.app)))
+			`sed -n 's/^CONFIG_IMAGE=//p' %s 2>/dev/null | head -n 1`, shQuote(stateFile(p.app))))
 		if err != nil || strings.TrimSpace(got) == "" {
 			return nil, fmt.Errorf("could not read the current config image for %q off the\n"+
 				"    server -- is that app set up on this box?", p.app)
@@ -293,10 +310,31 @@ func writeKeyFile(path string, kp keypair) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, []byte(kp.private), 0o600); err != nil {
+	// O_EXCL|O_NOFOLLOW rather than WriteFile: the latter sets the mode only when
+	// it creates the file, so an existing world-readable file, or a symlink into
+	// a shared directory, would take the private key at the wrong permissions or
+	// the wrong place. Refuse both -- a private key must land at 0600 on a real,
+	// new file.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
 		return fmt.Errorf("could not write the private key: %w", err)
 	}
-	if err := os.WriteFile(path+".pub", []byte(kp.public+"\n"), 0o644); err != nil {
+	if _, err := f.WriteString(kp.private); err != nil {
+		f.Close()
+		return fmt.Errorf("could not write the private key: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("could not write the private key: %w", err)
+	}
+	pf, err := os.OpenFile(path+".pub", os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o644)
+	if err != nil {
+		return fmt.Errorf("could not write the public key: %w", err)
+	}
+	if _, err := pf.WriteString(kp.public + "\n"); err != nil {
+		pf.Close()
+		return fmt.Errorf("could not write the public key: %w", err)
+	}
+	if err := pf.Close(); err != nil {
 		return fmt.Errorf("could not write the public key: %w", err)
 	}
 	return nil

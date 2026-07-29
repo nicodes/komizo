@@ -22,8 +22,8 @@ import (
 // deployBox is a fake server: an app directory, a routes directory, komizo's
 // state files, and a PATH where docker does as it is told.
 type deployBox struct {
-	root, appDir, routes, state, bin, config string
-	script                                   string
+	root, appDir, routes, proxyDir, state, bin, config string
+	script                                             string
 }
 
 func newDeployBox(t *testing.T) *deployBox {
@@ -33,18 +33,26 @@ func newDeployBox(t *testing.T) *deployBox {
 	}
 	root := t.TempDir()
 	b := &deployBox{
-		root:   root,
-		appDir: filepath.Join(root, "srv", "blog"),
-		routes: filepath.Join(root, "srv", "_proxy", "routes"),
-		state:  filepath.Join(root, "state"),
-		bin:    filepath.Join(root, "bin"),
-		config: filepath.Join(root, "config"),
+		root:     root,
+		appDir:   filepath.Join(root, "srv", "blog"),
+		routes:   filepath.Join(root, "srv", "_proxy", "routes"),
+		proxyDir: filepath.Join(root, "srv", "_proxy"),
+		state:    filepath.Join(root, "state"),
+		bin:      filepath.Join(root, "bin"),
+		config:   filepath.Join(root, "config"),
 	}
 	for _, d := range []string{b.appDir, b.routes, b.state, b.bin, b.config} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
+
+	// A proxy Caddyfile WITH an on-demand gate, so a box that supports wildcards
+	// is the default here. deploy-<app> refuses a wildcard when no gate exists
+	// (that path is covered by TestAWildcardWithoutATLSGateIsRefused); use
+	// b.ungateProxy() to model a box that has not configured one.
+	write(t, filepath.Join(b.proxyDir, "Caddyfile"), 0o644,
+		"{\n\ton_demand_tls {\n\t\task https://localhost/ask\n\t}\n}\nimport /etc/caddy/routes/*.caddy\n")
 
 	// A docker that answers the handful of things the script asks it, and
 	// copies the "config image" out of a directory instead of a registry.
@@ -72,14 +80,24 @@ exit 0
 		"__APP_DIR__", b.appDir,
 		"__CONFIG_IMAGE__", "ghcr.io/you/blog-config",
 		"__PROXY_CONTAINER__", "komizo-proxy",
+		"__PROXY_DIR__", b.proxyDir,
 		"__ROUTES_DIR__", b.routes,
 		"__STATE_DIR__", b.state,
 	).Replace(body)
-	if strings.Contains(b.script, "__") &&
-		strings.Contains(b.script, "__APP") {
+	if strings.Contains(b.script, "__APP") || strings.Contains(b.script, "__PROXY") ||
+		strings.Contains(b.script, "__CONFIG") || strings.Contains(b.script, "__ROUTES") ||
+		strings.Contains(b.script, "__STATE") {
 		t.Fatal("the deploy template has a placeholder this test does not substitute")
 	}
 	return b
+}
+
+// ungateProxy models a box whose proxy has no on-demand-TLS gate configured --
+// the state a fresh `komizo proxy` (no --tls-ask) leaves behind.
+func (b *deployBox) ungateProxy(t *testing.T) {
+	t.Helper()
+	write(t, filepath.Join(b.proxyDir, "Caddyfile"), 0o644,
+		"import /etc/caddy/routes/*.caddy\n")
 }
 
 func (b *deployBox) setState(app, dir string) {
@@ -290,6 +308,28 @@ func TestAHostnameMaySayHowItsCertificateIsObtained(t *testing.T) {
 		if strings.Contains(route, leaked) {
 			t.Errorf("%q leaked into the generated route:\n%s", leaked, route)
 		}
+	}
+}
+
+// A wildcard needs on-demand TLS, and on-demand TLS with no approval gate lets
+// anyone exhaust the box's shared ACME rate limit with random SNIs. So a
+// wildcard is refused unless the proxy has a gate configured, and refused before
+// anything is written.
+func TestAWildcardWithoutATLSGateIsRefused(t *testing.T) {
+	b := newDeployBox(t)
+	b.ungateProxy(t)
+	b.publishes(t, "services:\n  web:\n    image: x\n",
+		"*.preview.blog.example.com -> web\n")
+
+	out, err := b.deploy(t, "abc123")
+	if err == nil {
+		t.Fatalf("a wildcard was accepted with no on-demand gate:\n%s", out)
+	}
+	if !strings.Contains(out, "tls-ask") {
+		t.Errorf("the refusal should point at 'komizo proxy --tls-ask':\n%s", out)
+	}
+	if r := b.route(t); r != "" {
+		t.Errorf("a route was written despite the refusal:\n%s", r)
 	}
 }
 

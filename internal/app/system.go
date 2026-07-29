@@ -659,7 +659,7 @@ volumes_all() {
 // which is the only figure on this screen that cannot be read from a counter.
 // So it runs once, when the monitor is opened, for the one app being looked at.
 func storageScript(app string) string {
-	return stateHelper + volumeProbe + fmt.Sprintf("\nvolumes_all %q\n", app)
+	return stateHelper + volumeProbe + fmt.Sprintf("\nvolumes_all %s\n", shQuote(app))
 }
 
 // volRow is one volume, as much of the box's disk as one app can account for.
