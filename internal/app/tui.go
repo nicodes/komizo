@@ -694,6 +694,7 @@ const (
 	focusServer    focusKind = iota // the box itself: docker and the network
 	focusKomizo                     // what komizo has installed on it
 	focusProxy                      // the shared reverse proxy
+	focusGate                       // the proxy's on-demand TLS gate
 	focusApp                        // one app
 	focusContainer                  // one container belonging to an app
 	focusAdd                        // the row that adds one, under the list
@@ -728,8 +729,12 @@ func (m model) focusItems() []focusItem {
 	out = append(out, focusItem{kind: focusKomizo, app: -1, ctr: -1})
 	out = append(out, focusItem{kind: focusServer, app: -1, ctr: -1})
 	// The proxy sits below the facts, at the head of the live block it fronts.
+	// Its on-demand TLS gate follows on its own row, so whether a wildcard app
+	// can get certificates is a fact on the page rather than a flag you have to
+	// remember to have set.
 	if m.proxy.installed {
 		out = append(out, focusItem{kind: focusProxy, app: -1, ctr: -1})
+		out = append(out, focusItem{kind: focusGate, app: -1, ctr: -1})
 	}
 	for i, a := range m.apps {
 		out = append(out, focusItem{kind: focusApp, app: i, ctr: -1})
@@ -831,6 +836,11 @@ func (m model) handleIndexKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if c := m.focusedContainer(); c != nil {
 				return m.openMonitor(c.app, c.service)
 			}
+		case focusGate:
+			// The gate has no monitor of its own -- enter edits it, the way it
+			// adds on the add row. Setting, changing or clearing the ask URL is
+			// the only thing this row does.
+			return m.ask(m.gatePrompt()), nil
 		case focusAdd:
 			// Adding had a global "a" once, on the reasoning that it does not
 			// act on a selection so it should not need one. True, and beside
@@ -921,13 +931,6 @@ func (m model) handleIndexKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// already on screen. Changing either is rare enough to belong on the
 		// command line, where it is one flag: komizo proxy --network / --image.
 		m = m.ask(m.installProxyPrompt())
-
-	case "t":
-		// The on-demand TLS gate, on the proxy row: it is a per-server setting,
-		// and the row that shows whether it is set is the row that changes it.
-		if m.focused().kind == focusProxy && m.proxy.installed {
-			m = m.ask(m.gatePrompt())
-		}
 
 	}
 	return m, nil

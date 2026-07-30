@@ -190,32 +190,43 @@ func (m model) proxyLine() (string, string) {
 	if m.net.subnet != "" {
 		net += ", " + m.net.subnet
 	}
-	line := t + "  ·  " + net
-
-	// The on-demand TLS gate. A wildcard hostname cannot get an ordinary
-	// certificate, so it needs this -- and a wildcard app with no gate is a
-	// deploy that fails with nothing else on this page saying why. Surface the
-	// gate when set, and warn (outranking the proxy's own dot) when one is
-	// needed and missing. Pressing t sets it.
-	switch {
-	case m.anyWildcard() && m.proxy.tlsAsk == "":
-		return dot("warn"), line + "  ·  wildcard needs a TLS gate — press t"
-	case m.proxy.tlsAsk != "":
-		return g, line + "  ·  TLS gate on"
-	}
-	return g, line
+	return g, t + "  ·  " + net
 }
 
-// anyWildcard reports whether any app on the box declares a wildcard hostname,
-// which is what makes the proxy's on-demand TLS gate load-bearing.
-func (m model) anyWildcard() bool {
+// gateLine is the proxy's on-demand TLS gate, on its own row: the endpoint Caddy
+// asks before issuing a certificate for a wildcard hostname. Its own row so the
+// on/off state is a glance rather than a flag you have to remember -- forgetting
+// it on a fresh box otherwise surfaces only as a failed wildcard deploy.
+func (m model) gateLine() (string, string) {
+	if m.busy[proxyContainer] || m.settling[proxyContainer] {
+		return spinner(m.spin), "working…"
+	}
+	if m.proxy.tlsAsk != "" {
+		return dot("ok"), "on   " + m.proxy.tlsAsk
+	}
+	// Off. A red dot only when something actually needs it -- a box with no
+	// wildcard app is entitled to have no gate, and nagging it would train the
+	// dot to be ignored.
+	if names := m.wildcardApps(); len(names) > 0 {
+		return dot("warn"), "off — " + strings.Join(names, ", ") + " need it; enter to set"
+	}
+	return dot(""), "off — only a wildcard hostname needs one"
+}
+
+// wildcardApps is the apps that declare a wildcard hostname, which are the ones
+// the on-demand TLS gate is load-bearing for.
+func (m model) wildcardApps() []string {
+	var out []string
 	for _, a := range m.apps {
 		if a.hasWildcard() {
-			return true
+			out = append(out, a.name)
 		}
 	}
-	return false
+	return out
 }
+
+// anyWildcard reports whether any app on the box declares a wildcard hostname.
+func (m model) anyWildcard() bool { return len(m.wildcardApps()) > 0 }
 
 func orDash(s string) string {
 	if s == "" {
