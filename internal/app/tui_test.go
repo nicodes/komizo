@@ -4587,3 +4587,17 @@ func TestEnterOnTheGateRowEditsTheGate(t *testing.T) {
 		t.Error("an empty value should be accepted -- it clears the gate")
 	}
 }
+
+func TestTheKomizoRowLeadsWithTheCliVersion(t *testing.T) {
+	m := testModel()
+	m.srv.komizo = komizoStamp() // up to date: just the version and the stamp
+	line := stripANSI(m.komizoLine())
+	vi := strings.Index(line, versionText())
+	si := strings.Index(line, shortText(komizoStamp()))
+	if vi < 0 {
+		t.Fatalf("the komizo row should show the CLI version: %q", line)
+	}
+	if si < 0 || vi > si {
+		t.Errorf("the CLI version should come before the install stamp: %q", line)
+	}
+}

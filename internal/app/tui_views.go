@@ -395,18 +395,27 @@ func (m model) rowKeys() []string {
 // change anything" -- and a hash of what gets written is the only thing that
 // answers that without somebody remembering to bump a constant.
 func (m model) komizoLine() string {
+	// The CLI version first and bright, so "which komizo am I running" is a
+	// glance -- then the box's install stamp (dim), which is the separate,
+	// technical answer to "would updating change anything". The version is the
+	// binary in your hand; the stamp is what it last wrote on this box.
+	ver := versionText()
+	if ver != "dev" {
+		ver = "v" + ver
+	}
+	v := keyStyle.Render(ver)
 	switch {
 	case m.srv.komizo == "":
 		// Either never installed, or installed by a komizo old enough not to
 		// have left a stamp. Both are fixed the same way, so they read the same.
-		return dimStyle.Render("—  ") + warnStyle.Render("not installed") +
+		return v + dimStyle.Render("  ·  ") + warnStyle.Render("not installed") +
 			dimStyle.Render("  · u to install")
 	case m.srv.komizo != komizoStamp():
-		return dimStyle.Render(shortText(m.srv.komizo)+"  ") +
+		return v + dimStyle.Render("  "+shortText(m.srv.komizo)+"  ") +
 			warnStyle.Render("out of date") +
 			dimStyle.Render("  · u to update")
 	}
-	return dimStyle.Render(shortText(m.srv.komizo))
+	return v + dimStyle.Render("  "+shortText(m.srv.komizo))
 }
 
 func appActions() []string {
