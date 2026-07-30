@@ -1074,7 +1074,7 @@ func TestDockerAndKomizoAreUpdatedSeparately(t *testing.T) {
 }
 
 // The sparkline column carries containers too, and a container has one state an
-// app does not: unmeasurable. The proxy only ever talks to the app's gateway, so
+// app does not: unmeasurable. The proxy only ever talks to the app's gate, so
 // which container answered is whatever the app declared in its hostnames file --
 // a container nobody named there cannot be measured from here at all.
 func TestTheSparklineColumnTellsQuietFromUnmeasurable(t *testing.T) {
@@ -1280,21 +1280,21 @@ func TestAChartHasOneHeadingLine(t *testing.T) {
 
 // Which domain reaches which container comes from what the APP declared.
 //
-// Every app fronts itself with its own gateway now, so the proxy's upstream is
-// always <app>-gateway: matching on that put every hostname on the gateway row,
+// Every app fronts itself with its own gate now, so the proxy's upstream is
+// always <app>-gate: matching on that put every hostname on the gate row,
 // which is true of the first hop and no use as an answer to "what serves this
 // domain".
 func TestDomainsLandOnTheContainerTheAppNamed(t *testing.T) {
 	a := appRow{
 		name: "blog",
 		containers: []containerRow{
-			{app: "blog", service: "blog-gateway", name: "blog-gateway-1"},
+			{app: "blog", service: "blog-gate", name: "blog-gate-1"},
 			{app: "blog", service: "api", name: "blog-api-1"},
 			{app: "blog", service: "pb", name: "blog-pb-1"},
 			{app: "blog", service: "worker", name: "blog-worker-1"},
 		},
 		hosts: []hostRow{
-			{app: "blog", name: "blog.dev", service: "blog-gateway"},
+			{app: "blog", name: "blog.dev", service: "blog-gate"},
 			{app: "blog", name: "www.blog.dev"}, // no arrow
 			{app: "blog", name: "api.blog.dev", service: "api"},
 			{app: "blog", name: "*.preview.blog.dev", service: "api"},
@@ -1302,21 +1302,21 @@ func TestDomainsLandOnTheContainerTheAppNamed(t *testing.T) {
 		},
 		routes: []routeRow{{app: "blog",
 			sites:    "blog.dev,www.blog.dev,api.blog.dev,*.preview.blog.dev,gone.blog.dev",
-			upstream: "blog-gateway", port: "80"}},
+			upstream: "blog-gate", port: "80"}},
 	}
 	net := netRow{name: "edge", members: []netMember{
-		{container: "blog-gateway-1", aliases: []string{"blog-gateway"}},
+		{container: "blog-gate-1", aliases: []string{"blog-gate"}},
 	}}
 	got := a.routesByContainer(net)
 
 	if want := []string{"api.blog.dev", "*.preview.blog.dev"}; !sameSet(got["blog-api-1"], want) {
 		t.Errorf("api serves %v, want %v", got["blog-api-1"], want)
 	}
-	// The gateway keeps what it was named for, plus everything the app did not
+	// The gate keeps what it was named for, plus everything the app did not
 	// annotate -- which is the honest answer for those: the app did not say, and
-	// the gateway is genuinely where the request goes.
-	if want := []string{"blog.dev", "www.blog.dev", "gone.blog.dev"}; !sameSet(got["blog-gateway-1"], want) {
-		t.Errorf("the gateway serves %v, want %v", got["blog-gateway-1"], want)
+	// the gate is genuinely where the request goes.
+	if want := []string{"blog.dev", "www.blog.dev", "gone.blog.dev"}; !sameSet(got["blog-gate-1"], want) {
+		t.Errorf("the gate serves %v, want %v", got["blog-gate-1"], want)
 	}
 	// A container nothing names gets nothing, rather than inheriting the app's.
 	if len(got["blog-worker-1"]) != 0 {

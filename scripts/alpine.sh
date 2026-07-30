@@ -395,7 +395,7 @@ PROXY_CONTAINER="__PROXY_CONTAINER__"
 PROXY_DIR="__PROXY_DIR__"
 
 # Baked in rather than derived. The app's name decides the upstream the shared
-# proxy is pointed at (<app>-gateway), and its directory is where the hostnames
+# proxy is pointed at (<app>-gate), and its directory is where the hostnames
 # it has claimed are recorded -- both are read below, so both have to be values
 # this script carries rather than things it works out.
 APP_NAME="__APP_NAME__"
@@ -541,7 +541,7 @@ fi
 #
 # A line may name where the hostname goes -- "api.example.com -> api" -- which
 # is metadata for the interface and NOTHING ELSE. Routing reads the first field
-# and ignores the rest, so the shared proxy is still pointed at <app>-gateway
+# and ignores the rest, so the shared proxy is still pointed at <app>-gate
 # whatever the arrow says: a wrong annotation mislabels a chart, it cannot
 # misroute a request. The app is the only thing that knows which of its
 # containers serves a name, and this is the only way it can say so without
@@ -584,7 +584,7 @@ cat "$staging/compose.yml" > compose.yml
 # the second app to want one broke the first.
 #
 # Now the app declares names and nothing else. Everything a request meets after
-# the hostname match is inside the app, in its own gateway container.
+# the hostname match is inside the app, in its own gate container.
 #
 # Replaced wholesale rather than merged: a hostname the app has stopped
 # publishing must disappear, and the config image is the whole truth about this
@@ -763,7 +763,7 @@ if [ -n "$hostnames" ]; then
 		site() {
 			printf '\theader Strict-Transport-Security "max-age=31536000"\n'
 			access_log
-			printf '\treverse_proxy %s-gateway:80 {\n' "$APP_NAME"
+			printf '\treverse_proxy %s-gate:80 {\n' "$APP_NAME"
 			printf '\t\theader_up X-Forwarded-For {remote_host}\n'
 			printf '\t}\n'
 		}

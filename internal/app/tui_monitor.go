@@ -329,7 +329,7 @@ func sparkCell(t, e, top float64) (string, lipgloss.Style) {
 //
 // Three states, not two, and the third is the reason this is a separate
 // function. An app either has traffic or has not; a container can also be
-// UNMEASURABLE -- the shared proxy only ever talks to the app's gateway, and
+// UNMEASURABLE -- the shared proxy only ever talks to the app's gate, and
 // which container answered is decided inside the app, so komizo knows only what
 // the app declared in its hostnames file.
 //
@@ -417,7 +417,7 @@ func (m model) rangeLine() string {
 func (m model) noTrafficNote() string {
 	if m.monitorSvc != "" && !servesAnyHostname(m.monitor, m.monitorOf, m.monitorSvc) {
 		return kv("", dimStyle.Render("no hostname declares "+m.monitorSvc)) +
-			kv("", dimStyle.Render("requests reach this app's gateway and are routed inside it;")) +
+			kv("", dimStyle.Render("requests reach this app's gate and are routed inside it;")) +
 			kv("", dimStyle.Render("the shared proxy cannot see which container served them")) +
 			kv("", dimStyle.Render("name it in deploy/hostnames to chart it:  api.example.com -> "+m.monitorSvc))
 	}
