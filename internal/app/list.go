@@ -48,7 +48,9 @@ fi
 # In the inventory rather than in the probe: the probe is shared with the
 # sampler, and the sampler has no business reporting its own version to a log.
 if [ -f /var/lib/komizo/version ]; then
-	printf 'komizo\t%s\n' "$(head -n 1 /var/lib/komizo/version 2>/dev/null)"
+	printf 'komizo\t%s\t%s\n' \
+		"$(sed -n 1p /var/lib/komizo/version 2>/dev/null)" \
+		"$(sed -n 2p /var/lib/komizo/version 2>/dev/null)"
 fi
 
 # What the box actually runs, as the distribution names itself. Read rather
@@ -602,8 +604,14 @@ type serverRow struct {
 	// komizo is the stamp of what komizo last installed here, read back from the
 	// box. Empty on a server that has never had it, or one set up by a komizo
 	// old enough not to have written one.
-	komizo   string
-	hostKeys [][2]string // {type, base64}
+	komizo string
+	// komizoVersion is the komizo RELEASE that set this box up -- the first line
+	// of the version file, shown beside the CLI's own. Empty on a box set up by a
+	// komizo old enough to have written only the stamp; komizoInstalled tells
+	// that box apart from one that was never set up at all.
+	komizoVersion   string
+	komizoInstalled bool
+	hostKeys        [][2]string // {type, base64}
 }
 
 // osName is what the box runs, or what komizo puts on it when nothing has said
@@ -834,7 +842,18 @@ func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, n
 			g := f(3)
 			srv.state, srv.docker = g[1], g[2]
 		case "komizo":
-			srv.komizo = raw[1]
+			// The file exists, so komizo is installed -- whatever its fields say.
+			srv.komizoInstalled = true
+			g := f(3)
+			// New boxes write two lines: version, then stamp. A box old enough to
+			// have written only the stamp arrives with an empty second field, and
+			// its one line is the stamp -- so read the version from field two when
+			// it is there, and fall back to treating field one as the stamp.
+			if g[2] != "" {
+				srv.komizoVersion, srv.komizo = g[1], g[2]
+			} else {
+				srv.komizo = g[1]
+			}
 		case "os":
 			srv.os = raw[1]
 		case "hostkey":

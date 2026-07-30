@@ -691,8 +691,7 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 type focusKind int
 
 const (
-	focusServer    focusKind = iota // the box itself: docker and the network
-	focusKomizo                     // what komizo has installed on it
+	focusKomizo    focusKind = iota // the komizo the box was set up with
 	focusProxy                      // the shared reverse proxy
 	focusGate                       // the proxy's on-demand TLS gate
 	focusApp                        // one app
@@ -718,16 +717,11 @@ type focusItem struct {
 func (m model) focusItems() []focusItem {
 	var out []focusItem
 	// In page order. Every row that has something to do sits in this list, and
-	// the ones that are pure fact do not -- which is why the docker row is here
-	// (u re-runs setup on it) and the os row is not. This list has to agree
-	// with the page: the cursor is an index into it, so a row that moves on
-	// screen and not here selects its neighbour.
-	//
-	// komizo above docker, and both selectable. They are updated separately on
-	// purpose: a box can want a newer Docker without wanting komizo's own
-	// scripts rewritten, and far more often the other way round.
+	// the ones that are pure fact do not -- which is why the os and komizo cli
+	// rows are absent (nothing acts on them) and the komizo server row is here (u
+	// updates it). This list has to agree with the page: the cursor is an index
+	// into it, so a row that moves on screen and not here selects its neighbour.
 	out = append(out, focusItem{kind: focusKomizo, app: -1, ctr: -1})
-	out = append(out, focusItem{kind: focusServer, app: -1, ctr: -1})
 	// The proxy sits below the facts, at the head of the live block it fronts.
 	// Its on-demand TLS gate follows on its own row, so whether a wildcard app
 	// can get certificates is a fact on the page rather than a flag you have to
@@ -821,12 +815,12 @@ func (m model) handleIndexKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// "take this off the internet" on the key pressed by reflex. Looking
 		// is the reflex; the lifecycle moved to s.
 		switch f := m.focused(); f.kind {
-		case focusServer, focusKomizo, focusProxy:
-			// The whole machine, from any of the rows that ARE the whole
-			// machine. The server row owns what it is spending; the proxy row
-			// sees every request to every app, and is the only thing here that
-			// can be asked about all of them at once. Both questions are on
-			// one screen, so all three rows open it.
+		case focusKomizo, focusProxy:
+			// The whole machine, from either of the rows that ARE the whole
+			// machine. The komizo server row is the box itself; the proxy row sees
+			// every request to every app, and is the only thing here that can be
+			// asked about all of them at once. Both questions are on one screen, so
+			// both rows open it.
 			return m.openMonitor("", "")
 		case focusApp:
 			if f.app >= 0 {
@@ -861,11 +855,10 @@ func (m model) handleIndexKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.startStopAction()
 
 	case "u":
-		// Updating lives on the row that displays the version it changes.
-		switch m.focused().kind {
-		case focusServer:
-			m = m.ask(m.updateServerPrompt())
-		case focusKomizo:
+		// Updating lives on the komizo server row, which displays the version it
+		// changes. One operation re-runs the whole setup -- Docker included -- so
+		// there is no separate docker row to update.
+		if m.focused().kind == focusKomizo {
 			m = m.ask(m.updateKomizoPrompt())
 		}
 
@@ -1180,36 +1173,27 @@ func (m model) gatePrompt() prompt {
 	}
 }
 
-// updateKomizoPrompt refreshes what komizo itself put on the box.
+// updateKomizoPrompt re-runs the whole server setup, bringing the box to the
+// version of komizo now in your hand.
 //
-// Separate from the Docker update, and from the proxy. The three are updated on
-// different occasions: Docker when the distribution has a new one, the proxy
-// when Caddy does, and this whenever the komizo you are running has learned to
-// read something the box is not yet recording. Bundling them would mean a
-// routine Docker update rewrote scripts nobody asked it to touch.
+// One operation rather than three. The Docker, sampler and proxy steps were once
+// updated apart -- the reasoning being that a box could want a newer Docker
+// without wanting komizo's scripts rewritten -- but the thing people actually
+// need is the confidence that the box matches the CLI, and three separate
+// updates is three chances to have run only some of them. So this is a fresh
+// install over a running box: it re-runs setup, reinstalls the sampler, and
+// updates the proxy IF the box has one (a box that opted out stays proxy-less),
+// then stamps this version. Apps keep running and nothing is deleted.
 func (m model) updateKomizoPrompt() prompt {
 	return prompt{
-		question: "Update komizo on " + m.tgt.host + "?",
-		detail: "Rewrites the resource sampler and its schedule. Nothing that is " +
-			"running is touched, and the history already recorded is kept.",
+		question: "Update komizo on " + m.tgt.host + " to " + versionLabel(versionText()) + "?",
+		detail: "Re-runs the whole setup — Docker, the resource sampler, and the " +
+			"reverse proxy if this box has one — leaving it at " + versionLabel(versionText()) +
+			". The apps keep running, recorded history is kept, and nothing is deleted.",
 		action: func(m *model, _ string) tea.Cmd {
 			return tea.Batch(
 				m.startOp("Updating komizo on "+m.tgt.host),
 				m.startKomizoUpdate())
-		},
-	}
-}
-
-func (m model) updateServerPrompt() prompt {
-	q := "Update Docker on " + m.tgt.host + "?"
-	return prompt{
-		question: q,
-		detail: "Installs any Docker updates. Your apps keep running, the proxy and " +
-			"komizo's own scripts are not touched, and nothing is deleted.",
-		action: func(m *model, _ string) tea.Cmd {
-			return tea.Batch(
-				m.startOp("Re-running setup on "+m.tgt.host),
-				m.startServerUpdate())
 		},
 	}
 }
