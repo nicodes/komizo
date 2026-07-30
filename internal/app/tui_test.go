@@ -172,10 +172,10 @@ func TestCursorReachesTheBoxRowsAndEveryContainer(t *testing.T) {
 	for _, f := range m.focusItems() {
 		kinds = append(kinds, f.kind)
 	}
-	// Page order: the facts (komizo above docker), then the proxy and its TLS
-	// gate at the head of the live block, then the apps. The cursor is an index
-	// into this list, so the two have to agree.
-	want := []focusKind{focusKomizo, focusServer, focusProxy, focusGate, focusApp, focusContainer, focusApp, focusAdd}
+	// Page order: the komizo server row (os and komizo cli are pure facts, not
+	// focusable), then the proxy and its TLS gate, then the apps. The cursor is an
+	// index into this list, so the two have to agree.
+	want := []focusKind{focusKomizo, focusProxy, focusGate, focusApp, focusContainer, focusApp, focusAdd}
 	if len(kinds) != len(want) {
 		t.Fatalf("focus list = %v, want %v", kinds, want)
 	}
@@ -599,15 +599,18 @@ func TestTheBoxIsAlwaysOnScreen(t *testing.T) {
 	// No heading over them any more -- the facts are the point, not the label.
 	v := netModel().View()
 	for _, want := range []string{
-		"box.example.com",       // which box, in the header
-		"alpine",                // os
-		"Docker version 26.1.3", // docker
-		"edge", "bridge",        // network
-		"running", // proxy
+		"box.example.com", // which box, in the header
+		"alpine",          // os
+		"komizo server",   // the version the box was set up with
+		"edge", "bridge",  // network, on the proxy row
 	} {
 		if !strings.Contains(v, want) {
 			t.Errorf("the list is missing %q", want)
 		}
+	}
+	// No docker row: its version was a fact nobody acted on.
+	if strings.Contains(v, "Docker version") {
+		t.Errorf("the docker row should be gone:\n%s", v)
 	}
 }
 
@@ -615,19 +618,19 @@ func TestAStoppedProxyIsCalledOutWithoutNavigating(t *testing.T) {
 	m := netModel()
 	m.proxy = proxyRow{installed: true, state: "stopped", network: "edge",
 		image: "caddy:2", status: "Exited (0) 5 minutes ago"}
-	v := m.View()
-	if !strings.Contains(v, "stopped") {
-		t.Error("a stopped proxy is the loudest possible problem; it must be on the list")
+	// The word "stopped" is gone -- the red dot is the whole signal now.
+	if g, _ := m.proxyLine(); g != dot("err") {
+		t.Error("a stopped proxy should show the red dot")
 	}
 	// What it means for the apps is the red dot on every one of them, plus the
-	// proxy's own row saying stopped -- there is no summary block any more.
+	// proxy's own red dot -- there is no summary block any more.
 	m.cursor = rowOf(m, focusProxy)
 	if got := m.keyLabel("s"); got != "start" {
 		t.Errorf("s on a stopped proxy should offer to start, got %q", got)
 	}
 
 	m.proxy = proxyRow{}
-	v = m.View()
+	v := m.View()
 	if !strings.Contains(v, "not installed") {
 		t.Error("a box with no proxy should say so, not show nothing")
 	}
@@ -813,16 +816,10 @@ func TestScrollingStopsAtBothEnds(t *testing.T) {
 func TestStoppedProxyIsShouted(t *testing.T) {
 	m := netModel()
 	m.proxy = proxyRow{installed: true, state: "stopped", network: "edge", status: "Exited (0) 5 minutes ago"}
-	v := m.View()
-	// Case-insensitive: the wording is a style choice, that it is called out is not.
-	if !strings.Contains(strings.ToLower(v), "stopped") {
-		t.Error("a stopped proxy should be unmissable")
-	}
-
-	// Docker's prose is gone: every row on the page now says what it is doing
-	// and for how long, in one format. The exit code survives it.
-	if !strings.Contains(stripANSI(v), "stopped") {
-		t.Error("it should say the proxy is stopped")
+	// No word "stopped" any more: the red dot is what calls it out, and every row
+	// on the page says its state in that one column of colour rather than in prose.
+	if g, _ := m.proxyLine(); g != dot("err") {
+		t.Error("a stopped proxy should show the red dot")
 	}
 	// With the proxy selected, s offers to start it rather than stop it.
 	m.cursor = rowOf(m, focusProxy)
@@ -929,9 +926,8 @@ func TestServerScreenWithNoNetwork(t *testing.T) {
 	if !strings.Contains(v, "no shared network") {
 		t.Error("a box with no network should say so")
 	}
-	// The fix is re-running setup. It used to say "press u"; that key is gone,
-	// and a hint naming a key that does nothing is worse than no hint.
-	if !strings.Contains(stripANSI(v), "docker row") {
+	// The fix is re-running setup, which lives on the komizo server row.
+	if !strings.Contains(stripANSI(v), "komizo server row") {
 		t.Error("it should point at where the fix lives")
 	}
 }
@@ -974,16 +970,17 @@ func TestParsesRealDockerOutput(t *testing.T) {
 	}
 }
 
-func TestUpdatingTheServerDoesNotAskAboutTheProxy(t *testing.T) {
-	// The first-run form's only question is whether to install a proxy. Reusing
-	// it for a routine Docker update would mean a stray keypress installs one
-	// on a box that deliberately has none.
+func TestUpdatingKomizoDoesNotReopenTheSetupForm(t *testing.T) {
+	// Update is a prompt, not the first-run form. Reopening the form would put
+	// the proxy question back in front of someone who only meant to update, and a
+	// box that deliberately has no proxy stays that way -- the update's proxy step
+	// runs only where one already exists.
 	m := testModel()
 	m.proxy = proxyRow{} // no proxy on this box, by choice
-	m.cursor = rowOf(m, focusServer)
+	m.cursor = rowOf(m, focusKomizo)
 	m = send(m, "u")
 	if m.scr == screenSetup {
-		t.Fatal("update must not reopen the first-run form; that would re-ask the proxy question")
+		t.Fatal("update must not reopen the first-run form")
 	}
 	if m.prompt == nil {
 		t.Fatal("update should ask first")
@@ -992,10 +989,7 @@ func TestUpdatingTheServerDoesNotAskAboutTheProxy(t *testing.T) {
 	// terminal, so a phrase can straddle two lines and still be shown.
 	d := m.prompt.question + " " + m.prompt.detail
 	if !strings.Contains(d, "Docker") {
-		t.Error("the question should say what it actually does")
-	}
-	if !strings.Contains(d, "proxy and komizo's own scripts are not touched") {
-		t.Error("it should say what it leaves alone, since that is the surprise it prevents")
+		t.Error("the update re-runs the whole setup, so it should say Docker")
 	}
 	if !strings.Contains(d, "apps keep running") {
 		t.Error("it should say apps are unaffected")
@@ -1998,8 +1992,8 @@ func TestKnownHostsIsCopiedPerApp(t *testing.T) {
 	if !strings.Contains(stripANSI(m.pageFooter()), "hosts") {
 		t.Error("the app row should offer its known_hosts")
 	}
-	// And nowhere else: the server row has no value of its own any more.
-	m.cursor = rowOf(m, focusServer)
+	// And nowhere else: the komizo server row has no known_hosts of its own.
+	m.cursor = rowOf(m, focusKomizo)
 	if strings.Contains(stripANSI(m.pageFooter()), "hosts") {
 		t.Error("known_hosts is not a server-level value")
 	}
@@ -2033,11 +2027,10 @@ func TestHelpFollowsTheCursor(t *testing.T) {
 		key  string
 		want string
 	}{
-		{focusKomizo, "u", "update komizo"}, // what komizo installed, above docker
-		{focusServer, "u", "update docker"}, // the box
-		{focusProxy, "s", "stop"},           // proxy, at the head of the live block
-		{focusApp, "s", "stop"},             // app, running
-		{focusContainer, "s", "stop"},       // container, running
+		{focusKomizo, "u", "update"},  // the komizo the box was set up with
+		{focusProxy, "s", "stop"},     // proxy, at the head of the live block
+		{focusApp, "s", "stop"},       // app, running
+		{focusContainer, "s", "stop"}, // container, running
 	} {
 		m.cursor = rowOf(m, c.kind)
 		if got := m.keyLabel(c.key); got != c.want {
@@ -2069,22 +2062,22 @@ func TestHelpFollowsTheCursor(t *testing.T) {
 	}
 }
 
-func TestUOnTheDockerRowUpdatesTheServer(t *testing.T) {
+func TestUOnTheKomizoRowUpdatesTheServer(t *testing.T) {
 	// The action sits on the row showing the thing it changes: re-running setup
 	// is what moves that version, so the version is where you press it. There
 	// is no second way to reach it -- a global key as well would be two routes
 	// to one action, and one of them undiscoverable from the row it affects.
 	m := netModel()
-	// By kind, not by index: the docker row is no longer the first one.
-	m.cursor = rowOf(m, focusServer)
+	m.cursor = rowOf(m, focusKomizo)
 	m = send(m, "u")
 	if m.prompt == nil {
-		t.Fatal("u on the docker row should ask about an update")
+		t.Fatal("u on the komizo row should ask about an update")
 	}
-	if !strings.Contains(m.prompt.detail, "Docker updates") {
-		t.Errorf("the question should say what it does: %q", m.prompt.detail)
+	// It re-runs the whole setup, and must be clear the apps are not touched,
+	// since that is the fear.
+	if !strings.Contains(m.prompt.detail, "Docker") {
+		t.Errorf("the question should say it re-runs the setup: %q", m.prompt.detail)
 	}
-	// It must be clear the apps are not touched, since that is the fear.
 	if !strings.Contains(m.prompt.detail, "apps keep running") {
 		t.Error("it should say the apps are unaffected")
 	}
@@ -2156,9 +2149,9 @@ func sendCmd(m model, k string) (model, tea.Cmd) {
 }
 
 func TestUpdateServerHasNoGlobalKey(t *testing.T) {
-	// "u" was a second route to what enter on the docker row already does.
+	// "u" only does something on the komizo server row; there is no global key.
 	m := testModel()
-	m.cursor = rowOf(m, focusApp) // deliberately NOT the docker row
+	m.cursor = rowOf(m, focusApp) // deliberately NOT the komizo server row
 	if next := send(m, "u"); next.scr != screenIndex {
 		t.Errorf("'u' should no longer do anything, got %v", next.scr)
 	}
@@ -2168,11 +2161,11 @@ func TestUpdateServerHasNoGlobalKey(t *testing.T) {
 }
 
 func TestAppKeysOnlyOfferedWithAnAppSelected(t *testing.T) {
-	// Offering "rotate key" with the cursor on the Docker version offers it for
+	// Offering "rotate key" with the cursor on the komizo server row offers it for
 	// nothing: there is no app for it to apply to, so the hint is a small lie.
 	m := testModel()
 
-	m.cursor = rowOf(m, focusServer)
+	m.cursor = rowOf(m, focusKomizo)
 	v := stripANSI(m.pageFooter())
 	for _, k := range []string{"rotate", "remove", "config"} {
 		if strings.Contains(v, k) {
@@ -2238,7 +2231,7 @@ func TestHelpIsOneLineInAFixedOrder(t *testing.T) {
 	m := testModel()
 	m.srv.hostKeys = [][2]string{{"ssh-ed25519", "AAAA"}}
 
-	for _, k := range []focusKind{focusServer, focusProxy, focusApp} {
+	for _, k := range []focusKind{focusKomizo, focusProxy, focusApp} {
 		m.cursor = rowOf(m, k)
 		v := stripANSI(m.View())
 		for _, always := range []string{"quit", "select"} {
@@ -2249,10 +2242,10 @@ func TestHelpIsOneLineInAFixedOrder(t *testing.T) {
 	}
 
 	// The app keys are absent from rows they cannot act on.
-	m.cursor = rowOf(m, focusServer)
+	m.cursor = rowOf(m, focusKomizo)
 	for _, gone := range []string{"rotate", "remove", "config", "reinstall"} {
 		if strings.Contains(stripANSI(m.pageFooter()), gone) {
-			t.Errorf("%q should not be offered on the server row", gone)
+			t.Errorf("%q should not be offered on the komizo server row", gone)
 		}
 	}
 	// And present on one they can.
@@ -2374,7 +2367,7 @@ func TestAddIsGlobalButTheDestructiveKeysAreNot(t *testing.T) {
 	m := testModel()
 	m.srv.hostKeys = [][2]string{{"ssh-ed25519", "AAAA"}}
 
-	for _, k := range []focusKind{focusServer, focusProxy} {
+	for _, k := range []focusKind{focusKomizo, focusProxy} {
 		m.cursor = rowOf(m, k)
 		v := stripANSI(m.View())
 		if !strings.Contains(v, "add an app") {
@@ -2394,7 +2387,7 @@ func TestAddIsGlobalButTheDestructiveKeysAreNot(t *testing.T) {
 	}
 }
 func TestTheProxyIsPlainRowsUnderServer(t *testing.T) {
-	// One label/value row, the same shape as the docker row above it, with the
+	// One label/value row, the same shape as the komizo rows above it, with the
 	// network on it rather than on a row of its own: the network is not a
 	// thing anyone acts on, and its only interesting state is "missing".
 	m := netModel()
@@ -2509,10 +2502,10 @@ func TestQuestionsNeverLeaveTheList(t *testing.T) {
 			t.Errorf("%q hid the list behind the question", k)
 		}
 	}
-	// And the server row's question behaves the same.
-	m.cursor = rowOf(m, focusServer)
+	// And the komizo row's update question behaves the same.
+	m.cursor = rowOf(m, focusKomizo)
 	if next := send(m, "u"); next.scr != screenIndex || next.prompt == nil {
-		t.Error("updating the server should ask in the footer too")
+		t.Error("updating komizo should ask in the footer too")
 	}
 }
 
@@ -3118,15 +3111,14 @@ func TestTheMonitorHasNoHeadings(t *testing.T) {
 	if !strings.Contains(v, "komizo") {
 		t.Error("the header should still name the tool")
 	}
-	// Order still matters: what the box IS -- os, komizo, docker -- then the
-	// live block it is spending, led by the proxy every request passes
-	// through, then the apps.
+	// Order still matters: what the box IS -- os, the komizo it was set up with --
+	// then the proxy every request passes through, then the apps.
 	iOS := strings.Index(v, "alpine")
-	iD := strings.Index(v, "docker")
+	iK := strings.Index(v, "komizo server")
 	iP := strings.Index(v, "proxy")
 	iA := strings.Index(v, "blog")
-	if !(iOS < iD && iD < iP && iP < iA) {
-		t.Errorf("rows out of order: os=%d docker=%d proxy=%d apps=%d", iOS, iD, iP, iA)
+	if !(iOS < iK && iK < iP && iP < iA) {
+		t.Errorf("rows out of order: os=%d komizo=%d proxy=%d apps=%d", iOS, iK, iP, iA)
 	}
 	// Named "proxy" rather than "status": with no heading over it, "status"
 	// would read as the server's status, which is a different claim.
@@ -4512,10 +4504,12 @@ func TestAWildcardWithoutAGateWarnsOnTheGateRow(t *testing.T) {
 	}
 	g, text := m.gateLine()
 	if g != dot("warn") {
-		t.Errorf("the gate row should warn (red) when a wildcard has no gate")
+		t.Errorf("the gate row should warn (amber) when a wildcard has no gate")
 	}
-	if !strings.Contains(text, "off") || !strings.Contains(text, "blog") {
-		t.Errorf("the gate row should say it is off and name the app that needs it: %q", text)
+	// No "off" word -- the amber dot is the state; the text names the app that
+	// needs it and what to press.
+	if !strings.Contains(text, "blog") {
+		t.Errorf("the gate row should name the app that needs it: %q", text)
 	}
 }
 
@@ -4526,8 +4520,9 @@ func TestAConfiguredGateShowsOnTheGateRow(t *testing.T) {
 	if g != dot("ok") {
 		t.Errorf("a configured gate should show a green dot")
 	}
-	if !strings.Contains(text, "on") || !strings.Contains(text, "blog-gate/internal/tls-ask") {
-		t.Errorf("the gate row should show on and the ask URL: %q", text)
+	// No "on" word -- the green dot is the state; the value is the endpoint itself.
+	if !strings.Contains(text, "blog-gate/internal/tls-ask") {
+		t.Errorf("the gate row should show the ask URL: %q", text)
 	}
 }
 
@@ -4588,16 +4583,31 @@ func TestEnterOnTheGateRowEditsTheGate(t *testing.T) {
 	}
 }
 
-func TestTheKomizoRowLeadsWithTheCliVersion(t *testing.T) {
+func TestTheCliAndServerVersionsAreTwoRows(t *testing.T) {
 	m := testModel()
-	m.srv.komizo = komizoStamp() // up to date: just the version and the stamp
-	line := stripANSI(m.komizoLine())
-	vi := strings.Index(line, versionText())
-	si := strings.Index(line, shortText(komizoStamp()))
-	if vi < 0 {
-		t.Fatalf("the komizo row should show the CLI version: %q", line)
+	m.scr, m.width, m.height = screenIndex, 96, 30
+	// Up to date: same content stamp and same version as this komizo.
+	m.srv.komizoInstalled = true
+	m.srv.komizo = komizoStamp()
+	m.srv.komizoVersion = "0.0.1" // distinct from the cli's "dev", to tell them apart
+
+	// The cli row shows the running version; the server row shows the box's.
+	if got := stripANSI(m.komizoCliLine()); !strings.Contains(got, versionLabel(versionText())) {
+		t.Errorf("the cli row should show the running version, got %q", got)
 	}
-	if si < 0 || vi > si {
-		t.Errorf("the CLI version should come before the install stamp: %q", line)
+	if got := stripANSI(m.komizoServerLine()); !strings.Contains(got, versionLabel("0.0.1")) {
+		t.Errorf("the server row should show the box version, got %q", got)
+	}
+
+	// Two labelled rows on the page, server directly above cli: the box's version
+	// reads first, yours sits under it for the comparison.
+	body := stripANSI(m.pageBody())
+	si := strings.Index(body, "komizo server")
+	ci := strings.Index(body, "komizo cli")
+	if ci < 0 || si < 0 {
+		t.Fatalf("both komizo rows should be labelled on the page:\n%s", body)
+	}
+	if si > ci {
+		t.Errorf("the server row should sit above the cli row:\n%s", body)
 	}
 }

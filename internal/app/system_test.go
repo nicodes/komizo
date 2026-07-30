@@ -277,8 +277,8 @@ func TestAContainerWithNoHostnameStillShowsWhatItIsSpending(t *testing.T) {
 	}
 }
 
-// The bars are the box's, and they live on the index under the docker row --
-// not on the monitor, and not per app.
+// The bars are the box's, and they live on the index in their own block below
+// the proxy -- not on the monitor, and not per app.
 func TestTheBarsAreOnTheIndexAndAreTheBoxs(t *testing.T) {
 	m := sysModel("", "")
 	if got := stripANSI(m.pageBody()); strings.Contains(got, "█") {
@@ -1003,27 +1003,54 @@ func TestTheKomizoRowComparesTheBoxAgainstThisKomizo(t *testing.T) {
 	m := testModel()
 	m.scr, m.width, m.height = screenIndex, 96, 30
 
-	m.srv.komizo = ""
-	if got := stripANSI(m.komizoLine()); !strings.Contains(got, "not installed") {
-		t.Errorf("no stamp should read as not installed, got %q", got)
+	m.srv.komizoInstalled = false
+	if got := stripANSI(m.komizoServerLine()); !strings.Contains(got, "not installed") {
+		t.Errorf("an unset box should read as not installed, got %q", got)
 	}
+	// Installed, but by a different komizo: the stamp differs, so out of date.
+	m.srv.komizoInstalled = true
 	m.srv.komizo = "0badc0ffee11"
-	if got := stripANSI(m.komizoLine()); !strings.Contains(got, "out of date") {
+	m.srv.komizoVersion = versionText()
+	if got := stripANSI(m.komizoServerLine()); !strings.Contains(got, "out of date") {
 		t.Errorf("a different stamp should read as out of date, got %q", got)
 	}
+	// Same content and same version: current, and the box's version is shown.
 	m.srv.komizo = komizoStamp()
-	got := stripANSI(m.komizoLine())
+	m.srv.komizoVersion = versionText()
+	got := stripANSI(m.komizoServerLine())
 	if strings.Contains(got, "out of date") || strings.Contains(got, "not installed") {
 		t.Errorf("a matching stamp is current, got %q", got)
 	}
-	if !strings.Contains(got, shortText(komizoStamp())) {
-		t.Errorf("the row should show the stamp, got %q", got)
+	if !strings.Contains(got, versionLabel(versionText())) {
+		t.Errorf("the server row should show the box version, got %q", got)
 	}
-	// And it is on the page, above docker.
+	// A newer release with the same sampler content is still out of date: the
+	// version moved even though the stamp did not.
+	m.srv.komizoVersion = "0.0.1"
+	if got := stripANSI(m.komizoServerLine()); !strings.Contains(got, "out of date") {
+		t.Errorf("an older box version should read as out of date, got %q", got)
+	}
+
+	// A box that recorded only a stamp -- set up before versions were written --
+	// prompts an update, which is what starts recording one. It does not show the
+	// raw stamp as though it were a version.
+	m.srv.komizo = komizoStamp()
+	m.srv.komizoVersion = ""
+	got = stripANSI(m.komizoServerLine())
+	if !strings.Contains(got, "u to update") {
+		t.Errorf("a version-less box should prompt an update, got %q", got)
+	}
+	if strings.Contains(got, shortText(komizoStamp())) {
+		t.Errorf("it should not show the stamp as a version, got %q", got)
+	}
+	// And it is on the page, below os -- there is no docker row any more.
 	body := stripANSI(m.pageBody())
-	ki, di := strings.Index(body, "komizo"), strings.Index(body, "docker")
-	if ki < 0 || di < 0 || ki > di {
-		t.Errorf("komizo should sit above docker:\n%s", body)
+	oi, ki := strings.Index(body, "os"), strings.Index(body, "komizo server")
+	if ki < 0 || oi < 0 || oi > ki {
+		t.Errorf("the komizo server row should sit below os:\n%s", body)
+	}
+	if strings.Contains(body, "docker") {
+		t.Errorf("the docker row should be gone:\n%s", body)
 	}
 }
 
@@ -1049,27 +1076,24 @@ func TestTheStampFollowsWhatIsActuallyInstalled(t *testing.T) {
 	}
 }
 
-// Docker and komizo are updated on different occasions and from different
-// rows. Bundling them would mean a routine Docker update rewrote scripts
-// nobody asked it to touch.
-func TestDockerAndKomizoAreUpdatedSeparately(t *testing.T) {
+// Updating is one operation, on the komizo server row, and it re-runs the whole
+// setup -- Docker included. There is one thing to press and no way to have run
+// half of it; the docker row it replaced is gone.
+func TestUpdatingKomizoReprovisionsTheWholeBox(t *testing.T) {
 	m := testModel()
-	m.cursor = m.rowIndex(focusServer)
-	d := send(m, "u").prompt
-	if d == nil || !strings.Contains(d.question+d.detail, "Docker") {
-		t.Fatalf("the docker row should ask about Docker, got %+v", d)
-	}
-	if !strings.Contains(d.detail, "komizo's own scripts are not touched") {
-		t.Error("it should say komizo's scripts are left alone")
-	}
 
+	// The komizo server row's update names Docker AND the proxy: it is a fresh
+	// install.
 	m.cursor = m.rowIndex(focusKomizo)
 	k := send(m, "u").prompt
 	if k == nil || !strings.Contains(k.question, "Update komizo") {
 		t.Fatalf("the komizo row should ask about komizo, got %+v", k)
 	}
-	if strings.Contains(k.detail, "Docker") {
-		t.Error("updating komizo should not mention Docker")
+	if !strings.Contains(k.detail, "Docker") {
+		t.Error("updating komizo re-runs the whole setup, so it should mention Docker")
+	}
+	if !strings.Contains(k.detail, "proxy") {
+		t.Error("the update covers the proxy too when the box has one")
 	}
 }
 

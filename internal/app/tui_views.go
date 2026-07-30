@@ -191,10 +191,10 @@ func (m model) rowIndex(kind focusKind) int {
 // the first crumb, because it is the one fact on this page that every other
 // fact is relative to.
 //
-// The docker row is where re-running server setup lives -- that is what an
-// update IS, and it is the version on that row that changes. Putting the action
-// on the row showing the thing it acts on means one less thing to look up, the
-// same reason the proxy's actions sit on its own row.
+// Updating the box lives on the komizo server row -- that is what an update IS,
+// and it is the version on that row that changes. Putting the action on the row
+// showing the thing it acts on means one less thing to look up, the same reason
+// the proxy's actions sit on its own row.
 //
 // The network is left as a plain fact: it is created by setup rather than
 // chosen here, and moving it strands every app that names it.
@@ -208,23 +208,32 @@ func (m model) boxSection() string {
 	// the block into the header above it: the labels went, the structure they
 	// marked did not.
 	b.WriteString("\n")
-	// What the box IS, then what it is DOING. The facts first -- os, komizo,
-	// docker -- because they change when someone changes them; then, set off by
-	// a blank line, the live block: the proxy every request passes through and
-	// the three bars of what the machine is spending. The proxy sits directly
-	// above the bars because it is read the same way they are -- a glance at
-	// "is anything wrong with the thing it all runs through".
+	// What the box IS and what this tool put on it -- os, the two komizo versions,
+	// and the proxy with its TLS gate -- in one block; then, set off by a blank
+	// line, the three bars of what the machine is spending. The proxy sits with
+	// the facts rather than over the bars now: it is a thing you act on, like the
+	// komizo rows above it, and the bars below are pure measurement.
 	//
-	// komizo above docker: it is the one of the two that this interface can
-	// actually be wrong about, and the one you are more often here to fix.
+	// server over cli: the komizo the box was provisioned with -- the row this
+	// interface can be wrong about, and the one u updates -- then the cli you are
+	// running, so the box's version reads first and yours sits under it for the
+	// only comparison that matters: do they match.
+	//
+	// No docker row. Its version was a fact nobody acted on -- the update that
+	// re-runs Docker is on the komizo server row -- and a box that has got this
+	// far has a working Docker by definition.
 	b.WriteString(kv("os", dimStyle.Render(m.srv.osName())))
-	b.WriteString(kvSel("komizo", m.komizoLine(), m.cursor == m.rowIndex(focusKomizo)))
-	b.WriteString(kvSel("docker", dimStyle.Render(orDash(m.srv.docker)),
-		m.cursor == m.rowIndex(focusServer)))
-	b.WriteString("\n")
+	b.WriteString(kvSel("komizo server", m.komizoServerLine(), m.cursor == m.rowIndex(focusKomizo)))
+	b.WriteString(kv("komizo cli", m.komizoCliLine()))
 	b.WriteString(m.proxyRows())
 	b.WriteString(m.gateRows())
-	b.WriteString(m.serverUsage())
+	// The usage bars are their own block, one blank line down -- but only when
+	// there are readings to draw. A blank line over nothing would open a gap the
+	// box section does not otherwise have.
+	if usage := m.serverUsage(); usage != "" {
+		b.WriteString("\n")
+		b.WriteString(usage)
+	}
 	// No known_hosts row. The value is per app -- the keys are the box's, the
 	// names are the repo's -- so it is copied from the app it belongs to.
 	return b.String()
@@ -339,11 +348,8 @@ func (m model) contextKeys() []string {
 
 func (m model) rowKeys() []string {
 	switch f := m.focused(); f.kind {
-	case focusServer:
-		return []string{"enter", "monitor", "u", "update docker"}
-
 	case focusKomizo:
-		return []string{"enter", "monitor", "u", "update komizo"}
+		return []string{"enter", "monitor", "u", "update"}
 
 	case focusProxy:
 		return []string{"enter", "monitor", "s", startStop(m.proxy.running()),
@@ -394,28 +400,66 @@ func (m model) rowKeys() []string {
 // property of a release number, it is the answer to "would running the update
 // change anything" -- and a hash of what gets written is the only thing that
 // answers that without somebody remembering to bump a constant.
-func (m model) komizoLine() string {
-	// The CLI version first and bright, so "which komizo am I running" is a
-	// glance -- then the box's install stamp (dim), which is the separate,
-	// technical answer to "would updating change anything". The version is the
-	// binary in your hand; the stamp is what it last wrote on this box.
-	ver := versionText()
-	if ver != "dev" {
-		ver = "v" + ver
-	}
-	v := keyStyle.Render(ver)
+// komizoCliLine is the komizo you are running, on its own row -- the binary in
+// your hand, bright, so "which komizo is this" is a glance. It is a fact about
+// your machine rather than the server, so it carries no action and nothing to be
+// out of date against; the server row directly below is where the two compare.
+func (m model) komizoCliLine() string {
+	return keyStyle.Render(versionLabel(versionText()))
+}
+
+// komizoServerLine is the komizo that provisioned the box, and whether it
+// matches the cli row over it. Read against that row: the same version on both
+// is a box that is up to date; every other state here is a reason to press u.
+func (m model) komizoServerLine() string {
 	switch {
-	case m.srv.komizo == "":
-		// Either never installed, or installed by a komizo old enough not to
-		// have left a stamp. Both are fixed the same way, so they read the same.
-		return v + dimStyle.Render("  ·  ") + warnStyle.Render("not installed") +
-			dimStyle.Render("  · u to install")
-	case m.srv.komizo != komizoStamp():
-		return v + dimStyle.Render("  "+shortText(m.srv.komizo)+"  ") +
-			warnStyle.Render("out of date") +
-			dimStyle.Render("  · u to update")
+	case !m.srv.komizoInstalled:
+		// Never set up.
+		return warnStyle.Render("not installed") + dimStyle.Render("  · u to install")
+	case m.srv.komizoVersion == "":
+		// Installed, but by a komizo old enough to have recorded no version --
+		// only a stamp. Nothing to show and nothing to compare, so read it as
+		// needing an update: an update is what starts recording the version, and
+		// showing the raw stamp as if it were one only reads as noise.
+		return warnStyle.Render("version not recorded") + dimStyle.Render("  · u to update")
+	case m.komizoOutOfDate():
+		return dimStyle.Render(m.boxVersion()) + dimStyle.Render("  ") +
+			warnStyle.Render("out of date") + dimStyle.Render("  · u to update")
 	}
-	return v + dimStyle.Render("  "+shortText(m.srv.komizo))
+	return dimStyle.Render(m.boxVersion())
+}
+
+// komizoOutOfDate is whether running the update would change anything on this
+// box. Either signal is enough: a different content stamp (the sampler changed,
+// which the version alone would miss while it is "dev"), or a different release
+// version (something else komizo installs changed between releases, which the
+// stamp alone would miss when that something is not the sampler).
+//
+// A box that recorded no version at all is handled before this in komizoLine --
+// it has nothing to compare and is always treated as needing an update.
+func (m model) komizoOutOfDate() bool {
+	if m.srv.komizo != komizoStamp() {
+		return true
+	}
+	return m.srv.komizoVersion != "" && m.srv.komizoVersion != versionText()
+}
+
+// boxVersion is how the box's setup version reads on its row. Only called once a
+// version is recorded; the version-less box has its own branch in komizoLine.
+func (m model) boxVersion() string {
+	return versionLabel(m.srv.komizoVersion)
+}
+
+// versionLabel prefixes a "v" onto a release number, and leaves the honest
+// non-versions ("dev", a VCS pseudo-version) as they are.
+func versionLabel(v string) string {
+	if v == "" || v == "dev" {
+		return v
+	}
+	if v[0] >= '0' && v[0] <= '9' {
+		return "v" + v
+	}
+	return v
 }
 
 func appActions() []string {

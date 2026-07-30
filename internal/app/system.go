@@ -813,17 +813,19 @@ const (
 // that has learned to read something new installs a sampler that writes it.
 func samplerScript() string {
 	return fmt.Sprintf(installerTemplate, systemLog, samplerFile(), systemLogMax,
-		systemLogKeep, volEveryMinutes, systemLog+".lock", komizoStamp())
+		systemLogKeep, volEveryMinutes, systemLog+".lock", komizoStamp(), versionText())
 }
 
 // komizoStamp is what komizo has installed on a box, and how the interface can
 // tell whether it is current.
 //
 // A hash of the sampler rather than a version number anybody has to remember to
-// bump. The question the row on the index answers is not "which release is this"
-// -- it is "would running the update change anything", and only the content of
-// what gets written can answer that. A version constant answers it wrongly the
-// first time somebody edits the script without touching the constant.
+// bump. The release version IS recorded too, and shown -- "which komizo set this
+// box up" is a fair question -- but the version is not what decides "up to
+// date": that question is "would running the update change anything", and only
+// the content of what gets written can answer it. A version alone answers it
+// wrongly the first time somebody edits the script without touching the version,
+// which is every edit during development, when the version is "dev" throughout.
 //
 // Twelve hex characters, like the config SHAs on the app rows, so the two read
 // as the same kind of fact.
@@ -875,7 +877,12 @@ fi
 # run fails HERE, visibly, in the output of the thing that installed it.
 /usr/local/bin/komizo-sample
 
-printf '%%s\n' %[7]q > /var/lib/komizo/version
+# Two lines, written together: the komizo VERSION that set this box up, and the
+# content STAMP of what it wrote. The version is what the interface shows beside
+# the CLI's own -- "which komizo provisioned this box" -- and the stamp is the
+# separate, exact answer to "would running the update change anything". An update
+# rewrites both, so after one the box reads as the version in your hand.
+printf '%%s\n%%s\n' %[8]q %[7]q > /var/lib/komizo/version
 
 if [ -s %[1]s ]; then
 	log "Sampling this machine every minute into %[1]s"

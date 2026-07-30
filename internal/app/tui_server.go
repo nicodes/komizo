@@ -129,28 +129,6 @@ func containerCmd(name, verb string) string {
 	return fmt.Sprintf("docker %s %s", verb, shQuote(name))
 }
 
-// startServerUpdate re-runs the Docker half only. Deliberately not the proxy,
-// and deliberately not komizo's own scripts: bundling them would mean a routine
-// Docker update installed a proxy on a box that chose not to have one, and
-// rewrote scripts nobody asked it to touch.
-func (m model) startServerUpdate() tea.Cmd {
-	ch := m.run.ch
-	t := m.tgt
-	net := m.net.name
-	if net == "" {
-		net = defaultNetwork
-	}
-	go func() {
-		c := exec.Command("ssh", t.sshArgs(envPrefix(map[string]string{"SHARED_NETWORK": net})+"sh -s")...)
-		if err := stream(ch, c, scripts.AlpineInitScript); err != nil {
-			ch <- runDoneMsg{err: fmt.Errorf("server setup failed -- see the output above")}
-			return
-		}
-		ch <- runDoneMsg{}
-	}()
-	return m.run.wait()
-}
-
 // proxyLine is the proxy's state and the network it fronts, one line: the two
 // are read together -- "can anything reach the apps" -- and the network's only
 // interesting state of its own is being missing.
@@ -162,26 +140,26 @@ func (m model) proxyLine() (string, string) {
 	var g, t string
 	switch {
 	case !p.installed:
+		// The words stay here, because the dot does not carry them: "not
+		// installed" is a neutral dot, and a neutral dot names nothing on its own.
 		g, t = dot(""), "not installed — apps publish their own ports"
-	// The word stays here, unlike on a container row. This row is LABELLED
-	// "proxy", and a bare duration under that label answers a question nobody
-	// asked -- five minutes of what? On a container the dot and the columns
-	// around it already say, which is why the word is redundant there and not
-	// here.
 	case !p.running():
-		g, t = dot("err"), "stopped  "+since(p.finishedAt)
+		// No "stopped": the red dot says that. What the colour cannot say is how
+		// long, so the duration is all that is left.
+		g, t = dot("err"), since(p.finishedAt)
 	default:
-		g, t = dot("ok"), "running  "+since(p.startedAt)
+		// No "running" either: the green dot says it, and the value is the uptime.
+		g, t = dot("ok"), since(p.startedAt)
 	}
 	// The network, after whatever the proxy has to say. A missing one outranks
 	// the proxy's own dot: a running proxy on a box whose apps cannot reach
 	// each other is not a green row. The fix is re-running setup, which lives
-	// on the docker row.
+	// on the komizo server row.
 	if m.net.name == "" {
 		// Short enough to survive a narrow terminal: the frame cuts rows, and
 		// a hint that gets cut is no hint. The consequence -- apps cannot
 		// reach each other -- is what the red dot is for.
-		return dot("err"), t + "  ·  no shared network — re-run setup on the docker row"
+		return dot("err"), t + "  ·  no shared network — re-run setup on the komizo server row"
 	}
 	net := m.net.name
 	if m.net.driver != "" {
@@ -202,15 +180,17 @@ func (m model) gateLine() (string, string) {
 		return spinner(m.spin), "working…"
 	}
 	if m.proxy.tlsAsk != "" {
-		return dot("ok"), "on   " + m.proxy.tlsAsk
+		// No "on": the green dot says it, and the value is the endpoint itself.
+		return dot("ok"), m.proxy.tlsAsk
 	}
-	// Off. A red dot only when something actually needs it -- a box with no
+	// Off. An amber dot only when something actually needs it -- a box with no
 	// wildcard app is entitled to have no gate, and nagging it would train the
-	// dot to be ignored.
+	// dot to be ignored. No "off" in the text: the dot's colour is the state, and
+	// what is worth saying is why it matters or does not.
 	if names := m.wildcardApps(); len(names) > 0 {
-		return dot("warn"), "off — " + strings.Join(names, ", ") + " need it; enter to set"
+		return dot("warn"), strings.Join(names, ", ") + " need it; enter to set"
 	}
-	return dot(""), "off — only a wildcard hostname needs one"
+	return dot(""), "only a wildcard hostname needs one"
 }
 
 // wildcardApps is the apps that declare a wildcard hostname, which are the ones
@@ -235,20 +215,51 @@ func orDash(s string) string {
 	return s
 }
 
-// startKomizoUpdate rewrites what komizo installs on the box: the sampler and
-// its schedule.
+// startKomizoUpdate re-provisions the box: the same sequence as a fresh `komizo
+// init`, run over a server that is already live.
 //
-// The only thing komizo owns here besides the proxy. Everything else it runs on
-// a server -- the inventory, the request counts, the cgroup reads -- is piped
-// over SSH on every poll and installed nowhere, so it updates the moment you run
-// a newer komizo. This exists because a cron job cannot work that way.
+// A fresh install rather than a sampler rewrite, because "update" has one job --
+// leave the box at the version of komizo in your hand -- and only re-running
+// everything komizo installs can promise that. So: Docker and the network, then
+// the sampler (which stamps this version), then the proxy.
+//
+// The proxy step is conditional. A box that was set up without one, or chose to
+// stop it, should not have one reinstalled by a routine update -- so it runs
+// only where a proxy already exists, and re-runs it with the network, image and
+// TLS-gate the box already has, which is exactly what `p` on the proxy row does.
 func (m model) startKomizoUpdate() tea.Cmd {
 	ch := m.run.ch
 	t := m.tgt
+	net := m.net.name
+	if net == "" {
+		net = defaultNetwork
+	}
+	proxyInstalled := m.proxy.installed
+	img := m.proxy.image
+	if img == "" {
+		img = defaultProxy
+	}
+	tlsAsk := m.proxy.tlsAsk
 	go func() {
+		c := exec.Command("ssh", t.sshArgs(envPrefix(map[string]string{"SHARED_NETWORK": net})+"sh -s")...)
+		if err := stream(ch, c, scripts.AlpineInitScript); err != nil {
+			ch <- runDoneMsg{err: fmt.Errorf("server setup failed -- see the output above")}
+			return
+		}
 		if err := streamSampler(ch, t); err != nil {
 			ch <- runDoneMsg{err: err}
 			return
+		}
+		if proxyInstalled {
+			ch <- runOutputMsg("")
+			ch <- runOutputMsg("updating the shared reverse proxy...")
+			pc := exec.Command("ssh", t.sshArgs(envPrefix(proxyEnv(proxyOpts{
+				network: net, image: img, tlsAsk: tlsAsk,
+			}))+"sh -s")...)
+			if err := stream(ch, pc, scripts.AlpineProxyScript); err != nil {
+				ch <- runDoneMsg{err: fmt.Errorf("the server updated, but the proxy step failed -- press p to retry it")}
+				return
+			}
 		}
 		ch <- runDoneMsg{}
 	}()

@@ -49,8 +49,8 @@ func usageRow(label string, frac float64, detail string) string {
 	return kv(label, usageBar(frac, 20)+"  "+pad(pctText(frac), 5)+" "+dimStyle.Render(detail))
 }
 
-// serverUsage is the bars under the docker row: processor, memory, disk, for
-// the whole machine and nothing smaller.
+// serverUsage is the bars in their own block below the proxy: processor,
+// memory, disk, for the whole machine and nothing smaller.
 //
 // One set, for the box. Per-app bars were on the monitor and are gone: three
 // bars per subject is a lot of ink to say what one number could, and the
