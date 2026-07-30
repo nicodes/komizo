@@ -172,10 +172,10 @@ func TestCursorReachesTheBoxRowsAndEveryContainer(t *testing.T) {
 	for _, f := range m.focusItems() {
 		kinds = append(kinds, f.kind)
 	}
-	// Page order: the facts (komizo above docker), then the proxy at the head
-	// of the live block, then the apps. The cursor is an index into this list,
-	// so the two have to agree.
-	want := []focusKind{focusKomizo, focusServer, focusProxy, focusApp, focusContainer, focusApp, focusAdd}
+	// Page order: the facts (komizo above docker), then the proxy and its TLS
+	// gate at the head of the live block, then the apps. The cursor is an index
+	// into this list, so the two have to agree.
+	want := []focusKind{focusKomizo, focusServer, focusProxy, focusGate, focusApp, focusContainer, focusApp, focusAdd}
 	if len(kinds) != len(want) {
 		t.Fatalf("focus list = %v, want %v", kinds, want)
 	}
@@ -2026,25 +2026,34 @@ func TestHelpFollowsTheCursor(t *testing.T) {
 		{app: "blog", service: "web", name: "blog-web-1", state: "running", status: "Up 3 hours"},
 	}
 
+	// By kind, not by index: the gate row now sits between the proxy and the
+	// apps, and a hardcoded index moves every time a row is added.
 	for _, c := range []struct {
-		cursor int
-		key    string
-		want   string
+		kind focusKind
+		key  string
+		want string
 	}{
-		{0, "u", "update komizo"}, // what komizo installed, above docker
-		{1, "u", "update docker"}, // the box
-		{2, "s", "stop"},          // proxy, at the head of the live block
-		{3, "s", "stop"},          // app, running
-		{4, "s", "stop"},          // container, running
+		{focusKomizo, "u", "update komizo"}, // what komizo installed, above docker
+		{focusServer, "u", "update docker"}, // the box
+		{focusProxy, "s", "stop"},           // proxy, at the head of the live block
+		{focusApp, "s", "stop"},             // app, running
+		{focusContainer, "s", "stop"},       // container, running
 	} {
-		m.cursor = c.cursor
+		m.cursor = rowOf(m, c.kind)
 		if got := m.keyLabel(c.key); got != c.want {
-			t.Errorf("cursor %d: %s is labelled %q, want %q", c.cursor, c.key, got, c.want)
+			t.Errorf("%v: %s is labelled %q, want %q", c.kind, c.key, got, c.want)
 		}
-		// And enter is the monitor on every one of them.
+		// And enter is the monitor on every one of them (the gate row is the one
+		// exception, checked below).
 		if got := m.keyLabel("enter"); got != "monitor" {
-			t.Errorf("cursor %d: enter is labelled %q, want \"monitor\"", c.cursor, got)
+			t.Errorf("%v: enter is labelled %q, want \"monitor\"", c.kind, got)
 		}
+	}
+
+	// The gate row has no monitor: enter edits it.
+	m.cursor = rowOf(m, focusGate)
+	if got := m.keyLabel("enter"); got != "set gate" && got != "change gate" {
+		t.Errorf("gate row: enter is labelled %q, want \"set gate\"/\"change gate\"", got)
 	}
 
 	// The log key is offered on both, labelled the same. It used to name the
@@ -2052,10 +2061,10 @@ func TestHelpFollowsTheCursor(t *testing.T) {
 	// and made the footer's width depend on how long an app was called. Which
 	// log it opens is still the selected row's, and the window it opens says so
 	// in its title.
-	for _, c := range []int{4, 3} {
-		m.cursor = c
+	for _, k := range []focusKind{focusContainer, focusApp} {
+		m.cursor = rowOf(m, k)
 		if !strings.Contains(stripANSI(m.pageFooter()), "l logs") {
-			t.Errorf("cursor %d: l should be offered", c)
+			t.Errorf("%v: l should be offered", k)
 		}
 	}
 }
@@ -4494,49 +4503,73 @@ func TestNoGateLineMeansNoGate(t *testing.T) {
 	}
 }
 
-func TestAWildcardWithoutAGateWarnsOnTheProxyLine(t *testing.T) {
+func TestAWildcardWithoutAGateWarnsOnTheGateRow(t *testing.T) {
 	m := testModel()
 	m.apps[0].routes = []routeRow{{app: "blog", sites: "*.iframe.example.com", upstream: "blog-gateway"}}
 	m.proxy.tlsAsk = ""
 	if !m.anyWildcard() {
 		t.Fatal("a *. route should count as a wildcard")
 	}
-	g, text := m.proxyLine()
-	if !strings.Contains(text, "TLS gate") {
-		t.Errorf("a wildcard with no gate should warn on the proxy line: %q", text)
-	}
+	g, text := m.gateLine()
 	if g != dot("warn") {
-		t.Errorf("the proxy dot should warn when a wildcard has no gate")
+		t.Errorf("the gate row should warn (red) when a wildcard has no gate")
+	}
+	if !strings.Contains(text, "off") || !strings.Contains(text, "blog") {
+		t.Errorf("the gate row should say it is off and name the app that needs it: %q", text)
 	}
 }
 
-func TestAConfiguredGateShowsOnTheProxyLine(t *testing.T) {
+func TestAConfiguredGateShowsOnTheGateRow(t *testing.T) {
 	m := testModel()
-	m.apps[0].routes = []routeRow{{app: "blog", sites: "*.iframe.example.com", upstream: "blog-gateway"}}
 	m.proxy.tlsAsk = "http://blog-gateway/internal/tls-ask"
-	if _, text := m.proxyLine(); !strings.Contains(text, "gate on") {
-		t.Errorf("a configured gate should show on the proxy line: %q", text)
+	g, text := m.gateLine()
+	if g != dot("ok") {
+		t.Errorf("a configured gate should show a green dot")
+	}
+	if !strings.Contains(text, "on") || !strings.Contains(text, "blog-gateway/internal/tls-ask") {
+		t.Errorf("the gate row should show on and the ask URL: %q", text)
 	}
 }
 
-func TestNoWildcardMeansNoGateWarning(t *testing.T) {
+func TestNoWildcardOffGateIsNotShouted(t *testing.T) {
 	m := testModel() // blog has only a concrete hostname
 	m.proxy.tlsAsk = ""
 	if m.anyWildcard() {
 		t.Fatal("no app declares a wildcard here")
 	}
-	if _, text := m.proxyLine(); strings.Contains(text, "needs a TLS gate") {
-		t.Errorf("a box with no wildcard app should not nag about a gate: %q", text)
+	// Off is fine when nothing needs it: a neutral dot, not a warning.
+	if g, _ := m.gateLine(); g == dot("warn") {
+		t.Errorf("a box with no wildcard app should not warn about a missing gate")
 	}
 }
 
-func TestTOnTheProxyRowEditsTheGate(t *testing.T) {
+func TestTheGateRowIsPresentWhenTheProxyIs(t *testing.T) {
+	m := testModel()
+	if rowOf(m, focusGate) < 0 {
+		t.Fatal("a gate row should be reachable when the proxy is installed")
+	}
+	m.proxy = proxyRow{} // no proxy
+	if rowOf(m, focusGate) >= 0 {
+		t.Error("there should be no gate row without a proxy")
+	}
+}
+
+func TestTheGateRowRendersInTheIndex(t *testing.T) {
+	m := testModel()
+	m.proxy.tlsAsk = "http://blog-gateway/internal/tls-ask"
+	v := stripANSI(m.View())
+	if !strings.Contains(v, "tls gate") {
+		t.Errorf("the index should show a tls gate row:\n%s", v)
+	}
+}
+
+func TestEnterOnTheGateRowEditsTheGate(t *testing.T) {
 	m := testModel()
 	m.proxy.tlsAsk = "http://old/ask"
-	m.cursor = rowOf(m, focusProxy)
-	m = send(m, "t")
+	m.cursor = rowOf(m, focusGate)
+	m = send(m, "enter")
 	if m.prompt == nil || m.prompt.kind != promptInput {
-		t.Fatalf("t on the proxy row should open a URL input, got %+v", m.prompt)
+		t.Fatalf("enter on the gate row should open a URL input, got %+v", m.prompt)
 	}
 	if m.prompt.typed != "http://old/ask" {
 		t.Errorf("the input should prefill the current gate for editing, got %q", m.prompt.typed)
@@ -4552,14 +4585,5 @@ func TestTOnTheProxyRowEditsTheGate(t *testing.T) {
 	m.prompt.typed = ""
 	if !m.prompt.answered() {
 		t.Error("an empty value should be accepted -- it clears the gate")
-	}
-}
-
-func TestTDoesNothingOnAnAppRow(t *testing.T) {
-	m := testModel()
-	m.cursor = m.firstAppRow()
-	m = send(m, "t")
-	if m.prompt != nil {
-		t.Errorf("t is a proxy-row action; it should do nothing on an app row")
 	}
 }

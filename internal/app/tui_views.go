@@ -223,6 +223,7 @@ func (m model) boxSection() string {
 		m.cursor == m.rowIndex(focusServer)))
 	b.WriteString("\n")
 	b.WriteString(m.proxyRows())
+	b.WriteString(m.gateRows())
 	b.WriteString(m.serverUsage())
 	// No known_hosts row. The value is per app -- the keys are the box's, the
 	// names are the repo's -- so it is copied from the app it belongs to.
@@ -253,6 +254,17 @@ func (m model) proxyRows() string {
 	pg, pt := m.proxyLine()
 	return kvDot("proxy", pg, pt,
 		m.proxy.installed && m.cursor == m.rowIndex(focusProxy))
+}
+
+// gateRows is the proxy's on-demand TLS gate, one row directly under the proxy
+// it belongs to. Only when a proxy exists: a gate with nothing to gate for is
+// not a thing to show.
+func (m model) gateRows() string {
+	if !m.proxy.installed {
+		return ""
+	}
+	gg, gt := m.gateLine()
+	return kvDot("tls gate", gg, gt, m.cursor == m.rowIndex(focusGate))
 }
 
 // startStop names the direction enter will go, so one key for both is not a
@@ -335,7 +347,14 @@ func (m model) rowKeys() []string {
 
 	case focusProxy:
 		return []string{"enter", "monitor", "s", startStop(m.proxy.running()),
-			"l", "logs", "t", "tls gate", "p", "reinstall"}
+			"l", "logs", "p", "reinstall"}
+
+	case focusGate:
+		set := "set gate"
+		if m.proxy.tlsAsk != "" {
+			set = "change gate"
+		}
+		return []string{"enter", set}
 
 	case focusApp:
 		if f.app < 0 {
