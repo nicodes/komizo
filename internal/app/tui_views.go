@@ -335,7 +335,7 @@ func (m model) rowKeys() []string {
 
 	case focusProxy:
 		return []string{"enter", "monitor", "s", startStop(m.proxy.running()),
-			"l", "logs", "p", "reinstall"}
+			"l", "logs", "t", "tls gate", "p", "reinstall"}
 
 	case focusApp:
 		if f.app < 0 {

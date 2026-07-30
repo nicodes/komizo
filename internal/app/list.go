@@ -222,6 +222,14 @@ if [ -d /srv/_proxy ]; then
 	pid="$(docker ps -a --filter name=^komizo-proxy$ -q --no-trunc 2>/dev/null | head -n 1)"
 	pts="$(printf '%s\n' "$starts" | awk -F'\t' -v id="$pid" '$1 == id { printf "%s\t%s\t%s", $2, $3, $4; exit }')"
 	printf 'proxy\t%s\t%s\t%s\t%s\t%s\n' "$pstate" "${pnet:-?}" "${pimg:-?}" "${pstatus:-not created}" "$pts"
+	# The on-demand TLS gate, if one is configured. A wildcard hostname needs it,
+	# and its absence is the whole explanation for a wildcard deploy that fails.
+	# Read the ask URL straight off the Caddyfile; the directive is the only line
+	# whose first field is "ask" (comments start with '#').
+	if [ -f /srv/_proxy/Caddyfile ]; then
+		gate="$(awk '$1 == "ask" { print $2; exit }' /srv/_proxy/Caddyfile 2>/dev/null)"
+		[ -n "$gate" ] && printf 'gate\t%s\n' "$gate"
+	fi
 fi
 
 # The shared network, and -- the point of reporting it at all -- who is actually
@@ -302,6 +310,20 @@ type routeRow struct {
 
 // hostnames is every name this route answers on.
 func (r routeRow) hostnames() []string { return strings.Split(r.sites, ",") }
+
+// hasWildcard reports whether the app declares any wildcard hostname. A wildcard
+// can only get a certificate via on-demand TLS, which needs the proxy's ask
+// gate -- so this is what decides whether a missing gate is a problem for it.
+func (a appRow) hasWildcard() bool {
+	for _, r := range a.routes {
+		for _, h := range r.hostnames() {
+			if strings.HasPrefix(strings.TrimSpace(h), "*.") {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // routesByContainer pairs each of an app's containers with the hostnames that
 // reach it.
@@ -602,6 +624,7 @@ type proxyRow struct {
 	network   string
 	image     string
 	status    string // docker's own wording, e.g. "Up 3 hours" / "Exited (0) 5m ago"
+	tlsAsk    string // on-demand-TLS ask endpoint, empty when no gate is configured
 
 	startedAt  time.Time
 	finishedAt time.Time
@@ -742,6 +765,27 @@ func RunList(args []string) error {
 		note("reverse proxy running on network %q", proxy.network)
 	}
 
+	// The on-demand TLS gate, and the warning that would have named a missing one
+	// before a wildcard deploy failed for it.
+	if proxy.installed {
+		anyWildcard := false
+		var wildApps []string
+		for _, a := range apps {
+			if a.hasWildcard() {
+				anyWildcard = true
+				wildApps = append(wildApps, a.name)
+			}
+		}
+		switch {
+		case proxy.tlsAsk != "":
+			note("on-demand TLS gate: %s", proxy.tlsAsk)
+		case anyWildcard:
+			warn("%s use a wildcard hostname, but no on-demand TLS gate is set --\n"+
+				"    their certificates will fail. Configure one with:\n"+
+				"    komizo proxy --host %s --tls-ask <url>", strings.Join(wildApps, ", "), host)
+		}
+	}
+
 	for a, cs := range net.duplicateAliases() {
 		warn("%q resolves to %d containers on network %q (%s).\n"+
 			"    Traffic to it is split between them at random. Give each app a\n"+
@@ -821,6 +865,9 @@ func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, n
 			proxy = proxyRow{installed: true, state: g[1], network: g[2],
 				image: g[3], status: g[4]}
 			proxy.startedAt, proxy.finishedAt = parseStamp(g[5]), parseStamp(g[6])
+		case "gate":
+			// Emitted after the proxy line, so proxy is already populated.
+			proxy.tlsAsk = f(2)[1]
 		case "net":
 			g := f(4)
 			net.name, net.driver, net.subnet = g[1], g[2], g[3]
