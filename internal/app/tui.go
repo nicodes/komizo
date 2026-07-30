@@ -1158,7 +1158,7 @@ func (m model) gatePrompt() prompt {
 		img = defaultProxy
 	}
 	detail := "The URL Caddy asks before issuing an on-demand certificate for a " +
-		"wildcard hostname (e.g. http://<app>-gateway/internal/tls-ask). Leave it " +
+		"wildcard hostname (e.g. http://<app>-gate/internal/tls-ask). Leave it " +
 		"empty to remove the gate."
 	if m.anyWildcard() {
 		detail += " Apps here use a wildcard, so without a gate their certificates fail."

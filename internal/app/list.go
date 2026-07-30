@@ -101,7 +101,7 @@ fi
 #
 # Observed, not declared. The port used to be parsed out of the app's caddy
 # fragment, which said where the proxy DIALLED rather than where the process
-# listens; and EXPOSE is inherited from base images, so a Caddy gateway
+# listens; and EXPOSE is inherited from base images, so a Caddy gate
 # "exposes" 443 and 2019 it never binds.
 #
 # State 0A is LISTEN. The address field is hex, and busybox awk has no
@@ -179,8 +179,8 @@ for state in /var/lib/komizo/apps/*.env; do
 	# transformation later, and wrong the moment the generator changes.
 	#
 	# The upstream is not parsed either, for the same reason -- it is always
-	# <app>-gateway, because that is what the generator writes. Where a request
-	# goes after the gateway is inside the app now; this cannot see it and does
+	# <app>-gate, because that is what the generator writes. Where a request
+	# goes after the gate is inside the app now; this cannot see it and does
 	# not guess.
 	if [ -n "$dir" ] && [ -f "$dir/hostnames" ]; then
 		# The NAME only. A line may say which container serves it -- "a.example
@@ -190,14 +190,14 @@ for state in /var/lib/komizo/apps/*.env; do
 		# to read like a list of addresses.
 		sites="$(sed 's/#.*//' "$dir/hostnames" | tr -d '\r' |
 			awk 'NF { printf "%s%s", sep, $1; sep = "," }')"
-		[ -n "$sites" ] && printf 'route\t%s\t%s\t%s-gateway\t80\n' "$app" "$sites" "$app"
+		[ -n "$sites" ] && printf 'route\t%s\t%s\t%s-gate\t80\n' "$app" "$sites" "$app"
 		# And one record per name WITH what the app said serves it.
 		#
 		# The line above deliberately drops the annotation, because the app's own
 		# row lists what the box answers on and an arrow in that is noise. Here
 		# it is the whole point: it is the only thing on this machine that knows
 		# which container a hostname reaches, and without it every name lands on
-		# the gateway -- which is true of the first hop and useless as an answer.
+		# the gate -- which is true of the first hop and useless as an answer.
 		sed 's/#.*//' "$dir/hostnames" | tr -d '\r' | awk -v a="$app" 'NF {
 			svc = ""
 			if (NF >= 3 && $2 == "->") svc = $3
@@ -294,17 +294,17 @@ type appRow struct {
 	hosts []hostRow
 }
 
-// routeRow is what an app publishes: the hostnames it declared, and the gateway
+// routeRow is what an app publishes: the hostnames it declared, and the gate
 // the shared proxy hands them to.
 //
 // ONE per app now, not one per site block. Routing within an app happens inside
-// that app's own gateway container, which this tool cannot see into and does
+// that app's own gate container, which this tool cannot see into and does
 // not try to -- so the honest answer to "what serves this hostname" is the app,
 // and the app's own logs answer the rest.
 type routeRow struct {
 	app      string
 	sites    string // comma-joined, in the order the app declared them
-	upstream string // always <app>-gateway
+	upstream string // always <app>-gate
 	port     string // always 80; kept so the record shape is self-describing
 }
 
@@ -347,17 +347,17 @@ type hostRow struct {
 // routesByContainer is which names reach which container.
 //
 // From what the APP declared, first. Since every app fronts itself with its own
-// gateway, the proxy's upstream is always <app>-gateway -- so matching on that
-// puts every hostname on the gateway row, which is true of the first hop and no
+// gate, the proxy's upstream is always <app>-gate -- so matching on that
+// puts every hostname on the gate row, which is true of the first hop and no
 // use at all as an answer to "what serves this domain".
 //
 // The arrow in deploy/hostnames is the only thing on this machine that knows the
-// rest, because what happens after the gateway is inside the app, in config
-// komizo neither reads nor could parse if the gateway were nginx.
+// rest, because what happens after the gate is inside the app, in config
+// komizo neither reads nor could parse if the gate were nginx.
 //
 // Names with no arrow fall back to the upstream match, which lands them on the
-// gateway. That is the honest answer for them: the app did not say, and the
-// gateway is genuinely where the request goes.
+// gate. That is the honest answer for them: the app did not say, and the
+// gate is genuinely where the request goes.
 func (a appRow) routesByContainer(n netRow) map[string][]string {
 	byContainer := map[string][]string{}
 	byService := map[string]string{}

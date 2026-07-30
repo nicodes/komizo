@@ -142,7 +142,7 @@ type metricRow struct {
 	app    string
 	// service is the container the app said serves the hostname these counts
 	// came from, or empty when it said nothing. komizo cannot work this out --
-	// the shared proxy only ever talks to the app's gateway, and what happens
+	// the shared proxy only ever talks to the app's gate, and what happens
 	// after that is inside the app.
 	service string
 	c2      int // 2xx

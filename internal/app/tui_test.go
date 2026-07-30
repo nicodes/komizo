@@ -3696,19 +3696,19 @@ func TestTheImageColumnDropsTheVersionItRepeats(t *testing.T) {
 	}
 }
 
-// An app declares hostnames; komizo routes them to that app's gateway and shows
+// An app declares hostnames; komizo routes them to that app's gate and shows
 // them on the row of the container actually serving them.
 //
 // This is the whole of what the tool can now say about routing, and saying less
-// than before is the point: what a request meets after the gateway is inside the
+// than before is the point: what a request meets after the gate is inside the
 // app, in config komizo neither writes nor reads.
 func TestHostnamesLandOnTheGatewayRow(t *testing.T) {
 	out := strings.Join([]string{
 		"server\tready\tDocker version 26.1.3",
 		"app\tblog\tkomizo-blog\t/srv/blog\ta1b2c3d\t2\tghcr.io/you/blog-config\t",
-		"container\tblog\tblog-gateway\tblog-blog-gateway-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-gateway:a1b2c3d\t80",
+		"container\tblog\tblog-gate\tblog-blog-gate-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-gate:a1b2c3d\t80",
 		"container\tblog\tblog-api\tblog-blog-api-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-api:a1b2c3d\t9090",
-		"route\tblog\tblog.example.com,www.blog.example.com\tblog-gateway\t80",
+		"route\tblog\tblog.example.com,www.blog.example.com\tblog-gate\t80",
 	}, "\n")
 
 	apps, _, _, _, _ := parseInventory(out)
@@ -3724,13 +3724,13 @@ func TestHostnamesLandOnTheGatewayRow(t *testing.T) {
 	}
 
 	byContainer := apps[0].routesByContainer(netRow{})
-	if got := byContainer["blog-blog-gateway-1"]; len(got) != 2 {
-		t.Errorf("the gateway should carry both hostnames, got %q", got)
+	if got := byContainer["blog-blog-gate-1"]; len(got) != 2 {
+		t.Errorf("the gate should carry both hostnames, got %q", got)
 	}
-	// And nothing else does. The API is behind the gateway now; a hostname on
+	// And nothing else does. The API is behind the gate now; a hostname on
 	// its row would claim the shared proxy reaches it, which it no longer can.
 	if got := byContainer["blog-blog-api-1"]; len(got) != 0 {
-		t.Errorf("a service behind the gateway should carry no hostnames, got %q", got)
+		t.Errorf("a service behind the gate should carry no hostnames, got %q", got)
 	}
 
 	m := testModel()
@@ -3741,13 +3741,13 @@ func TestHostnamesLandOnTheGatewayRow(t *testing.T) {
 		t.Errorf("the hostnames should be on screen:\n%s", v)
 	}
 	// The port is observed from the container's own namespace, so it is there
-	// for every running container -- including the ones behind the gateway,
+	// for every running container -- including the ones behind the gate,
 	// which publish nothing and are named by no route.
 	if !strings.Contains(v, ":80") {
-		t.Errorf("the gateway's listening port should be on screen:\n%s", v)
+		t.Errorf("the gate's listening port should be on screen:\n%s", v)
 	}
 	if !strings.Contains(v, ":9090") {
-		t.Errorf("a service behind the gateway still shows what it listens on:\n%s", v)
+		t.Errorf("a service behind the gate still shows what it listens on:\n%s", v)
 	}
 }
 
@@ -3758,10 +3758,10 @@ func TestPortsAreObservedPerContainer(t *testing.T) {
 	out := strings.Join([]string{
 		"server\tready\tDocker version 26.1.3",
 		"app\tblog\tkomizo-blog\t/srv/blog\ta1b2c3d\t2\tghcr.io/you/blog-config\t",
-		"container\tblog\tblog-gateway\tblog-gw-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-gateway:a1b2c3d\t80",
+		"container\tblog\tblog-gate\tblog-gw-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-gate:a1b2c3d\t80",
 		"container\tblog\tblog-worker\tblog-worker-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-worker:a1b2c3d\t",
 		"container\tblog\tblog-db\tblog-db-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-db:a1b2c3d\t5432,9187",
-		"route\tblog\tblog.example.com\tblog-gateway\t80",
+		"route\tblog\tblog.example.com\tblog-gate\t80",
 	}, "\n")
 	apps, _, _, _, _ := parseInventory(out)
 	byName := map[string]containerRow{}
@@ -3770,7 +3770,7 @@ func TestPortsAreObservedPerContainer(t *testing.T) {
 	}
 
 	if got := byName["blog-gw-1"].portsText(); got != ":80" {
-		t.Errorf("gateway port = %q, want \":80\"", got)
+		t.Errorf("gate port = %q, want \":80\"", got)
 	}
 	// Several listeners are all shown: a database and its exporter is a normal
 	// shape, and picking one of them would be picking arbitrarily.
@@ -3787,7 +3787,7 @@ func TestPortsAreObservedPerContainer(t *testing.T) {
 	m.width, m.height = 120, 30
 	m.apps = apps
 	v := stripANSI(m.View())
-	// The database is behind the gateway and no route names it, but its port is
+	// The database is behind the gate and no route names it, but its port is
 	// still known -- which is the whole point of observing rather than parsing
 	// what the proxy was told to dial.
 	if !strings.Contains(v, ":5432") {
@@ -4089,7 +4089,7 @@ func TestAFlatBaselineDeclinesToScore(t *testing.T) {
 
 // Requests can be attributed to a container, but only because the app said so.
 // komizo cannot work it out: the shared proxy only ever talks to the app's
-// gateway, and what happens after that is inside the app.
+// gate, and what happens after that is inside the app.
 func TestRequestsAttributeToAContainerWhenTheAppSaysSo(t *testing.T) {
 	out := strings.Join([]string{
 		"metric\t600\tblog\tapi\t10\t0\t0\t2",
@@ -4455,7 +4455,7 @@ func TestTheBoxChartSumsEveryApp(t *testing.T) {
 func TestOneContainerHoldingAnAliasTwiceIsNotAClash(t *testing.T) {
 	n := netRow{name: "edge", members: []netMember{
 		{container: "komizo-proxy", aliases: []string{"komizo-proxy", "komizo-proxy"}},
-		{container: "ormos-ormos-gateway-1", aliases: []string{"ormos-gateway", "ormos-ormos-gateway-1"}},
+		{container: "ormos-ormos-gate-1", aliases: []string{"ormos-gate", "ormos-ormos-gate-1"}},
 	}}
 	if d := n.duplicateAliases(); len(d) != 0 {
 		t.Errorf("reported a clash on a box with one proxy: %v", d)
@@ -4464,8 +4464,8 @@ func TestOneContainerHoldingAnAliasTwiceIsNotAClash(t *testing.T) {
 	// And the real fault still is one: two DIFFERENT containers claiming a
 	// name, which does split traffic and did take an app down once.
 	n.members = append(n.members, netMember{
-		container: "astry-astry-gateway-1",
-		aliases:   []string{"komizo-proxy", "astry-gateway"},
+		container: "astry-astry-gate-1",
+		aliases:   []string{"komizo-proxy", "astry-gate"},
 	})
 	d := n.duplicateAliases()
 	if len(d["komizo-proxy"]) != 2 {
@@ -4490,8 +4490,8 @@ func stubClipboard(t *testing.T) {
 func TestGateIsParsedFromInventory(t *testing.T) {
 	_, _, proxy, _, _ := parseInventory(
 		"proxy\trunning\tedge\tcaddy:2\tUp 3 hours\t\t\t\n" +
-			"gate\thttp://ormos-gateway/internal/tls-ask\n")
-	if proxy.tlsAsk != "http://ormos-gateway/internal/tls-ask" {
+			"gate\thttp://ormos-gate/internal/tls-ask\n")
+	if proxy.tlsAsk != "http://ormos-gate/internal/tls-ask" {
 		t.Errorf("the gate line should set proxy.tlsAsk, got %q", proxy.tlsAsk)
 	}
 }
@@ -4505,7 +4505,7 @@ func TestNoGateLineMeansNoGate(t *testing.T) {
 
 func TestAWildcardWithoutAGateWarnsOnTheGateRow(t *testing.T) {
 	m := testModel()
-	m.apps[0].routes = []routeRow{{app: "blog", sites: "*.iframe.example.com", upstream: "blog-gateway"}}
+	m.apps[0].routes = []routeRow{{app: "blog", sites: "*.iframe.example.com", upstream: "blog-gate"}}
 	m.proxy.tlsAsk = ""
 	if !m.anyWildcard() {
 		t.Fatal("a *. route should count as a wildcard")
@@ -4521,12 +4521,12 @@ func TestAWildcardWithoutAGateWarnsOnTheGateRow(t *testing.T) {
 
 func TestAConfiguredGateShowsOnTheGateRow(t *testing.T) {
 	m := testModel()
-	m.proxy.tlsAsk = "http://blog-gateway/internal/tls-ask"
+	m.proxy.tlsAsk = "http://blog-gate/internal/tls-ask"
 	g, text := m.gateLine()
 	if g != dot("ok") {
 		t.Errorf("a configured gate should show a green dot")
 	}
-	if !strings.Contains(text, "on") || !strings.Contains(text, "blog-gateway/internal/tls-ask") {
+	if !strings.Contains(text, "on") || !strings.Contains(text, "blog-gate/internal/tls-ask") {
 		t.Errorf("the gate row should show on and the ask URL: %q", text)
 	}
 }
@@ -4556,7 +4556,7 @@ func TestTheGateRowIsPresentWhenTheProxyIs(t *testing.T) {
 
 func TestTheGateRowRendersInTheIndex(t *testing.T) {
 	m := testModel()
-	m.proxy.tlsAsk = "http://blog-gateway/internal/tls-ask"
+	m.proxy.tlsAsk = "http://blog-gate/internal/tls-ask"
 	v := stripANSI(m.View())
 	if !strings.Contains(v, "tls gate") {
 		t.Errorf("the index should show a tls gate row:\n%s", v)
@@ -4578,7 +4578,7 @@ func TestEnterOnTheGateRowEditsTheGate(t *testing.T) {
 	if m.prompt.answered() {
 		t.Error("a non-http(s) ask URL should be rejected")
 	}
-	m.prompt.typed = "http://ormos-gateway/internal/tls-ask"
+	m.prompt.typed = "http://ormos-gate/internal/tls-ask"
 	if !m.prompt.answered() {
 		t.Error("a valid ask URL should be accepted")
 	}

@@ -133,7 +133,7 @@ Safe to re-run -- that is how you update Caddy, move it to another network, or
 change the on-demand gate.
 
 For an app to be reachable through it, that app's compose.yml must join the
-shared network with a service named <app>-gateway, and its config image must
+shared network with a service named <app>-gate, and its config image must
 carry a hostnames file. See docs/proxy.md.
 
 Flags:

@@ -90,9 +90,9 @@ func printNextSteps(o addOpts, t target, knownHosts, key string) {
 	fmt.Printf("\n 3. VARIABLE  KOMIZO_SERVER_URL\n\n        %s\n", t.knownHostsField())
 
 	// The app name selects the deploy account, both privileged commands, and the
-	// gateway the shared proxy is pointed at. Hold this one more loosely than
+	// gate the shared proxy is pointed at. Hold this one more loosely than
 	// the three above: it is also written into the app's own compose.yml -- the
-	// service must be named <app>-gateway -- and into its image names, all
+	// service must be named <app>-gate -- and into its image names, all
 	// committed. This variable is where CI reads it, not where it is decided.
 	fmt.Printf("\n 4. VARIABLE  KOMIZO_APP_NAME\n\n        %s\n", o.app)
 	fmt.Printf("\n%s\n", rule)
@@ -119,7 +119,7 @@ func printNextSteps(o addOpts, t target, knownHosts, key string) {
 	// the environment by name. Each secret the app needs is one more line under
 	// env:, named KOMIZO_SECRET_<NAME>, and arrives on the host as <NAME>.
 	fmt.Printf(`
- Then in your app repo: a compose.yml with a service named %s-gateway --
+ Then in your app repo: a compose.yml with a service named %s-gate --
  your own Caddy, nginx, whatever -- listening on :80 and joined to the shared
  network. That container owns everything about how requests reach your app.
 

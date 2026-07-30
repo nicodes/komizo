@@ -211,7 +211,7 @@ func (a addResult) view() string {
 		// this one by another name while its DNS moves -- is a settings change.
 		//
 		// The app name is the weaker of the two. It is also written into the
-		// app's own compose.yml, its gateway service name and its images, all of
+		// app's own compose.yml, its gate service name and its images, all of
 		// which are committed and all of which must agree with it; this is
 		// where CI reads it, not where it is decided.
 		b.WriteString("\n" + gutter + "  " + keyStyle.Render("KOMIZO_SERVER_URL") + "  " +

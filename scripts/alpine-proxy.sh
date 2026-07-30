@@ -105,7 +105,7 @@ chmod 750 "$PROXY_DIR/logs"
 	printf '# This file terminates TLS and hands each hostname to the app that\n'
 	printf '# claimed it. It routes; it does not configure anybody. What an app\n'
 	printf '# does with a request once it arrives is inside that app, in its own\n'
-	printf '# gateway container, and cannot be written from here or broken from\n'
+	printf '# gate container, and cannot be written from here or broken from\n'
 	printf '# here.\n'
 
 	# On-demand TLS is the one global option, and it belongs to the SERVER
@@ -164,7 +164,7 @@ cat > "$PROXY_DIR/compose.yml" <<EOF
 # Written by komizo. Re-run 'komizo proxy' to change it; edits here are lost.
 services:
   # Named for what it is, not what it runs. A compose service name is a network
-  # alias, and this one sits on the network every app's gateway joins -- so a
+  # alias, and this one sits on the network every app's gate joins -- so a
   # service called "caddy" claimed that name box-wide, which is precisely what
   # this proxy tells apps not to do. It answered to both "caddy" and its
   # container name; now only the latter.
@@ -274,13 +274,13 @@ EOF
 cat <<EOF
 For an app to be reachable through it, that app needs two things.
 
-A gateway container -- its own Caddy, nginx, or anything that speaks HTTP --
-named <app>-gateway, listening on :80, joined to '$SHARED_NETWORK', publishing
+A gate container -- its own Caddy, nginx, or anything that speaks HTTP --
+named <app>-gate, listening on :80, joined to '$SHARED_NETWORK', publishing
 no ports of its own:
 
   services:
-    myapp-gateway:
-      image: ghcr.io/you/myapp-gateway:\${APP_VERSION}
+    myapp-gate:
+      image: ghcr.io/you/myapp-gate:\${APP_VERSION}
       networks:
         shared: {}
         default: {}
@@ -289,7 +289,7 @@ no ports of its own:
       external: true
       name: $SHARED_NETWORK
 
-Only the gateway joins the shared network. Everything behind it -- the API, the
+Only the gate joins the shared network. Everything behind it -- the API, the
 database -- stays on the app's own 'default' network, where no other app on this
 box can reach it.
 
@@ -299,9 +299,9 @@ And a hostnames file in the app's config image, one name per line:
   www.myapp.example.com
 
 That is all this proxy is told. It generates the route itself and points every
-one of those names at myapp-gateway:80, so no app writes config this server
+one of those names at myapp-gate:80, so no app writes config this server
 loads, and no app's mistake can be another app's outage.
 
 Everything a request meets after the hostname match -- paths, headers, static
-files, which service answers what -- is inside the gateway image the app built.
+files, which service answers what -- is inside the gate image the app built.
 EOF

@@ -168,7 +168,7 @@ func TestADeployWritesTheRouteBesideTheProxyAndNotBesideTheApp(t *testing.T) {
 		t.Fatalf("no route written to the proxy's directory\n%s", out)
 	}
 	for _, want := range []string{
-		"blog.example.com", "www.blog.example.com", "reverse_proxy blog-gateway:80",
+		"blog.example.com", "www.blog.example.com", "reverse_proxy blog-gate:80",
 	} {
 		if !strings.Contains(route, want) {
 			t.Errorf("route is missing %q:\n%s", want, route)
