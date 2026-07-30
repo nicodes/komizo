@@ -922,6 +922,13 @@ func (m model) handleIndexKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// command line, where it is one flag: komizo proxy --network / --image.
 		m = m.ask(m.installProxyPrompt())
 
+	case "t":
+		// The on-demand TLS gate, on the proxy row: it is a per-server setting,
+		// and the row that shows whether it is set is the row that changes it.
+		if m.focused().kind == focusProxy && m.proxy.installed {
+			m = m.ask(m.gatePrompt())
+		}
+
 	}
 	return m, nil
 }
@@ -1105,7 +1112,10 @@ func (m model) routesFor(c containerRow) []string {
 // installProxyPrompt reinstalls the shared proxy with whatever the box is
 // already using.
 func (m model) installProxyPrompt() prompt {
-	o := proxyOpts{network: m.net.name, image: m.proxy.image}
+	// tlsAsk carried forward, not dropped: reinstalling to pick up a newer Caddy
+	// must not silently remove the on-demand TLS gate and break every wildcard
+	// app on the box. Changing the gate is a separate action (t).
+	o := proxyOpts{network: m.net.name, image: m.proxy.image, tlsAsk: m.proxy.tlsAsk}
 	if o.network == "" {
 		o.network = defaultNetwork
 	}
@@ -1125,6 +1135,44 @@ func (m model) installProxyPrompt() prompt {
 		detail:   detail,
 		action: func(m *model, _ string) tea.Cmd {
 			return tea.Batch(m.startOp(doing), m.startProxy(o))
+		},
+	}
+}
+
+// gatePrompt sets, changes or clears the on-demand TLS gate -- the endpoint
+// Caddy asks before issuing a certificate for a wildcard hostname. It is a
+// per-server setting (Caddy takes one such block per machine), so it lives on
+// the proxy row rather than an app's. Applying it is a proxy re-run with the new
+// TLS_ASK, exactly what `komizo proxy --tls-ask` does; the network and image are
+// carried forward so the gate is the only thing that changes.
+func (m model) gatePrompt() prompt {
+	net := m.net.name
+	if net == "" {
+		net = defaultNetwork
+	}
+	img := m.proxy.image
+	if img == "" {
+		img = defaultProxy
+	}
+	detail := "The URL Caddy asks before issuing an on-demand certificate for a " +
+		"wildcard hostname (e.g. http://<app>-gateway/internal/tls-ask). Leave it " +
+		"empty to remove the gate."
+	if m.anyWildcard() {
+		detail += " Apps here use a wildcard, so without a gate their certificates fail."
+	}
+	return prompt{
+		kind:     promptInput,
+		question: "On-demand TLS ask endpoint",
+		detail:   detail,
+		typed:    m.proxy.tlsAsk, // prefill the current value for editing
+		check:    validateTLSAsk, // empty is valid and means "remove the gate"
+		action: func(m *model, v string) tea.Cmd {
+			doing := "Setting the TLS gate"
+			if v == "" {
+				doing = "Removing the TLS gate"
+			}
+			return tea.Batch(m.startOp(doing),
+				m.startProxy(proxyOpts{network: net, image: img, tlsAsk: v}))
 		},
 	}
 }

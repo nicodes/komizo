@@ -190,7 +190,31 @@ func (m model) proxyLine() (string, string) {
 	if m.net.subnet != "" {
 		net += ", " + m.net.subnet
 	}
-	return g, t + "  ·  " + net
+	line := t + "  ·  " + net
+
+	// The on-demand TLS gate. A wildcard hostname cannot get an ordinary
+	// certificate, so it needs this -- and a wildcard app with no gate is a
+	// deploy that fails with nothing else on this page saying why. Surface the
+	// gate when set, and warn (outranking the proxy's own dot) when one is
+	// needed and missing. Pressing t sets it.
+	switch {
+	case m.anyWildcard() && m.proxy.tlsAsk == "":
+		return dot("warn"), line + "  ·  wildcard needs a TLS gate — press t"
+	case m.proxy.tlsAsk != "":
+		return g, line + "  ·  TLS gate on"
+	}
+	return g, line
+}
+
+// anyWildcard reports whether any app on the box declares a wildcard hostname,
+// which is what makes the proxy's on-demand TLS gate load-bearing.
+func (m model) anyWildcard() bool {
+	for _, a := range m.apps {
+		if a.hasWildcard() {
+			return true
+		}
+	}
+	return false
 }
 
 func orDash(s string) string {

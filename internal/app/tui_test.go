@@ -4475,3 +4475,91 @@ func stubClipboard(t *testing.T) {
 	copyToClipboard = func(string) error { return nil }
 	t.Cleanup(func() { copyToClipboard = real })
 }
+
+// --- on-demand TLS gate ----------------------------------------------------
+
+func TestGateIsParsedFromInventory(t *testing.T) {
+	_, _, proxy, _, _ := parseInventory(
+		"proxy\trunning\tedge\tcaddy:2\tUp 3 hours\t\t\t\n" +
+			"gate\thttp://ormos-gateway/internal/tls-ask\n")
+	if proxy.tlsAsk != "http://ormos-gateway/internal/tls-ask" {
+		t.Errorf("the gate line should set proxy.tlsAsk, got %q", proxy.tlsAsk)
+	}
+}
+
+func TestNoGateLineMeansNoGate(t *testing.T) {
+	_, _, proxy, _, _ := parseInventory("proxy\trunning\tedge\tcaddy:2\tUp 3 hours\t\t\t\n")
+	if proxy.tlsAsk != "" {
+		t.Errorf("absent gate line should leave tlsAsk empty, got %q", proxy.tlsAsk)
+	}
+}
+
+func TestAWildcardWithoutAGateWarnsOnTheProxyLine(t *testing.T) {
+	m := testModel()
+	m.apps[0].routes = []routeRow{{app: "blog", sites: "*.iframe.example.com", upstream: "blog-gateway"}}
+	m.proxy.tlsAsk = ""
+	if !m.anyWildcard() {
+		t.Fatal("a *. route should count as a wildcard")
+	}
+	g, text := m.proxyLine()
+	if !strings.Contains(text, "TLS gate") {
+		t.Errorf("a wildcard with no gate should warn on the proxy line: %q", text)
+	}
+	if g != dot("warn") {
+		t.Errorf("the proxy dot should warn when a wildcard has no gate")
+	}
+}
+
+func TestAConfiguredGateShowsOnTheProxyLine(t *testing.T) {
+	m := testModel()
+	m.apps[0].routes = []routeRow{{app: "blog", sites: "*.iframe.example.com", upstream: "blog-gateway"}}
+	m.proxy.tlsAsk = "http://blog-gateway/internal/tls-ask"
+	if _, text := m.proxyLine(); !strings.Contains(text, "gate on") {
+		t.Errorf("a configured gate should show on the proxy line: %q", text)
+	}
+}
+
+func TestNoWildcardMeansNoGateWarning(t *testing.T) {
+	m := testModel() // blog has only a concrete hostname
+	m.proxy.tlsAsk = ""
+	if m.anyWildcard() {
+		t.Fatal("no app declares a wildcard here")
+	}
+	if _, text := m.proxyLine(); strings.Contains(text, "needs a TLS gate") {
+		t.Errorf("a box with no wildcard app should not nag about a gate: %q", text)
+	}
+}
+
+func TestTOnTheProxyRowEditsTheGate(t *testing.T) {
+	m := testModel()
+	m.proxy.tlsAsk = "http://old/ask"
+	m.cursor = rowOf(m, focusProxy)
+	m = send(m, "t")
+	if m.prompt == nil || m.prompt.kind != promptInput {
+		t.Fatalf("t on the proxy row should open a URL input, got %+v", m.prompt)
+	}
+	if m.prompt.typed != "http://old/ask" {
+		t.Errorf("the input should prefill the current gate for editing, got %q", m.prompt.typed)
+	}
+	m.prompt.typed = "ftp://nope"
+	if m.prompt.answered() {
+		t.Error("a non-http(s) ask URL should be rejected")
+	}
+	m.prompt.typed = "http://ormos-gateway/internal/tls-ask"
+	if !m.prompt.answered() {
+		t.Error("a valid ask URL should be accepted")
+	}
+	m.prompt.typed = ""
+	if !m.prompt.answered() {
+		t.Error("an empty value should be accepted -- it clears the gate")
+	}
+}
+
+func TestTDoesNothingOnAnAppRow(t *testing.T) {
+	m := testModel()
+	m.cursor = m.firstAppRow()
+	m = send(m, "t")
+	if m.prompt != nil {
+		t.Errorf("t is a proxy-row action; it should do nothing on an app row")
+	}
+}
