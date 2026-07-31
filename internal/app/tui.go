@@ -634,7 +634,13 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// else, so dismissing the screen without it on the clipboard is losing
 		// it -- a failed copy keeps the screen, where the error is readable and
 		// the value is still there.
-		if msg.result != nil && msg.result.items() == 1 {
+		//
+		// Keyed on the rotation, not on the result offering one value. An edit to
+		// an app's names offers one too, and its value is the host keys -- which
+		// are readable off the box for as long as it exists and are one keypress
+		// away on the app's row. Copying that silently and closing the screen
+		// would hide the only place the new value is spelled out.
+		if msg.result != nil && msg.result.rotated {
 			if err := copyToClipboard(msg.result.key); err == nil {
 				m.prompt = nil
 				m.status, m.statusErr = msg.result.app+" key rotated and copied — update KOMIZO_DEPLOY_KEY", false
@@ -868,6 +874,19 @@ func (m model) handleIndexKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// are actually doing rather than hidden behind "add".
 		if i := m.selectedApp(); i >= 0 {
 			m = m.ask(m.configPrompt(m.apps[i]))
+		}
+
+	case "a":
+		// The names CI dials this app by -- the third answer the add form asks
+		// for, and the only one that used to be unrepeatable.
+		//
+		// Beside "h" rather than folded into it, because they are two halves of
+		// one value and only one of them is editable: the KEYS are the box's,
+		// which is what h copies, and the NAMES are this app's, which is what
+		// this edits. Pressing h afterwards gives you the same string this
+		// screen just handed over.
+		if i := m.selectedApp(); i >= 0 {
+			m = m.ask(m.knownAsPrompt(m.apps[i]))
 		}
 
 	case "h":

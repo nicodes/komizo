@@ -67,6 +67,21 @@ func secretBin(app string) string { return "/usr/local/bin/set-secret-" + app }
 // deploy script, which made five readers depend on one generator's formatting.
 func stateFile(app string) string { return "/var/lib/komizo/apps/" + app + ".env" }
 
+// appState reads one value out of an app's record on the box.
+//
+// The record, not the generated deploy script. Both hold the config image; only
+// one of them is data, and reading komizo's own output back as a database is
+// what the state file was introduced to stop.
+//
+// key is always a constant from this package -- the values are the ones
+// alpine.sh writes -- so it is spliced into the sed rather than quoted; app
+// comes from the caller and is not.
+func appState(t target, app, key string) (string, error) {
+	got, err := t.quiet(fmt.Sprintf(`sed -n 's/^%s=//p' %s 2>/dev/null | head -n 1`,
+		key, shQuote(stateFile(app))))
+	return strings.TrimSpace(got), err
+}
+
 func RunAdd(args []string) error {
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
 	fs.Usage = func() { UsageAdd(fs) }
@@ -187,8 +202,13 @@ type addPlan struct {
 	// that repo pins should name that one, not every name every app on this
 	// box answers to. Empty leaves whatever the box already recorded.
 	knownAs []string
-	rotate  bool
-	harden  bool
+	// clearKnownAs says the empty knownAs above is an answer rather than a
+	// silence. The server keeps the recorded names when it is not told any,
+	// which is what a config-image change means by saying nothing -- so without
+	// this, editing the list down to nothing is the one edit that does nothing.
+	clearKnownAs bool
+	rotate       bool
+	harden       bool
 
 	// keepKey leaves the account's existing authorized_keys alone. Changing an
 	// app's config image re-runs this whole sequence, and issuing a new deploy
@@ -207,18 +227,18 @@ type addPlan struct {
 // The earlier arrangement had the interface skipping validation the CLI did,
 // which is the kind of drift that only shows up on someone else's server.
 func performAdd(p addPlan, out progress, runner func(script string, env map[string]string) error) (*addResult, error) {
-	if p.rotate && p.config == "" {
-		// Rotating a key must not change what config the host trusts, so carry
-		// the existing value forward. Read from the app's state file, which is
-		// what komizo records about it -- not back out of the generated deploy
-		// script, which is code that happens to contain the value.
-		got, err := p.tgt.quiet(fmt.Sprintf(
-			`sed -n 's/^CONFIG_IMAGE=//p' %s 2>/dev/null | head -n 1`, shQuote(stateFile(p.app))))
-		if err != nil || strings.TrimSpace(got) == "" {
+	if p.config == "" {
+		// Rotating a key, or editing the names CI dials this app by, must not
+		// change what config the host trusts -- so carry the existing value
+		// forward. Read from the app's state file, which is what komizo records
+		// about it, not back out of the generated deploy script, which is code
+		// that happens to contain the value.
+		got, err := appState(p.tgt, p.app, "CONFIG_IMAGE")
+		if err != nil || got == "" {
 			return nil, fmt.Errorf("could not read the current config image for %q off the\n"+
 				"    server -- is that app set up on this box?", p.app)
 		}
-		p.config = strings.TrimSpace(got)
+		p.config = got
 		out.note("keeping the configured image: %s", p.config)
 	}
 
@@ -262,6 +282,10 @@ func performAdd(p addPlan, out progress, runner func(script string, env map[stri
 		"APP_NAME":     p.app,
 		"CONFIG_IMAGE": p.config,
 		"HARDEN_SSH":   boolEnv(p.harden),
+		// Only ever 1 when the caller means "none", never as a matter of course:
+		// the server reads an empty KNOWN_AS as "not mentioned" for every other
+		// operation, and that is the reading a config-image change needs.
+		"CLEAR_KNOWN_AS": boolEnv(p.clearKnownAs && len(p.knownAs) == 0),
 	}
 	if p.appDir != "" {
 		env["APP_DIR"] = p.appDir

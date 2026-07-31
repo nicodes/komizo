@@ -391,3 +391,40 @@ func (m model) configPrompt(a appRow) prompt {
 		},
 	}
 }
+
+// --- changing the names CI dials an app by -----------------------------------
+//
+// Asked once when the app is added, and until now never again -- which made it
+// the only answer on that form that could not be corrected. It is also the one
+// most likely to need correcting: it is asked before the app exists, about a
+// domain that often does not point anywhere yet, and getting it wrong is
+// invisible until a deploy stops with "no entry for <name>" and the right keys
+// sitting in the variable it just refused.
+//
+// An input in the footer, like the config image, and for the same reasons: one
+// value, already on the app's row, edited where you can see what it is now.
+func (m model) knownAsPrompt(a appRow) prompt {
+	current := strings.Join(a.knownAs, ", ")
+	return prompt{
+		kind:     promptInput,
+		question: "Names CI dials " + a.name + " by",
+		detail: "Comma-separated, and empty is an answer — host keys are pinned per " +
+			"name, so a name missing here fails that repo's deploy. Its " +
+			"KOMIZO_KNOWN_HOSTS changes with this.",
+		typed: current,
+		check: validateKnownAs,
+		action: func(m *model, v string) tea.Cmd {
+			names := splitNames(v)
+			// Compared as the box will record them, not as they were typed: the
+			// difference between "a, b" and "a,b" is whitespace this drops on the
+			// way through, and re-running the whole setup to write back the same
+			// line is a stack restart for nothing.
+			if strings.Join(names, ",") == strings.Join(a.knownAs, ",") {
+				return nil
+			}
+			return tea.Batch(
+				m.startOp("Recording what "+a.name+" is dialled by"),
+				m.startKnownAsChange(a.name, names))
+		},
+	}
+}
