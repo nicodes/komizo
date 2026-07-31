@@ -401,11 +401,12 @@ func (m model) rowKeys() []string {
 // change anything" -- and a hash of what gets written is the only thing that
 // answers that without somebody remembering to bump a constant.
 // komizoCliLine is the komizo you are running, on its own row -- the binary in
-// your hand, bright, so "which komizo is this" is a glance. It is a fact about
-// your machine rather than the server, so it carries no action and nothing to be
-// out of date against; the server row directly below is where the two compare.
+// your hand. A plain dim value like every other fact on the page: it is not an
+// accent or a key, just the version, and reads against the server row under it.
+// It is a fact about your machine rather than the server, so it carries no
+// action and nothing to be out of date against.
 func (m model) komizoCliLine() string {
-	return keyStyle.Render(versionLabel(versionText()))
+	return dimStyle.Render(versionLabel(versionText()))
 }
 
 // komizoServerLine is the komizo that provisioned the box, and whether it
