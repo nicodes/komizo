@@ -106,6 +106,50 @@ func TestTheDeployScriptCarriesItsInstallTimeValues(t *testing.T) {
 	}
 }
 
+// The one input alpine.sh takes that has THREE states rather than two: names
+// given, names not mentioned, and no names at all. The middle one is what a
+// config-image change means by saying nothing, and it is why the third needs a
+// variable of its own.
+//
+// Run rather than read. Every check below happens before the script asks
+// whether it is root, so this exercises the real branch on any machine -- which
+// is the point: a fail-safe that is only asserted to exist in the text is a
+// fail-safe nobody has seen fail.
+func TestSayingThereAreNoNamesIsNotTheSameAsSayingNothing(t *testing.T) {
+	needs(t, "sh")
+	run := func(env ...string) (string, error) {
+		cmd := exec.Command("sh", "-s")
+		cmd.Stdin = strings.NewReader(scripts.AlpineScript)
+		cmd.Env = append([]string{"APP_NAME=blog", "CONFIG_IMAGE=ghcr.io/you/blog-config",
+			"PATH=/usr/bin:/bin"}, env...)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+
+	// Both at once says two different things, and guessing which one was meant
+	// is how an app silently loses the names its repo pins.
+	out, err := run("CLEAR_KNOWN_AS=1", "KNOWN_AS=blog.example.com")
+	if err == nil || !strings.Contains(out, "two different things") {
+		t.Errorf("clearing and setting at once should be refused, got %q / %v", out, err)
+	}
+
+	// Anything that is not 0 or 1 is a typo, and a typo must not read as "no".
+	// KEEP_DATA on the removal script is guarded the same way and for the same
+	// reason: the fail-open reading of a misspelt flag is the destructive one.
+	out, err = run("CLEAR_KNOWN_AS=ture")
+	if err == nil || !strings.Contains(out, "CLEAR_KNOWN_AS must be 0 or 1") {
+		t.Errorf("a misspelt flag should be refused, got %q / %v", out, err)
+	}
+
+	// And the ordinary cases get past this block entirely -- they fail later, at
+	// the root check, which is as far as this test can go.
+	for _, e := range []string{"CLEAR_KNOWN_AS=1", "KNOWN_AS=blog.example.com", "CLEAR_KNOWN_AS=0"} {
+		if out, _ := run(e); strings.Contains(out, "CLEAR_KNOWN_AS") {
+			t.Errorf("%s should be accepted, got %q", e, out)
+		}
+	}
+}
+
 func placeholders(s string) []string {
 	var out []string
 	seen := map[string]bool{}

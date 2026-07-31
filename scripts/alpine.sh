@@ -27,6 +27,7 @@
 #   CI_USER        deploy account        (default: komizo-<app>)
 #   APP_DIR        root-owned app directory                (default: /srv/<app>)
 #   KNOWN_AS       names CI dials this app by, comma-separated    (kept if unset)
+#   CLEAR_KNOWN_AS 1 to record that there are none                (default: 0)
 #   HARDEN_SSH     1 to also harden sshd machine-wide             (default: 0)
 #
 # The server must already be initialised (alpine-init.sh) -- this script does
@@ -144,8 +145,23 @@ HARDEN_SSH="${HARDEN_SSH:-0}"
 # Empty means keep whatever is already recorded, which is what re-running for a
 # config-image change wants: it is not saying the names changed, it is not
 # mentioning them.
+#
+# Which leaves no way to say "there are none", and that is what CLEAR_KNOWN_AS
+# is for. Editing the list down to nothing is a real edit -- a box that stopped
+# answering to a second name, an entry added by mistake -- and without this it
+# was the one change that silently did nothing. A separate variable rather than
+# a sentinel value, because every sentinel a hostname could never be is also a
+# value someone eventually types.
 KNOWN_AS="${KNOWN_AS:-}"
-if [ -z "$KNOWN_AS" ] && [ -f "$STATE_FILE" ]; then
+CLEAR_KNOWN_AS="${CLEAR_KNOWN_AS:-0}"
+case "$CLEAR_KNOWN_AS" in
+	1|yes|true) CLEAR_KNOWN_AS=1 ;;
+	0|no|false|'') CLEAR_KNOWN_AS=0 ;;
+	*) echo "error: CLEAR_KNOWN_AS must be 0 or 1" >&2; exit 1 ;;
+esac
+if [ "$CLEAR_KNOWN_AS" = "1" ]; then
+	[ -z "$KNOWN_AS" ] || { echo "error: CLEAR_KNOWN_AS=1 with names in KNOWN_AS says two different things" >&2; exit 1; }
+elif [ -z "$KNOWN_AS" ] && [ -f "$STATE_FILE" ]; then
 	KNOWN_AS="$(sed -n 's/^KNOWN_AS=//p' "$STATE_FILE" | head -n 1)"
 fi
 # Substituted into the generated deploy script, so constrain it here rather

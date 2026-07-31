@@ -463,8 +463,17 @@ func versionLabel(v string) string {
 	return v
 }
 
+// The order is a ranking, because the footer sheds from the end of the middle
+// when the terminal is too narrow for all of it (see helpLine). So the last
+// entry is the one the fewest people would miss.
+//
+// "known as" is last for that reason and not because it matters least. It is
+// the only one of these that is a CORRECTION -- the names were answered once,
+// when the app was added -- so it is looked for after something has already
+// gone wrong, which is when someone reads the whole line rather than the first
+// four keys on it. Rotating and removing are looked for cold.
 func appActions() []string {
-	return []string{"h", "hosts", "c", "config", "r", "rotate", "x", "remove"}
+	return []string{"h", "hosts", "c", "config", "r", "rotate", "x", "remove", "a", "known as"}
 }
 
 // short trims a commit SHA to something readable without losing which it is.

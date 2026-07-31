@@ -1477,6 +1477,153 @@ func TestConfigChangeResultDoesNotAskForAPaste(t *testing.T) {
 	}
 }
 
+// --- the names CI dials an app by --------------------------------------------
+//
+// Answered once on the add form and, until now, never again -- which made it the
+// only one of the three answers that could not be corrected. It is also the one
+// most likely to need correcting: it is asked before the app exists, about a
+// domain that often does not resolve yet, and a wrong answer is invisible until
+// a deploy stops with "no entry for <name>".
+
+func TestKnownAsIsEditable(t *testing.T) {
+	m := testModel()
+	m.apps[0].knownAs = []string{"blog.example.com", "www.blog.example.com"}
+	m.cursor = rowOf(m, focusApp)
+
+	m = send(m, "a")
+	if m.prompt == nil || m.prompt.kind != promptInput {
+		t.Fatal("'a' should open an input in the footer")
+	}
+	if m.scr != screenIndex {
+		t.Errorf("editing a setting should not leave the list, got %v", m.scr)
+	}
+	// Pre-filled with what is recorded, so the edit is made against the value
+	// rather than from memory.
+	if m.prompt.typed != "blog.example.com, www.blog.example.com" {
+		t.Errorf("the input should start from the recorded names, got %q", m.prompt.typed)
+	}
+	// The same check the add form applies. A hostname beginning with a hyphen is
+	// the one that matters: ssh-keyscan reads it as an option.
+	m.prompt.typed = "-oProxyCommand=x"
+	m = send(m, "enter")
+	if m.prompt == nil || m.prompt.problem == "" {
+		t.Errorf("a name ssh would read as an option should be rejected, got %+v", m.prompt)
+	}
+}
+
+func TestUnchangedNamesDoNothing(t *testing.T) {
+	// Re-running the whole setup to write back the line that is already there is
+	// a stack restart for nothing.
+	m := testModel()
+	m.apps[0].knownAs = []string{"blog.example.com"}
+	m.cursor = rowOf(m, focusApp)
+	if next := send(m, "a", "enter"); next.prompt != nil || next.run.ch != nil {
+		t.Error("enter on an unedited list should close the question and do nothing")
+	}
+
+	// And neither does re-typing the same names with different spacing: what is
+	// compared is what the box will record, not what was typed.
+	m2 := send(m, "a")
+	m2.prompt.typed = "blog.example.com,"
+	if next := send(m2, "enter"); next.run.ch != nil {
+		t.Error("the same names with a trailing comma are the same names")
+	}
+}
+
+func TestClearingTheNamesIsAnAnswer(t *testing.T) {
+	// The one edit that used to be impossible even in principle: the server
+	// reads an empty KNOWN_AS as "not mentioned" so that a config-image change
+	// cannot silently drop an app's names, which left no way to say "none".
+	m := testModel()
+	m.apps[0].knownAs = []string{"gone.example.com"}
+	m.cursor = rowOf(m, focusApp)
+
+	m = send(m, "a")
+	m.prompt.typed = ""
+	if err := m.prompt.check(""); err != nil {
+		t.Errorf("empty must be a valid answer, got %v", err)
+	}
+	if next := send(m, "enter"); next.run.ch == nil {
+		t.Error("clearing the list should actually run something")
+	}
+
+	// The plan that carries it says so explicitly rather than by being empty.
+	p := addPlan{app: "blog", knownAs: nil, clearKnownAs: true}
+	if !p.clearKnownAs || len(p.knownAs) != 0 {
+		t.Errorf("a cleared list is empty AND says it means it: %+v", p)
+	}
+}
+
+func TestANamesChangeHandsOverTheValueThatMoved(t *testing.T) {
+	// Unlike a config-image change, this one DOES move something in GitHub:
+	// known_hosts entries are written per name, so the app's KOMIZO_KNOWN_HOSTS
+	// is a different string afterwards.
+	r := addResult{app: "blog", knownHosts: "blog.example.com ssh-ed25519 AAAA",
+		namesChanged: true, changedNames: []string{"blog.example.com"}, onClipboard: -1}
+	v := stripANSI(r.view())
+	if strings.Contains(v, "Add these to the repo") {
+		t.Error("this is not a fresh setup; the deploy key did not change")
+	}
+	for _, want := range []string{"blog.example.com", "KOMIZO_KNOWN_HOSTS", "deploy key is unchanged"} {
+		if !strings.Contains(v, want) {
+			t.Errorf("result is missing %q:\n%s", want, v)
+		}
+	}
+	// One value, and it is the host keys. The deploy key is not even in memory
+	// here -- this operation never generated one -- so offering a row for it
+	// would offer an empty string.
+	if r.items() != 1 {
+		t.Errorf("a names change has one value to hand over, got %d", r.items())
+	}
+	stubClipboard(t)
+	if err := r.copySelected(); err != nil {
+		t.Fatal(err)
+	}
+	if !r.selected(resultHosts) {
+		t.Error("the one row a names change offers is the host keys")
+	}
+}
+
+func TestClearingTheNamesSaysSoOnTheResult(t *testing.T) {
+	// An empty list is a real outcome and has to read as one. "is now dialled by"
+	// followed by nothing reads as a screen that failed to load.
+	//
+	// The list here is nil, not empty, because that is what splitNames returns
+	// for an emptied field -- and an emptied list that read as "not a names
+	// change" would fall through to the fresh-setup screen and tell someone to
+	// paste a deploy key that was never generated.
+	r := addResult{app: "blog", knownHosts: "box ssh-ed25519 AAAA",
+		namesChanged: true, changedNames: nil, onClipboard: -1}
+	v := stripANSI(r.view())
+	if !strings.Contains(v, "nothing but the address you connected on") {
+		t.Errorf("an emptied list should say what is left:\n%s", v)
+	}
+	if strings.Contains(v, "Add these to the repo") || strings.Contains(v, "KOMIZO_DEPLOY_KEY") {
+		t.Errorf("an emptied list is still a names change, not a new app:\n%s", v)
+	}
+	if r.items() != 1 {
+		t.Errorf("it still offers exactly the host keys, got %d rows", r.items())
+	}
+}
+
+func TestOnlyARotationCopiesItselfAndCloses(t *testing.T) {
+	// The rotation does that because its value is held in memory and nowhere
+	// else -- dismissing the screen without it on the clipboard loses it. Host
+	// keys are readable off the box for as long as the box exists, and are one
+	// keypress away on the app's row, so a names change keeps its screen.
+	stubClipboard(t)
+	m := testModel()
+	m.run = newRunState("Recording what blog is dialled by")
+	next, _ := m.Update(runDoneMsg{result: &addResult{app: "blog",
+		knownHosts: "box ssh-ed25519 AAAA", namesChanged: true,
+		changedNames: []string{"a.example.com"},
+		onClipboard:  -1}})
+	got := next.(model)
+	if got.prompt == nil || got.prompt.kind != promptResult {
+		t.Error("a names change should leave its result on screen")
+	}
+}
+
 // --- known_hosts -------------------------------------------------------------
 
 func TestKnownHostsIsOneLinePerNamePerKey(t *testing.T) {
@@ -2164,29 +2311,34 @@ func TestAppKeysOnlyOfferedWithAnAppSelected(t *testing.T) {
 	// Offering "rotate key" with the cursor on the komizo server row offers it for
 	// nothing: there is no app for it to apply to, so the hint is a small lie.
 	m := testModel()
+	// Wide enough for the whole line. There are five app actions now, and below
+	// about 110 columns the footer sheds from the end -- which has a test of its
+	// own (TestTheFooterIsOneLineAtAnyWidth). What is being checked here is
+	// WHICH row offers them, so the width is taken out of it.
+	m.width = 140
 
 	m.cursor = rowOf(m, focusKomizo)
 	v := stripANSI(m.pageFooter())
-	for _, k := range []string{"rotate", "remove", "config"} {
+	for _, k := range []string{"rotate", "remove", "config", "known as"} {
 		if strings.Contains(v, k) {
 			t.Errorf("%q should not be offered with no app selected:\n%s", k, v)
 		}
 	}
 	// And pressing them does nothing rather than acting on some other app.
-	for _, k := range []string{"c", "r", "x"} {
-		if next := send(m, k); next.scr != screenIndex {
+	//
+	// "a" is one of them now: it edits the names CI dials an app by, so with no
+	// app selected there is nothing for it to edit. It is not the old add key --
+	// adding is its own row under the list, and has been since it stopped being
+	// something you could press by accident from an app.
+	for _, k := range []string{"c", "r", "x", "a"} {
+		if next := send(m, k); next.scr != screenIndex || next.prompt != nil {
 			t.Errorf("%q with no app selected should do nothing, got %v", k, next.scr)
 		}
-	}
-	// Adding is not among them at all now: it is its own row under the list,
-	// so it needs no key and cannot be pressed by accident from an app.
-	if next := send(m, "a"); next.scr != screenIndex {
-		t.Errorf("'a' should no longer do anything, got %v", next.scr)
 	}
 
 	m.cursor = rowOf(m, focusApp)
 	f := stripANSI(m.pageFooter())
-	for _, k := range []string{"rotate", "remove", "config"} {
+	for _, k := range []string{"rotate", "remove", "config", "known as"} {
 		if !strings.Contains(f, k) {
 			t.Errorf("%q should be offered with an app selected:\n%s", k, f)
 		}

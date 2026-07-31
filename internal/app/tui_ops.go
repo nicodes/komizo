@@ -70,6 +70,21 @@ type addResult struct {
 	// GitHub values are unchanged, so telling someone to paste them again
 	// would be wrong.
 	changedConfig string
+
+	// Set when this was an edit to the names CI dials the app by.
+	//
+	// Unlike a config-image change, this one DOES move a value in GitHub:
+	// known_hosts entries are written per name, so the app's KOMIZO_KNOWN_HOSTS
+	// is a different string afterwards and the repo has to be given it.
+	//
+	// A flag beside the list rather than "the list is not nil", because clearing
+	// the names is one of the edits and an emptied list is indistinguishable
+	// from an absent one -- splitNames returns nil for both. Reading the
+	// difference off a slice header would have made the emptied case render as a
+	// fresh app setup, telling someone to paste a deploy key that was never
+	// generated.
+	namesChanged bool
+	changedNames []string
 }
 
 // The two things this screen exists to hand over, in the order you paste them.
@@ -79,20 +94,49 @@ const (
 	resultItems
 )
 
-// value returns what the cursor is pointing at. The key is a path, because its
-// contents must not be held anywhere that might later be rendered.
-// items is how many rows this result offers. A rotation offers one: the host
-// keys did not change, so presenting them as something to copy would imply
-// otherwise.
-func (a addResult) items() int {
-	if a.rotated {
-		return 1
+// rows is which values this result offers, in display order.
+//
+// Not always both. A rotation replaces the deploy keypair and nothing else, so
+// offering the host keys beside it would say something else needs updating in
+// GitHub when nothing does. An edit to the names is the mirror image: the keys
+// are the box's and did not move, but they are now written against different
+// names, so the host keys are the only thing there is to hand over -- and the
+// deploy key is not even in memory to offer.
+func (a addResult) rows() []int {
+	switch {
+	case a.changedConfig != "":
+		return nil
+	case a.namesChanged:
+		return []int{resultHosts}
+	case a.rotated:
+		return []int{resultKey}
 	}
-	return resultItems
+	return []int{resultKey, resultHosts}
+}
+
+// items is how many rows this result offers.
+func (a addResult) items() int { return len(a.rows()) }
+
+// selected reports whether the cursor is on a given value. The cursor indexes
+// rows(), which is not the same as the value's own id the moment a result
+// offers only the second of the two.
+func (a addResult) selected(id int) bool { return rowAt(a.rows(), a.cursor) == id }
+
+// onClipboardIs reports whether a given value is the one on the clipboard NOW.
+// Same indexing question as selected, and the same answer.
+func (a addResult) onClipboardIs(id int) bool { return rowAt(a.rows(), a.onClipboard) == id }
+
+// rowAt is rows[i] for an index that may be out of range or the -1 that means
+// "nothing". Returns a value no row id can be.
+func rowAt(rows []int, i int) int {
+	if i < 0 || i >= len(rows) {
+		return -1
+	}
+	return rows[i]
 }
 
 func (a addResult) copySelected() error {
-	if a.cursor == resultKey {
+	if a.selected(resultKey) {
 		return copyToClipboard(a.key)
 	}
 	return copyToClipboard(a.knownHosts)
@@ -171,6 +215,28 @@ func (a addResult) view() string {
 			"same. The next deploy pulls config from here."))
 		return b.String()
 	}
+	if a.namesChanged {
+		names := strings.Join(a.changedNames, ", ")
+		if names == "" {
+			names = "nothing but the address you connected on"
+		}
+		b.WriteString(gutter + dot("ok") + " " + titleStyle.Render(a.app+" is now dialled by") + "\n")
+		b.WriteString(gutter + "  " + names + "\n")
+		// The one value that moved, and it has to be pasted for this to take
+		// effect anywhere. A name that CI dials with no entry written against it
+		// stops the deploy with "no entry for <name>" while the correct keys sit
+		// in the variable -- which is the whole reason this list is editable.
+		b.WriteString(a.row(resultHosts, "KOMIZO_KNOWN_HOSTS", dimStyle.Render("variable, not a secret")))
+		for _, l := range strings.Split(a.knownHosts, "\n") {
+			b.WriteString(gutter + "      " + dimStyle.Render(l) + "\n")
+		}
+		if a.copyErr != "" {
+			b.WriteString("\n" + gutter + dot("warn") + " " + warnStyle.Render(a.copyErr) + "\n")
+		}
+		b.WriteString(para("\n"+gutter, "The deploy key is unchanged. Update this variable in the app's "+
+			"repository before its next deploy."))
+		return b.String()
+	}
 	b.WriteString(gutter + dot("ok") + " " + titleStyle.Render("Add these to the repo for "+a.app) + "\n")
 	b.WriteString(dimStyle.Render(gutter+"  Settings → Secrets and variables → Actions") + "\n")
 
@@ -182,7 +248,7 @@ func (a addResult) view() string {
 	b.WriteString(a.row(resultKey, "KOMIZO_DEPLOY_KEY", dimStyle.Render("secret")))
 	b.WriteString(gutter + "      " + dimStyle.Render("held in memory and not shown — press c to copy it") + "\n")
 	b.WriteString(gutter + "      " + dimStyle.Render("it is not saved anywhere; rotate the key to get another") + "\n")
-	if a.onClipboard == resultKey {
+	if a.onClipboardIs(resultKey) {
 		// The key is a private credential sitting on the system clipboard, where a
 		// clipboard manager may persist it. Say so, so it gets pasted and then
 		// cleared rather than left there.
@@ -245,12 +311,12 @@ func (a addResult) view() string {
 // selection, with a tick once it has been copied.
 func (a addResult) row(i int, name, kind string) string {
 	caret, label := "  ", keyStyle.Render(name)
-	if a.cursor == i {
+	if a.selected(i) {
 		caret = barStyle.Render("▍") + " "
 		label = keyStyle.Render(name)
 	}
 	mark := ""
-	if a.onClipboard == i {
+	if a.onClipboardIs(i) {
 		mark = "  " + okStyle.Render("← on the clipboard")
 	}
 	return "\n" + gutter + caret + label + "  " + kind + mark + "\n"
@@ -371,6 +437,40 @@ func (m model) startConfigChange(app, config string) tea.Cmd {
 		res, err := doAddKeepingKey(t, app, config, ch)
 		if res != nil {
 			res.changedConfig = config
+		}
+		ch <- runDoneMsg{err: err, result: res}
+	}()
+	return m.run.wait()
+}
+
+// startKnownAsChange records a different set of names for an app.
+//
+// The same operation as a config-image change -- re-running the setup with the
+// deploy key left alone -- because there is no smaller one: the names are in the
+// app's record on the box, and that record is written by the setup script.
+//
+// What comes back matters more here than it does for a config image, though.
+// known_hosts is matched on the exact name the client dialled, so changing this
+// list changes the value that app's repository has to pin, and the result screen
+// hands the new one over.
+func (m model) startKnownAsChange(app string, names []string) tea.Cmd {
+	ch := m.run.ch
+	t := m.tgt
+	go func() {
+		res, err := runAddPlan(addPlan{
+			tgt:  t,
+			app:  app,
+			user: deriveUser(app),
+			// Empty, so performAdd reads the app's own off the box. The names are
+			// the only thing being changed, and a value carried down from a row on
+			// screen is a value that can be stale.
+			config:       "",
+			knownAs:      names,
+			clearKnownAs: len(names) == 0,
+			keepKey:      true,
+		}, ch)
+		if res != nil {
+			res.namesChanged, res.changedNames = true, names
 		}
 		ch <- runDoneMsg{err: err, result: res}
 	}()
