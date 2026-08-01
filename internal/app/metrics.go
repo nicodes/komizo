@@ -1,7 +1,6 @@
 package app
 
 import (
-	"fmt"
 	"math"
 	"sort"
 	"strconv"
@@ -19,130 +18,6 @@ import (
 // Counts, never lines. The host does the totalling and sends back one record per
 // minute per app; raw log lines -- which carry client IPs and request paths --
 // stay on the box.
-
-// accessLog is where the generated site blocks write. See alpine.sh.
-const accessLog = "/srv/_proxy/logs/access.log"
-
-// metricsScript totals the requests in a range, per app.
-//
-// The range is applied on the host so the answer is small and roughly constant
-// however big the log has grown, and however wide a range is asked for. Reading is bounded by BYTES as well: a rolled
-// 10MB log must not become a 10MB scan every five seconds, and the tail is the
-// end anyone is asking about.
-//
-// A partial first line from cutting mid-file is not a special case -- none of
-// the three patterns match it, so it is skipped like any line that is not a
-// request.
-func metricsScript(r timeRange) string {
-	return stateHelper + fmt.Sprintf(`
-# --- request counts, per app, per minute ---------------------------------
-if [ -f %[1]s ]; then
-	# Hostname -> app, from what each app declared. Read first so the awk over
-	# the log can attribute as it goes rather than in a second pass.
-	#
-	# A wildcard entry (*.iframe.ormos.dev) is stored under its suffix, and a
-	# hostname that matches nothing is counted for no app -- which is the honest
-	# answer for a name pointed at this box by someone else.
-	#
-	# The apps are enumerated from komizo's own records, and the app NAME comes
-	# from the record rather than from the directory it lives in. This used to
-	# glob /srv/*/hostnames and take the basename, which was wrong twice over:
-	# an app placed elsewhere with --app-dir was invisible, so its charts were
-	# permanently empty; and an app whose directory did not match its name was
-	# attributed to a bucket no app row matches, which looks identical. Every
-	# other reader on the box was moved to the state files; this was the last
-	# one left behind.
-	{
-		for _state in /var/lib/komizo/apps/*.env; do
-			[ -f "$_state" ] || continue
-			a="${_state##*/}"; a="${a%%.env}"
-			d="$(komizo_state "$_state" APP_DIR)"
-			# shellcheck disable=SC2015 # both sides are tests; either failing means skip
-			[ -n "$d" ] && [ -f "$d/hostnames" ] || continue
-			# name [-> service]. The service is what the app says serves that
-			# name; blank when it did not say, which is the honest default --
-			# nothing on this box can work it out otherwise.
-			sed 's/#.*//' "$d/hostnames" | tr -d '\r' | awk -v a="$a" 'NF {
-				svc = ""
-				if (NF >= 3 && $2 == "->") svc = $3
-				printf "MAP\t%%s\t%%s\t%%s\n", $1, a, svc
-			}'
-		done
-		tail -c 4000000 %[1]s 2>/dev/null
-	} | awk -v from=%[2]d -v to=%[3]d '
-		/^MAP\t/ { split($0, m, "\t"); map[m[2]] = m[3]; svc[m[2]] = m[4]; next }
-
-		{
-			# The three fields that matter, pulled by pattern rather than by
-			# position: this is JSON, and nothing promises key order.
-			#
-			# Whitespace after the colon is tolerated even though Caddy emits
-			# none -- the cost is one character in a pattern, and the failure it
-			# prevents is silent: every count reads zero and the chart is simply
-			# flat, which looks exactly like no traffic.
-			if (!match($0, /"ts":[ ]*[0-9.]+/)) next
-			ts = substr($0, RSTART + 5, RLENGTH - 5) + 0
-
-			# What the log actually covers, measured over every request line
-			# in the tail -- INCLUDING the ones outside the asked-for range,
-			# which is the whole point. It is the difference between "nothing
-			# was served in this minute" and "nobody was writing this down
-			# yet", and only the lines the range excludes can establish where
-			# that boundary is.
-			if (oldest == 0 || ts < oldest) oldest = ts
-			if (ts > newest) newest = ts
-
-			# The range, applied HERE rather than by the caller, so the answer
-			# is small and roughly constant however wide a range is asked for
-			# and however big the log has grown.
-			if (ts < from || ts > to) next
-
-			if (!match($0, /"host":[ ]*"[^"]+"/)) next
-			host = substr($0, RSTART, RLENGTH)
-			sub(/^"host":[ ]*"/, "", host); sub(/"$/, "", host)
-
-			if (!match($0, /"status":[ ]*[0-9]+/)) next
-			st = substr($0, RSTART + 9, RLENGTH - 9) + 0
-
-			app = map[host]
-			if (app == "") {
-				# Not an exact name. Try the wildcard its parent would have
-				# claimed: one label off the front, which is all Caddy allows.
-				sub(/^[^.]+\./, "*.", host)
-				app = map[host]
-			}
-			if (app == "") next
-			s = svc[host]
-
-			# Keyed by app AND the container the app said serves this name.
-			# Summing over the second gives the app; filtering on it gives the
-			# container. A name with no annotation lands under "", which is a
-			# real bucket meaning "this app, container unstated" rather than a
-			# missing one.
-			bucket = int(ts / 60) * 60
-			k = bucket "\t" app "\t" s
-			seen[k] = 1
-			if (st >= 500)      c5[k]++
-			else if (st >= 400) c4[k]++
-			else if (st >= 300) c3[k]++
-			else                c2[k]++
-		}
-
-		END {
-			# How far back the log itself goes. Without it every minute
-			# before the log started charts as zero -- a confident claim that
-			# nothing was served, drawn over a stretch nobody recorded.
-			if (oldest > 0) printf "mspan\t%%d\t%%d\n", oldest, newest
-			for (k in seen) {
-				split(k, f, "\t")
-				printf "metric\t%%s\t%%s\t%%s\t%%d\t%%d\t%%d\t%%d\n",
-					f[1], f[2], f[3], c2[k], c3[k], c4[k], c5[k]
-			}
-		}
-	'
-fi
-`, accessLog, r.from, r.to)
-}
 
 // metricRow is one minute of one app's traffic, split by status class.
 //

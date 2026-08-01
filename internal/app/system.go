@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nicodes/komizo/scripts"
 )
 
 // What the box and the things on it are spending: processor, memory, disk.
@@ -23,147 +25,6 @@ import (
 // side holding both readings knows what the interval actually was. A poll that
 // arrived two seconds late measures the gap it really covered rather than the
 // five seconds it was supposed to be.
-
-// systemProbe reads the box and defines how one container is read.
-//
-// ONE definition, used twice: spliced into the inventory the TUI runs every
-// five seconds, and written verbatim into the sampler that cron runs every
-// minute. The cgroup handling is the fiddly part -- two hierarchy layouts, two
-// time units, values that must stay blank when they cannot be read -- and two
-// copies of it would drift, silently, in the direction of whichever one nobody
-// happened to be looking at.
-const systemProbe = `
-# What this machine is spending: processor, memory, disk.
-#
-# CUMULATIVE COUNTERS, not rates. A rate needs two readings and this script is
-# one of them -- the caller keeps the previous sample and does the subtraction.
-# That also makes the interval explicit rather than assumed: a poll that arrived
-# late measures the longer gap it actually covered.
-# %.0f, never %d, for anything that can pass 2^31: BusyBox awk clamps %d to 32
-# bits, so a disk over 2GB printed as -2147483648 and the reader -- correctly
-# refusing a negative byte count -- dropped the line. Cumulative jiffies and
-# byte counts all cross 2^31 on ordinary boxes; %.0f is exact to 2^53.
-awk '$1 == "cpu" {
-	t = 0
-	for (i = 2; i <= NF; i++) t += $i
-	# Idle counts iowait with it. Waiting on a disk is not work, and counting it
-	# as busy makes a box that is merely reading from a slow disk look loaded.
-	printf "sys\tcpu\t%.0f\t%.0f\n", t, $5 + $6
-	exit
-}' /proc/stat 2>/dev/null
-awk '/^processor/ { n++ } END { if (n) printf "sys\tcores\t%d\t0\n", n }' /proc/cpuinfo 2>/dev/null
-# MemAvailable, never MemFree. Free memory on a healthy box is near zero -- the
-# kernel spends everything spare on cache and hands it back on demand -- so
-# reporting free as used is the classic way to make every server on earth look
-# seconds from death.
-awk '/^MemTotal:/ { t = $2 } /^MemAvailable:/ { a = $2 }
-	END { if (t > 0 && a != "") printf "sys\tmem\t%.0f\t%.0f\n", t * 1024, (t - a) * 1024 }' \
-	/proc/meminfo 2>/dev/null
-# Used and available, rather than the filesystem's raw size. df computes its own
-# percentage the same way, excluding the blocks reserved for root -- and a disk
-# figure that disagrees with df on the very same box is one nobody will believe,
-# however defensible the arithmetic behind it.
-#
-# Both paths, because the one that fills is usually not the one people watch:
-# images and volumes live under /var/lib/docker, which is frequently its own
-# filesystem. The device travels with the numbers so the caller can fold the
-# two when they are one filesystem -- by DEVICE, not mount point, because
-# docker setups routinely bind-mount /var/lib/docker onto itself, and df then
-# reports the same filesystem under two names.
-for p in / /var/lib/docker; do
-	[ -d "$p" ] || continue
-	df -k "$p" 2>/dev/null | awk 'NR > 1 && NF >= 4 {
-		printf "disk\t%s\t%s\t%.0f\t%.0f\n", $NF, $1, $3 * 1024, ($3 + $4) * 1024
-		exit
-	}'
-done
-
-
-# What one container is spending.
-#
-# Read from the CGROUP, which is where the kernel does the accounting anyway --
-# 'docker stats' reads the same files and then streams, which is why it costs a
-# second per call. This is three small reads with no daemon in the path, cheap
-# enough to ride the five-second poll.
-#
-# Same shape as the box's numbers: cumulative processor time, and memory as of
-# now. The caller subtracts.
-#
-# Memory excludes inactive page cache, which is the convention 'docker stats'
-# follows and the honest one: cache is memory the container is BORROWING and the
-# kernel will take straight back under pressure. Counting it makes anything that
-# has ever read a large file look permanently swollen.
-container_stat() {
-	_pid="$1"
-	[ -n "$_pid" ] && [ "$_pid" != "0" ] || return 0
-	_cpu=""; _mem=""; _lim=""
-	# cgroup v2: one unified hierarchy, on the line whose id is 0.
-	_cg="$(awk -F: '$1 == "0" { print $3; exit }' "/proc/$_pid/cgroup" 2>/dev/null)"
-	if [ -n "$_cg" ] && [ -d "/sys/fs/cgroup$_cg" ]; then
-		_d="/sys/fs/cgroup$_cg"
-		_cpu="$(awk '$1 == "usage_usec" { print $2; exit }' "$_d/cpu.stat" 2>/dev/null)"
-		_cur="$(cat "$_d/memory.current" 2>/dev/null)"
-		_ina="$(awk '$1 == "inactive_file" { print $2; exit }' "$_d/memory.stat" 2>/dev/null)"
-		_lim="$(cat "$_d/memory.max" 2>/dev/null)"
-		[ -n "$_cur" ] && _mem=$((_cur - ${_ina:-0}))
-	else
-		# cgroup v1: a hierarchy per controller, each on its own line. Still what
-		# older Alpine and anything with a v1 boot argument presents.
-		_c1="$(awk -F: '$2 ~ /(^|,)cpuacct(,|$)/ { print $3; exit }' "/proc/$_pid/cgroup" 2>/dev/null)"
-		if [ -n "$_c1" ] && [ -f "/sys/fs/cgroup/cpuacct$_c1/cpuacct.usage" ]; then
-			# Nanoseconds there, microseconds under v2. Converted here so the
-			# caller never has to know which kind of box it is talking to.
-			_cpu="$(awk '{ printf "%.0f", $1 / 1000; exit }' "/sys/fs/cgroup/cpuacct$_c1/cpuacct.usage" 2>/dev/null)"
-		fi
-		_m1="$(awk -F: '$2 ~ /(^|,)memory(,|$)/ { print $3; exit }' "/proc/$_pid/cgroup" 2>/dev/null)"
-		if [ -n "$_m1" ] && [ -f "/sys/fs/cgroup/memory$_m1/memory.usage_in_bytes" ]; then
-			_cur="$(cat "/sys/fs/cgroup/memory$_m1/memory.usage_in_bytes" 2>/dev/null)"
-			_ina="$(awk '$1 == "total_inactive_file" { print $2; exit }' "/sys/fs/cgroup/memory$_m1/memory.stat" 2>/dev/null)"
-			_lim="$(cat "/sys/fs/cgroup/memory$_m1/memory.limit_in_bytes" 2>/dev/null)"
-			[ -n "$_cur" ] && _mem=$((_cur - ${_ina:-0}))
-		fi
-	fi
-	# Blanks travel as blanks. A cgroup this could not read is UNKNOWN, and a
-	# zero would be a measurement -- one saying the container is using nothing.
-	printf '%s\t%s\t%s' "${_cpu:-}" "${_mem:-}" "${_lim:-}"
-}
-
-# Every running container on the box, with the app it belongs to.
-#
-# The sampler's own enumeration. The live poll already walks the apps for other
-# reasons and calls container_stat as it goes; cron has no such loop, and
-# without this the sampler wrote the box's numbers and nothing else -- so every
-# app and container chart was empty however long the box had been up, which is a
-# failure that looks exactly like an idle machine.
-#
-# Membership comes from compose rather than a label match on the project name:
-# compose derives that name from the directory and normalises it, so an app
-# under a custom --app-dir would not match its own containers.
-#
-# Running containers only. A stopped one has no pid and no cgroup, so there is
-# nothing to read -- and its ABSENCE from a reading is the honest record of it,
-# which the reader turns back into a zero.
-container_stats_all() {
-	command -v docker >/dev/null 2>&1 || return 0
-	docker info >/dev/null 2>&1 || return 0
-	for _state in /var/lib/komizo/apps/*.env; do
-		[ -f "$_state" ] || continue
-		_app="${_state##*/}"; _app="${_app%.env}"
-		_dir="$(komizo_state "$_state" APP_DIR)"
-		# shellcheck disable=SC2015 # both sides are tests; either failing means skip
-		[ -n "$_dir" ] && [ -f "$_dir/compose.yml" ] || continue
-		for _cid in $(docker compose -f "$_dir/compose.yml" --project-directory "$_dir" ps -q 2>/dev/null); do
-			# One inspect for both fields: this runs per container per minute,
-			# and two calls would be twice the docker round trips for one row.
-			_info="$(docker inspect "$_cid" -f '{{index .Config.Labels "com.docker.compose.service"}}	{{.State.Pid}}' 2>/dev/null)"
-			_svc="${_info%%	*}"
-			_cpid="${_info##*	}"
-			[ -n "$_svc" ] || continue
-			printf 'cstat\t%s\t%s\t%s\n' "$_app" "$_svc" "$(container_stat "$_cpid")"
-		done
-	done
-}
-`
 
 // sysHistory is how many derived points are kept. At the five-second poll that
 // is about half an hour, which is as far back as a number nobody is storing
@@ -624,68 +485,6 @@ func mountsIn(s []sysSample) []string {
 	return out
 }
 
-// volumeProbe measures volumes with du, for one app or for all of them.
-//
-// One definition, called two ways: with an app name by the monitor, which wants
-// an answer now for the app being looked at, and with none by the sampler,
-// which walks the box on a slow cadence so there is a history to chart.
-//
-// Volumes only. A container's writable layer needs `docker ps -s`, which walks
-// every layer of every image and is slow enough to notice -- and it should be
-// near nothing anyway, because whatever is written outside a volume is deleted
-// by the next deploy. The volumes are where an app's disk actually goes.
-const volumeProbe = `
-# shellcheck disable=SC2120 # called with an app by the monitor, without one by the sampler
-volumes_all() {
-	_only="${1:-}"
-	command -v docker >/dev/null 2>&1 || return 0
-	for _state in /var/lib/komizo/apps/*.env; do
-		[ -f "$_state" ] || continue
-		_app="${_state##*/}"; _app="${_app%.env}"
-		[ -z "$_only" ] || [ "$_app" = "$_only" ] || continue
-		_dir="$(komizo_state "$_state" APP_DIR)"
-		# shellcheck disable=SC2015 # both sides are tests; either failing means skip
-		[ -n "$_dir" ] && [ -f "$_dir/compose.yml" ] || continue
-		_ids="$(docker compose -f "$_dir/compose.yml" --project-directory "$_dir" ps -aq 2>/dev/null)"
-		[ -n "$_ids" ] || continue
-		# shellcheck disable=SC2086 # deliberate word splitting: one container id per arg
-		# service, volume name, and where it lives on the host. One line per
-		# mount, so a volume shared by two containers appears under both.
-		_pairs="$(docker inspect $_ids --format \
-			'{{$s := index .Config.Labels "com.docker.compose.service"}}{{range .Mounts}}{{if eq .Type "volume"}}{{$s}}	{{.Name}}	{{.Source}}
-{{end}}{{end}}' 2>/dev/null)"
-		# Measured once per volume, then attributed. Two containers sharing one
-		# volume must not make it count twice, and du is far too expensive to
-		# run twice for the same answer.
-		_sizes=""
-		for _src in $(printf '%s\n' "$_pairs" | awk -F'\t' 'NF >= 3 && $3 != "" { print $3 }' | sort -u); do
-			[ -d "$_src" ] || continue
-			_sz="$(du -sxk "$_src" 2>/dev/null | awk '{ print $1 * 1024; exit }')"
-			[ -n "$_sz" ] && _sizes="$_sizes$_src	$_sz
-"
-		done
-		printf '%s\n' "$_pairs" | awk -F'\t' -v app="$_app" -v sz="$_sizes" '
-			BEGIN {
-				n = split(sz, L, "\n")
-				for (i = 1; i <= n; i++) {
-					split(L[i], p, "\t")
-					if (p[1] != "") S[p[1]] = p[2]
-				}
-			}
-			NF >= 3 && S[$3] != "" { printf "vol\t%s\t%s\t%s\t%s\n", app, $1, $2, S[$3] }'
-	done
-}
-`
-
-// storageScript is one app's volumes, measured now.
-//
-// Kept off the five-second poll: it costs a du of every volume the app mounts,
-// which is the only figure on this screen that cannot be read from a counter.
-// So it runs once, when the monitor is opened, for the one app being looked at.
-func storageScript(app string) string {
-	return stateHelper + volumeProbe + fmt.Sprintf("\nvolumes_all %s\n", shQuote(app))
-}
-
 // volRow is one volume, as much of the box's disk as one app can account for.
 type volRow struct {
 	app, service string
@@ -797,53 +596,6 @@ func (m *model) takeSample(s sysSample) {
 	m.sys, m.sysHave = s, true
 }
 
-// Where the sampler writes and how much it keeps.
-//
-// Under /var/lib rather than /srv: /srv is apps, and is mounted into the proxy.
-// This is the server's own record and belongs to nothing that ships.
-const (
-	systemLog = "/var/lib/komizo/system.log"
-	// Trimmed by BYTES, not by age. Age would make retention depend on how many
-	// containers the box runs -- twenty containers would keep a fifth as long as
-	// four for the same disk -- and the thing actually worth bounding is the
-	// disk. Roughly a week at a handful of containers.
-	systemLogMax  = 8000000
-	systemLogKeep = 60000 // lines kept when it is trimmed
-
-	// How often the sampler measures volumes, in minutes.
-	//
-	// Not every minute, and this is the one measurement that has to be rationed.
-	// Everything else here is a counter read -- open a file, read a number. Disk
-	// use needs du, which walks the whole tree, and walking a database volume
-	// sixty times an hour would make watching the box the heaviest thing
-	// happening on it.
-	//
-	// A quarter hour loses nothing worth having. Storage moves in the direction
-	// of full, slowly, and the question it answers -- "what is filling this
-	// disk, and how fast" -- is not one that a minute's resolution answers any
-	// better than fifteen.
-	volEveryMinutes = 15
-)
-
-// samplerScript installs the per-minute sampler and makes sure cron is running.
-//
-// This exists because /proc has no history. The request charts read a log the
-// box keeps whether anything is watching or not, and the resource charts had
-// nothing equivalent -- what komizo sampled while it happened to be open, gone
-// on quit. So something on the box has to write them down, and the smallest
-// thing that can is a shell script and a crontab line.
-//
-// One record per minute, of the same counters the live poll reads: the reader
-// subtracts consecutive samples exactly as it does for the live ones, so a
-// minute of history and a five-second gap go through identical arithmetic.
-//
-// Safe to re-run. It is written every time rather than checked for, so a komizo
-// that has learned to read something new installs a sampler that writes it.
-func samplerScript() string {
-	return fmt.Sprintf(installerTemplate, systemLog, samplerFile(), systemLogMax,
-		systemLogKeep, volEveryMinutes, systemLog+".lock", komizoStamp(), versionText())
-}
-
 // komizoStamp is what komizo has installed on a box, and how the interface can
 // tell whether it is current.
 //
@@ -858,79 +610,8 @@ func samplerScript() string {
 // Twelve hex characters, like the config SHAs on the app rows, so the two read
 // as the same kind of fact.
 func komizoStamp() string {
-	sum := sha256.Sum256([]byte(samplerFile()))
+	sum := sha256.Sum256([]byte(scripts.Sampler()))
 	return hex.EncodeToString(sum[:])[:12]
-}
-
-// samplerFile is the script cron runs, exactly as it lands on the box.
-func samplerFile() string {
-	return fmt.Sprintf(samplerTemplate, systemLog, stateHelper+systemProbe+volumeProbe,
-		systemLogMax, systemLogKeep, volEveryMinutes, systemLog+".lock")
-}
-
-const installerTemplate = `
-set -eu
-log() { printf '\n==> %%s\n' "$*"; }
-
-log "Installing the resource sampler"
-mkdir -p /var/lib/komizo
-chmod 750 /var/lib/komizo
-
-# Quoted delimiter: everything between here and the end marker is written
-# literally, so the probe's own $variables survive into the installed script
-# instead of being expanded once, now, against this shell.
-cat > /usr/local/bin/komizo-sample <<'KOMIZO_SAMPLER_EOF'
-%[2]s
-KOMIZO_SAMPLER_EOF
-chmod 755 /usr/local/bin/komizo-sample
-
-# The crontab line is replaced rather than appended to, so re-running setup on a
-# box that already has one leaves one and not two.
-mkdir -p /etc/crontabs
-touch /etc/crontabs/root
-grep -v 'komizo-sample' /etc/crontabs/root > /etc/crontabs/root.tmp 2>/dev/null || true
-printf '* * * * * /usr/local/bin/komizo-sample\n' >> /etc/crontabs/root.tmp
-mv /etc/crontabs/root.tmp /etc/crontabs/root
-
-# busybox crond is installed on Alpine but not necessarily running, and a
-# crontab nothing reads is the quietest possible failure: every screen looks
-# right and the history is simply always empty.
-if command -v rc-update >/dev/null 2>&1; then
-	rc-update add crond default >/dev/null 2>&1 || true
-	rc-service crond start >/dev/null 2>&1 || rc-service crond restart >/dev/null 2>&1 || true
-fi
-
-# Written now rather than waiting up to a minute for cron, so the first reading
-# exists by the time anyone opens the monitor -- and so a sampler that cannot
-# run fails HERE, visibly, in the output of the thing that installed it.
-/usr/local/bin/komizo-sample
-
-# Two lines, written together: the komizo VERSION that set this box up, and the
-# content STAMP of what it wrote. The version is what the interface shows beside
-# the CLI's own -- "which komizo provisioned this box" -- and the stamp is the
-# separate, exact answer to "would running the update change anything". An update
-# rewrites both, so after one the box reads as the version in your hand.
-printf '%%s\n%%s\n' %[8]q %[7]q > /var/lib/komizo/version
-
-if [ -s %[1]s ]; then
-	log "Sampling this machine every minute into %[1]s"
-else
-	printf 'warning: the sampler wrote nothing -- resource history will be empty\n' >&2
-fi
-`
-
-// systemLogScript reads back what the sampler wrote in a range.
-//
-// Bounded by bytes as well as by time, for the same reason the access log is:
-// the tail is the part anyone is asking about, and a file that has grown must
-// not turn into a growing scan.
-func systemLogScript(r timeRange) string {
-	return fmt.Sprintf(`
-if [ -f %[1]s ]; then
-	tail -c 4000000 %[1]s 2>/dev/null | awk -F'\t' -v from=%[2]d -v to=%[3]d '
-		$1 == "S" && $2 + 0 >= from && $2 + 0 <= to'
-fi
-`, systemLog, r.from, r.to)
 }
 
 // parseSystemLog turns the sampler's records back into readings, one per
@@ -968,63 +649,3 @@ func parseSystemLog(out string) []sysSample {
 	}
 	return out2
 }
-
-// samplerTemplate is the sampler as it lands on the box.
-const samplerTemplate = `#!/bin/sh
-# Written by komizo. Edits are lost the next time the server is set up.
-#
-# One reading of this machine, appended to a log. Run by cron every minute.
-set -u
-LOG=%[1]q
-LOCK=%[6]q
-now="$(date +%%s)"
-
-# One sampler at a time. Every minute is comfortable for counter reads, and then
-# every fifteenth minute runs du over the volumes -- which on a large one can
-# outlast the minute it started in. Two overlapping runs would interleave their
-# lines into the log, and a half of one reading merged with a half of another is
-# worse than a missing minute: it looks like a reading.
-#
-# mkdir because it is atomic on every filesystem this will ever run on. A lock
-# left behind by a kill -9 is cleared once it is older than any honest run.
-if [ -d "$LOCK" ] && [ -z "$(find "$LOCK" -maxdepth 0 -mmin +20 2>/dev/null)" ]; then
-	exit 0
-fi
-rm -rf "$LOCK" 2>/dev/null || true
-mkdir "$LOCK" 2>/dev/null || exit 0
-trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT INT TERM
-
-# The whole reading is built before ANY of it is written. A sampler killed
-# half way through a slow docker call would otherwise leave a partial minute
-# in the log -- a box that appears to have lost containers for one minute,
-# which is exactly the shape of the incident somebody would come here to
-# investigate.
-out="$(
-%[2]s
-container_stats_all
-# Volumes on a slower cadence than everything else, because they cost a du
-# rather than a file read. Keyed off the clock rather than off a counter kept
-# somewhere, so it stays on the same quarter-hours across reboots and re-installs.
-#
-# Inside this block, and after it, deliberately: the probe DEFINES volumes_all,
-# and a shell runs a file as it reads it -- so calling it above would be calling
-# a function that does not exist yet, on a line that then quietly produces
-# nothing. Which is the same failure the sampler already shipped once.
-# Also on the very first run, whether or not the clock has reached a quarter
-# hour. Otherwise a box set up at 11:07 records no storage at all until 11:15,
-# and needs a second one at 11:30 before there are two points to draw a line
-# between -- so the chart is missing for the first half hour after installing
-# the thing that draws it, which reads as broken rather than as new.
-if [ ! -f "$LOG" ] || [ "$(( now / 60 %% %[5]d ))" -eq 0 ]; then
-	volumes_all
-fi
-)"
-[ -n "$out" ] || exit 0
-printf '%%s\n' "$out" | sed "s/^/S	$now	/" >> "$LOG"
-
-# Trimmed only when it has grown, rather than rewritten every minute: the copy
-# costs the whole file, and paying that once every few days is the difference
-# between a cron job nobody notices and one that shows up in iowait.
-if [ "$(wc -c < "$LOG" 2>/dev/null || echo 0)" -gt %[3]d ]; then
-	tail -n %[4]d "$LOG" > "$LOG.tmp" 2>/dev/null && mv "$LOG.tmp" "$LOG"
-fi`

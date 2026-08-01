@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nicodes/komizo/scripts"
 )
 
 // The inventory's per-container join, executed.
@@ -28,11 +30,11 @@ import (
 // closes it.
 func joinAwk(t *testing.T, marker string) string {
 	t.Helper()
-	i := strings.Index(inventoryScript, marker)
+	i := strings.Index(scripts.Inventory(), marker)
 	if i < 0 {
 		t.Fatalf("could not find %q in the inventory script -- has the join been rewritten?", marker)
 	}
-	rest := inventoryScript[i+len(marker):]
+	rest := scripts.Inventory()[i+len(marker):]
 	j := strings.Index(rest, "'")
 	if j < 0 {
 		t.Fatal("the awk program is not quoted as expected")

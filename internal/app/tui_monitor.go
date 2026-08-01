@@ -9,6 +9,8 @@ import (
 	"github.com/NimbleMarkets/ntcharts/linechart/timeserieslinechart"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/nicodes/komizo/scripts"
 )
 
 // The one screen that shows a MEASUREMENT rather than a fact.
@@ -80,7 +82,7 @@ type monitorMsg struct {
 
 func fetchMonitor(t target, app string, r timeRange) tea.Cmd {
 	return func() tea.Msg {
-		script := metricsScript(r) + "\n" + systemLogScript(r)
+		script := scripts.Metrics(r.from, r.to) + "\n" + scripts.SystemLogRange(r.from, r.to)
 		// Disk is measured for ONE app, here, rather than for every app on the
 		// poll: it costs a du of every volume the app mounts, which is the only
 		// number on this screen that cannot be read from a counter.
@@ -89,7 +91,7 @@ func fetchMonitor(t target, app string, r timeRange) tea.Cmd {
 		// walking every volume to arrive at a smaller version of a number the
 		// kernel hands over instantly would be work done to be less accurate.
 		if app != "" {
-			script += "\n" + storageScript(app)
+			script += "\n" + scripts.Storage(app)
 		}
 		out, err := t.runCapture(script)
 		if err != nil {
