@@ -1,4 +1,4 @@
-name: CI
+name: ci
 
 # Every push and pull request: build, then test, on one runner.
 #
@@ -29,6 +29,9 @@ concurrency:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    # Bounded, so a step that hangs fails here rather than sitting until the
+    # runner's own timeout hours later. The Go suite alone is allowed 5m.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
