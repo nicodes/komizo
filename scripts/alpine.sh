@@ -697,6 +697,42 @@ if [ -n "$hostnames" ]; then
 	# The apps are enumerated from komizo's own records rather than by globbing
 	# /srv, because an app is not required to live there: --app-dir puts it
 	# anywhere, and such an app was neither checked against nor checked.
+	# Held across the check AND the claim, box-wide.
+	#
+	# The deploy lock above is per-app, deliberately, so two different apps still
+	# deploy at once -- they share nothing but the daemon. This one is the
+	# exception: checking whether a hostname is taken and then taking it is a
+	# read-then-write over state every app on the box shares, and two apps
+	# claiming the same name at the same moment both passed the check. Neither
+	# was told what had happened; they wrote their routes, and whichever ran
+	# `caddy validate` second failed with "the routes generated from X do not
+	# load" -- or, on the other interleaving, the FIRST app failed for a conflict
+	# the second one caused. The good message this check exists to produce is the
+	# one that got skipped.
+	#
+	# A short critical section, not the whole deploy: it is a scan of a few small
+	# files and one write, so this costs concurrent deploys nothing measurable
+	# while making the claim atomic.
+	#
+	# Skipped wherever the lock cannot be taken, exactly as the deploy lock is --
+	# a busybox without the flock applet, or a /run this cannot write. Refusing
+	# to deploy would trade a rare bad error message for a certain outage.
+	claim_lock="/run/komizo/hostnames.lock"
+	claimed_lock=0
+	if command -v flock >/dev/null 2>&1 &&
+		mkdir -p /run/komizo 2>/dev/null &&
+		: > "$claim_lock" 2>/dev/null
+	then
+		exec 8>"$claim_lock"
+		if flock -w 60 8; then
+			claimed_lock=1
+		else
+			echo "deploy: waited 60s for another app to finish claiming hostnames" >&2
+			revert
+			exit 1
+		fi
+	fi
+
 	for h in $hostnames; do
 		# Pathname expansion is off (set -f) so $hostnames cannot glob; restore it
 		# just for this scan of the other apps' state files, then turn it back off.
@@ -709,6 +745,7 @@ if [ -n "$hostnames" ]; then
 			[ -n "$_odir" ] && [ -f "$_odir/hostnames" ] || continue
 			if awk '{ print $1 }' "$_odir/hostnames" 2>/dev/null | grep -qxF "$h"; then
 				set -f
+				if [ "$claimed_lock" = 1 ]; then exec 8>&-; fi
 				revert
 				echo "deploy: '$h' is already claimed by $_other" >&2
 				exit 1
@@ -719,7 +756,11 @@ if [ -n "$hostnames" ]; then
 
 	# Recorded WITH annotations: the interface reads this file to attribute
 	# requests, and the arrows are the only place that mapping exists.
+	#
+	# This write is the claim, which is why the lock spans it: another app's scan
+	# above reads exactly this file.
 	printf '%s\n' "$hostmap" > hostnames
+	if [ "$claimed_lock" = 1 ]; then exec 8>&-; fi
 
 	# Wildcards get their OWN site block, because `tls { on_demand }` applies to
 	# every name in the block it sits in. Folded together with the concrete
