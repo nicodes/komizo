@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nicodes/komizo/scripts"
 )
 
 func TestARangeIsAnOffsetOrTwoMoments(t *testing.T) {
@@ -151,13 +153,13 @@ func TestMinutesWithNoRecordAreNotPlotted(t *testing.T) {
 // is asked for and however big the logs have grown.
 func TestTheRangeIsAppliedOnTheHost(t *testing.T) {
 	r := timeRange{from: 1700000000, to: 1700003600}
-	for _, script := range []string{metricsScript(r), systemLogScript(r)} {
+	for _, script := range []string{scripts.Metrics(r.from, r.to), scripts.SystemLogRange(r.from, r.to)} {
 		if !strings.Contains(script, "1700000000") || !strings.Contains(script, "1700003600") {
 			t.Errorf("the range is not in the script:\n%s", script)
 		}
 	}
 	// And the access log's own coverage comes back with the counts.
-	if !strings.Contains(metricsScript(r), "mspan") {
+	if !strings.Contains(scripts.Metrics(r.from, r.to), "mspan") {
 		t.Error("the counts do not report how far back the log reaches")
 	}
 	span, ok := parseMetricSpan("mspan\t1699000000\t1700000000\n")
@@ -206,7 +208,7 @@ func TestTheIndexSparklineIgnoresTheMonitorRange(t *testing.T) {
 	// fetch() builds its own window from the clock; assert on the script it
 	// would send rather than on the model.
 	now := time.Now().Unix()
-	script := metricsScript(timeRange{from: now - sparkWindow*60, to: now})
+	script := scripts.Metrics(now-sparkWindow*60, now)
 	if strings.Contains(script, "\t1000\t") {
 		t.Error("the poll should not inherit the monitor's range")
 	}

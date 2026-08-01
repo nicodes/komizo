@@ -159,8 +159,8 @@ func fetchApps(t target) tea.Cmd {
 		// A window relative to now, always: the sparkline on a row is "the last
 		// half hour" and has to stay that whatever range the monitor is showing.
 		now := time.Now().Unix()
-		out, err := t.runCapture(inventoryScript + "\n" +
-			metricsScript(timeRange{from: now - sparkWindow*60, to: now}))
+		out, err := t.runCapture(scripts.Inventory() + "\n" +
+			scripts.Metrics(now-sparkWindow*60, now))
 		if err != nil {
 			return appsMsg{err: fmt.Errorf("could not read the server's inventory: %w", err)}
 		}
@@ -562,7 +562,7 @@ func streamSampler(ch chan tea.Msg, t target) error {
 	ch <- runOutputMsg("")
 	ch <- runOutputMsg("installing the resource sampler...")
 	c := exec.Command("ssh", t.sshArgs("sh -s")...)
-	if err := stream(ch, c, samplerScript()); err != nil {
+	if err := stream(ch, c, scripts.SamplerInstall(komizoStamp(), versionText())); err != nil {
 		return fmt.Errorf("the server is ready, but the resource sampler failed -- resource history will be empty")
 	}
 	return nil

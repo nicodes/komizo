@@ -1,44 +1,116 @@
 package scripts
 
-import _ "embed"
+import (
+	_ "embed"
+	"fmt"
+	"regexp"
+	"strings"
+)
 
-// The server-side scripts, shipped over SSH and run as root on the box.
+// The server-side shell, shipped over SSH and run as root on the box.
 //
-// They live under cli/ so that every Go file in this project is in one package
-// -- go:embed cannot reach outside its own package directory, and having a
-// second package at the repository root purely to hold an embed directive was
-// the tail wagging the dog.
+// ALL of it lives here as .sh files, and none of it is built with fmt.Sprintf.
+// That second half is the point.
 //
-// They stay TEXT rather than being generated or compiled in: what runs as root
-// on someone's server should be readable before it does, which is what
-// `komizo script` is for.
+// Shell held in a Go FORMAT string has to have every literal '%' doubled, and
+// '%' is not rare in shell -- it is parameter expansion (${a%.env}), printf,
+// arithmetic modulo, and date formats. The sampler alone carried all four
+// meanings in one string, plus Go's own verbs on top. Miss one doubling and the
+// meaning changes SILENTLY, in code that runs as root.
+//
+// alpine.sh already learned this and says so in its own comments: it used to be
+// an unquoted heredoc with every '$' hand-escaped, "where one missed backslash
+// silently moved an expansion from deploy time to install time -- the worst
+// possible failure mode for the most security-sensitive file on the box". The
+// fix there was to write ordinary shell and spell the substituted values
+// __LIKE_THIS__. This is the same fix, applied to the half that was still in Go.
+//
+// So: the files are ordinary shell. They are syntax-highlighted, greppable,
+// runnable by hand, printed verbatim by `komizo script`, and checked by
+// shellcheck through one glob -- none of which is true of a Go string.
 
-// AlpineScript sets an app up: Docker, the deploy account, its two privileged
-// commands, the doas rules and the sshd restrictions.
-//
 //go:embed alpine.sh
 var AlpineScript string
 
-// AlpineRemoveScript tears one app back off. Separate from AlpineScript so that
-// the thing which deletes can be read on its own, without hunting for a branch
-// inside the thing that creates.
-//
 //go:embed alpine-remove.sh
 var AlpineRemoveScript string
 
-// AlpineInitScript prepares the server itself: the container runtime and the
-// network apps share. Separate from AlpineScript because setting a server up
-// and putting an app on it are different things -- a fresh box is either
-// initialised or it is not, rather than becoming half-configured as a side
-// effect of whichever app was added first.
-//
 //go:embed alpine-init.sh
 var AlpineInitScript string
 
-// AlpineProxyScript installs the one shared reverse proxy. Separate again
-// because it is per-SERVER, not per-app: it takes no app name, creates no
-// account, and re-running it is how you update Caddy or move it to another
-// network.
-//
 //go:embed alpine-proxy.sh
 var AlpineProxyScript string
+
+// The read-only halves: what the interface and the sampler run to describe a
+// box. Not printed by `komizo script` -- they change nothing -- but they run on
+// the same server and get the same treatment.
+
+//go:embed inventory.sh
+var inventory string
+
+//go:embed metrics.sh
+var metrics string
+
+//go:embed system-log.sh
+var systemLog string
+
+//go:embed storage.sh
+var storage string
+
+//go:embed sampler.sh
+var sampler string
+
+//go:embed sampler-install.sh
+var samplerInstall string
+
+// The pieces more than one script needs. Spliced in by placeholder rather than
+// duplicated: the cgroup handling is the fiddly part, and two copies would
+// drift in the direction of whichever nobody was looking at.
+
+//go:embed lib-state.sh
+var libState string
+
+//go:embed lib-system-probe.sh
+var libSystemProbe string
+
+//go:embed lib-volume-probe.sh
+var libVolumeProbe string
+
+// leftover matches a placeholder that nothing replaced.
+var leftover = regexp.MustCompile(`__[A-Z][A-Z0-9_]*__`)
+
+// render substitutes __PLACEHOLDER__ values into a script and refuses to return
+// one that still has any left.
+//
+// The refusal is the safety property. A renamed placeholder, or a caller that
+// forgot one, would otherwise ship a literal __APP__ to a server and fail
+// somewhere much later with a message about a directory that does not exist.
+// alpine.sh guards its own substitution the same way, and calls a leftover what
+// it is: a komizo bug.
+//
+// Panics rather than returning an error because every caller passes a fixed set
+// of keys decided at compile time. A leftover is unreachable unless the code is
+// wrong, and threading an error through would only move the same crash further
+// from its cause.
+func render(script string, subs ...string) string {
+	if len(subs)%2 != 0 {
+		panic("scripts.render: odd number of substitution arguments")
+	}
+	out := strings.NewReplacer(subs...).Replace(script)
+	if m := leftover.FindString(out); m != "" {
+		panic(fmt.Sprintf("scripts.render: %s was never substituted -- this is a komizo bug", m))
+	}
+	return out
+}
+
+// ShQuote wraps a value for a shell command line.
+//
+// Single quotes, with any single quote in the value closed, escaped and
+// reopened -- the one form that is safe for arbitrary text in POSIX sh.
+//
+// Exported and living HERE because this is the package that builds shell. The
+// app package had its own copy; it now calls this one, so there is a single
+// definition of the rule that makes every quoted value in this tool safe.
+func ShQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}

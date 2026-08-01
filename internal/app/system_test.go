@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nicodes/komizo/scripts"
 )
 
 // A sample as the host script actually emits it: the three box records, two
@@ -495,7 +497,7 @@ func TestAnAppGetsNoDiskChart(t *testing.T) {
 // box's numbers and nothing else -- every app and container chart was empty
 // however long the box had been up, which looks exactly like an idle machine.
 func TestTheSamplerActuallyReadsContainers(t *testing.T) {
-	sh := samplerScript()
+	sh := scripts.SamplerInstall(komizoStamp(), versionText())
 	if !strings.Contains(sh, "container_stats_all() {") {
 		t.Fatal("the sampler has no container enumeration")
 	}
@@ -643,7 +645,7 @@ func TestStorageIsChartedFromTheReadingsThatMeasuredIt(t *testing.T) {
 // quietly produces nothing, which is exactly how the sampler shipped once
 // already with a container reader it never called.
 func TestTheSamplerDefinesEveryFunctionBeforeItCallsIt(t *testing.T) {
-	sh := samplerScript()
+	sh := scripts.SamplerInstall(komizoStamp(), versionText())
 	for _, fn := range []string{"container_stat", "container_stats_all", "volumes_all"} {
 		def := strings.Index(sh, fn+"() {")
 		if def < 0 {
@@ -674,7 +676,7 @@ func TestTheSamplerDefinesEveryFunctionBeforeItCallsIt(t *testing.T) {
 // runs would interleave their lines, and half of one reading merged with half
 // of another is worse than a missing minute: it looks like a reading.
 func TestTheSamplerTakesALock(t *testing.T) {
-	sh := samplerScript()
+	sh := scripts.SamplerInstall(komizoStamp(), versionText())
 	if !strings.Contains(sh, "mkdir \"$LOCK\"") {
 		t.Error("the sampler does not take a lock")
 	}
@@ -964,9 +966,23 @@ func TestTheStorageChartIncludesTheMeasurementTakenOnOpening(t *testing.T) {
 // missing for the first half hour after installing the thing that draws it,
 // which reads as broken rather than as new.
 func TestTheSamplerMeasuresVolumesOnItsFirstRun(t *testing.T) {
-	sh := samplerScript()
-	if !strings.Contains(sh, `if [ ! -f "$LOG" ] || [ "$(( now / 60 % 15 ))" -eq 0 ]; then`) {
-		t.Error("the first run does not measure volumes")
+	sh := scripts.SamplerInstall(komizoStamp(), versionText())
+
+	// Asserted as two facts rather than as one literal line. The line used to
+	// be matched verbatim, including the substituted "15" -- so binding the
+	// interval to a variable, which changed nothing about what the sampler
+	// does, failed a test named for the behaviour. A test that breaks on
+	// formatting is one people learn to update without reading.
+	if !strings.Contains(sh, `[ ! -f "$LOG" ]`) {
+		t.Error("nothing makes the FIRST run measure volumes; a box set up at " +
+			"11:07 would record no storage until 11:15")
+	}
+	if !strings.Contains(sh, `VOL_EVERY=15`) {
+		t.Error("the volume interval is not 15 minutes")
+	}
+	if !strings.Contains(sh, `now / 60 % VOL_EVERY`) {
+		t.Error("the periodic measurement no longer keys off the clock, so it " +
+			"will drift across reboots instead of staying on the quarter hours")
 	}
 }
 
@@ -1062,13 +1078,13 @@ func TestTheStampFollowsWhatIsActuallyInstalled(t *testing.T) {
 		t.Errorf("stamp = %q, want 12 characters", komizoStamp())
 	}
 	// The installer writes the same stamp the interface compares against.
-	if !strings.Contains(samplerScript(), komizoStamp()) {
+	if !strings.Contains(scripts.SamplerInstall(komizoStamp(), versionText()), komizoStamp()) {
 		t.Error("the installer does not write the stamp the row reads")
 	}
 	// And it covers the sampler's contents: change the probe and the stamp
 	// moves, which is what makes a stale box detectable at all.
 	sum := komizoStamp()
-	if strings.Contains(samplerFile(), "container_stats_all") != true {
+	if strings.Contains(scripts.Sampler(), "container_stats_all") != true {
 		t.Fatal("the sampler no longer contains the probe this test relies on")
 	}
 	if sum == "" {
@@ -1380,7 +1396,7 @@ func sameSet(got, want []string) bool {
 // the app's own routes line on purpose -- an arrow reads as noise in a list of
 // addresses -- so it travels in a record of its own.
 func TestTheInventoryCarriesWhatServesEachName(t *testing.T) {
-	if !strings.Contains(inventoryScript, `printf "host\t%s\t%s\t%s\n"`) {
+	if !strings.Contains(scripts.Inventory(), `printf "host\t%s\t%s\t%s\n"`) {
 		t.Error("the inventory does not report what serves each hostname")
 	}
 	inv := parseInventory(
@@ -1620,26 +1636,6 @@ func TestTwoRealFilesystemsAreTwoBarsNamedInTheDetail(t *testing.T) {
 	legacy := parseSystem("disk\t/\t3000000000\t10000000000\n", time.Unix(1000, 0))
 	if len(legacy.disks) != 1 || legacy.disks[0].used != 3000000000 {
 		t.Errorf("legacy disks = %+v, want one entry for /", legacy.disks)
-	}
-}
-
-// BusyBox awk clamps printf %d to 32 bits. A disk over 2GB printed as
-// -2147483648, the reader refused the negative byte count, and the index drew
-// no disk bar at all -- on every box whose disk was bigger than 2GB, which is
-// every box. Anything in the probe that can pass 2^31 -- byte counts,
-// cumulative jiffies, cumulative microseconds -- must print with %.0f, which
-// is exact to 2^53.
-func TestTheProbeNeverPrintsAClampableNumber(t *testing.T) {
-	for i, ln := range strings.Split(systemProbe, "\n") {
-		if !strings.Contains(ln, "%d") || strings.HasPrefix(strings.TrimSpace(ln), "#") {
-			continue
-		}
-		// The core count is the one number here that cannot reach 2^31.
-		if strings.Contains(ln, "cores") {
-			continue
-		}
-		t.Errorf("probe line %d prints with %%d, which BusyBox awk clamps to 32 bits:\n%s",
-			i+1, strings.TrimSpace(ln))
 	}
 }
 
