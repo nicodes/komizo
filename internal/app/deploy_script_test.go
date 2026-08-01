@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nicodes/komizo/scripts"
 )
@@ -24,6 +25,9 @@ import (
 type deployBox struct {
 	root, appDir, routes, proxyDir, state, bin, config string
 	script                                             string
+	// env is extra environment for the docker stub, so a test can choose which
+	// docker call fails.
+	env []string
 }
 
 func newDeployBox(t *testing.T) *deployBox {
@@ -61,6 +65,17 @@ case "$1" in
   cp)  cp -a "$STUB_CONFIG/." "$3"; exit 0 ;;
   create) echo stubcid; exit 0 ;;
   ps)  echo komizo-proxy; exit 0 ;;
+  compose)
+    # A pull that fails is the interesting one: it happens AFTER the route
+    # file has been written and validated, so it is the only failure that can
+    # leave a published route behind.
+    for a in "$@"; do
+      if [ "$a" = "pull" ] && [ -n "$STUB_PULL_FAILS" ]; then
+        echo "Error response from daemon: manifest unknown" >&2
+        exit 1
+      fi
+    done
+    exit 0 ;;
 esac
 exit 0
 `)
@@ -121,10 +136,10 @@ func (b *deployBox) deploy(t *testing.T, version string) (string, error) {
 	t.Helper()
 	cmd := exec.Command("sh", "-s", version)
 	cmd.Stdin = strings.NewReader(b.script)
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(append(os.Environ(),
 		"STUB_CONFIG="+b.config,
 		"PATH="+b.bin+":/usr/bin:/bin",
-	)
+	), b.env...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -142,7 +157,7 @@ func (b *deployBox) route(t *testing.T) string {
 	return b.read(t, filepath.Join(b.routes, "blog.caddy"))
 }
 
-func (b *deployBox) env(t *testing.T) string {
+func (b *deployBox) dotenv(t *testing.T) string {
 	return b.read(t, filepath.Join(b.appDir, ".env"))
 }
 
@@ -187,7 +202,7 @@ func TestADeployWritesTheRouteBesideTheProxyAndNotBesideTheApp(t *testing.T) {
 	if strings.Contains(route, "-> web") {
 		t.Errorf("the arrow leaked into the generated route:\n%s", route)
 	}
-	if got := b.env(t); !strings.Contains(got, "APP_VERSION=abc123") {
+	if got := b.dotenv(t); !strings.Contains(got, "APP_VERSION=abc123") {
 		t.Errorf("version not committed: %q", got)
 	}
 }
@@ -241,7 +256,7 @@ func TestARefusedDeployLeavesTheBoxOnItsPreviousConfig(t *testing.T) {
 	if got := b.route(t); got != before {
 		t.Errorf("the route changed despite the deploy failing:\nbefore:\n%s\nafter:\n%s", before, got)
 	}
-	if got := b.env(t); !strings.Contains(got, "APP_VERSION=abc123") {
+	if got := b.dotenv(t); !strings.Contains(got, "APP_VERSION=abc123") {
 		t.Errorf("the box no longer claims the version it is running: %q", got)
 	}
 	if got := b.read(t, filepath.Join(b.appDir, "compose.yml")); !strings.Contains(got, "good") {
@@ -271,7 +286,7 @@ func TestAnAppThatPublishesNoHostnamesGetsNoRoute(t *testing.T) {
 	if got := b.route(t); got != "" {
 		t.Errorf("a worker should publish no route, got:\n%s", got)
 	}
-	if got := b.env(t); !strings.Contains(got, "APP_VERSION=abc123") {
+	if got := b.dotenv(t); !strings.Contains(got, "APP_VERSION=abc123") {
 		t.Errorf("version not committed: %q", got)
 	}
 }
@@ -365,5 +380,127 @@ func TestSomethingThatIsNeitherAnArrowNorAModeIsStillRefused(t *testing.T) {
 		"blog.example.com -> web nonsense\n")
 	if out, err := b.deploy(t, "abc123"); err == nil {
 		t.Fatalf("junk after the arrow was accepted:\n%s", out)
+	}
+}
+
+// A deploy that dies at `docker compose pull` must leave nothing published.
+//
+// This is the gap the audit called H3. The .prev backups used to be deleted
+// just BEFORE the pull, on the reasoning that everything above it had been
+// validated -- but the pull is the first step that can fail for a reason
+// nothing above it can see: a tag that exists for the config image and not for
+// an app image. When it did, .env was restored and the new compose.yml and the
+// new ROUTE FILE were not, because their backups were already gone.
+//
+// The route is the half that matters. It is syntactically valid and it sits in
+// the directory the shared proxy imports, so although THIS deploy does not
+// reload Caddy, the next deploy of any other app on the box does -- and at that
+// moment the hostnames of a stack that never started begin resolving to a gate
+// that is not there. A green "nothing restarted" and a domain that 502s, with
+// nothing connecting the two.
+func TestAFailedPullLeavesNothingPublished(t *testing.T) {
+	b := newDeployBox(t)
+	b.publishes(t, "services:\n  web:\n    image: good\n", "blog.example.com\n")
+	if out, err := b.deploy(t, "abc123"); err != nil {
+		t.Fatalf("first deploy failed: %v\n%s", err, out)
+	}
+	routeBefore, composeBefore := b.route(t), b.read(t, filepath.Join(b.appDir, "compose.yml"))
+	if routeBefore == "" {
+		t.Fatal("the first deploy published no route, so this proves nothing")
+	}
+
+	// A second version that is fine in every way this script can check, and
+	// whose images do not exist.
+	b.env = []string{"STUB_PULL_FAILS=1"}
+	b.publishes(t, "services:\n  web:\n    image: missing\n",
+		"blog.example.com\nnew.example.com\n")
+	out, err := b.deploy(t, "def456")
+	if err == nil {
+		t.Fatalf("a failed pull should fail the deploy:\n%s", out)
+	}
+
+	// The route is the one this test exists for.
+	if got := b.route(t); got != routeBefore {
+		t.Errorf("the route was left at the version that never started.\nbefore:\n%s\nafter:\n%s",
+			routeBefore, got)
+	}
+	if strings.Contains(b.route(t), "new.example.com") {
+		t.Error("a hostname from the failed version is published; the next app's " +
+			"deploy would reload Caddy and start serving it")
+	}
+	if got := b.read(t, filepath.Join(b.appDir, "compose.yml")); got != composeBefore {
+		t.Errorf("compose.yml was left at the failed version:\n%s", got)
+	}
+	if got := b.read(t, filepath.Join(b.appDir, "hostnames")); strings.Contains(got, "new.example.com") {
+		t.Errorf("the hostnames record claims names that were never served:\n%s", got)
+	}
+	// .env was already restored before this fix; assert it still is, so the
+	// wider revert cannot regress the narrower one.
+	if got := b.dotenv(t); !strings.Contains(got, "APP_VERSION=abc123") {
+		t.Errorf("the box no longer claims the version it is actually running: %q", got)
+	}
+	// And the backups go, so the next deploy's revert restores this state and
+	// not something older.
+	for _, leftover := range []string{"compose.yml.prev", "hostnames.prev"} {
+		if _, err := os.Stat(filepath.Join(b.appDir, leftover)); err == nil {
+			t.Errorf("%s was left behind", leftover)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(b.routes, "blog.caddy.prev")); err == nil {
+		t.Error("blog.caddy.prev was left behind")
+	}
+}
+
+// The claim on a hostname is taken under a box-wide lock, so the scan of other
+// apps and the write that publishes this app's names cannot interleave.
+//
+// The deploy lock is deliberately per-app -- two different apps should deploy
+// at once -- which is exactly why this needs its own. Without it both apps pass
+// the duplicate check, both write routes, and whichever validates second fails
+// with "the routes generated from X do not load"; on the other interleaving the
+// FIRST app fails for a conflict the second one caused.
+//
+// Asserted through the lock's own effects rather than by racing two shells,
+// which would be a test that passes for timing reasons.
+func TestTheHostnameClaimIsTakenUnderALock(t *testing.T) {
+	b := newDeployBox(t)
+	b.publishes(t, "services:\n  web:\n    image: x\n", "blog.example.com\n")
+	if out, err := b.deploy(t, "abc123"); err != nil {
+		t.Fatalf("deploy failed: %v\n%s", err, out)
+	}
+
+	// The lock spans the scan and the claim, and nothing else: it is released
+	// before the route is written, so a slow Caddy validate cannot hold up
+	// another app's claim.
+	i := strings.Index(b.script, `claim_lock="`)
+	j := strings.Index(b.script, "> hostnames")
+	if i < 0 || j < 0 || j < i {
+		t.Fatal("the claim section is not where this test expects it -- markers moved")
+	}
+	claim := b.script[i:j]
+	if !strings.Contains(claim, "flock") {
+		t.Error("the hostname claim is not taken under a lock")
+	}
+	if !strings.Contains(claim, "is already claimed by") {
+		t.Error("the duplicate scan is outside the lock, so the check and the " +
+			"claim are not atomic")
+	}
+	// Released explicitly rather than left to process exit, so the section is
+	// bounded by something a reader can see.
+	after := b.script[j:]
+	if !strings.Contains(after[:120], "exec 8>&-") {
+		t.Error("the lock is not released once the claim is written")
+	}
+
+	// A second deploy must not block on a lock the first failed to drop.
+	done := make(chan error, 1)
+	go func() { _, err := b.deploy(t, "def456"); done <- err }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("the second deploy failed: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the second deploy blocked -- the first did not release the lock")
 	}
 }
