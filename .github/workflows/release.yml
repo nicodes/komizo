@@ -1,4 +1,4 @@
-name: Release
+name: release
 
 # Cut a release: bump the tag, cross-compile, publish archives with checksums
 # and build provenance.
@@ -28,6 +28,9 @@ concurrency: release-${{ github.repository }}
 jobs:
   release:
     runs-on: ubuntu-latest
+    # Bounded, so a step that hangs fails here rather than sitting until the
+    # runner's own timeout hours later.
+    timeout-minutes: 20
     permissions:
       contents: write # create the tag and the release
       id-token: write # OIDC identity for build provenance
@@ -78,13 +81,20 @@ jobs:
       # against this exact commit is not redundant: CI passing on this SHA
       # earlier is a claim about that run, and a release is the artefact people
       # actually execute.
-      - name: Test
-        uses: ./.github/actions/test
-
+      #
+      # Build before Test, as CI does and as every other repository does. This
+      # file used to run Test first, which is defensible on its own -- do not
+      # cross-compile four platforms for a release whose tests fail -- but it
+      # made this the one workflow in the organisation with the opposite order,
+      # and the exception cost more to remember than the runner minutes it saved
+      # on releases that were going to fail anyway.
       - name: Build
         uses: ./.github/actions/build
         with:
           version: ${{ steps.release.outputs.version }}
+
+      - name: Test
+        uses: ./.github/actions/test
 
       # This binary connects to your server AS ROOT and runs shell there, which
       # makes it worth tampering with. checksums.txt only says the archives
