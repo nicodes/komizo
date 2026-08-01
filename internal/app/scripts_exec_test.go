@@ -2,9 +2,7 @@ package app
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -39,88 +37,6 @@ func shellCheck(t *testing.T, name, script string) {
 	cmd.Stdin = strings.NewReader(script)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Errorf("%s is not valid shell: %v\n%s", name, err, out)
-	}
-}
-
-// generatedScripts is every script this package builds out of Go strings, as
-// the box will receive it. One list, so a check added below covers all of them
-// and a script added later cannot quietly escape one.
-func generatedScripts() []struct{ name, script string } {
-	now := int64(1753700400)
-	return []struct{ name, script string }{
-		{"inventory", inventoryScript},
-		{"metrics", metricsScript(timeRange{from: now - 3600, to: now})},
-		{"sampler", samplerFile()},
-		{"sampler installer", samplerScript()},
-		{"storage", storageScript("blog")},
-		{"system log", systemLogScript(timeRange{from: now - 3600, to: now})},
-	}
-}
-
-func TestEveryGeneratedScriptIsValidShell(t *testing.T) {
-	needs(t, "sh")
-	for _, c := range generatedScripts() {
-		shellCheck(t, c.name, c.script)
-	}
-}
-
-// TestShellcheck is the check `sh -n` cannot be.
-//
-// `sh -n` parses: it catches a heredoc left open or a quote that closed a Go
-// raw string early, and nothing else. It says nothing about an unquoted
-// expansion that word-splits on a path with a space in it, a `read` without -r,
-// or a variable used before it is set -- which is the class of defect that
-// actually reaches a server, because the script runs fine until the one input
-// that breaks it.
-//
-// Run over BOTH halves, from one list. scripts/*.sh is the half CI already
-// parsed; the generated half is the larger one -- the inventory alone is bigger
-// than any file in scripts/ -- and it runs as root on the box just the same.
-// Splitting the two checks is how the last reader still globbing /srv went
-// unnoticed for as long as it did.
-//
-// Skipped rather than failed when shellcheck is absent, so a contributor
-// without it can still run the suite; CI installs it, so the gate is real
-// there. The sibling komizo-actions repo has run shellcheck over its embedded
-// bash for a while -- this is the same discipline, applied to the shell that
-// has root.
-func TestShellcheck(t *testing.T) {
-	needs(t, "shellcheck")
-
-	dir := t.TempDir()
-	var files []string
-
-	standalone, err := filepath.Glob(filepath.Join("..", "..", "scripts", "*.sh"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(standalone) == 0 {
-		t.Fatal("no scripts/*.sh found -- has the layout changed?")
-	}
-	files = append(files, standalone...)
-
-	for _, c := range generatedScripts() {
-		// Named after the constant so a finding says which one to open. The
-		// generated scripts have no path of their own; this is the closest
-		// thing to one.
-		p := filepath.Join(dir, strings.ReplaceAll(c.name, " ", "-")+".sh")
-		if err := os.WriteFile(p, []byte(c.script), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		files = append(files, p)
-	}
-
-	// -s sh, not bash: these run under Alpine's busybox ash, and checking them
-	// as bash would accept arrays and [[ ]] that the box cannot run.
-	//
-	// No severity floor and no blanket excludes. Everything it currently
-	// reports is a deliberate idiom carrying a `# shellcheck disable=` with its
-	// reason beside it, which is the honest place for that argument -- an
-	// exclude list here would silence the same rule everywhere, including where
-	// it is right.
-	args := append([]string{"-s", "sh"}, files...)
-	if out, err := exec.Command("shellcheck", args...).CombinedOutput(); err != nil {
-		t.Errorf("shellcheck: %v\n%s", err, out)
 	}
 }
 
@@ -304,7 +220,7 @@ func accessLine(ts int64, host string, status int) string {
 // in it, so every poll counted and shipped the whole four-megabyte tail.
 func TestTheAwkAppliesTheRangeItIsGiven(t *testing.T) {
 	needs(t, "awk")
-	prog := awkProgram(t, metricsScript(timeRange{from: 0, to: 0}))
+	prog := awkProgram(t, scripts.Metrics(0, 0))
 
 	const minute = 1753700400
 	in := strings.Join([]string{
@@ -333,7 +249,7 @@ func TestTheAwkAppliesTheRangeItIsGiven(t *testing.T) {
 // goes, which is what tells a chart where to stop drawing zeroes.
 func TestTheAwkReportsHowFarBackTheLogGoes(t *testing.T) {
 	needs(t, "awk")
-	prog := awkProgram(t, metricsScript(timeRange{from: 0, to: 0}))
+	prog := awkProgram(t, scripts.Metrics(0, 0))
 
 	const minute = 1753700400
 	in := strings.Join([]string{
@@ -361,7 +277,7 @@ func TestTheAwkReportsHowFarBackTheLogGoes(t *testing.T) {
 // would have claimed, which is how a preview domain is attributed at all.
 func TestTheAwkAttributesWildcardHostnames(t *testing.T) {
 	needs(t, "awk")
-	prog := awkProgram(t, metricsScript(timeRange{from: 0, to: 0}))
+	prog := awkProgram(t, scripts.Metrics(0, 0))
 
 	const minute = 1753700400
 	in := strings.Join([]string{

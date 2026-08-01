@@ -3,6 +3,8 @@ package app
 import (
 	"fmt"
 	"strings"
+
+	"github.com/nicodes/komizo/scripts"
 )
 
 // Everything here ends up either single-quoted into a remote command line or
@@ -68,18 +70,15 @@ func isControl(r rune) bool {
 
 // shQuote wraps a value for a remote command line.
 //
-// Single quotes, with any single quote in the value closed, escaped and
-// reopened -- the one form that is safe for arbitrary text in POSIX sh.
+// One line, because the rule lives in the scripts package -- the one that
+// builds shell -- and two implementations of "how do you make a value safe in
+// sh" is exactly the kind of near-duplicate that drifts apart and is only
+// noticed by whatever it lets through.
 //
-// It exists because the alternative was an invariant: every caller validated
-// every value against a charset that happened to exclude a quote, and the
-// quoting itself -- three files away from those checks -- had no defence of its
-// own. That held, but it made a new caller's forgotten validation a shell
-// injection rather than a bad error message, and nothing near the quoting said
-// so.
-func shQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
+// It stays named here so the twenty call sites read the same as they always
+// did: the quoting is a property of the command being built, not of which
+// package happens to own the helper.
+func shQuote(s string) string { return scripts.ShQuote(s) }
 
 const (
 	appChars  = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"

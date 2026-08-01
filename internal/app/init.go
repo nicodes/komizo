@@ -60,7 +60,7 @@ func RunInit(args []string) error {
 	}
 
 	step("Installing the resource sampler")
-	if err := tgt.runScript(samplerScript(), nil); err != nil {
+	if err := tgt.runScript(scripts.SamplerInstall(komizoStamp(), versionText()), nil); err != nil {
 		return fmt.Errorf("the server is ready, but the resource sampler failed -- " +
 			"resource history will be empty until it is fixed")
 	}
