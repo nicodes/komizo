@@ -41,7 +41,8 @@ func TestInventoryFieldsAreScrubbedBeforeAnythingRendersThem(t *testing.T) {
 	out := "server\tready\tDocker 27\n" +
 		"app\tblog\tkomizo-blog\t/srv/blog\tabc\t1\tghcr.io/x/y\t\n" +
 		"container\tblog\tweb\tblog-\x1b[2Jweb-1\trunning\tUp 3 hours\t\t\t0\timg\t80\n"
-	apps, _, _, _, _ := parseInventory(out)
+	inv := parseInventory(out)
+	apps := inv.apps
 	if len(apps) != 1 || len(apps[0].containers) != 1 {
 		t.Fatalf("expected one app with one container, got %+v", apps)
 	}
@@ -96,8 +97,9 @@ func TestEnvPrefixQuotesValuesRatherThanTrustingThem(t *testing.T) {
 // two fields short. An exact-length match dropped the whole row, and the
 // interface then offered to install a proxy that was already installed.
 func TestAnInstalledProxyIsSeenEvenWithNoTimestamps(t *testing.T) {
-	_, _, proxy, _, _ := parseInventory(
+	inv := parseInventory(
 		"proxy\tstopped\tedge\tcaddy:2\tnot created\t")
+	proxy := inv.proxy
 	if !proxy.installed {
 		t.Fatal("an installed proxy with no start time was dropped entirely")
 	}
@@ -112,7 +114,8 @@ func TestAnInstalledProxyIsSeenEvenWithNoTimestamps(t *testing.T) {
 func TestAContainerWithNoRecordedTimestampsStillAppears(t *testing.T) {
 	out := "app\tblog\tkomizo-blog\t/srv/blog\tabc\t0\tghcr.io/x/y\t\n" +
 		"container\tblog\tweb\tblog-web-1\tcreated\tCreated\t"
-	apps, _, _, _, _ := parseInventory(out)
+	inv := parseInventory(out)
+	apps := inv.apps
 	if len(apps) != 1 || len(apps[0].containers) != 1 {
 		t.Fatalf("a container short of its timestamp fields was dropped: %+v", apps)
 	}

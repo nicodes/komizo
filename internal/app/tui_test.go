@@ -528,7 +528,8 @@ func TestInventoryParsing(t *testing.T) {
 		"orphan\tghost",
 		"", // trailing blank, as the server emits
 	}, "\n")
-	apps, srv, proxy, net, orphans := parseInventory(out)
+	inv := parseInventory(out)
+	apps, srv, proxy, net, orphans := inv.apps, inv.srv, inv.proxy, inv.net, inv.orphans
 	if !srv.ready() {
 		t.Errorf("server should parse as ready, got %+v", srv)
 	}
@@ -571,7 +572,8 @@ func TestInventoryParsing(t *testing.T) {
 func TestInventoryWithoutAProxy(t *testing.T) {
 	// A box with no proxy emits no proxy record at all; that must read as
 	// "not installed" rather than as an empty-but-present proxy.
-	_, _, proxy, _, _ := parseInventory("app\tblog\tcd-blog\t/srv/blog\ta1b2\t2\tghcr.io/you/blog-config\t\t")
+	inv := parseInventory("app\tblog\tcd-blog\t/srv/blog\ta1b2\t2\tghcr.io/you/blog-config\t\t")
+	proxy := inv.proxy
 	if proxy.installed {
 		t.Errorf("no proxy record should mean not installed, got %+v", proxy)
 	}
@@ -937,7 +939,8 @@ func TestServerScreenWithNoNetwork(t *testing.T) {
 // servers too, and "alpine" about a Debian box is wrong in the row whose whole
 // job is stating facts.
 func TestTheOSIsReadOffTheBox(t *testing.T) {
-	_, srv, _, _, _ := parseInventory("server\tready\tDocker version 26\nos\tAlpine Linux v3.20\n")
+	inv := parseInventory("server\tready\tDocker version 26\nos\tAlpine Linux v3.20\n")
+	srv := inv.srv
 	if srv.osName() != "Alpine Linux v3.20" {
 		t.Errorf("os = %q, want what the box reported", srv.osName())
 	}
@@ -957,7 +960,8 @@ func TestParsesRealDockerOutput(t *testing.T) {
 		"netmember\tkomizo-t-blog\tweb,blog-web",
 		"netmember\tkomizo-t-shop\tweb,shop-web",
 	}, "\n")
-	_, _, _, n, _ := parseInventory(out)
+	inv := parseInventory(out)
+	n := inv.net
 	if n.name != "komizo-test-edge" || n.driver != "bridge" || n.subnet != "172.22.0.0/16" {
 		t.Fatalf("network meta parsed wrong: %+v", n)
 	}
@@ -1669,7 +1673,8 @@ func TestInventoryAttachesContainersToTheirApp(t *testing.T) {
 		"app\tshop\tkomizo-shop\t/srv/shop\tnone\t0\tghcr.io/you/shop-config\t",
 	}, "\n")
 
-	apps, _, _, _, _ := parseInventory(out)
+	inv := parseInventory(out)
+	apps := inv.apps
 	if len(apps) != 2 {
 		t.Fatalf("expected 2 apps, got %d", len(apps))
 	}
@@ -3855,7 +3860,8 @@ func TestHostnamesLandOnTheGatewayRow(t *testing.T) {
 		"route\tblog\tblog.example.com,www.blog.example.com\tblog-gate\t80",
 	}, "\n")
 
-	apps, _, _, _, _ := parseInventory(out)
+	inv := parseInventory(out)
+	apps := inv.apps
 	if len(apps) != 1 {
 		t.Fatalf("expected 1 app, got %d", len(apps))
 	}
@@ -3907,7 +3913,8 @@ func TestPortsAreObservedPerContainer(t *testing.T) {
 		"container\tblog\tblog-db\tblog-db-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-db:a1b2c3d\t5432,9187",
 		"route\tblog\tblog.example.com\tblog-gate\t80",
 	}, "\n")
-	apps, _, _, _, _ := parseInventory(out)
+	inv := parseInventory(out)
+	apps := inv.apps
 	byName := map[string]containerRow{}
 	for _, c := range apps[0].containers {
 		byName[c.name] = c
@@ -4632,16 +4639,18 @@ func stubClipboard(t *testing.T) {
 // --- on-demand TLS gate ----------------------------------------------------
 
 func TestGateIsParsedFromInventory(t *testing.T) {
-	_, _, proxy, _, _ := parseInventory(
+	inv := parseInventory(
 		"proxy\trunning\tedge\tcaddy:2\tUp 3 hours\t\t\t\n" +
 			"gate\thttp://ormos-gate/internal/tls-ask\n")
+	proxy := inv.proxy
 	if proxy.tlsAsk != "http://ormos-gate/internal/tls-ask" {
 		t.Errorf("the gate line should set proxy.tlsAsk, got %q", proxy.tlsAsk)
 	}
 }
 
 func TestNoGateLineMeansNoGate(t *testing.T) {
-	_, _, proxy, _, _ := parseInventory("proxy\trunning\tedge\tcaddy:2\tUp 3 hours\t\t\t\n")
+	inv := parseInventory("proxy\trunning\tedge\tcaddy:2\tUp 3 hours\t\t\t\n")
+	proxy := inv.proxy
 	if proxy.tlsAsk != "" {
 		t.Errorf("absent gate line should leave tlsAsk empty, got %q", proxy.tlsAsk)
 	}

@@ -53,10 +53,6 @@ func (o *addOpts) bind(fs *flag.FlagSet) {
 // app by that name.
 func deriveUser(app string) string { return "komizo-" + app }
 
-func deployBin(app string) string { return "/usr/local/bin/deploy-" + app }
-
-func secretBin(app string) string { return "/usr/local/bin/set-secret-" + app }
-
 // stateFile is where the server records what komizo knows about an app: its
 // directory, its deploy account, its config image, the names CI dials it by.
 // It mirrors alpine.sh, which writes it.
@@ -318,7 +314,8 @@ func performAdd(p addPlan, out progress, runner func(script string, env map[stri
 
 	return &addResult{
 		app:         p.app,
-		host:        p.tgt.knownHostsField(),
+		host:        p.tgt.serverURL(),
+		port:        p.tgt.port,
 		key:         kp.private,
 		keyPath:     p.keyPath,
 		knownHosts:  kh,

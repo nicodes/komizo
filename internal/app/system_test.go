@@ -1383,10 +1383,11 @@ func TestTheInventoryCarriesWhatServesEachName(t *testing.T) {
 	if !strings.Contains(inventoryScript, `printf "host\t%s\t%s\t%s\n"`) {
 		t.Error("the inventory does not report what serves each hostname")
 	}
-	apps, _, _, _, _ := parseInventory(
+	inv := parseInventory(
 		"app\tblog\tdeploy-blog\t/srv/blog\tv1\t2\timg\t\n" +
 			"host\tblog\tapi.blog.dev\tapi\n" +
 			"host\tblog\tblog.dev\t\n")
+	apps := inv.apps
 	if len(apps) != 1 || len(apps[0].hosts) != 2 {
 		t.Fatalf("hosts = %+v", apps)
 	}

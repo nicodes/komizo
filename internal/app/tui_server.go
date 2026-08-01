@@ -208,13 +208,6 @@ func (m model) wildcardApps() []string {
 // anyWildcard reports whether any app on the box declares a wildcard hostname.
 func (m model) anyWildcard() bool { return len(m.wildcardApps()) > 0 }
 
-func orDash(s string) string {
-	if s == "" {
-		return dimStyle.Render("—")
-	}
-	return s
-}
-
 // startKomizoUpdate re-provisions the box: the same sequence as a fresh `komizo
 // init`, run over a server that is already live.
 //

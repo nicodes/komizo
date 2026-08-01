@@ -89,6 +89,7 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
 	# whole box, like the one above.
 	ids="$(docker ps -aq --no-trunc 2>/dev/null || true)"
 	if [ -n "$ids" ]; then
+		# shellcheck disable=SC2086 # deliberate word splitting: one container id per arg
 		starts="$(docker inspect $ids \
 			--format '{{.Id}}	{{.State.StartedAt}}	{{.State.FinishedAt}}	{{.State.ExitCode}}	{{.State.Pid}}' \
 			2>/dev/null || true)"
@@ -114,6 +115,7 @@ container_ports() {
 	_pid="$1"
 	[ -n "$_pid" ] && [ "$_pid" != "0" ] || return 0
 	_out=""
+	# shellcheck disable=SC2013 # these are single hex fields, never lines with spaces
 	for _h in $(awk '$4 == "0A" { split($2, a, ":"); print a[2] }' \
 		"/proc/$_pid/net/tcp" "/proc/$_pid/net/tcp6" 2>/dev/null | sort -u); do
 		_p=$(printf '%d' "0x$_h" 2>/dev/null) || continue
@@ -153,21 +155,59 @@ for state in /var/lib/komizo/apps/*.env; do
 		# second 'ps -q' beside this, and a compose invocation is the slow part
 		# of this script -- so a box with six apps paid for six round trips it
 		# could answer from the states it had already fetched.
+		# Two passes over the buffers, not five.
+		#
+		# This loop used to run 'printf | awk' four separate times over the same
+		# two buffers -- once for the timestamps, once for the pid, once for the
+		# state, once to emit the row -- and then a fifth to emit the cstat. Five
+		# pipelines, ten processes, per container, per poll. The expensive docker
+		# calls above are hoisted for exactly this reason and the cheap-looking
+		# shell inside the loop was never given the same treatment: on a box with
+		# six apps of five containers that was several hundred processes every
+		# five seconds, for a page that is usually just left open.
+		#
+		# The two buffers are concatenated with a \034 (FS) record between them,
+		# which nothing in docker's output can contain, so awk tells them apart
+		# without depending on how many fields each happens to have -- a field
+		# count would break the moment one of these formats gains a column.
+		cinfo() {
+			{ printf '%s\n' "$allc"; printf '\034\n'; printf '%s\n' "$starts"; }
+		}
 		for cid in $(docker compose -f "$dir/compose.yml" --project-directory "$dir" ps -aq 2>/dev/null); do
-			ts="$(printf '%s\n' "$starts" | awk -F'\t' -v id="$cid" '$1 == id { printf "%s\t%s\t%s", $2, $3, $4; exit }')"
-			cpid="$(printf '%s\n' "$starts" | awk -F'\t' -v id="$cid" '$1 == id { print $5; exit }')"
-			cports="$(container_ports "$cpid")"
-			cstate="$(printf '%s\n' "$allc" | awk -F'\t' -v id="$cid" '$1 == id { print $3; exit }')"
+			# Pass one: the two values the /proc reads below need. Defaulted in
+			# awk rather than in the shell, so the split that follows always has
+			# exactly two fields to find.
+			info="$(cinfo | awk -F'\t' -v id="$cid" '
+				$0 == "\034" { second = 1; next }
+				$1 != id { next }
+				!second { st = $3; next }
+				{ pid = $5 }
+				END { printf "%s %s", (pid == "" ? "0" : pid), (st == "" ? "-" : st) }')"
+			cpid="${info%% *}"
+			cstate="${info#* }"
 			[ "$cstate" = "running" ] && running=$((running + 1))
-			printf '%s\n' "$allc" | awk -F'\t' -v id="$cid" -v app="$app" -v ts="$ts" -v pt="$cports" '
-				$1 == id { printf "container\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", app, $5, $2, $3, $4, ts, $6, pt }'
+
+			cports="$(container_ports "$cpid")"
 			# Its own record rather than more fields on the one above. That row is
 			# what the container IS and changes when it is redeployed; this is what
 			# it is spending and changes every five seconds. Keeping them apart
 			# means a reading this could not take leaves the row alone.
+			#
+			# Two RECORDS, one pass: they are built from the same two lines, and
+			# keeping them separate on the wire is the point -- walking those
+			# lines twice to do it was not.
 			cst="$(container_stat "$cpid")"
-			printf '%s\n' "$allc" | awk -F'\t' -v id="$cid" -v app="$app" -v st="$cst" '
-				$1 == id { printf "cstat\t%s\t%s\t%s\n", app, $5, st }'
+			cinfo | awk -F'\t' -v id="$cid" -v app="$app" -v pt="$cports" -v st="$cst" '
+				$0 == "\034" { second = 1; next }
+				$1 != id { next }
+				!second { nm = $2; state = $3; status = $4; svc = $5; img = $6; have = 1; next }
+				{ sa = $2; fa = $3; ec = $4 }
+				END {
+					if (!have) exit
+					printf "container\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+						app, svc, nm, state, status, sa, fa, ec, img, pt
+					printf "cstat\t%s\t%s\t%s\n", app, svc, st
+				}'
 		done
 	fi
 	printf 'app\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$app" "${usr:-?}" "$dir" "${ver:-none}" "$running" "$img" "$kas"
@@ -713,6 +753,9 @@ func RunList(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return ErrSilent
 	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))
+	}
 	tgt, err := resolveTarget(fs, host, port)
 	if err != nil {
 		return err
@@ -726,7 +769,8 @@ func RunList(args []string) error {
 		return fmt.Errorf("could not read the server's inventory: %w", err)
 	}
 
-	apps, srv, proxy, net, orphans := parseInventory(res)
+	inv := parseInventory(res)
+	apps, srv, proxy, net, orphans := inv.apps, inv.srv, inv.proxy, inv.net, inv.orphans
 
 	if !srv.ready() {
 		if srv.state == "docker-stopped" {
@@ -806,9 +850,26 @@ func RunList(args []string) error {
 	return nil
 }
 
+// inventory is everything one read of a box says about it.
+//
+// A struct rather than five positional returns. Every caller took them in the
+// same order and most wanted two of them, so the call sites were a row of
+// blanks -- `_, _, proxy, _, _ :=` -- in which a field inserted anywhere but
+// the end silently rebinds the wrong value at seventeen places, and the two
+// that matter compile either way because serverRow and proxyRow are both
+// structs. Naming them makes that a compile error instead of a wrong screen.
+type inventory struct {
+	apps    []appRow
+	srv     serverRow
+	proxy   proxyRow
+	net     netRow
+	orphans []string
+}
+
 // parseInventory turns the server's tab-separated records into rows. Shared by
 // `komizo list` and the TUI so both see the same view of a box.
-func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, net netRow, orphans []string) {
+func parseInventory(out string) inventory {
+	var inv inventory
 	var containers []containerRow
 	var routes []routeRow
 	var hosts []hostRow
@@ -840,28 +901,28 @@ func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, n
 		switch raw[0] {
 		case "server":
 			g := f(3)
-			srv.state, srv.docker = g[1], g[2]
+			inv.srv.state, inv.srv.docker = g[1], g[2]
 		case "komizo":
 			// The file exists, so komizo is installed -- whatever its fields say.
-			srv.komizoInstalled = true
+			inv.srv.komizoInstalled = true
 			g := f(3)
 			// New boxes write two lines: version, then stamp. A box old enough to
 			// have written only the stamp arrives with an empty second field, and
 			// its one line is the stamp -- so read the version from field two when
 			// it is there, and fall back to treating field one as the stamp.
 			if g[2] != "" {
-				srv.komizoVersion, srv.komizo = g[1], g[2]
+				inv.srv.komizoVersion, inv.srv.komizo = g[1], g[2]
 			} else {
-				srv.komizo = g[1]
+				inv.srv.komizo = g[1]
 			}
 		case "os":
-			srv.os = raw[1]
+			inv.srv.os = raw[1]
 		case "hostkey":
 			g := f(3)
-			srv.hostKeys = append(srv.hostKeys, [2]string{g[1], g[2]})
+			inv.srv.hostKeys = append(inv.srv.hostKeys, [2]string{g[1], g[2]})
 		case "app":
 			g := f(8)
-			apps = append(apps, appRow{
+			inv.apps = append(inv.apps, appRow{
 				name: g[1], user: g[2], dir: g[3], version: g[4],
 				running: g[5], image: g[6], knownAs: splitNames(g[7]),
 			})
@@ -881,15 +942,15 @@ func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, n
 			hosts = append(hosts, hostRow{app: g[1], name: g[2], service: g[3]})
 		case "proxy":
 			g := f(8)
-			proxy = proxyRow{installed: true, state: g[1], network: g[2],
+			inv.proxy = proxyRow{installed: true, state: g[1], network: g[2],
 				image: g[3], status: g[4]}
-			proxy.startedAt, proxy.finishedAt = parseStamp(g[5]), parseStamp(g[6])
+			inv.proxy.startedAt, inv.proxy.finishedAt = parseStamp(g[5]), parseStamp(g[6])
 		case "gate":
 			// Emitted after the proxy line, so proxy is already populated.
-			proxy.tlsAsk = f(2)[1]
+			inv.proxy.tlsAsk = f(2)[1]
 		case "net":
 			g := f(4)
-			net.name, net.driver, net.subnet = g[1], g[2], g[3]
+			inv.net.name, inv.net.driver, inv.net.subnet = g[1], g[2], g[3]
 		case "netmember":
 			g := f(3)
 			var al []string
@@ -898,9 +959,9 @@ func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, n
 					al = append(al, a)
 				}
 			}
-			net.members = append(net.members, netMember{container: g[1], aliases: al})
+			inv.net.members = append(inv.net.members, netMember{container: g[1], aliases: al})
 		case "orphan":
-			orphans = append(orphans, raw[1])
+			inv.orphans = append(inv.orphans, raw[1])
 		}
 	}
 
@@ -908,22 +969,22 @@ func parseInventory(out string) (apps []appRow, srv serverRow, proxy proxyRow, n
 	// app are emitted inside that app's own record, so they arrive before the
 	// app row is complete only by accident of ordering. Joining here does not
 	// depend on that.
-	for i := range apps {
+	for i := range inv.apps {
 		for _, c := range containers {
-			if c.app == apps[i].name {
-				apps[i].containers = append(apps[i].containers, c)
+			if c.app == inv.apps[i].name {
+				inv.apps[i].containers = append(inv.apps[i].containers, c)
 			}
 		}
 		for _, r := range routes {
-			if r.app == apps[i].name {
-				apps[i].routes = append(apps[i].routes, r)
+			if r.app == inv.apps[i].name {
+				inv.apps[i].routes = append(inv.apps[i].routes, r)
 			}
 		}
 		for _, h := range hosts {
-			if h.app == apps[i].name {
-				apps[i].hosts = append(apps[i].hosts, h)
+			if h.app == inv.apps[i].name {
+				inv.apps[i].hosts = append(inv.apps[i].hosts, h)
 			}
 		}
 	}
-	return apps, srv, proxy, net, orphans
+	return inv
 }

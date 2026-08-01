@@ -34,7 +34,7 @@ const accessLog = "/srv/_proxy/logs/access.log"
 // the three patterns match it, so it is skipped like any line that is not a
 // request.
 func metricsScript(r timeRange) string {
-	return fmt.Sprintf(`
+	return stateHelper + fmt.Sprintf(`
 # --- request counts, per app, per minute ---------------------------------
 if [ -f %[1]s ]; then
 	# Hostname -> app, from what each app declared. Read first so the awk over
@@ -43,14 +43,26 @@ if [ -f %[1]s ]; then
 	# A wildcard entry (*.iframe.ormos.dev) is stored under its suffix, and a
 	# hostname that matches nothing is counted for no app -- which is the honest
 	# answer for a name pointed at this box by someone else.
+	#
+	# The apps are enumerated from komizo's own records, and the app NAME comes
+	# from the record rather than from the directory it lives in. This used to
+	# glob /srv/*/hostnames and take the basename, which was wrong twice over:
+	# an app placed elsewhere with --app-dir was invisible, so its charts were
+	# permanently empty; and an app whose directory did not match its name was
+	# attributed to a bucket no app row matches, which looks identical. Every
+	# other reader on the box was moved to the state files; this was the last
+	# one left behind.
 	{
-		for h in /srv/*/hostnames; do
-			[ -f "$h" ] || continue
-			a="${h%%/hostnames}"; a="${a##*/}"
+		for _state in /var/lib/komizo/apps/*.env; do
+			[ -f "$_state" ] || continue
+			a="${_state##*/}"; a="${a%%.env}"
+			d="$(komizo_state "$_state" APP_DIR)"
+			# shellcheck disable=SC2015 # both sides are tests; either failing means skip
+			[ -n "$d" ] && [ -f "$d/hostnames" ] || continue
 			# name [-> service]. The service is what the app says serves that
 			# name; blank when it did not say, which is the honest default --
 			# nothing on this box can work it out otherwise.
-			sed 's/#.*//' "$h" | tr -d '\r' | awk -v a="$a" 'NF {
+			sed 's/#.*//' "$d/hostnames" | tr -d '\r' | awk -v a="$a" 'NF {
 				svc = ""
 				if (NF >= 3 && $2 == "->") svc = $3
 				printf "MAP\t%%s\t%%s\t%%s\n", $1, a, svc

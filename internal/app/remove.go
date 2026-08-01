@@ -24,6 +24,9 @@ func RunRemove(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return ErrSilent
 	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))
+	}
 	if err := validateApp(app); err != nil {
 		return err
 	}
@@ -61,6 +64,21 @@ func RunScript(args []string) error {
 		which = args[0]
 	}
 	switch which {
+	case "-h", "--help", "help":
+		fmt.Print(`komizo script - print the shell komizo runs on your server
+
+  komizo script [init|add|remove|proxy]
+
+It is piped over SSH and run as root, so this is how you read it before it
+runs. "add" is the default because it is the one that creates the deploy
+account, the doas rules and the sshd restrictions.
+
+  init     prepare a fresh box: Docker, the shared network
+  add      set an app up, or update one
+  remove   tear one app back off
+  proxy    install the one shared reverse proxy
+`)
+		return nil
 	case "init":
 		fmt.Print(scripts.AlpineInitScript)
 	case "add":

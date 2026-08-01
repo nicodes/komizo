@@ -628,14 +628,6 @@ func (m model) newChart(from, to int64, w, h int, extra ...timeserieslinechart.O
 	return timeserieslinechart.New(w, h, append(opts, extra...)...)
 }
 
-func chartLines(s string) string {
-	var b strings.Builder
-	for _, ln := range strings.Split(s, "\n") {
-		b.WriteString(gutter + ln + "\n")
-	}
-	return b.String()
-}
-
 // extent is the first and last index that carry a value, so a reference line
 // can be drawn across the data rather than across the window.
 func extent(vals []float64) (int, int, bool) {

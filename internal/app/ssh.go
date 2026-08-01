@@ -108,9 +108,25 @@ func (t target) display() string {
 	return fmt.Sprintf("%s:%d", t.addr(), t.port)
 }
 
-// knownHostsField is how a host appears in a known_hosts line: bare for port
+// knownHostsField is how a host appears in a KNOWN_HOSTS LINE: bare for port
 // 22, bracketed otherwise.
+//
+// That is the only thing it is for. It used to be handed out as
+// KOMIZO_SERVER_URL as well, which is the address CI DIALS -- and on any box
+// not using port 22 that value was "[host]:2222", which is a known_hosts
+// pattern and not a hostname. The connect action refuses it outright (brackets
+// are not in the charset it allows), and ssh could not have used it either:
+// the port is a separate input, and `HostName [host]:2222` names no host. Every
+// server on a non-standard SSH port therefore shipped a deploy variable that
+// could not work. See serverURL.
 func (t target) knownHostsField() string { return t.knownHostsName(t.host) }
+
+// serverURL is the address CI dials: what KOMIZO_SERVER_URL is set to.
+//
+// The bare hostname, always. The port does not belong in it -- the deploy
+// action takes `port:` separately, and printNextSteps writes that line into the
+// workflow snippet beside this value.
+func (t target) serverURL() string { return t.host }
 
 func (t target) knownHostsName(host string) string {
 	if t.port == 22 {
@@ -254,15 +270,6 @@ func (t *target) resolvePort() {
 	}
 }
 
-// run executes a command on the far end and returns its stdout, trimmed.
-// Stderr is passed through so ssh's own diagnostics reach the user.
-func (t target) run(cmd string) (string, error) {
-	c := exec.Command("ssh", t.sshArgs(cmd)...)
-	c.Stderr = os.Stderr
-	out, err := c.Output()
-	return strings.TrimRight(string(out), "\n"), err
-}
-
 // quiet is run with stderr suppressed, for probes where a failure is an
 // expected answer rather than something to report.
 func (t target) quiet(cmd string) (string, error) {
@@ -270,13 +277,6 @@ func (t target) quiet(cmd string) (string, error) {
 	out, err := c.Output()
 	return strings.TrimRight(string(out), "\n"), err
 }
-
-// reachable reports whether we can open a session without a password.
-//
-// Kept only for callers that genuinely need a yes/no. Anything that reports a
-// failure to a person should use probe() and explain(): the reason matters, and
-// "cannot log in" is the wrong answer for three of the four ways this fails.
-func (t target) reachable() bool { return t.probe().ok() }
 
 // runScript pipes a script to the far end and runs it there, with its output
 // streamed straight through so a long bootstrap shows progress as it happens.

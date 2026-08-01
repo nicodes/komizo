@@ -50,6 +50,13 @@ type addResult struct {
 	// interface never does.
 	keyPath    string
 	knownHosts string
+	// port is the SSH port CI has to dial. Carried so the screen can say so:
+	// KOMIZO_SERVER_URL is the bare hostname (see target.serverURL), and on a box
+	// that is not on 22 the port has to reach the workflow some other way -- the
+	// deploy action's own `port:` input. It used to be folded into the URL as
+	// "[host]:2222", which is a known_hosts pattern that the connect action
+	// refuses outright.
+	port int
 	// config is what the box ended up pinned to -- given on a setup, read back
 	// off the server on a rotation.
 	config  string
@@ -157,11 +164,11 @@ func fetchApps(t target) tea.Cmd {
 		if err != nil {
 			return appsMsg{err: fmt.Errorf("could not read the server's inventory: %w", err)}
 		}
-		apps, srv, proxy, net, _ := parseInventory(out)
+		inv := parseInventory(out)
 		// Stamped on arrival rather than on the box. The interval that matters
 		// is the one between two readings landing HERE, and the two clocks need
 		// not agree for that to be measured correctly.
-		return appsMsg{apps: apps, srv: srv, proxy: proxy, net: net,
+		return appsMsg{apps: inv.apps, srv: inv.srv, proxy: inv.proxy, net: inv.net,
 			metrics: parseMetrics(out), sys: parseSystem(out, time.Now())}
 	}
 }
@@ -283,6 +290,13 @@ func (a addResult) view() string {
 		b.WriteString("\n" + gutter + "  " + keyStyle.Render("KOMIZO_SERVER_URL") + "  " +
 			dimStyle.Render("variable") + "\n")
 		b.WriteString(gutter + "      " + dimStyle.Render(a.host) + "\n")
+		// The hostname alone, so the port has to be said somewhere. It goes in
+		// the workflow rather than in this variable: the deploy action takes it
+		// as its own input, and a port inside the URL is a value ssh cannot use.
+		if a.port != 0 && a.port != 22 {
+			b.WriteString(gutter + "      " + dimStyle.Render(fmt.Sprintf(
+				"this box listens on %d — add `port: \"%d\"` to the deploy step", a.port, a.port)) + "\n")
+		}
 
 		b.WriteString("\n" + gutter + "  " + keyStyle.Render("KOMIZO_APP_NAME") + "  " +
 			dimStyle.Render("variable") + "\n")
