@@ -6,6 +6,18 @@ import (
 	"strings"
 )
 
+// actionsVersion is the komizo-actions release the pasted workflow pins.
+//
+// A constant, bumped by hand when that repo cuts a release. It cannot be
+// derived: the two repositories version independently, and this CLI has no way
+// to ask which action releases exist without a network call in the middle of a
+// setup that has just finished talking to a server.
+//
+// Bumping it late is the safe failure -- the workflow pins an older release
+// that works. Leaving it at a tag that no longer moves is the unsafe one, which
+// is what `@v0` became.
+const actionsVersion = "v0.0.1"
+
 func step(format string, a ...any) {
 	fmt.Printf("\n==> "+format+"\n", a...)
 }
@@ -123,8 +135,15 @@ func printNextSteps(o addOpts, t target, knownHosts, key string) {
 	// No app, host or key in the snippet: all four settings above are read from
 	// the environment by name. Each secret the app needs is one more line under
 	// env:, named KOMIZO_SECRET_<NAME>, and arrives on the host as <NAME>.
+	//
+	// The action is pinned to a VERSION, and the version is a constant here
+	// rather than something worked out at run time: this is a snippet to paste,
+	// so it has to name a ref that exists today. komizo-actions releases
+	// immutable v0.0.x tags -- `@v0` used to move and no longer does, so a
+	// snippet still offering it would send every new app at a tag frozen before
+	// this CLI existed. See actionsVersion.
 	fmt.Printf(`
- Then in your app repo: a compose.yml with a service named %s-gate --
+ Then in your app repo: a compose.yml with a service named %[1]s-gate --
  your own Caddy, nginx, whatever -- listening on :80 and joined to the shared
  network. That container owns everything about how requests reach your app.
 
@@ -134,7 +153,7 @@ func printNextSteps(o addOpts, t target, knownHosts, key string) {
  Both in a directory of their own (deploy/ by convention), then a workflow.
  Your deploy step:
 
-   - uses: nicodes/komizo-actions/deploy@v0
+   - uses: nicodes/komizo-actions/deploy@%[4]s
      env:
           KOMIZO_APP_NAME: ${{ vars.KOMIZO_APP_NAME }}
           KOMIZO_SERVER_URL: ${{ vars.KOMIZO_SERVER_URL }}
@@ -143,12 +162,12 @@ func printNextSteps(o addOpts, t target, knownHosts, key string) {
 
           KOMIZO_SECRET_DATABASE_URL: ${{ secrets.DATABASE_URL }}
      with:
-          version: ${{ github.sha }}%s
+          version: ${{ github.sha }}%[2]s
           config-compose: deploy/compose.yml
           config-hostnames: deploy/hostnames
-          config-image: %s
+          config-image: %[3]s
           registry-user: ${{ github.actor }}
           registry-token: ${{ secrets.GITHUB_TOKEN }}
 
-`, o.app, portLine, o.config)
+`, o.app, portLine, o.config, actionsVersion)
 }
