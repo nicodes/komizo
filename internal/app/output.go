@@ -87,7 +87,12 @@ func printNextSteps(o addOpts, t target, knownHosts, key string) {
 	// Moving an app to another box, or reaching this one by a different name
 	// while its public DNS is mid-cutover, is then a settings change instead of
 	// a commit and a deploy.
-	fmt.Printf("\n 3. VARIABLE  KOMIZO_SERVER_URL\n\n        %s\n", t.knownHostsField())
+	//
+	// The bare host. This used to print knownHostsField(), which brackets the
+	// name and appends the port on any box not using 22 -- a known_hosts
+	// pattern, not an address. The port is a separate input, written into the
+	// snippet below.
+	fmt.Printf("\n 3. VARIABLE  KOMIZO_SERVER_URL\n\n        %s\n", t.serverURL())
 
 	// The app name selects the deploy account, both privileged commands, and the
 	// gate the shared proxy is pointed at. Hold this one more loosely than

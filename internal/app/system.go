@@ -150,6 +150,7 @@ container_stats_all() {
 		[ -f "$_state" ] || continue
 		_app="${_state##*/}"; _app="${_app%.env}"
 		_dir="$(komizo_state "$_state" APP_DIR)"
+		# shellcheck disable=SC2015 # both sides are tests; either failing means skip
 		[ -n "$_dir" ] && [ -f "$_dir/compose.yml" ] || continue
 		for _cid in $(docker compose -f "$_dir/compose.yml" --project-directory "$_dir" ps -q 2>/dev/null); do
 			# One inspect for both fields: this runs per container per minute,
@@ -196,6 +197,22 @@ type sysSample struct {
 
 	disks []diskUse
 	cs    []cgroupStat
+	// csIndex finds a container in cs without walking it.
+	//
+	// The charts ask this question a great many times. One app's processor rate
+	// over a window is a lookup per container per PAIR of readings, and the
+	// monitor recomputes the whole window on every frame -- so a linear scan
+	// made the cost of drawing grow with the SQUARE of the number of containers
+	// on the box. Measured over a day of samples: 2.7ms at ten containers,
+	// 19.5ms at forty, per series, per frame, with six panels on screen.
+	//
+	// Built in parseSystem, which already had this exact map to collapse
+	// duplicate records and threw it away.
+	//
+	// Nil on a sysSample built by hand -- tests do that -- and statFor falls
+	// back to the scan, so it stays a pure optimisation rather than a second
+	// way to be wrong.
+	csIndex map[string]int
 	// vols is present only on the readings that measured it -- every fifteenth
 	// minute, because it costs a du. A reading without it is not a reading of
 	// zero storage, it is a minute nobody asked.
@@ -330,12 +347,23 @@ func parseSystem(out string, at time.Time) sysSample {
 			s.cs = append(s.cs, c)
 		}
 	}
+	// Kept rather than discarded: the readers ask for a container by name far
+	// more often than this builds one. See sysSample.csIndex.
+	s.csIndex = byKey
 	return s
 }
 
 // statFor is one container in one reading. Absent means it was not running --
 // a stopped container has no cgroup to read, so there is no record of it.
 func (s sysSample) statFor(app, service string) (cgroupStat, bool) {
+	if s.csIndex != nil {
+		i, ok := s.csIndex[csKey(app, service)]
+		if !ok {
+			return cgroupStat{}, false
+		}
+		return s.cs[i], true
+	}
+	// A sample built by hand rather than parsed. Same answer, slower.
 	for _, c := range s.cs {
 		if c.app == app && c.service == service {
 			return c, true
@@ -371,13 +399,6 @@ func (r resSeries) any() bool {
 		}
 	}
 	return false
-}
-
-func (r resSeries) span() time.Duration {
-	if len(r.times) < 2 {
-		return 0
-	}
-	return r.times[len(r.times)-1].Sub(r.times[0])
 }
 
 // maxRateGap is how far apart two readings may be and still be differenced.
@@ -614,6 +635,7 @@ func mountsIn(s []sysSample) []string {
 // near nothing anyway, because whatever is written outside a volume is deleted
 // by the next deploy. The volumes are where an app's disk actually goes.
 const volumeProbe = `
+# shellcheck disable=SC2120 # called with an app by the monitor, without one by the sampler
 volumes_all() {
 	_only="${1:-}"
 	command -v docker >/dev/null 2>&1 || return 0
@@ -622,9 +644,11 @@ volumes_all() {
 		_app="${_state##*/}"; _app="${_app%.env}"
 		[ -z "$_only" ] || [ "$_app" = "$_only" ] || continue
 		_dir="$(komizo_state "$_state" APP_DIR)"
+		# shellcheck disable=SC2015 # both sides are tests; either failing means skip
 		[ -n "$_dir" ] && [ -f "$_dir/compose.yml" ] || continue
 		_ids="$(docker compose -f "$_dir/compose.yml" --project-directory "$_dir" ps -aq 2>/dev/null)"
 		[ -n "$_ids" ] || continue
+		# shellcheck disable=SC2086 # deliberate word splitting: one container id per arg
 		# service, volume name, and where it lives on the host. One line per
 		# mount, so a volume shared by two containers appears under both.
 		_pairs="$(docker inspect $_ids --format \
@@ -763,8 +787,12 @@ func (m *model) takeSample(s sysSample) {
 		return
 	}
 	m.sysSamples = append(m.sysSamples, s)
+	// Shifted in place rather than copied into a fresh slice. The old form
+	// allocated a new 360-element backing array on every poll once the buffer
+	// was full -- once every five seconds, forever, for a window left open --
+	// to drop one reading off the front. copy reuses the array it already has.
 	if n := len(m.sysSamples) - sysHistory; n > 0 {
-		m.sysSamples = append([]sysSample(nil), m.sysSamples[n:]...)
+		m.sysSamples = m.sysSamples[:copy(m.sysSamples, m.sysSamples[n:])]
 	}
 	m.sys, m.sysHave = s, true
 }

@@ -38,7 +38,27 @@ esac
 
 log "Installing Docker"
 apk update
-apk add --no-cache docker docker-cli-compose openssh doas
+# Only what is MISSING is installed. `apk add` on an already-present package
+# upgrades it to whatever the repository now offers, and this script is re-run
+# by "update komizo" (u in the interface) -- whose prompt promises the apps keep
+# running and nothing is deleted. Silently staging a new Docker under a box full
+# of running containers is not that promise: the daemon holds its old binary
+# until something restarts it, so the change lands at the next reboot rather
+# than at the operation that caused it.
+#
+# Upgrading is a real thing to want, and it is a thing to do on purpose:
+# `apk upgrade docker` over the same connection, when you have decided to.
+missing=""
+for pkg in docker docker-cli-compose openssh doas; do
+	apk info -e "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
+done
+if [ -n "$missing" ]; then
+	log "Installing:$missing"
+	# shellcheck disable=SC2086 # deliberate word splitting: one package per arg
+	apk add --no-cache $missing
+else
+	log "Docker, compose, openssh and doas are already installed"
+fi
 
 log "Enabling Docker at boot"
 rc-update add docker default

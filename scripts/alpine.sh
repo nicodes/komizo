@@ -427,8 +427,14 @@ cd "$APP_DIR"
 # without reaching an explicit cleanup, and each would otherwise leave a
 # root-owned copy of the config image -- or the per-run registry credentials --
 # behind in /tmp.
+#
+# The .env backup is in here for the same reason. It is removed on both the
+# success and the failure path below, but a kill between writing it and reaching
+# either would leave a copy of this app's environment sitting in its directory
+# until something happened to overwrite it.
 staging=""
-trap 'rm -rf "$staging" "${DOCKER_CONFIG:-}" 2>/dev/null || true' EXIT INT TERM
+trap 'rm -rf "$staging" "${DOCKER_CONFIG:-}" 2>/dev/null || true
+	rm -f "$APP_DIR/.env.komizo.bak" 2>/dev/null || true' EXIT INT TERM
 
 # Tags and SHAs only: letters, digits, dot, underscore, hyphen. Required --
 # every deploy names a version, because the config for that version has to be
@@ -855,16 +861,28 @@ if [ "$proxy_up" = 1 ]; then
 	fi
 fi
 
-rm -f compose.yml.prev hostnames.prev "$ROUTE_FILE.prev"
+# The .prev files are deliberately still here. They used to be deleted at this
+# point, on the reasoning that everything after it had been validated -- but
+# `docker compose pull` comes next and can fail for a reason nothing above can
+# see (a tag that exists for the config image but not for an app image). That
+# left the box with the NEW compose.yml and the NEW route file on disk, their
+# backups already gone, and only .env restored.
+#
+# The route file is the part that matters. It is valid, it is in the directory
+# the shared proxy imports, and while this deploy does not reload Caddy, the
+# next deploy of ANY app on the box does -- at which point the hostnames of a
+# stack that never started begin resolving to a gate that is not there. A green
+# "nothing restarted" and a domain that 502s, with nothing connecting the two.
+#
+# So they survive until the deploy has actually happened. See the cleanup below.
 
 # Committed only once the config for this version is in place and valid, so a
 # deploy that fails earlier leaves the box claiming the version it is actually
 # still running. Persisted so a later manual 'docker compose up -d' keeps this
 # commit instead of drifting back to :latest.
 # .env is read by the pull/up below for ${APP_VERSION} substitution, so it has
-# to be written first -- but a pull that then fails (a tag that exists for the
-# config image but not the app image) would leave .env claiming a version that
-# never started. Back it up and put it back on failure.
+# to be written first -- but a pull that then fails would leave .env claiming a
+# version that never started. Back it up and put it back on failure.
 cp .env .env.komizo.bak 2>/dev/null || true
 if grep -q '^APP_VERSION=' .env; then
 	sed -i "s|^APP_VERSION=.*|APP_VERSION=$version|" .env
@@ -874,11 +892,19 @@ fi
 
 if ! docker compose pull; then
 	mv -f .env.komizo.bak .env 2>/dev/null || rm -f .env.komizo.bak
-	echo "deploy: 'docker compose pull' failed -- .env restored, nothing restarted" >&2
+	# The whole config goes back, not just .env: compose.yml, the hostnames
+	# record and the generated route are all this version's and none of them
+	# was ever served.
+	revert
+	echo "deploy: 'docker compose pull' failed -- reverted, nothing restarted" >&2
 	exit 1
 fi
 rm -f .env.komizo.bak
 docker compose up -d --remove-orphans
+
+# Now the deploy has happened, so there is nothing left to go back to. Dropped
+# here rather than before the pull, which is the bug described above.
+rm -f compose.yml.prev hostnames.prev "$ROUTE_FILE.prev"
 
 # Deliberately NOT pruning images here. 'docker image prune' is machine-wide,
 # and this script is per-app: every other step targets this app's own name, so
@@ -997,6 +1023,20 @@ log "Granting '$CI_USER' doas access to $DEPLOY_BIN and $SECRET_BIN only"
 # no portable include directive, and a drop-in that is never read would fail
 # open-looking but silently do nothing.
 touch /etc/doas.conf
+
+# Backed up before it is touched, and restored on ANY failure between here and
+# a successful `doas -C`.
+#
+# doas refuses to run at all against a config it cannot parse, so a file left
+# invalid does not break this app -- it breaks EVERY app on the box, from an
+# operation scoped to one of them, with no way back except editing the file by
+# hand over the connection komizo just used. This is the one file the script
+# was mutating without a way back: sshd_config below has both a backup and a
+# trap, and alpine-remove.sh backs up this very file on the way out.
+doas_bak="/etc/doas.conf.komizo.bak"
+cp /etc/doas.conf "$doas_bak"
+trap 'mv -f "$doas_bak" /etc/doas.conf 2>/dev/null || true' EXIT
+
 # Delimited block, so the rule set can grow without the removal logic having to
 # know how many lines it spans.
 # Keyed on the project rather than this file, so adding a script for another
@@ -1013,7 +1053,15 @@ cat >> /etc/doas.conf <<-EOF
 EOF
 chown root:root /etc/doas.conf
 chmod 600 /etc/doas.conf
-doas -C /etc/doas.conf || die "generated doas.conf is invalid"
+if ! doas -C /etc/doas.conf; then
+	mv -f "$doas_bak" /etc/doas.conf
+	trap - EXIT
+	die "the generated doas.conf is invalid, reverted -- no rules were changed"
+fi
+# Success: stop guarding it and drop the backup, so a later run's "backup" is
+# not one that already carries komizo's edits.
+trap - EXIT
+rm -f "$doas_bak"
 
 # --- 4. sshd ---------------------------------------------------------------
 # Two separate things, deliberately:

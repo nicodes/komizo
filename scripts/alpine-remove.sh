@@ -113,16 +113,26 @@ fi
 # unable to invoke something that no longer exists, rather than able to invoke
 # something unexpected that later takes its path.
 
+# One backup suffix across every script that edits a file in /etc: ".komizo.bak"
+# beside the file. There were three conventions before this -- ".komizo.bak" for
+# sshd_config in alpine.sh, ".bak.remove" for both files here -- so a stray
+# backup left by a killed run was not obviously komizo's, and no two of them
+# could be cleaned by one rule. Each is guarded by a trap, so an interrupted run
+# puts the file back rather than leaving a half-edit and a copy beside it.
 log "Removing doas rules for '$CI_USER'"
 if [ -f /etc/doas.conf ]; then
-	cp /etc/doas.conf /etc/doas.conf.bak.remove
+	doas_bak=/etc/doas.conf.komizo.bak
+	cp /etc/doas.conf "$doas_bak"
+	trap 'mv -f "$doas_bak" /etc/doas.conf 2>/dev/null || true' EXIT
 	sed -i -E "/^# $PROJECT_MARKER: $CI_USER BEGIN\$/,/^# $PROJECT_MARKER: $CI_USER END\$/d" /etc/doas.conf
 	if ! doas -C /etc/doas.conf >/dev/null 2>&1; then
-		mv /etc/doas.conf.bak.remove /etc/doas.conf
+		mv -f "$doas_bak" /etc/doas.conf
+		trap - EXIT
 		echo "error: removing the doas rules left an invalid config -- reverted" >&2
 		exit 1
 	fi
-	rm -f /etc/doas.conf.bak.remove
+	trap - EXIT
+	rm -f "$doas_bak"
 fi
 
 log "Removing $DEPLOY_BIN and $SECRET_BIN"
@@ -133,15 +143,19 @@ rm -f "$DEPLOY_BIN" "$SECRET_BIN"
 log "Removing the sshd restrictions for '$CI_USER'"
 conf=/etc/ssh/sshd_config
 if [ -f "$conf" ]; then
-	cp "$conf" "$conf.bak.remove"
+	conf_bak="$conf.komizo.bak"
+	cp "$conf" "$conf_bak"
+	trap 'mv -f "$conf_bak" "$conf" 2>/dev/null || true' EXIT
 	sed -i -E \
 		-e "/^# $PROJECT_MARKER: sshd $CI_USER BEGIN\$/,/^# $PROJECT_MARKER: sshd $CI_USER END\$/d" \
 		"$conf"
 	if sshd -t >/dev/null 2>&1; then
-		rm -f "$conf.bak.remove"
+		trap - EXIT
+		rm -f "$conf_bak"
 		rc-service sshd reload >/dev/null 2>&1 || rc-service sshd restart >/dev/null 2>&1 || true
 	else
-		mv "$conf.bak.remove" "$conf"
+		mv -f "$conf_bak" "$conf"
+		trap - EXIT
 		echo "error: removing the sshd block left an invalid config -- reverted" >&2
 		exit 1
 	fi
