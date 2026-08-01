@@ -33,34 +33,50 @@ runs:
       shell: bash
       run: go vet ./...
 
+    # Installed BEFORE the tests, because one of them is the shellcheck gate and
+    # it skips itself when the tool is absent. A skip is what a contributor
+    # without shellcheck should get; a skip in CI is the check quietly not
+    # happening, which is the same as not having it.
+    #
+    # shellcheck ships on the ubuntu-latest image, but install it explicitly so
+    # a base-image change cannot silently turn that test into a no-op.
+    - name: Install shellcheck
+      shell: bash
+      run: |
+        command -v shellcheck >/dev/null 2>&1 \
+          || { sudo apt-get update && sudo apt-get install -y shellcheck; }
+        shellcheck --version
+
     # -race because the TUI runs commands as goroutines writing to a channel the
     # model reads, which is exactly the shape that fails only under load.
     #
     # -count=1 because a cached PASS from an earlier run is not evidence about
     # this one, and the cache is keyed on inputs this suite deliberately reaches
-    # outside of: it shells out to sh, and writes and executes files in a temp
-    # directory.
+    # outside of: it shells out to sh and to shellcheck, and writes and executes
+    # files in a temp directory.
+    #
+    # The shell komizo pipes to a server as root is checked in here rather than
+    # in a step of its own. It used to be a step, and that step globbed
+    # scripts/*.sh -- which is the SMALLER half. The generated scripts
+    # (internal/app: the inventory, the sampler, the metrics awk) are shell too,
+    # they run as root just the same, and the inventory alone is larger than any
+    # file in scripts/. Only a Go test can reach both, since one half exists
+    # only once Go has built it: see TestShellcheck and
+    # TestEveryGeneratedScriptIsValidShell, which share one list of scripts so a
+    # script added later cannot escape either check.
     - name: Go tests
       shell: bash
       run: go test -race -count=1 -timeout 5m ./...
 
-    # The embedded scripts are POSIX sh, run on Alpine's busybox ash. `sh -n` on
-    # the runner's dash is the closest cheap approximation of that parser, and it
-    # catches the class of error worth catching here: a heredoc left open, an
-    # unbalanced quote, a stray backtick closing a Go raw string early.
-    #
-    # Worth a step of its own because this is the half that runs as ROOT on
-    # somebody else's server, and it is the half Go cannot type-check. The Go
-    # tests above execute some of it against a fake box; this checks all of it
-    # at least parses.
-    - name: Server scripts parse
+    # A skipped test is a green tick, so assert the two shell gates actually
+    # ran. Without this, shellcheck vanishing from the image would read as
+    # "everything passes" -- exactly the failure the checks exist to prevent.
+    - name: The shell checks were not skipped
       shell: bash
       run: |
-        fail=0
-        for f in scripts/*.sh; do
-          if ! sh -n "$f"; then
-            echo "::error file=$f::does not parse as POSIX sh"
-            fail=1
-          fi
-        done
-        exit $fail
+        out="$(go test -count=1 -run 'TestShellcheck|TestEveryGeneratedScriptIsValidShell' -v ./internal/app)"
+        echo "$out"
+        if grep -q -- '--- SKIP' <<<"$out"; then
+          echo "::error::a shell check skipped itself -- the tool it needs is missing"
+          exit 1
+        fi

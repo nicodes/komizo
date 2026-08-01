@@ -82,9 +82,16 @@ func shQuote(s string) string {
 }
 
 const (
-	appChars   = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
-	userChars  = appChars + "."
-	hostChars  = userChars + ":"
+	appChars  = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+	userChars = appChars + "."
+	// No colon. It bought nothing and cost a divergence: addr() hands ssh
+	// "user@host" as ONE argv element, so "example.com:2222" reaches it as a
+	// literal hostname and fails to resolve, and a bare IPv6 literal is never
+	// bracketed for addr() either. Meanwhile the server script's KNOWN_AS
+	// charset has never allowed one -- so --known-as 'box:2222' passed every
+	// check on this machine, opened a connection, and died on the far end with
+	// a message about commas. See TestTheCharsetsAgreeWithTheServerScripts.
+	hostChars  = userChars
 	imageChars = userChars + ":/"
 	pathChars  = userChars + "/"
 )
