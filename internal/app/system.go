@@ -62,8 +62,8 @@ type sysSample struct {
 	// on the box. Measured over a day of samples: 2.7ms at ten containers,
 	// 19.5ms at forty, per series, per frame, with six panels on screen.
 	//
-	// Built in parseSystem, which already had this exact map to collapse
-	// duplicate records and threw it away.
+	// Built by sysSampleFrom, which needs the same map anyway to collapse a
+	// container reported twice.
 	//
 	// Nil on a sysSample built by hand -- tests do that -- and statFor falls
 	// back to the scan, so it stays a pure optimisation rather than a second

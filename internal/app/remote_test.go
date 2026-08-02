@@ -233,3 +233,18 @@ func TestANewKeyIsStillAppendedBesideTheOldOnes(t *testing.T) {
 		}
 	}
 }
+
+// A failing agent can print a page; the line that says what went wrong is the
+// last one, and the rest is context nobody reads in a status bar.
+func TestLastLineIsWhatWentWrong(t *testing.T) {
+	for in, want := range map[string]string{
+		"one line":                      "one line",
+		"context\nmore\nthe real error": "the real error",
+		"trailing newline\n":            "trailing newline",
+		"":                              "",
+	} {
+		if got := lastLine(in); got != want {
+			t.Errorf("lastLine(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

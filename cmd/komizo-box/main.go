@@ -1,24 +1,28 @@
-// Command komizo-box is what runs on a server.
+// Command komizo-box is what komizo installs on a server.
 //
-// One binary, several modes, run by DIFFERENT USERS -- which is the whole
-// design and not a packaging convenience. See design/architecture.md.
-//
-//	rootd    root. Probes the machine and writes report.json on a timer.
-//	report   one reading to stdout. What `komizo report` runs over SSH.
+//	rootd    a daemon. Probes the machine every minute and writes report.json.
+//	report   one reading to stdout. What `komizo report` asks for.
 //	poll     a reading plus a window of request counts. The app list.
 //	monitor  a range of counts, past readings, and one app's volumes. The charts.
 //
-// Every mode but rootd prints ONE JSON document and exits. The CLI drives them
-// over SSH, and a mode per screen rather than per subject is deliberate: each
-// read costs a connection, and that -- not the probing -- is the expensive part.
+// Every mode but rootd prints ONE JSON document and exits. A mode per SCREEN
+// rather than per subject is deliberate: each read costs an SSH connection, and
+// the connection -- not the probing -- is the expensive part, so a screen that
+// needs three things asks once.
 //
-// Splitting the modes across separate binaries would make agent updates three
-// questions instead of one; running them as one PROCESS would merge root with
-// the account that is supposed to have nothing. So: one file on disk, two
-// processes, two users.
+// rootd is the load-bearing one. It runs as root on a timer and leaves a
+// world-readable file; nothing dials in to ask it for anything. That is what
+// lets the process which will one day report to a service have no privileges at
+// all, and it is the property design/appify.md §3 exists to defend.
 //
-// In v0 only the root half exists. There is no agent yet, because there is
-// nothing for it to report to -- see design/appify.md §11.
+// The other modes are read-only and run as whoever opened the connection, which
+// today is the operator over their own root key. When the agent and the team
+// shell arrive they become two more modes here rather than two more binaries:
+// one file to install is one question about updating it, and three would be
+// three -- see design/appify.md §10, which has no answer yet.
+//
+// They must stay separate PROCESSES under separate users. Merging them merges
+// the privilege, and the privilege is the whole point.
 package main
 
 import (

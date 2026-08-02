@@ -82,7 +82,12 @@ func askBox(t target, args ...string) ([]byte, error) {
 // A failing agent can print a page; the line that says what went wrong is the
 // last one, and the rest is context nobody reads in a status bar.
 func lastLine(s string) string {
-	if i := strings.LastIndexByte(strings.TrimRight(s, "\n"), '\n'); i >= 0 {
+	// Trimmed FIRST, so the answer never carries a trailing newline into a
+	// status bar. Searching the trimmed string and then slicing the original
+	// looks equivalent and is not: a single line ending in a newline finds no
+	// separator and falls through untouched.
+	s = strings.TrimSpace(s)
+	if i := strings.LastIndexByte(s, '\n'); i >= 0 {
 		return strings.TrimSpace(s[i+1:])
 	}
 	return s
