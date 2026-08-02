@@ -239,7 +239,7 @@ func (m model) startKomizoUpdate() tea.Cmd {
 			ch <- runDoneMsg{err: fmt.Errorf("server setup failed -- see the output above")}
 			return
 		}
-		if err := streamSampler(ch, t); err != nil {
+		if err := streamAgent(ch, t); err != nil {
 			ch <- runDoneMsg{err: err}
 			return
 		}

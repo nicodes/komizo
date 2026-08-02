@@ -63,6 +63,12 @@ var sampler string
 //go:embed sampler-install.sh
 var samplerInstall string
 
+// agent-install.sh puts komizo-box on the box and starts it. The binary itself
+// travels on its own connection -- see AgentInstall.
+
+//go:embed agent-install.sh
+var agentInstall string
+
 // The pieces more than one script needs. Spliced in by placeholder rather than
 // duplicated: the cgroup handling is the fiddly part, and two copies would
 // drift in the direction of whichever nobody was looking at.

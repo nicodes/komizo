@@ -1,8 +1,6 @@
 package app
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"math"
 	"sort"
@@ -10,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nicodes/komizo/scripts"
+	"github.com/nicodes/komizo/internal/agent"
 )
 
 // What the box and the things on it are spending: processor, memory, disk.
@@ -609,10 +607,12 @@ func (m *model) takeSample(s sysSample) {
 //
 // Twelve hex characters, like the config SHAs on the app rows, so the two read
 // as the same kind of fact.
-func komizoStamp() string {
-	sum := sha256.Sum256([]byte(scripts.Sampler()))
-	return hex.EncodeToString(sum[:])[:12]
-}
+//
+// Over the AGENT now rather than over the sampler shell it replaced, because
+// the agent is what gets written. agent.Stamp covers every architecture komizo
+// carries, so two boxes running the same release agree about whether they are
+// up to date even when one is arm64 and the other is not.
+func komizoStamp() string { return agent.Stamp() }
 
 // parseSystemLog turns the sampler's records back into readings, one per
 // timestamp, oldest first.

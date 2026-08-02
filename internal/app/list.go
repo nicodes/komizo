@@ -8,8 +8,6 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
-
-	"github.com/nicodes/komizo/scripts"
 )
 
 type appRow struct {
@@ -455,12 +453,15 @@ func RunList(args []string) error {
 		return err
 	}
 
-	res, err := tgt.runCapture(scripts.Inventory())
+	rep, err := fetchReport(tgt)
 	if err != nil {
+		if _, missing := err.(errNoAgent); missing {
+			return err
+		}
 		return fmt.Errorf("could not read the server's inventory: %w", err)
 	}
 
-	inv := parseInventory(res)
+	inv := inventoryFromReport(rep)
 	apps, srv, proxy, net, orphans := inv.apps, inv.srv, inv.proxy, inv.net, inv.orphans
 
 	if !srv.ready() {

@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-
+	"github.com/nicodes/komizo/internal/box"
 	"github.com/nicodes/komizo/scripts"
 )
 
@@ -151,25 +152,29 @@ func (a addResult) copySelected() error {
 
 func fetchApps(t target) tea.Cmd {
 	return func() tea.Msg {
-		// One script, one connection. The request counts ride along on the
+		// One command, one connection. The request counts ride along on the
 		// inventory rather than getting a poll of their own: every poll opens a
-		// fresh SSH connection, and that -- not the awk -- is the expensive
+		// fresh SSH connection, and that -- not the probing -- is the expensive
 		// part. A second ticker would double the connection rate against the
 		// box to draw a line that moves one column.
 		// A window relative to now, always: the sparkline on a row is "the last
 		// half hour" and has to stay that whatever range the monitor is showing.
 		now := time.Now().Unix()
-		out, err := t.runCapture(scripts.Inventory() + "\n" +
-			scripts.Metrics(now-sparkWindow*60, now))
+		p, err := runBox[box.Poll](t, "poll",
+			"--from", strconv.FormatInt(now-sparkWindow*60, 10),
+			"--to", strconv.FormatInt(now, 10))
 		if err != nil {
+			if _, missing := err.(errNoAgent); missing {
+				return appsMsg{err: err}
+			}
 			return appsMsg{err: fmt.Errorf("could not read the server's inventory: %w", err)}
 		}
-		inv := parseInventory(out)
+		inv := inventoryFromReport(p.Report)
 		// Stamped on arrival rather than on the box. The interval that matters
 		// is the one between two readings landing HERE, and the two clocks need
 		// not agree for that to be measured correctly.
 		return appsMsg{apps: inv.apps, srv: inv.srv, proxy: inv.proxy, net: inv.net,
-			metrics: parseMetrics(out), sys: parseSystem(out, time.Now())}
+			metrics: metricsFromBox(p.Metrics), sys: sysSampleFrom(p.Report.System, time.Now())}
 	}
 }
 
@@ -403,7 +408,7 @@ func (m model) startInit(o initOpts) tea.Cmd {
 			ch <- runDoneMsg{err: fmt.Errorf("could not set the server up -- see the output above")}
 			return
 		}
-		if err := streamSampler(ch, t); err != nil {
+		if err := streamAgent(ch, t); err != nil {
 			ch <- runDoneMsg{err: err}
 			return
 		}
@@ -551,19 +556,18 @@ func runAddPlan(p addPlan, ch chan tea.Msg) (*addResult, error) {
 	})
 }
 
-// streamSampler installs the per-minute resource sampler.
+// streamAgent installs komizo-box.
 //
-// Its own step, after the server itself is ready, and NOT fatal to what came
-// before it in the caller's eyes: a box whose Docker install worked but whose
-// sampler did not is a working server that is missing a chart. The distinction
-// matters because this runs on every "update server", which people press to fix
-// unrelated things.
-func streamSampler(ch chan tea.Msg, t target) error {
+// Its own step, after the server itself is ready. Unlike the sampler it
+// replaces, this one IS fatal to what the interface can do afterwards: komizo
+// reads a box through the agent now, so a box without one shows nothing at all
+// rather than a working server missing a chart. It is reported as the failure
+// it is, and the Docker install before it still stands.
+func streamAgent(ch chan tea.Msg, t target) error {
 	ch <- runOutputMsg("")
-	ch <- runOutputMsg("installing the resource sampler...")
-	c := exec.Command("ssh", t.sshArgs("sh -s")...)
-	if err := stream(ch, c, scripts.SamplerInstall(komizoStamp(), versionText())); err != nil {
-		return fmt.Errorf("the server is ready, but the resource sampler failed -- resource history will be empty")
+	ch <- runOutputMsg("installing the komizo agent...")
+	if err := installAgent(t, ch); err != nil {
+		return fmt.Errorf("the server is ready, but the agent failed to install: %w", err)
 	}
 	return nil
 }

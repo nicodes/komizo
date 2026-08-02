@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -49,6 +50,10 @@ func main() {
 		err = runMetrics(os.Args[2:])
 	case "history":
 		err = runHistory(os.Args[2:])
+	case "poll":
+		err = runPoll(os.Args[2:])
+	case "monitor":
+		err = runMonitor(os.Args[2:])
 	case "version":
 		fmt.Println(version)
 	case "-h", "--help", "help":
@@ -68,7 +73,9 @@ func usage() {
 	fmt.Fprint(os.Stderr, `komizo-box -- the komizo agent, on the server
 
   komizo-box rootd [--interval 60s] [--report PATH]
-  komizo-box report [--json]
+  komizo-box report [--cached] [--volumes]
+  komizo-box poll --from UNIX --to UNIX
+  komizo-box monitor --from UNIX --to UNIX [--app NAME]
   komizo-box metrics --from UNIX --to UNIX
   komizo-box history --from UNIX --to UNIX
   komizo-box version
@@ -97,10 +104,16 @@ func runRootd(args []string) error {
 		return err
 	}
 
-	// Created up front, by root, so the permissions on komizo's state are
-	// decided in one place rather than by whichever process happens to write
-	// first.
-	for _, d := range []string{box.StateDir, box.PendingDir} {
+	// Only what this is about to write, and derived from the flags rather than
+	// from the constants -- otherwise pointing --report somewhere else still
+	// demands /var/lib/komizo, which makes the daemon impossible to run as
+	// anyone but root even when it is writing to a temp directory.
+	//
+	// Laying out the rest of the box, PendingDir included, is the installer's
+	// job. It runs as root once, at a moment when creating directories is what
+	// it is for; a daemon that also provisions is a daemon with a reason to
+	// need privileges it otherwise would not.
+	for _, d := range []string{filepath.Dir(*reportPath), filepath.Dir(*historyPath)} {
 		if err := os.MkdirAll(d, 0o750); err != nil {
 			return err
 		}
@@ -179,6 +192,51 @@ func runReport(args []string) error {
 		r.System.Volumes = probe().Volumes(ctx, "")
 	}
 	return emit(r)
+}
+
+// runPoll is the app list's redraw: the inventory, plus a window of request
+// counts for the sparkline on each row.
+//
+// One command rather than two because every read costs an SSH connection, and
+// that -- not the probing -- is what makes polling expensive.
+func runPoll(args []string) error {
+	fs := flag.NewFlagSet("poll", flag.ContinueOnError)
+	from := fs.Int64("from", 0, "start of the sparkline window, unix seconds")
+	to := fs.Int64("to", 0, "end of the sparkline window, unix seconds")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	p := probe()
+	out := box.Poll{Report: p.Report(context.Background())}
+	if *from != 0 && *to != 0 {
+		out.Metrics = p.Metrics(*from, *to)
+	}
+	return emit(out)
+}
+
+// runMonitor is the charts: a range of request counts and past readings, and
+// one app's volume sizes when asked for.
+func runMonitor(args []string) error {
+	fs := flag.NewFlagSet("monitor", flag.ContinueOnError)
+	from := fs.Int64("from", 0, "start of the range, unix seconds")
+	to := fs.Int64("to", 0, "end of the range, unix seconds")
+	app := fs.String("app", "", "also measure this app's volumes (slow)")
+	path := fs.String("history", box.HistoryPath, "where readings are kept")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *from == 0 || *to == 0 {
+		return fmt.Errorf("both --from and --to are required")
+	}
+	p := probe()
+	out := box.Monitor{Metrics: p.Metrics(*from, *to), History: []box.Sample{}}
+	if h, err := box.ReadSamples(*path, *from, *to); err == nil && h != nil {
+		out.History = h
+	}
+	if *app != "" {
+		out.Volumes = p.Volumes(context.Background(), *app)
+	}
+	return emit(out)
 }
 
 func runMetrics(args []string) error {

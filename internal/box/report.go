@@ -123,6 +123,15 @@ type Server struct {
 
 func (s Server) Ready() bool { return s.State == "ready" }
 
+// OSName is what the box runs, or what komizo installs when nothing has said
+// otherwise -- a box whose probe never got as far as /etc/os-release.
+func (s Server) OSName() string {
+	if s.OS == "" {
+		return "alpine"
+	}
+	return s.OS
+}
+
 // KomizoInstall is the stamp komizo wrote when it last set this box up.
 type KomizoInstall struct {
 	Installed bool `json:"installed"`
