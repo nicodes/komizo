@@ -7,26 +7,35 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nicodes/komizo/internal/box"
 	"github.com/nicodes/komizo/scripts"
 )
 
-// A sample as the host script actually emits it: the three box records, two
-// filesystems that turn out to be one, and a container per line. The two disk
-// records carry different mount points and the same device, which is what a
-// box that bind-mounts /var/lib/docker onto itself reports -- the shape that
-// folding by mount point got wrong.
-const sysSampleOut = "server\tready\tDocker version 26\n" +
-	"sys\tcpu\t100000\t90000\n" +
-	"sys\tcores\t2\t0\n" +
-	"sys\tmem\t2000000000\t500000000\n" +
-	"disk\t/\t/dev/vda1\t3000000000\t10000000000\n" +
-	"disk\t/var/lib/docker\t/dev/vda1\t3000000000\t10000000000\n" +
-	"cstat\tblog\tapi\t1000000\t50000000\t268435456\n" +
-	"cstat\tblog\tdb\t2000000\t90000000\tmax\n" +
-	"app\tblog\tdeploy-blog\t/srv/blog\tv1\t2\timg\t\n"
+// A reading as the agent reports it: the box's counters, its filesystems, and a
+// container per entry.
+//
+// ONE disk, because that is what an agent sends. / and /var/lib/docker are
+// measured separately and are usually the same filesystem; the agent folds them
+// before reporting -- see box.Probe.disks and TestOneFilesystemUnderTwoMounts.
+// A fixture with two would be asserting the reader folds, which it does not and
+// must not: two implementations of one rule is how they come to disagree.
+func sysFixture() box.System {
+	return box.System{
+		Cores: 2,
+		CPU:   cpuOf(100000, 90000),
+		Mem:   memOf(2000000000, 500000000),
+		Disks: []box.Disk{diskOf("/", "vda1", 3000000000, 10000000000)},
+		Containers: []box.ContainerStat{
+			{App: "blog", Service: "api", CPUUsec: u64(1000000), Mem: u64(50000000), Limit: u64(268435456)},
+			cstatOf("blog", "db", 2000000, 90000000),
+		},
+	}
+}
 
-func TestSystemRecordsAreReadOutOfTheSameOutput(t *testing.T) {
-	s := parseSystem(sysSampleOut, time.Unix(1000, 0))
+// The adapter is where a report becomes the rows the charts are drawn from, so
+// it is where "unknown is not zero" either holds or quietly stops holding.
+func TestAReadingBecomesASample(t *testing.T) {
+	s := sysSampleFrom(sysFixture(), time.Unix(1000, 0))
 
 	if !s.haveCPU || s.cpuTotal != 100000 || s.cpuIdle != 90000 {
 		t.Errorf("cpu = %d/%d have=%v", s.cpuTotal, s.cpuIdle, s.haveCPU)
@@ -38,9 +47,6 @@ func TestSystemRecordsAreReadOutOfTheSameOutput(t *testing.T) {
 		t.Errorf("mem = %d of %d", s.memUsed, s.memTotal)
 	}
 
-	// / and /var/lib/docker are asked about separately and are usually the same
-	// filesystem -- here under two names, which the shared device says. Listing
-	// it twice would read as twice the disk.
 	if len(s.disks) != 1 || s.disks[0].mount != "/" {
 		t.Fatalf("disks = %+v, want one entry for /", s.disks)
 	}
@@ -55,34 +61,44 @@ func TestSystemRecordsAreReadOutOfTheSameOutput(t *testing.T) {
 	if !ok || !api.hasLimit || api.limit != 268435456 {
 		t.Errorf("api limit = %d have=%v", api.limit, api.hasLimit)
 	}
-	// "max" is cgroup v2 for uncapped. A container with no ceiling is a fact
-	// worth showing, not a missing number.
+	// A container with no ceiling is a fact worth showing, not a missing
+	// number. The agent reports the limit absent rather than as zero.
 	db, _ := s.statFor("blog", "db")
 	if db.hasLimit {
-		t.Errorf("db reported a limit of %d, but its cgroup says max", db.limit)
+		t.Errorf("db reported a limit of %d, but it is uncapped", db.limit)
 	}
 }
 
 // A cgroup that could not be read is UNKNOWN. Zero would be a measurement --
-// one saying the container is using nothing at all.
+// one saying the container is using nothing at all. The agent sends nothing,
+// and this is the assertion that nothing does not become a number on the way in.
 func TestAnUnreadableCgroupIsNotZero(t *testing.T) {
-	s := parseSystem("cstat\tblog\tapi\t\t\t\n", time.Unix(1000, 0))
+	s := sysSampleFrom(box.System{
+		Containers: []box.ContainerStat{{App: "blog", Service: "api"}},
+	}, time.Unix(1000, 0))
 	if len(s.cs) != 1 {
 		t.Fatalf("want the container listed anyway, got %+v", s.cs)
 	}
 	if s.cs[0].haveCPU || s.cs[0].haveMem {
-		t.Errorf("blank readings became values: %+v", s.cs[0])
+		t.Errorf("absent readings became values: %+v", s.cs[0])
 	}
 }
 
 // at builds a reading, with the counters given, so a test can say what changed
 // between two of them and nothing else.
 func at(sec int64, cpuTotal, cpuIdle int, apiCPU string) sysSample {
-	out := strings.NewReplacer(
-		"sys\tcpu\t100000\t90000", "sys\tcpu\t"+itoa(cpuTotal)+"\t"+itoa(cpuIdle),
-		"cstat\tblog\tapi\t1000000", "cstat\tblog\tapi\t"+apiCPU,
-	).Replace(sysSampleOut)
-	return parseSystem(out, time.Unix(sec, 0))
+	sys := sysFixture()
+	sys.CPU = cpuOf(uint64(cpuTotal), uint64(cpuIdle))
+	// An empty string is a cgroup that could not be read, which travels as an
+	// absent value rather than as a zero.
+	if apiCPU == "" {
+		sys.Containers[0].CPUUsec = nil
+	} else {
+		var n uint64
+		fmt.Sscanf(apiCPU, "%d", &n)
+		sys.Containers[0].CPUUsec = &n
+	}
+	return sysSampleFrom(sys, time.Unix(sec, 0))
 }
 
 func TestRatesComeFromTheGapBetweenTwoReadings(t *testing.T) {
@@ -113,7 +129,7 @@ func TestAnUnreadableProcessorIsNotZero(t *testing.T) {
 	cur := at(1010, 100200, 90150, "6000000")
 
 	// No /proc/stat in the older reading.
-	blind := parseSystem("sys\tcores\t2\t0\n", time.Unix(1000, 0))
+	blind := sysSampleFrom(box.System{Cores: 2}, time.Unix(1000, 0))
 	if _, ok := boxCPUAt(blind, cur); ok {
 		t.Error("a reading with no cpu counter should give no rate")
 	}
@@ -149,8 +165,11 @@ func TestARestartProducesNoProcessorPointRatherThanASpike(t *testing.T) {
 // A container that IS there but whose cgroup could not be read is unknown.
 func TestStoppedIsZeroAndUnreadableIsUnknown(t *testing.T) {
 	prev := at(1000, 100000, 90000, "1000000")
-	gone := parseSystem(strings.Replace(sysSampleOut,
-		"cstat\tblog\tapi\t1000000\t50000000\t268435456\n", "", 1), time.Unix(1010, 0))
+	// The container is simply ABSENT from the reading, which is how a stopped
+	// one is reported: no pid, no cgroup, nothing to read.
+	goneSys := sysFixture()
+	goneSys.Containers = goneSys.Containers[1:]
+	gone := sysSampleFrom(goneSys, time.Unix(1010, 0))
 	if v, ok := cpuAt(prev, gone, "blog", "api"); !ok || v != 0 {
 		t.Errorf("a stopped container = %v ok=%v, want 0", v, ok)
 	}
@@ -158,9 +177,11 @@ func TestStoppedIsZeroAndUnreadableIsUnknown(t *testing.T) {
 		t.Errorf("a stopped container holds %d ok=%v, want 0", v, ok)
 	}
 
-	blind := parseSystem(strings.Replace(sysSampleOut,
-		"cstat\tblog\tapi\t1000000\t50000000\t268435456",
-		"cstat\tblog\tapi\t\t\t", 1), time.Unix(1010, 0))
+	// Present but unreadable: the agent lists the container and sends no
+	// numbers with it.
+	blindSys := sysFixture()
+	blindSys.Containers[0] = box.ContainerStat{App: "blog", Service: "api"}
+	blind := sysSampleFrom(blindSys, time.Unix(1010, 0))
 	if _, ok := memAt(blind, "blog", "api"); ok {
 		t.Error("an unreadable cgroup should not report a memory figure")
 	}
@@ -180,12 +201,13 @@ func TestAnAppIsUnknownWhenAnyOfItsContainersIs(t *testing.T) {
 
 	// Now restart db. The app's own line goes unknown for that one interval
 	// rather than reporting api alone as though it were the whole app.
-	restarted := parseSystem(strings.Replace(
-		strings.NewReplacer(
-			"sys\tcpu\t100000\t90000", "sys\tcpu\t100200\t90150",
-			"cstat\tblog\tapi\t1000000", "cstat\tblog\tapi\t6000000",
-		).Replace(sysSampleOut),
-		"cstat\tblog\tdb\t2000000", "cstat\tblog\tdb\t5", 1), time.Unix(1010, 0))
+	restartedSys := sysFixture()
+	restartedSys.CPU = cpuOf(100200, 90150)
+	restartedSys.Containers[0] = cstatOf("blog", "api", 6000000, 50000000)
+	// db's counter went BACKWARDS, which is what a restart looks like: a fresh
+	// cgroup counting from zero.
+	restartedSys.Containers[1] = cstatOf("blog", "db", 5, 90000000)
+	restarted := sysSampleFrom(restartedSys, time.Unix(1010, 0))
 	if v, ok := cpuAt(prev, restarted, "blog", ""); ok {
 		t.Errorf("the app reported %v while one of its containers was unknown", v)
 	}
@@ -197,10 +219,11 @@ func TestAnAppIsUnknownWhenAnyOfItsContainersIs(t *testing.T) {
 }
 
 func TestAVolumeTwoContainersShareIsCountedOnceForTheApp(t *testing.T) {
-	rows := parseVolumes(
-		"vol\tblog\tapi\tblog_data\t100\n" +
-			"vol\tblog\tdb\tblog_data\t100\n" +
-			"vol\tblog\tdb\tblog_uploads\t50\n")
+	rows := volumesFromBox([]box.Volume{
+		volOf("blog", "api", "blog_data", 100),
+		volOf("blog", "db", "blog_data", 100),
+		volOf("blog", "db", "blog_uploads", 50),
+	})
 	if len(rows) != 3 {
 		t.Fatalf("rows = %+v", rows)
 	}
@@ -305,7 +328,7 @@ func TestTheBarsAreOnTheIndexAndAreTheBoxs(t *testing.T) {
 func TestOneReadingDrawsNoProcessorBarRatherThanAnEmptyOne(t *testing.T) {
 	m := testModel()
 	m.scr, m.width, m.height = screenIndex, 100, 30
-	m.takeSample(parseSystem(sysSampleOut, time.Unix(1000, 0)))
+	m.takeSample(sysSampleFrom(sysFixture(), time.Unix(1000, 0)))
 	out := stripANSI(m.pageBody())
 	if strings.Contains(out, "processor") {
 		t.Errorf("a processor bar was drawn from a single reading:\n%s", out)
@@ -328,23 +351,29 @@ func TestTheSessionHistoryIsBounded(t *testing.T) {
 	}
 }
 
-// Captured from the sampler actually running, with the container line it now
-// writes: two readings a second apart, and the duplicate disk line the two df
+// Two readings a second apart, and the duplicate disk line the two df
 // calls really produce.
-const sampledLog = "S\t1785232675\tsys\tcpu\t374177611\t356049689\n" +
-	"S\t1785232675\tsys\tcores\t16\t0\n" +
-	"S\t1785232675\tsys\tmem\t32713216000\t17545588736\n" +
-	"S\t1785232675\tdisk\t/\t175837097984\t1018959839232\n" +
-	"S\t1785232675\tdisk\t/\t175837097984\t1018959839232\n" +
-	"S\t1785232675\tcstat\tblog\tapi\t1000000\t50000000\tmax\n" +
-	"S\t1785232676\tsys\tcpu\t374179265\t356051248\n" +
-	"S\t1785232676\tsys\tcores\t16\t0\n" +
-	"S\t1785232676\tsys\tmem\t32713216000\t17529319424\n" +
-	"S\t1785232676\tdisk\t/\t175837097984\t1018959839232\n" +
-	"S\t1785232676\tcstat\tblog\tapi\t1400000\t50000000\tmax\n"
+func sampledLog() []box.Sample {
+	return []box.Sample{
+		sample(1785232675, box.System{
+			Cores:      16,
+			CPU:        cpuOf(374177611, 356049689),
+			Mem:        memOf(32713216000, 17545588736),
+			Disks:      []box.Disk{diskOf("/", "vda1", 175837097984, 1018959839232)},
+			Containers: []box.ContainerStat{cstatOf("blog", "api", 1000000, 50000000)},
+		}),
+		sample(1785232676, box.System{
+			Cores:      16,
+			CPU:        cpuOf(374179265, 356051248),
+			Mem:        memOf(32713216000, 17529319424),
+			Disks:      []box.Disk{diskOf("/", "vda1", 175837097984, 1018959839232)},
+			Containers: []box.ContainerStat{cstatOf("blog", "api", 1400000, 50000000)},
+		}),
+	}
+}
 
-func TestTheSamplersRecordsComeBackAsReadings(t *testing.T) {
-	s := parseSystemLog(sampledLog)
+func TestReadingsComeBackAsASeries(t *testing.T) {
+	s := histOf(sampledLog()...)
 	if len(s) != 2 {
 		t.Fatalf("got %d readings, want 2", len(s))
 	}
@@ -358,7 +387,7 @@ func TestTheSamplersRecordsComeBackAsReadings(t *testing.T) {
 	// Parsed by exactly the same code the live poll uses, so the duplicate
 	// filesystem is folded here too.
 	if len(s[0].disks) != 1 {
-		t.Errorf("disks = %+v, want the duplicate folded away", s[0].disks)
+		t.Errorf("disks = %+v, want one filesystem", s[0].disks)
 	}
 
 	// 1654 jiffies passed, 1559 of them idle: about 6% busy.
@@ -371,17 +400,16 @@ func TestTheSamplersRecordsComeBackAsReadings(t *testing.T) {
 	}
 }
 
-// Cron stopped, or the box was down, or the sampler was killed. A cumulative
+// The box was down, or the agent was killed. A cumulative
 // counter differenced across the hole gives a true average OF the hole, dated
 // at its end and drawn as one point -- a confident value painted over a stretch
 // nobody measured.
 func TestAGapInTheRecordIsNotBridged(t *testing.T) {
-	var b strings.Builder
-	for _, ts := range []int{1000, 1060, 1120, 100000, 100060} {
-		b.WriteString("S\t" + itoa(ts) + "\tsys\tcpu\t" + itoa(1000+ts) + "\t" + itoa(500+ts) + "\n")
-		b.WriteString("S\t" + itoa(ts) + "\tsys\tcores\t2\t0\n")
+	var ss []box.Sample
+	for _, ts := range []int64{1000, 1060, 1120, 100000, 100060} {
+		ss = append(ss, sample(ts, box.System{Cores: 2, CPU: cpuOf(uint64(1000+ts), uint64(500+ts))}))
 	}
-	r := cpuSeries(parseSystemLog(b.String()), "", "")
+	r := cpuSeries(histOf(ss...), "", "")
 	if len(r.vals) != 4 {
 		t.Fatalf("got %d values for five readings, want 4", len(r.vals))
 	}
@@ -400,7 +428,7 @@ func TestAGapInTheRecordIsNotBridged(t *testing.T) {
 func TestTheBoxsRecordWinsOverWhatThisSessionSampled(t *testing.T) {
 	m := sysModel("", "")
 	if _, sampledHere := m.resourceHistory(); !sampledHere {
-		t.Error("with no sampler on the box, the session's own samples are all there is")
+		t.Error("with no history on the box, the session's own samples are all there is")
 	}
 	if got := stripANSI(m.pageBody()); !strings.Contains(got, "sampled by this session") {
 		t.Errorf("the weaker claim must be labelled:\n%s", got)
@@ -416,18 +444,18 @@ func TestTheBoxsRecordWinsOverWhatThisSessionSampled(t *testing.T) {
 		}
 	}
 
-	m.sysLog = parseSystemLog(sampledLog)
+	m.sysLog = histOf(sampledLog()...)
 	hist, sampledHere := m.resourceHistory()
 	if sampledHere || len(hist) != 2 {
-		t.Errorf("the sampler's history should win, got %d readings sampledHere=%v", len(hist), sampledHere)
+		t.Errorf("the box's history should win, got %d readings sampledHere=%v", len(hist), sampledHere)
 	}
 }
 
 // Two polls is ten seconds. Bucketing the session's own samples into minutes
 // meant nothing appeared until it crossed its second CLOCK minute -- up to two
-// minutes of staring at a page that looks broken on any box without a sampler,
+// minutes of staring at a page that looks broken on any box with no history yet,
 // which is every box until server setup is re-run.
-func TestTheChartsDrawWithinTwoPollsOnABoxWithNoSampler(t *testing.T) {
+func TestTheChartsDrawWithinTwoPollsOnAFreshBox(t *testing.T) {
 	m := testModel()
 	m.scr, m.monitorReady, m.width, m.height = screenMonitor, true, 96, 40
 	m.takeSample(at(1000, 100000, 90000, "1000000"))
@@ -444,14 +472,15 @@ func TestTheChartsDrawWithinTwoPollsOnABoxWithNoSampler(t *testing.T) {
 // Disk had no history at all: the derived point type never carried it, so the
 // chart could not have been drawn however long you waited.
 func TestDiskIsChartedFromTheRollups(t *testing.T) {
-	var b strings.Builder
+	var ss []box.Sample
 	for i := 0; i < 40; i++ {
-		ts := itoa(100000 + i*60)
-		b.WriteString("S\t" + ts + "\tsys\tcpu\t" + itoa(1000+i*100) + "\t" + itoa(500+i*50) + "\n")
-		b.WriteString("S\t" + ts + "\tsys\tcores\t2\t0\n")
-		b.WriteString("S\t" + ts + "\tdisk\t/\t" + itoa(3000000000+i*9000000) + "\t10000000000\n")
+		ss = append(ss, sample(int64(100000+i*60), box.System{
+			Cores: 2,
+			CPU:   cpuOf(uint64(1000+i*100), uint64(500+i*50)),
+			Disks: []box.Disk{diskOf("/", "vda1", uint64(3000000000+i*9000000), 10000000000)},
+		}))
 	}
-	hist := parseSystemLog(b.String())
+	hist := histOf(ss...)
 	if got := mountsIn(hist); len(got) != 1 || got[0] != "/" {
 		t.Fatalf("mounts = %v", got)
 	}
@@ -487,31 +516,9 @@ func TestDiskIsChartedFromTheRollups(t *testing.T) {
 // demand -- so it gets the storage list and no chart.
 func TestAnAppGetsNoDiskChart(t *testing.T) {
 	m := sysModel("blog", "")
-	m.sysLog = parseSystemLog(sampledLog)
+	m.sysLog = histOf(sampledLog()...)
 	if out := stripANSI(m.pageBody()); strings.Contains(out, "% full") {
 		t.Errorf("an app should have no filesystem chart:\n%s", out)
-	}
-}
-
-// The sampler defined the cgroup reader and never called it, so it wrote the
-// box's numbers and nothing else -- every app and container chart was empty
-// however long the box had been up, which looks exactly like an idle machine.
-func TestTheSamplerActuallyReadsContainers(t *testing.T) {
-	sh := scripts.SamplerInstall(komizoStamp(), versionText())
-	if !strings.Contains(sh, "container_stats_all() {") {
-		t.Fatal("the sampler has no container enumeration")
-	}
-	// A line that is nothing but the name is a call; the definition ends in
-	// "() {". Matched that way rather than by scanning to the end of the command
-	// substitution, which the probe is itself full of.
-	called := false
-	for _, ln := range strings.Split(sh, "\n") {
-		if strings.TrimSpace(ln) == "container_stats_all" {
-			called = true
-		}
-	}
-	if !called {
-		t.Error("the sampler defines the container reader but never calls it")
 	}
 }
 
@@ -523,7 +530,7 @@ func TestTheSamplerActuallyReadsContainers(t *testing.T) {
 // 0.833%. Cron stops for six minutes, and api restarts once.
 func TestTheChartedNumbersAreTheArithmetic(t *testing.T) {
 	start := int64(1785200000) / 60 * 60
-	var log strings.Builder
+	var log []box.Sample
 	cpuTotal, cpuIdle, apiUsec := 1000000, 900000, 5000000
 	for i := 0; i < 120; i++ {
 		ts := start + int64(i)*60
@@ -540,18 +547,19 @@ func TestTheChartedNumbersAreTheArithmetic(t *testing.T) {
 		if i == 110 {
 			apiUsec = 1000 // restarted: a fresh cgroup counts from zero
 		}
-		row := func(f string, a ...any) {
-			fmt.Fprintf(&log, "S\t%d\t"+f+"\n", append([]any{ts}, a...)...)
-		}
-		row("sys\tcpu\t%d\t%d", cpuTotal, cpuIdle)
-		row("sys\tcores\t2\t0")
-		row("sys\tmem\t2000000000\t%d", 500000000+i*1000000)
-		row("cstat\tblog\tapi\t%d\t%d\tmax", apiUsec, 300*1024*1024)
-		row("cstat\tblog\tdb\t%d\t%d\tmax", 1000000+i*1000000, 90*1024*1024)
+		log = append(log, sample(ts, box.System{
+			Cores: 2,
+			CPU:   cpuOf(uint64(cpuTotal), uint64(cpuIdle)),
+			Mem:   memOf(2000000000, uint64(500000000+i*1000000)),
+			Containers: []box.ContainerStat{
+				cstatOf("blog", "api", uint64(apiUsec), 300*1024*1024),
+				cstatOf("blog", "db", uint64(1000000+i*1000000), 90*1024*1024),
+			},
+		}))
 	}
 
-	hist := parseSystemLog(log.String())
-	box := cpuSeries(hist, "", "")
+	hist := histOf(log...)
+	whole := cpuSeries(hist, "", "")
 	api := cpuSeries(hist, "blog", "api")
 	app := cpuSeries(hist, "blog", "")
 
@@ -569,15 +577,15 @@ func TestTheChartedNumbersAreTheArithmetic(t *testing.T) {
 			t.Errorf("%s = %.3f, want %.3f", name, got, want)
 		}
 	}
-	near("box steady", valueAt(box, 50), 10)
-	near("box burst", valueAt(box, 100), 60)
+	near("box steady", valueAt(whole, 50), 10)
+	near("box burst", valueAt(whole, 100), 60)
 	near("api steady", valueAt(api, 50), 5)
 	near("api burst", valueAt(api, 100), 35)
 	// An app is its containers added up, and nothing else is folded in.
 	near("app steady", valueAt(app, 50), 5.833)
 
 	// The reading that closes the six-minute hole is not differenced across it.
-	if v := valueAt(box, 76); !math.IsNaN(v) {
+	if v := valueAt(whole, 76); !math.IsNaN(v) {
 		t.Errorf("a value of %v was computed across the gap", v)
 	}
 	// A restart is unknown for the container AND for the app that contains it,
@@ -595,25 +603,28 @@ func TestTheChartedNumbersAreTheArithmetic(t *testing.T) {
 // Storage rides the rollups on a slower cadence than everything else, because
 // it costs a du rather than a file read.
 func TestStorageIsChartedFromTheReadingsThatMeasuredIt(t *testing.T) {
-	var log strings.Builder
+	var log []box.Sample
 	start := int64(1785200000) / 60 * 60
 	for i := 0; i < 40; i++ {
 		ts := start + int64(i)*60
-		fmt.Fprintf(&log, "S\t%d\tsys\tmem\t2000000000\t500000000\n", ts)
+		sys := box.System{Mem: memOf(2000000000, 500000000)}
 		// Only every fifteenth minute carries volumes, growing as it goes.
 		if i%15 == 0 {
-			fmt.Fprintf(&log, "S\t%d\tvol\tblog\tapi\tblog_data\t%d\n", ts, 100000000+i*1000000)
-			fmt.Fprintf(&log, "S\t%d\tvol\tblog\tdb\tblog_data\t%d\n", ts, 100000000+i*1000000)
-			fmt.Fprintf(&log, "S\t%d\tvol\tblog\tdb\tblog_up\t%d\n", ts, 50000000)
+			sys.Volumes = []box.Volume{
+				volOf("blog", "api", "blog_data", uint64(100000000+i*1000000)),
+				volOf("blog", "db", "blog_data", uint64(100000000+i*1000000)),
+				volOf("blog", "db", "blog_up", 50000000),
+			}
 		}
+		log = append(log, sample(ts, sys))
 	}
-	hist := parseSystemLog(log.String())
+	hist := histOf(log...)
 	if len(hist) != 40 {
 		t.Fatalf("got %d readings", len(hist))
 	}
 
 	r := storageSeries(hist, "blog", "")
-	// Three measurements in forty minutes, not forty. A minute the sampler did
+	// Three measurements in forty minutes, not forty. A minute the agent did
 	// not run du on is not a hole in the measurement -- it is simply not one of
 	// them, and a series of gaps around three real points says the opposite.
 	if len(r.vals) != 3 {
@@ -640,55 +651,6 @@ func TestStorageIsChartedFromTheReadingsThatMeasuredIt(t *testing.T) {
 	}
 }
 
-// A shell runs a file as it reads it, so a function called above its own
-// definition is a function that does not exist yet -- on a line that then
-// quietly produces nothing, which is exactly how the sampler shipped once
-// already with a container reader it never called.
-func TestTheSamplerDefinesEveryFunctionBeforeItCallsIt(t *testing.T) {
-	sh := scripts.SamplerInstall(komizoStamp(), versionText())
-	for _, fn := range []string{"container_stat", "container_stats_all", "volumes_all"} {
-		def := strings.Index(sh, fn+"() {")
-		if def < 0 {
-			t.Errorf("%s is never defined", fn)
-			continue
-		}
-		called := -1
-		for i, ln := range strings.Split(sh, "\n") {
-			t := strings.TrimSpace(ln)
-			if t == fn || strings.HasPrefix(t, fn+" ") || strings.HasPrefix(t, fn+"(\"") {
-				if !strings.Contains(t, "() {") {
-					called = i
-					break
-				}
-			}
-		}
-		if called < 0 {
-			continue // called indirectly, covered by the test above
-		}
-		defLine := strings.Count(sh[:def], "\n")
-		if called < defLine {
-			t.Errorf("%s is called on line %d but defined on line %d", fn, called+1, defLine+1)
-		}
-	}
-}
-
-// du on a large volume can outlast the minute it started in. Two overlapping
-// runs would interleave their lines, and half of one reading merged with half
-// of another is worse than a missing minute: it looks like a reading.
-func TestTheSamplerTakesALock(t *testing.T) {
-	sh := scripts.SamplerInstall(komizoStamp(), versionText())
-	if !strings.Contains(sh, "mkdir \"$LOCK\"") {
-		t.Error("the sampler does not take a lock")
-	}
-	if !strings.Contains(sh, "trap 'rmdir \"$LOCK\"") {
-		t.Error("the sampler does not release its lock")
-	}
-	// And a lock left by a kill -9 must not stop it forever.
-	if !strings.Contains(sh, "-mmin +20") {
-		t.Error("a stale lock is never cleared")
-	}
-}
-
 // rollupModel is a model with two hours of the box's own per-minute record, so
 // the charts take their scored, gridded form.
 func rollupModel(app, svc string) model {
@@ -696,26 +658,26 @@ func rollupModel(app, svc string) model {
 	m.scr, m.monitorReady = screenMonitor, true
 	m.monitorOf, m.monitorSvc = app, svc
 	start := time.Now().Unix()/60*60 - 120*60
-	var log strings.Builder
+	var log []box.Sample
 	cpuTotal, cpuIdle, apiUsec := 1000000, 900000, 5000000
 	for i := 0; i < 120; i++ {
 		ts := start + int64(i)*60
 		cpuTotal += 6000
 		cpuIdle += 5280
 		apiUsec += 6000000
-		row := func(f string, a ...any) {
-			fmt.Fprintf(&log, "S\t%d\t"+f+"\n", append([]any{ts}, a...)...)
+		sys := box.System{
+			Cores:      2,
+			CPU:        cpuOf(uint64(cpuTotal), uint64(cpuIdle)),
+			Mem:        memOf(2000000000, uint64(600000000+i*2000000)),
+			Disks:      []box.Disk{diskOf("/", "vda1", uint64(3000000000+i*8000000), 10000000000)},
+			Containers: []box.ContainerStat{cstatOf("blog", "api", uint64(apiUsec), 300*1024*1024)},
 		}
-		row("sys\tcpu\t%d\t%d", cpuTotal, cpuIdle)
-		row("sys\tcores\t2\t0")
-		row("sys\tmem\t2000000000\t%d", 600000000+i*2000000)
-		row("disk\t/\t%d\t10000000000", 3000000000+i*8000000)
-		row("cstat\tblog\tapi\t%d\t%d\tmax", apiUsec, 300*1024*1024)
 		if i%15 == 0 {
-			row("vol\tblog\tapi\tblog_data\t%d", 700000000+i*3000000)
+			sys.Volumes = []box.Volume{volOf("blog", "api", "blog_data", uint64(700000000+i*3000000))}
 		}
+		log = append(log, sample(ts, sys))
 	}
-	m.sysLog = parseSystemLog(log.String())
+	m.sysLog = histOf(log...)
 	now := time.Now().Unix() / 60 * 60
 	for i := 0; i < 200; i++ {
 		m.monitor = append(m.monitor, metricRow{minute: now - int64(199-i)*60,
@@ -865,20 +827,23 @@ func TestATitleTooWideForItsColumnIsCut(t *testing.T) {
 // different things: how full the filesystem is, which is what kills a machine,
 // and how much of it is the apps' own data, which is the part anyone can act on.
 func TestTheBoxChartsBothItsDiskAndItsStorage(t *testing.T) {
-	var log strings.Builder
+	var log []box.Sample
 	start := int64(1785200000) / 60 * 60
 	for i := 0; i < 40; i++ {
 		ts := start + int64(i)*60
-		fmt.Fprintf(&log, "S\t%d\tdisk\t/\t%d\t10000000000\n", ts, 3000000000+i*9000000)
+		sys := box.System{Disks: []box.Disk{diskOf("/", "vda1", uint64(3000000000+i*9000000), 10000000000)}}
 		if i%15 == 0 {
-			fmt.Fprintf(&log, "S\t%d\tvol\tblog\tapi\tblog_data\t%d\n", ts, 700000000+i*1000000)
-			fmt.Fprintf(&log, "S\t%d\tvol\tblog\tdb\tblog_data\t%d\n", ts, 700000000+i*1000000)
-			fmt.Fprintf(&log, "S\t%d\tvol\tshop\tdb\tshop_db\t%d\n", ts, 300000000)
+			sys.Volumes = []box.Volume{
+				volOf("blog", "api", "blog_data", uint64(700000000+i*1000000)),
+				volOf("blog", "db", "blog_data", uint64(700000000+i*1000000)),
+				volOf("shop", "db", "shop_db", 300000000),
+			}
 		}
+		log = append(log, sample(ts, sys))
 	}
 	m := testModel()
 	m.scr, m.monitorReady, m.width, m.height = screenMonitor, true, 170, 60
-	m.sysLog = parseSystemLog(log.String())
+	m.sysLog = histOf(log...)
 
 	var titles []string
 	for _, p := range m.diskPanels(m.sysLog) {
@@ -913,10 +878,11 @@ func TestTheBoxChartsBothItsDiskAndItsStorage(t *testing.T) {
 // not the newest reading: du runs on a slow cadence, so most readings have none.
 func TestTheBreakdownComesFromTheLastMeasuredReading(t *testing.T) {
 	m := testModel()
-	m.sysLog = parseSystemLog(
-		"S\t1000\tvol\tblog\tapi\tblog_data\t100\n" +
-			"S\t1060\tsys\tcores\t2\t0\n" +
-			"S\t1120\tsys\tcores\t2\t0\n")
+	m.sysLog = histOf(
+		sample(1000, box.System{Volumes: []box.Volume{volOf("blog", "api", "blog_data", 100)}}),
+		sample(1060, box.System{Cores: 2}),
+		sample(1120, box.System{Cores: 2}),
+	)
 	rows := m.latestVols()
 	if len(rows) != 1 || rows[0].bytes != 100 {
 		t.Errorf("latestVols = %+v, want the reading from 1000", rows)
@@ -932,7 +898,9 @@ func TestTheStorageChartIncludesTheMeasurementTakenOnOpening(t *testing.T) {
 	m.scr, m.monitorReady, m.width, m.height = screenMonitor, true, 120, 50
 	m.monitorOf = "blog"
 	// One rollup reading: not enough for a line on its own.
-	m.sysLog = parseSystemLog("S\t1785200000\tvol\tblog\tapi\tblog_data\t700000000\n")
+	m.sysLog = histOf(sample(1785200000, box.System{
+		Volumes: []box.Volume{volOf("blog", "api", "blog_data", 700000000)},
+	}))
 	if got := storageSeries(m.sysLog, "blog", ""); len(got.times) != 1 {
 		t.Fatalf("want one rollup point, got %d", len(got.times))
 	}
@@ -945,7 +913,7 @@ func TestTheStorageChartIncludesTheMeasurementTakenOnOpening(t *testing.T) {
 	}
 
 	// The du that runs when the monitor opens makes it two.
-	m.vols = parseVolumes("vol\tblog\tapi\tblog_data\t900000000\n")
+	m.vols = volumesFromBox([]box.Volume{volOf("blog", "api", "blog_data", 900000000)})
 	r := m.storageSeriesNow()
 	if len(r.times) != 2 {
 		t.Fatalf("want the live measurement appended, got %d points", len(r.times))
@@ -961,33 +929,8 @@ func TestTheStorageChartIncludesTheMeasurementTakenOnOpening(t *testing.T) {
 	}
 }
 
-// A box set up at 11:07 would otherwise record no storage until 11:15, and need
-// a second reading at 11:30 before a line could be drawn -- so the chart is
-// missing for the first half hour after installing the thing that draws it,
-// which reads as broken rather than as new.
-func TestTheSamplerMeasuresVolumesOnItsFirstRun(t *testing.T) {
-	sh := scripts.SamplerInstall(komizoStamp(), versionText())
-
-	// Asserted as two facts rather than as one literal line. The line used to
-	// be matched verbatim, including the substituted "15" -- so binding the
-	// interval to a variable, which changed nothing about what the sampler
-	// does, failed a test named for the behaviour. A test that breaks on
-	// formatting is one people learn to update without reading.
-	if !strings.Contains(sh, `[ ! -f "$LOG" ]`) {
-		t.Error("nothing makes the FIRST run measure volumes; a box set up at " +
-			"11:07 would record no storage until 11:15")
-	}
-	if !strings.Contains(sh, `VOL_EVERY=15`) {
-		t.Error("the volume interval is not 15 minutes")
-	}
-	if !strings.Contains(sh, `now / 60 % VOL_EVERY`) {
-		t.Error("the periodic measurement no longer keys off the clock, so it " +
-			"will drift across reboots instead of staying on the quarter hours")
-	}
-}
-
 // Storage must not follow the fallback the other charts use. The five-second
-// poll does not run du, so a box whose sampler has only one reading yet would
+// poll does not run du, so a box with only one reading yet would
 // fall back to session readings -- a series that is always empty, and a chart
 // that never appears however long you wait.
 func TestStorageReadsTheBoxsRecordEvenWhenTheOtherChartsDoNot(t *testing.T) {
@@ -995,13 +938,15 @@ func TestStorageReadsTheBoxsRecordEvenWhenTheOtherChartsDoNot(t *testing.T) {
 	m.scr, m.monitorReady, m.width, m.height = screenMonitor, true, 120, 50
 	m.monitorOf = "blog"
 	// One rollup reading, so processor and memory fall back to the session.
-	m.sysLog = parseSystemLog("S\t1785200000\tvol\tblog\tapi\tblog_data\t700000000\n")
+	m.sysLog = histOf(sample(1785200000, box.System{
+		Volumes: []box.Volume{volOf("blog", "api", "blog_data", 700000000)},
+	}))
 	m.takeSample(at(1000, 100000, 90000, "1000000"))
 	m.takeSample(at(1005, 100300, 90150, "1500000"))
 	if _, sampledHere := m.resourceHistory(); !sampledHere {
 		t.Fatal("one rollup reading should not win over the session's two")
 	}
-	m.vols = parseVolumes("vol\tblog\tapi\tblog_data\t900000000\n")
+	m.vols = volumesFromBox([]box.Volume{volOf("blog", "api", "blog_data", 900000000)})
 
 	out := stripANSI(m.pageBody())
 	if !strings.Contains(out, "Storage") {
@@ -1040,7 +985,7 @@ func TestTheKomizoRowComparesTheBoxAgainstThisKomizo(t *testing.T) {
 	if !strings.Contains(got, versionLabel(versionText())) {
 		t.Errorf("the server row should show the box version, got %q", got)
 	}
-	// A newer release with the same sampler content is still out of date: the
+	// A newer release with the same agent content is still out of date: the
 	// version moved even though the stamp did not.
 	m.srv.komizoVersion = "0.0.1"
 	if got := stripANSI(m.komizoServerLine()); !strings.Contains(got, "out of date") {
@@ -1072,23 +1017,22 @@ func TestTheKomizoRowComparesTheBoxAgainstThisKomizo(t *testing.T) {
 
 // The stamp is a hash of what gets written, not a constant somebody has to
 // remember to bump. "Up to date" means "running the update would change
-// nothing", and only the content can answer that.
+// nothing", and only the content can answer that -- so it is over the agent
+// BINARIES, which are what an update actually installs.
 func TestTheStampFollowsWhatIsActuallyInstalled(t *testing.T) {
-	if len(komizoStamp()) != 12 {
-		t.Errorf("stamp = %q, want 12 characters", komizoStamp())
+	sum := komizoStamp()
+	if sum == "" {
+		// Built without `make agents`. The stamp is empty rather than a hash of
+		// nothing, which is the honest answer for a komizo with no agent to
+		// install -- and the rest of this test has nothing to measure.
+		t.Skip("no agents embedded; run `make agents`")
+	}
+	if len(sum) != 12 {
+		t.Errorf("stamp = %q, want 12 characters", sum)
 	}
 	// The installer writes the same stamp the interface compares against.
-	if !strings.Contains(scripts.SamplerInstall(komizoStamp(), versionText()), komizoStamp()) {
+	if !strings.Contains(scripts.AgentInstall(sum, versionText()), sum) {
 		t.Error("the installer does not write the stamp the row reads")
-	}
-	// And it covers the sampler's contents: change the probe and the stamp
-	// moves, which is what makes a stale box detectable at all.
-	sum := komizoStamp()
-	if strings.Contains(scripts.Sampler(), "container_stats_all") != true {
-		t.Fatal("the sampler no longer contains the probe this test relies on")
-	}
-	if sum == "" {
-		t.Error("empty stamp")
 	}
 }
 
@@ -1392,29 +1336,6 @@ func sameSet(got, want []string) bool {
 	return true
 }
 
-// The annotation has to survive the inventory to be shown. It is dropped from
-// the app's own routes line on purpose -- an arrow reads as noise in a list of
-// addresses -- so it travels in a record of its own.
-func TestTheInventoryCarriesWhatServesEachName(t *testing.T) {
-	if !strings.Contains(scripts.Inventory(), `printf "host\t%s\t%s\t%s\n"`) {
-		t.Error("the inventory does not report what serves each hostname")
-	}
-	inv := parseInventory(
-		"app\tblog\tdeploy-blog\t/srv/blog\tv1\t2\timg\t\n" +
-			"host\tblog\tapi.blog.dev\tapi\n" +
-			"host\tblog\tblog.dev\t\n")
-	apps := inv.apps
-	if len(apps) != 1 || len(apps[0].hosts) != 2 {
-		t.Fatalf("hosts = %+v", apps)
-	}
-	if apps[0].hosts[0].service != "api" {
-		t.Errorf("the arrow was lost: %+v", apps[0].hosts[0])
-	}
-	if apps[0].hosts[1].service != "" {
-		t.Errorf("a name with no arrow should have no service: %+v", apps[0].hosts[1])
-	}
-}
-
 // The deployed commit and the listening ports have a column of their own.
 //
 // In brackets after the name they pushed the name's width around -- a long SHA
@@ -1617,10 +1538,11 @@ func TestSelectingDoesNotStealSFromATextField(t *testing.T) {
 // with the mount after the sizes -- a path in the label column pushed every
 // bar on the page out of line with the others.
 func TestTwoRealFilesystemsAreTwoBarsNamedInTheDetail(t *testing.T) {
-	out := "disk\t/\t/dev/vda1\t3000000000\t10000000000\n" +
-		"disk\t/var/lib/docker\t/dev/vdb1\t5000000000\t20000000000\n"
 	m := testModel()
-	m.takeSample(parseSystem(out, time.Unix(1000, 0)))
+	m.takeSample(sysSampleFrom(box.System{Disks: []box.Disk{
+		diskOf("/", "vda1", 3000000000, 10000000000),
+		diskOf("/var/lib/docker", "vdb1", 5000000000, 20000000000),
+	}}, time.Unix(1000, 0)))
 	v := stripANSI(m.serverUsage())
 	if strings.Contains(v, "disk /") {
 		t.Errorf("the mount must not be in the label:\n%s", v)
@@ -1631,11 +1553,11 @@ func TestTwoRealFilesystemsAreTwoBarsNamedInTheDetail(t *testing.T) {
 		}
 	}
 
-	// The record shape before the device was reported still parses: the box's
-	// system.log is full of it.
-	legacy := parseSystem("disk\t/\t3000000000\t10000000000\n", time.Unix(1000, 0))
-	if len(legacy.disks) != 1 || legacy.disks[0].used != 3000000000 {
-		t.Errorf("legacy disks = %+v, want one entry for /", legacy.disks)
+	// A filesystem with no size is not a measurement, and charting it would
+	// draw a bar that is always either empty or full.
+	empty := sysSampleFrom(box.System{Disks: []box.Disk{{Mount: "/", Size: 0}}}, time.Unix(1000, 0))
+	if len(empty.disks) != 0 {
+		t.Errorf("a zero-size filesystem should not chart: %+v", empty.disks)
 	}
 }
 

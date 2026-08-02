@@ -14,7 +14,7 @@ import (
 //
 // Shell held in a Go FORMAT string has to have every literal '%' doubled, and
 // '%' is not rare in shell -- it is parameter expansion (${a%.env}), printf,
-// arithmetic modulo, and date formats. The sampler alone carried all four
+// arithmetic modulo, and date formats. One script alone carried all four
 // meanings in one string, plus Go's own verbs on top. Miss one doubling and the
 // meaning changes SILENTLY, in code that runs as root.
 //
@@ -41,46 +41,17 @@ var AlpineInitScript string
 //go:embed alpine-proxy.sh
 var AlpineProxyScript string
 
-// The read-only halves: what the interface and the sampler run to describe a
-// box. Not printed by `komizo script` -- they change nothing -- but they run on
-// the same server and get the same treatment.
-
-//go:embed inventory.sh
-var inventory string
-
-//go:embed metrics.sh
-var metrics string
-
-//go:embed system-log.sh
-var systemLog string
-
-//go:embed storage.sh
-var storage string
-
-//go:embed sampler.sh
-var sampler string
-
-//go:embed sampler-install.sh
-var samplerInstall string
-
-// agent-install.sh puts komizo-box on the box and starts it. The binary itself
-// travels on its own connection -- see AgentInstall.
+// agent-install.sh puts komizo-box on the box and starts it.
+//
+// The read-only half of what komizo used to pipe at a server -- the inventory,
+// the request counts, the cgroup reads -- is not here any more. It is Go, in
+// internal/box, running on the box as komizo-box. What is left in this package
+// is the half that PROVISIONS: it runs once, as root, and changes the machine.
+//
+// The binary itself travels on its own connection -- see AgentInstall.
 
 //go:embed agent-install.sh
 var agentInstall string
-
-// The pieces more than one script needs. Spliced in by placeholder rather than
-// duplicated: the cgroup handling is the fiddly part, and two copies would
-// drift in the direction of whichever nobody was looking at.
-
-//go:embed lib-state.sh
-var libState string
-
-//go:embed lib-system-probe.sh
-var libSystemProbe string
-
-//go:embed lib-volume-probe.sh
-var libVolumeProbe string
 
 // leftover matches a placeholder that nothing replaced.
 var leftover = regexp.MustCompile(`__[A-Z][A-Z0-9_]*__`)

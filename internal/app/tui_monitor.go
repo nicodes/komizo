@@ -73,9 +73,9 @@ type monitorMsg struct {
 	// as the range asked for.
 	span    timeRange
 	hasSpan bool
-	// hist is the readings the sampler wrote. Empty on a box whose server setup
-	// predates the sampler, which the view falls back from rather than treats
-	// as an error.
+	// hist is the readings the agent has written. Empty on a box that has only just
+	// been set up, which the view falls back from rather than treats as an
+	// error.
 	hist []sysSample
 	err  error
 }

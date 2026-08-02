@@ -99,17 +99,29 @@ func readyBox(t *testing.T) *fakeBox {
 	f.write("/proc/uptime", "91238.15 700000.00\n")
 	f.write("/etc/ssh/ssh_host_ed25519_key.pub", "ssh-ed25519 AAAAC3Nz root@box\n")
 
+	// Two calls describe the whole box, and these are their shapes.
+	//
+	// The working_dir is unprefixed even though Probe.Root is set: Root is a
+	// fiction for the FILESYSTEM, and docker on a real box reports the same
+	// absolute path the app's state file records as APP_DIR. That equality is
+	// what joins a container to its app.
+	//
+	// ps:      id, name, state, status, service, image, compose working_dir
+	// inspect: id, startedAt, finishedAt, exitCode, pid, networks, mounts
 	f.reply("info", "29.1.3").
 		reply("--version", "Docker version 29.1.3, build f52814d").
-		reply("ps -a --no-trunc", "cid1\tblog-web-1\trunning\tUp 3 hours\tweb\tghcr.io/n/blog:e1b2557").
-		reply("inspect --format {{.Id}}", "cid1\t2026-08-02T09:00:00Z\t0001-01-01T00:00:00Z\t0\t0").
-		reply("compose", "cid1").
-		reply("network inspect edge --format {{.Driver}}", "bridge\t172.22.0.0/16").
-		reply("network inspect edge --format {{range", "blog-web-1\tcid1").
-		reply("inspect cid1 --format {{range $n", "blog-web,web").
-		reply("inspect cid1 --format {{index", "web\t0")
+		reply("ps -a --no-trunc", ps(
+			"cid1\tblog-web-1\trunning\tUp 3 hours\tweb\tghcr.io/n/blog:e1b2557\t"+"/srv/blog")).
+		reply("inspect --format {{.Id}}", inspect(
+			"cid1\t2026-08-02T09:00:00Z\t0001-01-01T00:00:00Z\t0\t1234\tedge=blog-web,web, \t")).
+		reply("network inspect edge --format {{.Driver}}", "bridge\t172.22.0.0/16")
 	return f
 }
+
+// ps and inspect exist to name what a fixture is, since both are tab-separated
+// lines and the two are easy to confuse at a glance.
+func ps(lines ...string) string      { return strings.Join(lines, "\n") }
+func inspect(lines ...string) string { return strings.Join(lines, "\n") }
 
 func TestReportReadsTheBox(t *testing.T) {
 	f := readyBox(t)
@@ -211,12 +223,19 @@ func TestBareAndStoppedBoxesAreStatesNotErrors(t *testing.T) {
 	})
 }
 
-func TestOldBoxesWroteOnlyAStamp(t *testing.T) {
+// The version file is two lines and komizo writes both. A file with one is not
+// a file komizo wrote, and picking a field out of it would be a guess presented
+// as a fact -- so it reads as installed with nothing known about it, which is
+// exactly what it is.
+func TestAMalformedVersionFileClaimsNothing(t *testing.T) {
 	f := newFakeBox(t)
 	f.write("/var/lib/komizo/version", "abc123\n")
 	k := f.probe().komizoInstall()
-	if !k.Installed || k.Stamp != "abc123" || k.Version != "" {
-		t.Errorf("one-line version file = %+v, want stamp only", k)
+	if !k.Installed {
+		t.Error("the file exists, so komizo is installed")
+	}
+	if k.Version != "" || k.Stamp != "" {
+		t.Errorf("a one-line file should yield no fields, got %+v", k)
 	}
 }
 
@@ -354,14 +373,58 @@ func TestMemoryNeverWrapsBelowZero(t *testing.T) {
 	}
 }
 
+// / and /var/lib/docker are measured separately, because the one that fills is
+// usually not the one people watch. On most boxes they are the same filesystem,
+// and listing it twice reads as twice the disk.
+//
+// Folded by DEVICE, not by mount point: docker setups routinely bind-mount
+// /var/lib/docker onto itself, which gives one filesystem two mount points, and
+// folding by mount point drew that box's one disk as two identical bars.
+//
+// This is the only place the rule lives. The reader trusts what it is sent --
+// two implementations of one rule is how they come to disagree.
+func TestOneFilesystemUnderTwoMounts(t *testing.T) {
+	// statfs is the real syscall here, so this asserts against whatever this
+	// machine actually has. /var/lib/docker either is its own filesystem or is
+	// not, and both are answers this must handle.
+	p := &Probe{}
+	got := p.disks()
+	if len(got) == 0 {
+		t.Skip("no readable filesystem")
+	}
+	seen := map[string]bool{}
+	for _, d := range got {
+		if d.Dev == "" {
+			t.Errorf("a disk with no device cannot be folded: %+v", d)
+			continue
+		}
+		if seen[d.Dev] {
+			t.Errorf("device %s reported twice: %+v", d.Dev, got)
+		}
+		seen[d.Dev] = true
+		if d.Size == 0 {
+			t.Errorf("a filesystem with no size is not a measurement: %+v", d)
+		}
+		if d.Used > d.Size {
+			t.Errorf("used exceeds size: %+v", d)
+		}
+	}
+	// / is always there and is always first, so the row order is stable.
+	if got[0].Mount != "/" {
+		t.Errorf("first disk = %q, want /", got[0].Mount)
+	}
+}
+
 func TestProxyAndNetwork(t *testing.T) {
 	f := readyBox(t)
 	f.write("/srv/_proxy/compose.yml", "services:\n  proxy:\n    image: caddy:2\nnetworks:\n  edge:\n    name: edge\n")
 	f.write("/srv/_proxy/Caddyfile", "{\n  on_demand_tls {\n    ask https://gate.example.com/check\n  }\n}\n")
-	f.reply("ps -a --no-trunc", "cid1\tblog-web-1\trunning\tUp 3 hours\tweb\tghcr.io/n/blog:e1b2557\n"+
-		"cid2\tkomizo-proxy\trunning\tUp 5 hours\tproxy\tcaddy:2")
-	f.reply("inspect --format {{.Id}}", "cid1\t2026-08-02T09:00:00Z\t0001-01-01T00:00:00Z\t0\t0\n"+
-		"cid2\t2026-08-02T07:00:00Z\t0001-01-01T00:00:00Z\t0\t0")
+	f.reply("ps -a --no-trunc", ps(
+		"cid1\tblog-web-1\trunning\tUp 3 hours\tweb\tghcr.io/n/blog:e1b2557\t"+"/srv/blog",
+		"cid2\tkomizo-proxy\trunning\tUp 5 hours\tproxy\tcaddy:2\t"+"/srv/_proxy"))
+	f.reply("inspect --format {{.Id}}", inspect(
+		"cid1\t2026-08-02T09:00:00Z\t0001-01-01T00:00:00Z\t0\t1234\tedge=blog-web,web, \t",
+		"cid2\t2026-08-02T07:00:00Z\t0001-01-01T00:00:00Z\t0\t5678\tedge=komizo-proxy, \t"))
 
 	r := f.probe().Report(context.Background())
 	if r.Proxy == nil {

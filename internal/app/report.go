@@ -22,6 +22,14 @@ import (
 // natively produces, and the rows are shaped by what the screens need. Merging
 // them would make the wire format follow the layout, which is exactly the kind
 // of coupling the version rule in internal/box exists to prevent.
+//
+// It is also where every string from a server is SCRUBBED, once, on the way in.
+// Container names, image references and docker's status prose are all written
+// by the far end, and an escape sequence in any of them can move the cursor,
+// clear the screen, or write the local clipboard through OSC 52. Doing it here
+// rather than at each of the several dozen places a field lands on screen is
+// the whole reason this is one function: this is the boundary the values
+// cross.
 
 // BoxBin is where init puts the agent.
 const BoxBin = "/usr/local/bin/komizo-box"
@@ -78,35 +86,35 @@ func fetchReport(t target) (box.Report, error) {
 func inventoryFromReport(r box.Report) inventory {
 	var inv inventory
 	inv.srv = serverRow{
-		state:           r.Server.State,
-		docker:          r.Server.Docker,
-		os:              r.Server.OS,
-		komizo:          r.Server.Komizo.Stamp,
-		komizoVersion:   r.Server.Komizo.Version,
+		state:           scrub(r.Server.State),
+		docker:          scrub(r.Server.Docker),
+		os:              scrub(r.Server.OS),
+		komizo:          scrub(r.Server.Komizo.Stamp),
+		komizoVersion:   scrub(r.Server.Komizo.Version),
 		komizoInstalled: r.Server.Komizo.Installed,
 	}
 	for _, k := range r.Server.HostKeys {
-		inv.srv.hostKeys = append(inv.srv.hostKeys, [2]string{k.Type, k.Key})
+		inv.srv.hostKeys = append(inv.srv.hostKeys, [2]string{scrub(k.Type), scrub(k.Key)})
 	}
 
 	for _, a := range r.Apps {
 		row := appRow{
-			name:    a.Name,
-			user:    a.User,
-			dir:     a.Dir,
-			version: a.Version,
+			name:    scrub(a.Name),
+			user:    scrub(a.User),
+			dir:     scrub(a.Dir),
+			version: scrub(a.Version),
 			running: strconv.Itoa(a.Running()),
-			image:   a.ConfigImage,
-			knownAs: a.KnownAs,
+			image:   scrub(a.ConfigImage),
+			knownAs: scrubAll(a.KnownAs),
 		}
 		for _, c := range a.Containers {
 			row.containers = append(row.containers, containerRow{
-				app:        a.Name,
-				service:    c.Service,
-				name:       c.Name,
-				state:      c.State,
-				status:     c.Status,
-				image:      c.Image,
+				app:        scrub(a.Name),
+				service:    scrub(c.Service),
+				name:       scrub(c.Name),
+				state:      scrub(c.State),
+				status:     scrub(c.Status),
+				image:      scrub(c.Image),
 				startedAt:  c.StartedAt,
 				finishedAt: c.FinishedAt,
 				exitCode:   c.ExitCode,
@@ -114,16 +122,16 @@ func inventoryFromReport(r box.Report) inventory {
 			})
 		}
 		for _, h := range a.Hosts {
-			row.hosts = append(row.hosts, hostRow{app: a.Name, name: h.Name, service: h.Service})
+			row.hosts = append(row.hosts, hostRow{app: scrub(a.Name), name: scrub(h.Name), service: scrub(h.Service)})
 		}
 		// One route per app, as it has been since routing within an app moved
 		// inside that app's own gate. The upstream is always <app>-gate because
 		// that is what the generator writes.
-		if names := a.Routes(); len(names) > 0 {
+		if names := scrubAll(a.Routes()); len(names) > 0 {
 			row.routes = append(row.routes, routeRow{
-				app:      a.Name,
+				app:      scrub(a.Name),
 				sites:    strings.Join(names, ","),
-				upstream: a.Name + "-gate",
+				upstream: scrub(a.Name) + "-gate",
 				port:     "80",
 			})
 		}
@@ -133,23 +141,35 @@ func inventoryFromReport(r box.Report) inventory {
 	if r.Proxy != nil {
 		inv.proxy = proxyRow{
 			installed:  true,
-			state:      r.Proxy.State,
-			network:    r.Proxy.Network,
-			image:      r.Proxy.Image,
-			status:     r.Proxy.Status,
-			tlsAsk:     r.Proxy.TLSAsk,
+			state:      scrub(r.Proxy.State),
+			network:    scrub(r.Proxy.Network),
+			image:      scrub(r.Proxy.Image),
+			status:     scrub(r.Proxy.Status),
+			tlsAsk:     scrub(r.Proxy.TLSAsk),
 			startedAt:  r.Proxy.StartedAt,
 			finishedAt: r.Proxy.FinishedAt,
 		}
 	}
 	if r.Network != nil {
-		inv.net = netRow{name: r.Network.Name, driver: r.Network.Driver, subnet: r.Network.Subnet}
+		inv.net = netRow{name: scrub(r.Network.Name), driver: scrub(r.Network.Driver), subnet: scrub(r.Network.Subnet)}
 		for _, m := range r.Network.Members {
-			inv.net.members = append(inv.net.members, netMember{container: m.Container, aliases: m.Aliases})
+			inv.net.members = append(inv.net.members, netMember{container: scrub(m.Container), aliases: scrubAll(m.Aliases)})
 		}
 	}
-	inv.orphans = r.Orphans
+	inv.orphans = scrubAll(r.Orphans)
 	return inv
+}
+
+// scrubAll is scrub over a list.
+func scrubAll(in []string) []string {
+	if in == nil {
+		return nil
+	}
+	out := make([]string, len(in))
+	for i, s := range in {
+		out[i] = scrub(s)
+	}
+	return out
 }
 
 // joinPorts renders the listening ports the way the row type holds them.
@@ -169,7 +189,7 @@ func metricsFromBox(m box.Metrics) []metricRow {
 	rows := make([]metricRow, 0, len(m.Rows))
 	for _, r := range m.Rows {
 		rows = append(rows, metricRow{
-			minute: r.Minute, app: r.App, service: r.Service,
+			minute: r.Minute, app: scrub(r.App), service: scrub(r.Service),
 			c2: r.C2, c3: r.C3, c4: r.C4, c5: r.C5,
 		})
 	}
@@ -206,11 +226,11 @@ func sysSampleFrom(s box.System, at time.Time) sysSample {
 		if d.Size == 0 {
 			continue
 		}
-		out.disks = append(out.disks, diskUse{mount: d.Mount, dev: d.Dev, used: d.Used, size: d.Size})
+		out.disks = append(out.disks, diskUse{mount: scrub(d.Mount), dev: d.Dev, used: d.Used, size: d.Size})
 	}
 	out.csIndex = make(map[string]int, len(s.Containers))
 	for _, c := range s.Containers {
-		cs := cgroupStat{app: c.App, service: c.Service}
+		cs := cgroupStat{app: scrub(c.App), service: scrub(c.Service)}
 		if c.CPUUsec != nil {
 			cs.cpuUsec, cs.haveCPU = *c.CPUUsec, true
 		}
@@ -220,8 +240,9 @@ func sysSampleFrom(s box.System, at time.Time) sysSample {
 		if c.Limit != nil {
 			cs.limit, cs.hasLimit = *c.Limit, true
 		}
-		// Last wins, matching what the record-based parser did when a box
-		// reported the same container twice.
+		// Last wins if a box somehow reports the same container twice. An
+		// arbitrary rule, but a stated one -- the alternative is a silent
+		// duplicate in every lookup that walks the list.
 		if i, ok := out.csIndex[cs.key()]; ok {
 			out.cs[i] = cs
 			continue
@@ -230,7 +251,7 @@ func sysSampleFrom(s box.System, at time.Time) sysSample {
 		out.cs = append(out.cs, cs)
 	}
 	for _, v := range s.Volumes {
-		out.vols = append(out.vols, volRow{app: v.App, service: v.Service, name: v.Name, bytes: v.Bytes})
+		out.vols = append(out.vols, volRow{app: scrub(v.App), service: scrub(v.Service), name: scrub(v.Name), bytes: v.Bytes})
 	}
 	return out
 }
@@ -239,7 +260,7 @@ func sysSampleFrom(s box.System, at time.Time) sysSample {
 func volumesFromBox(vs []box.Volume) []volRow {
 	out := make([]volRow, 0, len(vs))
 	for _, v := range vs {
-		out = append(out, volRow{app: v.App, service: v.Service, name: v.Name, bytes: v.Bytes})
+		out = append(out, volRow{app: scrub(v.App), service: scrub(v.Service), name: scrub(v.Name), bytes: v.Bytes})
 	}
 	return out
 }

@@ -150,6 +150,20 @@ func (a addResult) copySelected() error {
 	return copyToClipboard(a.knownHosts)
 }
 
+// sparkRange is the window the row sparklines cover.
+//
+// Relative to NOW, always. The sparkline on a row is "the last half hour" and
+// has to stay that whatever range the monitor screen is showing -- they are
+// different questions on different pages, and the poll serves every row at
+// once.
+//
+// A function rather than two lines inside the fetch so that rule is assertable
+// without a server on the other end of a connection.
+func sparkRange(now time.Time) (from, to int64) {
+	to = now.Unix()
+	return to - sparkWindow*60, to
+}
+
 func fetchApps(t target) tea.Cmd {
 	return func() tea.Msg {
 		// One command, one connection. The request counts ride along on the
@@ -157,12 +171,10 @@ func fetchApps(t target) tea.Cmd {
 		// fresh SSH connection, and that -- not the probing -- is the expensive
 		// part. A second ticker would double the connection rate against the
 		// box to draw a line that moves one column.
-		// A window relative to now, always: the sparkline on a row is "the last
-		// half hour" and has to stay that whatever range the monitor is showing.
-		now := time.Now().Unix()
+		from, to := sparkRange(time.Now())
 		p, err := runBox[box.Poll](t, "poll",
-			"--from", strconv.FormatInt(now-sparkWindow*60, 10),
-			"--to", strconv.FormatInt(now, 10))
+			"--from", strconv.FormatInt(from, 10),
+			"--to", strconv.FormatInt(to, 10))
 		if err != nil {
 			if _, missing := err.(errNoAgent); missing {
 				return appsMsg{err: err}
@@ -558,8 +570,7 @@ func runAddPlan(p addPlan, ch chan tea.Msg) (*addResult, error) {
 
 // streamAgent installs komizo-box.
 //
-// Its own step, after the server itself is ready. Unlike the sampler it
-// replaces, this one IS fatal to what the interface can do afterwards: komizo
+// Its own step, after the server itself is ready. This one IS fatal to what the interface can do afterwards: komizo
 // reads a box through the agent now, so a box without one shows nothing at all
 // rather than a working server missing a chart. It is reported as the failure
 // it is, and the Docker install before it still stands.

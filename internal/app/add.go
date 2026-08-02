@@ -58,7 +58,7 @@ func deriveUser(app string) string { return "komizo-" + app }
 // It mirrors alpine.sh, which writes it.
 //
 // A record rather than code. Everything that needs these values reads this --
-// the inventory, the resource sampler, the volume probe, a key rotation --
+// the agent's probes, a key rotation, the deploy script --
 // where they used to be recovered by sed-ing them back out of the generated
 // deploy script, which made five readers depend on one generator's formatting.
 func stateFile(app string) string { return "/var/lib/komizo/apps/" + app + ".env" }

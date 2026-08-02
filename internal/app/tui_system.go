@@ -235,7 +235,7 @@ func (m model) diskPanels(hist []sysSample) []panel {
 // was opened.
 //
 // Always from the box's own record, whatever history the other charts are using.
-// Storage is measured by the sampler and by opening this screen, and by nothing
+// Storage is measured by the agent and by opening this screen, and by nothing
 // else -- the five-second poll does not run du -- so falling back to the
 // session's readings the way processor and memory do would fall back to a series
 // that is always empty.
@@ -295,7 +295,7 @@ func (m model) storageList() string {
 		return section("Volumes") + m.viewStorage(m.monitorOf, m.monitorSvc)
 	}
 	// The box never runs du of its own -- df already covers the whole disk --
-	// so this comes from the newest reading the SAMPLER measured, which is up to
+	// so this comes from the newest reading the AGENT measured, which is up to
 	// a quarter of an hour old. An app's list is measured when the monitor
 	// opens and is current; this one is not, and says so.
 	rows := m.latestVols()
@@ -379,8 +379,8 @@ func (m model) firstMounter(v volRow) string {
 // interval there is.
 //
 // From the last two readings of whichever run is fresher. The session's own
-// samples are five seconds apart against the sampler's minute, so they win when
-// there are two of them; the sampler's are the fallback, which is what makes the
+// samples are five seconds apart against the agent's minute, so they win when
+// there are two of them; the agent's are the fallback, which is what makes the
 // bars appear within a second of connecting rather than after a second poll.
 func (m model) nowCPU() (float64, bool) {
 	if n := len(m.sysSamples); n >= 2 {
@@ -397,7 +397,7 @@ func (m model) nowCPU() (float64, bool) {
 // The box's own record when there is one: it covers hours, it survives quitting,
 // and it was written whether anything was watching or not -- the same standing
 // the request charts have. What this session sampled is the FALLBACK, for a box
-// set up before the sampler existed, and it is a weaker claim in every way.
+// set up moments ago, and it is a weaker claim in every way.
 //
 // Not merged. The two overlap in the recent minutes at different resolutions,
 // and stitching them would put a seam in the middle of the chart where the point

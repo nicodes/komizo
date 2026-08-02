@@ -18,18 +18,10 @@ const (
 	StateDir   = "/var/lib/komizo"
 	AppsDir    = StateDir + "/apps"
 	ReportPath = StateDir + "/report.json"
-	// HistoryPath is one JSON reading per line.
+	// HistoryPath is one JSON reading per line, oldest first.
 	//
-	// A NEW file, beside the sampler's system.log rather than replacing it. The
-	// two formats are not compatible -- the old one is tab-separated records
-	// written by shell -- and interleaving them in one file would mean every
-	// reader had to detect which kind of line it was holding, forever, to
-	// salvage a few days of chart on boxes that are about to be updated anyway.
-	//
-	// The cost is that history restarts once, on the box, at the update. The
-	// old file is left in place rather than deleted: it is the only copy of what
-	// happened before, and deleting data during an upgrade is not a thing to do
-	// casually even when nothing is expected to want it.
+	// Append-only and trimmed by bytes. Reading it is a tail, because the
+	// question is always about recent minutes.
 	HistoryPath = StateDir + "/history.jsonl"
 	VersionPath = StateDir + "/version"
 	// PendingDir is where signed requests land for rootd to apply. Nothing in v0
@@ -66,9 +58,9 @@ func readState(path string) (state, error) {
 		if !ok {
 			continue
 		}
-		// First wins, matching komizo_state's `head -n 1`. A file with the same
-		// key twice is malformed either way; agreeing with the shell means a box
-		// mid-upgrade reads the same on both paths.
+		// First wins. A file with the same key twice is malformed, and taking
+		// the first is what the deploy script does when it reads the same file
+		// -- so the box and the report agree about which value is live.
 		if _, dup := st[k]; !dup {
 			st[k] = v
 		}

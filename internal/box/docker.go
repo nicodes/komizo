@@ -8,18 +8,32 @@ import (
 	"time"
 )
 
-// Everything docker is asked, asked once.
+// Everything docker is asked, asked twice.
 //
-// `docker ps` and `docker inspect` are the slow part of describing a box, and
-// the cost is per CALL rather than per container -- so both are read for the
-// whole machine and then indexed. The shell this replaces learned the same
-// lesson the hard way and says so: a box with six apps of five containers was
-// running several hundred processes every five seconds for a page that is
-// usually just left open.
+// TWO calls for the whole box, however many apps are on it: one `ps -a` and one
+// `inspect` over every id it returned. Membership, aliases, mounts, timestamps
+// and pids all come out of those, and nothing below this line talks to docker
+// again.
+//
+// That is the property worth defending, because the cost is per CALL rather
+// than per container. Asking per app instead -- a `compose ps` to find an app's
+// containers, an `inspect` for each one's service and pid, another for its
+// mounts -- put a six-app box at roughly eighty invocations per report, on a
+// five-second poll. The shell this replaced was rewritten once for exactly this
+// reason and said so in its own comments; it would have been a poor trade to
+// port the probe and lose the lesson.
+//
+// Membership comes from the compose project's working directory, which compose
+// records as a label. Matching on the project NAME would not do: compose
+// derives that from the directory and normalises it, so an app under a custom
+// --app-dir would not match its own containers.
 
-// dockerInventory is every container on the box, indexed by id.
+// dockerInventory is every container on the box, indexed two ways.
 type dockerInventory struct {
 	byID map[string]*containerInfo
+	// byDir is the containers of one app, keyed by the directory its compose
+	// file lives in -- which is what an app's state file records as APP_DIR.
+	byDir map[string][]*containerInfo
 }
 
 type containerInfo struct {
@@ -29,20 +43,40 @@ type containerInfo struct {
 	status  string
 	service string
 	image   string
+	// workingDir is the compose project directory this container belongs to.
+	// Empty for anything docker is running that compose did not create, which
+	// is not komizo's business and is left out of every app.
+	workingDir string
 
 	startedAt  time.Time
 	finishedAt time.Time
 	exitCode   int
 	pid        int
+
+	// networks is alias list by network name, for the clash check. Per-endpoint,
+	// so it comes from the container rather than from the network.
+	networks map[string][]string
+	// mounts is this container's named volumes and where they live on the host.
+	mounts []mountInfo
 }
 
-// The separator between the fields of one record. Docker's --format writes
-// whatever is asked for, and a container name or an image reference can contain
-// almost anything -- but not a tab, and not a newline.
-const dsep = "\t"
+type mountInfo struct{ name, source string }
+
+// The separators between fields of one record.
+//
+// docker's --format writes whatever is asked for, and a container name or an
+// image reference can hold almost anything -- but not a tab, and not a newline.
+// The two inner ones only ever separate values docker itself generates: network
+// names, aliases and volume names, all of which are restricted to
+// [a-zA-Z0-9][a-zA-Z0-9_.-]*.
+const (
+	dsep    = "\t"
+	dlist   = " "
+	dassign = "="
+)
 
 func (p *Probe) dockerInventory(ctx context.Context) dockerInventory {
-	inv := dockerInventory{byID: map[string]*containerInfo{}}
+	inv := dockerInventory{byID: map[string]*containerInfo{}, byDir: map[string][]*containerInfo{}}
 
 	// .State is the machine-readable word (running, exited); .Status is docker's
 	// own prose (Up 3 hours), which is what a person actually wants to read.
@@ -50,43 +84,50 @@ func (p *Probe) dockerInventory(ctx context.Context) dockerInventory {
 		strings.Join([]string{
 			"{{.ID}}", "{{.Names}}", "{{.State}}", "{{.Status}}",
 			`{{.Label "com.docker.compose.service"}}`, "{{.Image}}",
+			`{{.Label "com.docker.compose.project.working_dir"}}`,
 		}, dsep))
 	if err != nil {
 		return inv
 	}
+	var ids []string
 	for _, ln := range strings.Split(out, "\n") {
 		f := strings.Split(strings.TrimRight(ln, "\r"), dsep)
-		if len(f) < 6 || f[0] == "" {
+		if len(f) < 7 || f[0] == "" {
 			continue
 		}
-		inv.byID[f[0]] = &containerInfo{
-			id: f[0], name: f[1], state: f[2], status: f[3], service: f[4], image: f[5],
+		c := &containerInfo{
+			id: f[0], name: f[1], state: f[2], status: f[3],
+			service: f[4], image: f[5], workingDir: f[6],
+		}
+		inv.byID[c.id] = c
+		ids = append(ids, c.id)
+		if c.workingDir != "" {
+			d := filepath.Clean(c.workingDir)
+			inv.byDir[d] = append(inv.byDir[d], c)
 		}
 	}
-	if len(inv.byID) == 0 {
+	if len(ids) == 0 {
 		return inv
 	}
 
-	// When each container last started and last stopped, and why -- as
-	// timestamps and a number rather than docker's prose. From inspect rather
-	// than ps, because ps offers only .RunningFor (prose) and .CreatedAt
-	// (creation, which a restart does not move).
-	ids := make([]string, 0, len(inv.byID))
-	for id := range inv.byID {
-		ids = append(ids, id)
-	}
-	args := append([]string{"inspect", "--format",
-		strings.Join([]string{
-			"{{.Id}}", "{{.State.StartedAt}}", "{{.State.FinishedAt}}",
-			"{{.State.ExitCode}}", "{{.State.Pid}}",
-		}, dsep)}, ids...)
+	// Everything ps cannot say. Timestamps rather than prose, because ps offers
+	// only .RunningFor (prose) and .CreatedAt (creation, which a restart does
+	// not move); plus the pid the cgroup and namespace reads need, the aliases
+	// the clash check needs, and the mounts the volume walk needs.
+	args := append([]string{"inspect", "--format", strings.Join([]string{
+		"{{.Id}}",
+		"{{.State.StartedAt}}", "{{.State.FinishedAt}}", "{{.State.ExitCode}}", "{{.State.Pid}}",
+		`{{range $n, $c := .NetworkSettings.Networks}}{{$n}}` + dassign +
+			`{{range $c.Aliases}}{{.}},{{end}}` + dlist + `{{end}}`,
+		`{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}` + dassign + `{{.Source}}` + dlist + `{{end}}{{end}}`,
+	}, dsep)}, ids...)
 	out, err = p.docker(ctx, args...)
 	if err != nil {
 		return inv
 	}
 	for _, ln := range strings.Split(out, "\n") {
 		f := strings.Split(strings.TrimRight(ln, "\r"), dsep)
-		if len(f) < 5 {
+		if len(f) < 7 {
 			continue
 		}
 		c, ok := inv.byID[f[0]]
@@ -97,8 +138,39 @@ func (p *Probe) dockerInventory(ctx context.Context) dockerInventory {
 		c.finishedAt = parseStamp(f[2])
 		c.exitCode, _ = strconv.Atoi(f[3])
 		c.pid, _ = strconv.Atoi(f[4])
+		c.networks = parseNetworks(f[5])
+		c.mounts = parseMounts(f[6])
 	}
 	return inv
+}
+
+// parseNetworks reads "netA=alias1,alias2, netB=alias3,".
+//
+// Docker adds the container's own short id as an alias. Harmless: it is unique,
+// so it cannot cause a false clash.
+func parseNetworks(s string) map[string][]string {
+	out := map[string][]string{}
+	for _, e := range strings.Split(s, dlist) {
+		name, aliases, ok := strings.Cut(e, dassign)
+		if !ok || name == "" {
+			continue
+		}
+		out[name] = splitList(aliases)
+	}
+	return out
+}
+
+// parseMounts reads "vol1=/host/path vol2=/host/path".
+func parseMounts(s string) []mountInfo {
+	var out []mountInfo
+	for _, e := range strings.Split(s, dlist) {
+		name, src, ok := strings.Cut(e, dassign)
+		if !ok || name == "" || src == "" {
+			continue
+		}
+		out = append(out, mountInfo{name: name, source: src})
+	}
+	return out
 }
 
 // parseStamp reads one of docker's RFC3339 times.
@@ -114,49 +186,26 @@ func parseStamp(s string) time.Time {
 	return t
 }
 
-// composeIDs is the container ids belonging to one app.
+// forDir is one app's containers.
 //
-// Membership comes from compose rather than from a label match on the project
-// name: compose derives that name from the directory and normalises it, so an
-// app under a custom --app-dir would not match its own containers.
-//
-// Asked with -a so a container that exited is listed as exited instead of
-// vanishing -- a stack that died is exactly what you are looking for here, and
-// an absent row reads as "no such service".
-func (p *Probe) composeIDs(ctx context.Context, dir string, all bool) []string {
-	compose := p.path(filepath.Join(dir, "compose.yml"))
-	if !fileExists(compose) {
+// Asked with everything, so a container that exited is listed as exited instead
+// of vanishing -- a stack that died is exactly what you are looking for here,
+// and an absent row reads as "no such service".
+func (inv dockerInventory) forDir(dir string) []*containerInfo {
+	if dir == "" {
 		return nil
 	}
-	args := []string{"compose", "-f", compose, "--project-directory", p.path(dir), "ps"}
-	if all {
-		args = append(args, "-a")
-	}
-	args = append(args, "-q")
-	out, err := p.docker(ctx, args...)
-	if err != nil {
-		return nil
-	}
-	var ids []string
-	for _, ln := range strings.Split(out, "\n") {
-		if ln = strings.TrimSpace(ln); ln != "" {
-			ids = append(ids, ln)
-		}
-	}
-	return ids
+	return inv.byDir[filepath.Clean(dir)]
 }
 
 // containers is one app's containers, named individually rather than counted.
 //
 // A count says three are up; it cannot say WHICH of four is missing, and the
 // missing one is the whole question when something 502s.
-func (p *Probe) containers(ctx context.Context, dir string, inv dockerInventory) []Container {
-	var out []Container
-	for _, id := range p.composeIDs(ctx, dir, true) {
-		ci, ok := inv.byID[id]
-		if !ok {
-			continue
-		}
+func (p *Probe) containers(dir string, inv dockerInventory) []Container {
+	cs := inv.forDir(dir)
+	out := make([]Container, 0, len(cs))
+	for _, ci := range cs {
 		out = append(out, Container{
 			Service:    ci.service,
 			Name:       ci.name,
@@ -173,13 +222,17 @@ func (p *Probe) containers(ctx context.Context, dir string, inv dockerInventory)
 }
 
 // proxy is the shared reverse proxy, or nil when there is none.
-func (p *Probe) proxy(ctx context.Context, inv dockerInventory) *Proxy {
+func (p *Probe) proxy(inv dockerInventory) *Proxy {
 	if !dirExists(p.path(ProxyDir)) {
 		return nil
 	}
-	pr := &Proxy{State: "stopped", Status: "not created"}
-	pr.Network = firstIndented(p.path(filepath.Join(ProxyDir, "compose.yml")), "name:")
-	pr.Image = firstIndented(p.path(filepath.Join(ProxyDir, "compose.yml")), "image:")
+	compose := p.path(filepath.Join(ProxyDir, "compose.yml"))
+	pr := &Proxy{
+		State:   "stopped",
+		Status:  "not created",
+		Network: firstIndented(compose, "name:"),
+		Image:   firstIndented(compose, "image:"),
+	}
 	if pr.Network == "" {
 		pr.Network = "?"
 	}
@@ -187,7 +240,7 @@ func (p *Probe) proxy(ctx context.Context, inv dockerInventory) *Proxy {
 		pr.Image = "?"
 	}
 	for _, c := range inv.byID {
-		if c.name != "komizo-proxy" {
+		if c.name != proxyContainer {
 			continue
 		}
 		pr.State = c.state
@@ -208,8 +261,17 @@ func (p *Probe) proxy(ctx context.Context, inv dockerInventory) *Proxy {
 	return pr
 }
 
+// proxyContainer is what the shared proxy is always called. Fixed by
+// alpine-proxy.sh, which sets container_name.
+const proxyContainer = "komizo-proxy"
+
 // network is the shared network and who is attached under what alias.
-func (p *Probe) network(ctx context.Context, pr *Proxy) *Network {
+//
+// The members come from the containers already read, not from `network
+// inspect`: that would name them but not their aliases, and the aliases are the
+// entire point -- Caddy reaches an app by alias, so two containers claiming one
+// name is the whole explanation for a 502 that nothing else on the box reveals.
+func (p *Probe) network(ctx context.Context, pr *Proxy, inv dockerInventory) *Network {
 	name := "edge"
 	if pr != nil && pr.Network != "" && pr.Network != "?" {
 		name = pr.Network
@@ -227,30 +289,26 @@ func (p *Probe) network(ctx context.Context, pr *Proxy) *Network {
 	if len(f) >= 2 {
 		n.Subnet = f[1]
 	}
-
-	// Aliases are per-endpoint, so they come from the container rather than from
-	// the network. Docker adds the short id as one; harmless, since it is unique
-	// and cannot cause a false collision.
-	members, err := p.docker(ctx, "network", "inspect", name, "--format",
-		`{{range $k, $v := .Containers}}{{$v.Name}}`+dsep+`{{$k}}
-{{end}}`)
-	if err != nil {
-		return n
-	}
-	for _, ln := range strings.Split(members, "\n") {
-		f := strings.Split(strings.TrimSpace(ln), dsep)
-		if len(f) < 2 || f[0] == "" {
+	for _, c := range inv.sorted() {
+		aliases, ok := c.networks[name]
+		if !ok {
 			continue
 		}
-		m := NetworkMember{Container: f[0]}
-		al, err := p.docker(ctx, "inspect", f[1], "--format",
-			`{{range $n, $c := .NetworkSettings.Networks}}{{if eq $n "`+name+`"}}{{range $c.Aliases}}{{.}},{{end}}{{end}}{{end}}`)
-		if err == nil {
-			m.Aliases = splitList(strings.TrimSpace(al))
-		}
-		n.Members = append(n.Members, m)
+		n.Members = append(n.Members, NetworkMember{Container: c.name, Aliases: aliases})
 	}
 	return n
+}
+
+// sorted is every container by name, so a report of the same box twice is the
+// same document. Map order is not, and a report that reshuffles itself every
+// minute is one nothing can usefully diff.
+func (inv dockerInventory) sorted() []*containerInfo {
+	out := make([]*containerInfo, 0, len(inv.byID))
+	for _, c := range inv.byID {
+		out = append(out, c)
+	}
+	sortBy(out, func(c *containerInfo) string { return c.name })
+	return out
 }
 
 // firstIndented pulls the value off the first "  key: value" line in a compose

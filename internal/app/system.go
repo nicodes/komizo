@@ -3,9 +3,6 @@ package app
 import (
 	"fmt"
 	"math"
-	"sort"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/nicodes/komizo/internal/agent"
@@ -82,7 +79,7 @@ type diskUse struct {
 	mount string
 	// dev is the filesystem's device, for folding two mount points that are one
 	// filesystem. Empty on records written before it was reported, which is
-	// most of any box's system.log.
+	// most of any box's history.
 	dev        string
 	used, size uint64
 }
@@ -112,105 +109,6 @@ type cgroupStat struct {
 func csKey(app, service string) string { return app + "\x00" + service }
 
 func (c cgroupStat) key() string { return csKey(c.app, c.service) }
-
-// parseSystem reads the resource records out of a host script's output,
-// ignoring everything else -- the same output also carries the inventory and
-// the request counts.
-func parseSystem(out string, at time.Time) sysSample {
-	s := sysSample{at: at}
-	byKey := map[string]int{}
-	out = scrub(out)
-	for _, ln := range strings.Split(out, "\n") {
-		f := strings.Split(strings.TrimRight(ln, "\r"), "\t")
-		switch {
-		case len(f) == 4 && f[0] == "sys":
-			a, errA := strconv.ParseUint(f[2], 10, 64)
-			b, errB := strconv.ParseUint(f[3], 10, 64)
-			if errA != nil || errB != nil {
-				continue
-			}
-			switch f[1] {
-			case "cpu":
-				s.cpuTotal, s.cpuIdle, s.haveCPU = a, b, true
-			case "cores":
-				s.cores = int(a)
-			case "mem":
-				s.memTotal, s.memUsed, s.haveMem = a, b, true
-			}
-
-		case (len(f) == 4 || len(f) == 5) && f[0] == "disk":
-			// Two shapes: mount/used/size, and mount/device/used/size once the
-			// probe learned to report the device. The old one still parses
-			// because the box's system.log is full of it.
-			d := diskUse{mount: f[1]}
-			var errU, errS error
-			if len(f) == 5 {
-				d.dev = f[2]
-				d.used, errU = strconv.ParseUint(f[3], 10, 64)
-				d.size, errS = strconv.ParseUint(f[4], 10, 64)
-			} else {
-				d.used, errU = strconv.ParseUint(f[2], 10, 64)
-				d.size, errS = strconv.ParseUint(f[3], 10, 64)
-			}
-			if errU != nil || errS != nil || d.size == 0 {
-				continue
-			}
-			// Folded when the two are one filesystem. Both / and /var/lib/docker
-			// are asked for, and on most boxes they are the same one -- listing
-			// it twice would read as twice the disk. The DEVICE is what says so:
-			// docker setups routinely bind-mount /var/lib/docker onto itself,
-			// which gives one filesystem two mount points, and folding by mount
-			// point drew that box's one disk as two identical bars.
-			dup := false
-			for _, x := range s.disks {
-				if x.mount == d.mount || (d.dev != "" && x.dev == d.dev) {
-					dup = true
-					break
-				}
-			}
-			if !dup {
-				s.disks = append(s.disks, d)
-			}
-
-		case len(f) == 5 && f[0] == "vol":
-			n, err := strconv.ParseUint(f[4], 10, 64)
-			if err != nil {
-				continue
-			}
-			s.vols = append(s.vols, volRow{app: f[1], service: f[2], name: f[3], bytes: n})
-
-		case len(f) == 6 && f[0] == "cstat":
-			c := cgroupStat{app: f[1], service: f[2]}
-			if v, err := strconv.ParseUint(f[3], 10, 64); err == nil {
-				c.cpuUsec, c.haveCPU = v, true
-			}
-			if v, err := strconv.ParseUint(f[4], 10, 64); err == nil {
-				c.mem, c.haveMem = v, true
-			}
-			// "max" is cgroup v2 for uncapped, and v1 writes a number so large
-			// it means the same thing. Both are "no limit", which is a fact
-			// worth showing -- a container with no ceiling is one that can take
-			// the box down with it.
-			if f[5] != "" && f[5] != "max" {
-				if v, err := strconv.ParseUint(f[5], 10, 64); err == nil && v < 1<<62 {
-					c.limit, c.hasLimit = v, true
-				}
-			}
-			// Later records win, so a redeployed container's row replaces the
-			// stale one rather than appearing twice.
-			if i, ok := byKey[c.key()]; ok {
-				s.cs[i] = c
-				continue
-			}
-			byKey[c.key()] = len(s.cs)
-			s.cs = append(s.cs, c)
-		}
-	}
-	// Kept rather than discarded: the readers ask for a container by name far
-	// more often than this builds one. See sysSample.csIndex.
-	s.csIndex = byKey
-	return s
-}
 
 // statFor is one container in one reading. Absent means it was not running --
 // a stopped container has no cgroup to read, so there is no record of it.
@@ -448,8 +346,8 @@ func diskSeries(s []sysSample, mount string) resSeries {
 // storageSeries is what an app or container has been holding on disk.
 //
 // Only the readings that measured it, at the times they measured it -- the rest
-// are skipped rather than charted as gaps. A minute the sampler did not run du
-// on is not a hole in the measurement; it is simply not one of the measurements,
+// are skipped rather than charted as gaps. A minute the agent did not measure
+// volumes on is not a hole in the measurement; it is simply not one of them,
 // and a series of a hundred NaNs around four real points would say the opposite.
 func storageSeries(s []sysSample, app, service string) resSeries {
 	var r resSeries
@@ -488,29 +386,6 @@ type volRow struct {
 	app, service string
 	name         string
 	bytes        uint64
-}
-
-func parseVolumes(out string) []volRow {
-	var rows []volRow
-	seen := map[string]bool{}
-	out = scrub(out)
-	for _, ln := range strings.Split(out, "\n") {
-		f := strings.Split(strings.TrimRight(ln, "\r"), "\t")
-		if len(f) != 5 || f[0] != "vol" {
-			continue
-		}
-		n, err := strconv.ParseUint(f[4], 10, 64)
-		if err != nil {
-			continue
-		}
-		k := f[1] + "\x00" + f[2] + "\x00" + f[3]
-		if seen[k] {
-			continue
-		}
-		seen[k] = true
-		rows = append(rows, volRow{app: f[1], service: f[2], name: f[3], bytes: n})
-	}
-	return rows
 }
 
 // volTotal adds up what one subject is holding on disk.
@@ -597,55 +472,18 @@ func (m *model) takeSample(s sysSample) {
 // komizoStamp is what komizo has installed on a box, and how the interface can
 // tell whether it is current.
 //
-// A hash of the sampler rather than a version number anybody has to remember to
-// bump. The release version IS recorded too, and shown -- "which komizo set this
-// box up" is a fair question -- but the version is not what decides "up to
-// date": that question is "would running the update change anything", and only
-// the content of what gets written can answer it. A version alone answers it
-// wrongly the first time somebody edits the script without touching the version,
-// which is every edit during development, when the version is "dev" throughout.
+// A hash of the AGENT BINARIES, which are what an update installs, rather than
+// a version number anybody has to remember to bump. The release version IS
+// recorded too, and shown -- "which komizo set this box up" is a fair question
+// -- but the version is not what decides "up to date": that question is "would
+// running the update change anything", and only the content can answer it. A
+// version alone answers it wrongly the first time somebody changes the agent
+// without touching the version, which is every change during development, when
+// the version is "dev" throughout.
+//
+// It covers every architecture komizo carries, so two boxes running the same
+// release agree about whether they are current even when one is arm64.
 //
 // Twelve hex characters, like the config SHAs on the app rows, so the two read
 // as the same kind of fact.
-//
-// Over the AGENT now rather than over the sampler shell it replaced, because
-// the agent is what gets written. agent.Stamp covers every architecture komizo
-// carries, so two boxes running the same release agree about whether they are
-// up to date even when one is arm64 and the other is not.
 func komizoStamp() string { return agent.Stamp() }
-
-// parseSystemLog turns the sampler's records back into readings, one per
-// timestamp, oldest first.
-//
-// Each reading is handed to the same parseSystem the live poll uses -- the
-// sampler writes the probe's output verbatim behind a timestamp, so there is
-// one parser for both and no second format to keep in step.
-func parseSystemLog(out string) []sysSample {
-	byTS := map[int64]*strings.Builder{}
-	var order []int64
-	for _, ln := range strings.Split(out, "\n") {
-		f := strings.SplitN(strings.TrimRight(ln, "\r"), "\t", 3)
-		if len(f) != 3 || f[0] != "S" {
-			continue
-		}
-		ts, err := strconv.ParseInt(f[1], 10, 64)
-		if err != nil {
-			continue
-		}
-		b, ok := byTS[ts]
-		if !ok {
-			b = &strings.Builder{}
-			byTS[ts] = b
-			order = append(order, ts)
-		}
-		b.WriteString(f[2])
-		b.WriteString("\n")
-	}
-	sort.Slice(order, func(i, j int) bool { return order[i] < order[j] })
-
-	out2 := make([]sysSample, 0, len(order))
-	for _, ts := range order {
-		out2 = append(out2, parseSystem(byTS[ts].String(), time.Unix(ts, 0)))
-	}
-	return out2
-}

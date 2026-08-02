@@ -6,10 +6,6 @@ log() { printf '\n==> %s\n' "$*"; }
 # The binary itself is NOT here. It arrives on its own connection, written to
 # __STAGED__ before this runs, because it is several megabytes of ELF and
 # nothing good comes of trying to carry that through a shell heredoc.
-#
-# Replaces the sampler and its per-minute crontab entry. Everything the sampler
-# measured, komizo-box measures; what changes is that a Go binary does it in one
-# process instead of a shell script spawning several hundred.
 
 log "Installing the komizo agent"
 
@@ -64,19 +60,6 @@ chmod 755 /etc/init.d/komizo-rootd
 if command -v rc-update >/dev/null 2>&1; then
 	rc-update add komizo-rootd default >/dev/null 2>&1 || true
 	rc-service komizo-rootd restart >/dev/null 2>&1 || rc-service komizo-rootd start >/dev/null 2>&1 || true
-fi
-
-# The sampler this replaces. Its crontab line is removed so the box is not
-# running both -- they measure the same things and would interleave two answers
-# to every question.
-#
-# The script and its log are LEFT IN PLACE. The log is the only record of what
-# happened before the update, and deleting somebody's history as a side effect
-# of an upgrade is not a thing to do casually even when nothing is expected to
-# read it again.
-if [ -f /etc/crontabs/root ]; then
-	grep -v 'komizo-sample' /etc/crontabs/root > /etc/crontabs/root.tmp 2>/dev/null || true
-	mv /etc/crontabs/root.tmp /etc/crontabs/root
 fi
 
 # Written now rather than waiting for the timer, so the first report exists by

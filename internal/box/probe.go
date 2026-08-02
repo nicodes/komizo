@@ -69,10 +69,8 @@ func (p *Probe) dockerOK(ctx context.Context) bool {
 
 // Report produces one complete reading.
 //
-// Ordered so the expensive calls happen once. `docker ps` is the slow part over
-// a busy box, and it is read for the whole machine and then indexed, rather
-// than once per app -- a box with six apps would otherwise pay six round trips
-// for facts it already had.
+// Two docker calls, whatever is on the box. Everything below reads the index
+// they produce -- see docker.go, where that is the property being defended.
 func (p *Probe) Report(ctx context.Context) Report {
 	r := Report{V: Version, At: p.now(), Apps: []App{}, Problems: []Problem{}}
 	r.Server = p.server(ctx)
@@ -84,11 +82,11 @@ func (p *Probe) Report(ctx context.Context) Report {
 	}
 
 	inv := p.dockerInventory(ctx)
-	r.Apps = p.apps(ctx, inv)
-	r.Proxy = p.proxy(ctx, inv)
-	r.Network = p.network(ctx, r.Proxy)
+	r.Apps = p.apps(inv)
+	r.Proxy = p.proxy(inv)
+	r.Network = p.network(ctx, r.Proxy, inv)
 	r.Orphans = p.orphans()
-	r.System = p.System(ctx)
+	r.System = p.System(inv)
 	r.Problems = Diagnose(r)
 	return r
 }
@@ -129,14 +127,18 @@ func (p *Probe) komizoInstall() KomizoInstall {
 		return k
 	}
 	k.Installed = true
-	// Two lines: version, then stamp. A box set up by a komizo old enough to
-	// have written only the stamp has one line, and that line is the stamp.
-	if len(lines) >= 2 && strings.TrimSpace(lines[1]) != "" {
-		k.Version = strings.TrimSpace(lines[0])
-		k.Stamp = strings.TrimSpace(lines[1])
-	} else {
-		k.Stamp = strings.TrimSpace(lines[0])
+	// Two lines, always: the komizo version that provisioned the box, then the
+	// content stamp of what it wrote. Anything else is a file komizo did not
+	// write, and reading one field out of it would be a guess presented as a
+	// fact -- so the file's existence is reported and nothing else is claimed.
+	if len(lines) < 2 {
+		return k
 	}
+	version, stamp := strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1])
+	if version == "" || stamp == "" {
+		return k
+	}
+	k.Version, k.Stamp = version, stamp
 	return k
 }
 
@@ -160,7 +162,7 @@ func (p *Probe) hostKeys() []HostKey {
 }
 
 // apps walks komizo's own records and joins each to what docker says.
-func (p *Probe) apps(ctx context.Context, inv dockerInventory) []App {
+func (p *Probe) apps(inv dockerInventory) []App {
 	states := p.appStates()
 	out := make([]App, 0, len(states))
 	for _, as := range states {
@@ -189,7 +191,7 @@ func (p *Probe) apps(ctx context.Context, inv dockerInventory) []App {
 				a.Version = v
 			}
 			a.Hosts = p.hosts(a.Dir)
-			a.Containers = p.containers(ctx, a.Dir, inv)
+			a.Containers = p.containers(a.Dir, inv)
 		}
 		out = append(out, a)
 	}
@@ -241,6 +243,15 @@ func (p *Probe) orphans() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// sortBy orders a slice by a string key.
+//
+// Every list in a report goes through this. A report of the same box twice must
+// be the same document -- map iteration is not, and a report that reshuffles
+// itself every minute is one nothing can usefully diff or alert on.
+func sortBy[T any](s []T, key func(T) string) {
+	sort.Slice(s, func(i, j int) bool { return key(s[i]) < key(s[j]) })
 }
 
 // splitList reads a comma or space separated field into a slice, dropping

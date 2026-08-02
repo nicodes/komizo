@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/nicodes/komizo/internal/box"
 )
 
 // Everything komizo displays about a box was written by something on the far
@@ -27,27 +29,43 @@ func TestRemoteTextCannotDriveTheTerminal(t *testing.T) {
 }
 
 func TestScrubKeepsTheCharactersTheFormatIsMadeOf(t *testing.T) {
-	// Records are tab-separated and logs are lines. Scrubbing either would
-	// destroy every parser downstream of this.
+	// Logs are lines and a log line can hold a tab. Scrubbing either would
+	// mangle the one thing this is most often applied to.
 	in := "app\tblog\tkomizo-blog\nnext\tline"
 	if got := scrub(in); got != in {
 		t.Errorf("scrub altered a clean record: %q -> %q", in, got)
 	}
 }
 
-func TestInventoryFieldsAreScrubbedBeforeAnythingRendersThem(t *testing.T) {
-	// The container name is docker's, but docker's is whatever the image or a
-	// compose file called it.
-	out := "server\tready\tDocker 27\n" +
-		"app\tblog\tkomizo-blog\t/srv/blog\tabc\t1\tghcr.io/x/y\t\n" +
-		"container\tblog\tweb\tblog-\x1b[2Jweb-1\trunning\tUp 3 hours\t\t\t0\timg\t80\n"
-	inv := parseInventory(out)
+// Everything in a report is written by the far end. A container name is
+// docker's, and docker's is whatever the image or a compose file called it --
+// so an escape sequence can arrive in one, and JSON carries it through
+// perfectly well. The adapter is the one place that can stop it.
+func TestReportFieldsAreScrubbedBeforeAnythingRendersThem(t *testing.T) {
+	inv := invOf(oneApp(box.App{
+		Name: "blog", User: "komizo-blog", Dir: "/srv/blog", Version: "abc",
+		ConfigImage: "ghcr.io/x/\x1b]0;pwned\x07y",
+		Hosts:       []box.Host{{Name: "blog.\x1b[2Jexample.com"}},
+		Containers: []box.Container{{
+			Service: "web", Name: "blog-\x1b[2Jweb-1", State: "running",
+			Status: "Up \x1b[31m3 hours", Image: "img",
+		}},
+	}))
 	apps := inv.apps
 	if len(apps) != 1 || len(apps[0].containers) != 1 {
 		t.Fatalf("expected one app with one container, got %+v", apps)
 	}
-	if strings.Contains(apps[0].containers[0].name, "\x1b") {
-		t.Errorf("an escape survived into a container name: %q", apps[0].containers[0].name)
+	c := apps[0].containers[0]
+	for what, got := range map[string]string{
+		"container name": c.name,
+		"status":         c.status,
+		"config image":   apps[0].image,
+		"hostname":       apps[0].hosts[0].name,
+		"route":          apps[0].routes[0].sites,
+	} {
+		if strings.ContainsAny(got, "\x1b\x07") {
+			t.Errorf("an escape survived into the %s: %q", what, got)
+		}
 	}
 }
 
@@ -91,36 +109,53 @@ func TestEnvPrefixQuotesValuesRatherThanTrustingThem(t *testing.T) {
 	}
 }
 
-// --- the inventory's own robustness ----------------------------------------
+// --- what an absent value means --------------------------------------------
 
-// A proxy that has never been created reports no timestamps, so its record is
-// two fields short. An exact-length match dropped the whole row, and the
-// interface then offered to install a proxy that was already installed.
+// A proxy that has never been created has no timestamps and no status worth
+// printing. It is still INSTALLED, and reading it otherwise makes the interface
+// offer to install the one already there.
 func TestAnInstalledProxyIsSeenEvenWithNoTimestamps(t *testing.T) {
-	inv := parseInventory(
-		"proxy\tstopped\tedge\tcaddy:2\tnot created\t")
-	proxy := inv.proxy
+	r := oneApp(box.App{Name: "blog"})
+	r.Proxy = &box.Proxy{State: "stopped", Network: "edge", Image: "caddy:2", Status: "not created"}
+	proxy := invOf(r).proxy
 	if !proxy.installed {
 		t.Fatal("an installed proxy with no start time was dropped entirely")
 	}
 	if proxy.state != "stopped" || proxy.network != "edge" || proxy.image != "caddy:2" {
-		t.Errorf("fields did not survive the padding: %+v", proxy)
+		t.Errorf("fields did not survive: %+v", proxy)
 	}
 	if !proxy.startedAt.IsZero() {
 		t.Errorf("a missing timestamp should be zero, got %v", proxy.startedAt)
 	}
 }
 
+// The mirror of it: no proxy at all must read as not installed rather than as
+// an empty-but-present one. The report says so by omitting the object, which is
+// why Proxy is a pointer.
+func TestNoProxyRecordMeansNotInstalled(t *testing.T) {
+	if proxy := invOf(oneApp(box.App{Name: "blog"})).proxy; proxy.installed {
+		t.Errorf("no proxy should mean not installed, got %+v", proxy)
+	}
+}
+
+// A container that has never run has no start time and no listening ports --
+// it has no network namespace to read. It still appears, because a stack that
+// will not start is exactly what somebody is looking for.
 func TestAContainerWithNoRecordedTimestampsStillAppears(t *testing.T) {
-	out := "app\tblog\tkomizo-blog\t/srv/blog\tabc\t0\tghcr.io/x/y\t\n" +
-		"container\tblog\tweb\tblog-web-1\tcreated\tCreated\t"
-	inv := parseInventory(out)
+	inv := invOf(oneApp(box.App{
+		Name: "blog", User: "komizo-blog", Dir: "/srv/blog", Version: "abc",
+		Containers: []box.Container{{Service: "web", Name: "blog-web-1", State: "created", Status: "Created"}},
+	}))
 	apps := inv.apps
 	if len(apps) != 1 || len(apps[0].containers) != 1 {
-		t.Fatalf("a container short of its timestamp fields was dropped: %+v", apps)
+		t.Fatalf("a container with no timestamps was dropped: %+v", apps)
 	}
-	if c := apps[0].containers[0]; c.state != "created" || c.ports != "" {
+	c := apps[0].containers[0]
+	if c.state != "created" || c.ports != "" {
 		t.Errorf("unexpected container: %+v", c)
+	}
+	if !c.startedAt.IsZero() || !c.finishedAt.IsZero() {
+		t.Errorf("absent timestamps should be zero: %+v", c)
 	}
 }
 

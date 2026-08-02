@@ -1,7 +1,6 @@
 package box
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,15 +9,14 @@ import (
 )
 
 // System is one reading of what the box and its containers are spending.
-func (p *Probe) System(ctx context.Context) System {
-	s := System{
-		Cores: p.cores(),
-		CPU:   p.cpu(),
-		Mem:   p.mem(),
-		Disks: p.disks(),
+func (p *Probe) System(inv dockerInventory) System {
+	return System{
+		Cores:      p.cores(),
+		CPU:        p.cpu(),
+		Mem:        p.mem(),
+		Disks:      p.disks(),
+		Containers: p.containerStats(inv),
 	}
-	s.Containers = p.containerStats(ctx)
-	return s
 }
 
 // cpu is cumulative jiffies since boot, and the idle part of them.
@@ -189,26 +187,17 @@ func (p *Probe) listeningPorts(pid int) []int {
 // Running containers only. A stopped one has no pid and no cgroup, so there is
 // nothing to read -- and its ABSENCE from a reading is the honest record of
 // that, which a reader turns back into a zero.
-func (p *Probe) containerStats(ctx context.Context) []ContainerStat {
+func (p *Probe) containerStats(inv dockerInventory) []ContainerStat {
 	var out []ContainerStat
 	for _, as := range p.appStates() {
-		dir := as.dir()
-		if dir == "" {
-			continue
-		}
-		for _, id := range p.composeIDs(ctx, dir, false) {
-			info, err := p.docker(ctx, "inspect", id, "--format",
-				`{{index .Config.Labels "com.docker.compose.service"}}`+dsep+"{{.State.Pid}}")
-			if err != nil {
+		for _, ci := range inv.forDir(as.dir()) {
+			// Running containers only. A stopped one has no pid and no cgroup,
+			// so there is nothing to read.
+			if ci.pid <= 0 || ci.service == "" {
 				continue
 			}
-			f := strings.Split(strings.TrimSpace(info), dsep)
-			if len(f) < 2 || f[0] == "" {
-				continue
-			}
-			pid, _ := strconv.Atoi(f[1])
-			cs := p.cgroupStat(pid)
-			cs.App, cs.Service = as.name, f[0]
+			cs := p.cgroupStat(ci.pid)
+			cs.App, cs.Service = as.name, ci.service
 			out = append(out, cs)
 		}
 	}

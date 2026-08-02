@@ -17,16 +17,11 @@ import (
 func all(t *testing.T) map[string]string {
 	t.Helper()
 	return map[string]string{
-		"alpine":          AlpineScript,
-		"alpine-init":     AlpineInitScript,
-		"alpine-proxy":    AlpineProxyScript,
-		"alpine-remove":   AlpineRemoveScript,
-		"inventory":       Inventory(),
-		"metrics":         Metrics(1753700400, 1753704000),
-		"system-log":      SystemLogRange(1753700400, 1753704000),
-		"storage":         Storage("blog"),
-		"sampler":         Sampler(),
-		"sampler-install": SamplerInstall("94d5dbd1333d", "0.0.11"),
+		"alpine":        AlpineScript,
+		"alpine-init":   AlpineInitScript,
+		"alpine-proxy":  AlpineProxyScript,
+		"alpine-remove": AlpineRemoveScript,
+		"agent-install": AgentInstall("94d5dbd1333d", "0.0.11"),
 	}
 }
 
