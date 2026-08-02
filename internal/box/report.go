@@ -90,6 +90,9 @@ type Report struct {
 	Problems []Problem `json:"problems"`
 }
 
+// Schema is the version this document was written against. See Decode.
+func (r Report) Schema() int { return r.V }
+
 // Stale reports whether this reading is older than d.
 //
 // The check belongs here rather than in each reader: "how old is too old" is a

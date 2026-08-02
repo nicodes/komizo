@@ -54,17 +54,47 @@ func TestReportIsWorldReadable(t *testing.T) {
 	}
 }
 
-func TestAReportFromTheFutureIsRefused(t *testing.T) {
-	// A box running a newer binary than the CLI is a normal state, because
-	// boxes are updated by hand. The failure has to be a message about versions
-	// rather than a screen of plausible zeroes.
-	b, _ := json.Marshal(Report{V: Version + 1, Server: Server{State: "ready"}})
-	_, err := DecodeReport(b)
-	if err == nil {
-		t.Fatal("want an error for a newer schema")
+// A box running a newer binary than the CLI is a normal state, because boxes
+// are updated by hand, one at a time. The failure has to be a message about
+// versions rather than a screen of plausible zeroes.
+//
+// Every document, not just the report: the poll and the monitor cross the same
+// gap, and the one that skipped the check would be the one that showed a
+// plausible screen of nothing.
+func TestADocumentFromTheFutureIsRefused(t *testing.T) {
+	future := Version + 1
+	docs := map[string]func() ([]byte, error){
+		"report":  func() ([]byte, error) { return json.Marshal(Report{V: future, Server: Server{State: "ready"}}) },
+		"poll":    func() ([]byte, error) { return json.Marshal(Poll{V: future}) },
+		"monitor": func() ([]byte, error) { return json.Marshal(Monitor{V: future}) },
 	}
-	if !strings.Contains(err.Error(), "update komizo") {
-		t.Errorf("the error should say what to do, got %q", err)
+	check := map[string]func([]byte) error{
+		"report":  func(b []byte) error { _, err := Decode[Report](b); return err },
+		"poll":    func(b []byte) error { _, err := Decode[Poll](b); return err },
+		"monitor": func(b []byte) error { _, err := Decode[Monitor](b); return err },
+	}
+	for name, mk := range docs {
+		b, err := mk()
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = check[name](b)
+		if err == nil {
+			t.Errorf("%s: want an error for a newer schema", name)
+			continue
+		}
+		if !strings.Contains(err.Error(), "update komizo") {
+			t.Errorf("%s: the error should say what to do, got %q", name, err)
+		}
+	}
+}
+
+// A document with no version is not one komizo-box wrote. Refused rather than
+// read as v0, because the shapes overlap enough that some other JSON would
+// decode into a report full of zeroes and render as a broken server.
+func TestADocumentWithNoVersionIsRefused(t *testing.T) {
+	if _, err := Decode[Report]([]byte(`{"server":{"state":"ready"}}`)); err == nil {
+		t.Error("want an error for a document with no schema version")
 	}
 }
 
@@ -72,7 +102,7 @@ func TestAnOlderReportStillReads(t *testing.T) {
 	// The other direction, which must keep working: fields the old producer
 	// never wrote arrive as zeroes, and that is survivable.
 	b := []byte(`{"v":1,"at":"2026-08-02T12:00:00Z","server":{"state":"ready"},"apps":[]}`)
-	r, err := DecodeReport(b)
+	r, err := Decode[Report](b)
 	if err != nil {
 		t.Fatal(err)
 	}

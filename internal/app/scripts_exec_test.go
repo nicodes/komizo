@@ -1,27 +1,24 @@
 package app
 
 import (
-	"fmt"
 	"os/exec"
-	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/nicodes/komizo/scripts"
 )
 
-// The scripts this package ships are shell and awk held in Go strings, and
-// nothing here used to RUN any of them.
+// The shell komizo pipes to a server runs as ROOT, and nothing here used to
+// parse any of it.
 //
-// That is not a gap in coverage, it is the gap that mattered. The request-counts
-// awk carried three defects at once -- a range filter that referenced two
-// variables nobody had defined, and a span record built from two more that were
-// never assigned -- and the test named for that behaviour asserted the numbers
-// appeared in the script TEXT and then fed a hand-written line to the parser.
-// Every assertion passed against a program that could not do what it said.
+// That is not a gap in coverage, it is the gap that mattered: a script is
+// perfectly capable of being wrong in a way that reads correctly. So everything
+// generated is syntax-checked as the box will read it -- after substitution, as
+// a whole file -- rather than being asserted about as text.
 //
-// So: syntax-check everything that is generated, and execute the part that
-// computes.
+// What this package still generates is the PROVISIONING half. The half that
+// read a box was shell too, and is now Go: see internal/box, where the same
+// question is settled by running the probes instead.
 
 func needs(t *testing.T, tool string) {
 	t.Helper()
@@ -169,27 +166,4 @@ func between(t *testing.T, s, start, end string) string {
 		t.Fatalf("could not find the end of %q", start)
 	}
 	return rest[:j]
-}
-
-// --- the awk that counts requests ------------------------------------------
-
-func runAwk(t *testing.T, prog string, from, to int64, stdin string) string {
-	t.Helper()
-	cmd := exec.Command("awk",
-		"-v", "from="+strconv.FormatInt(from, 10),
-		"-v", "to="+strconv.FormatInt(to, 10), prog)
-	cmd.Stdin = strings.NewReader(stdin)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("awk failed: %v\n%s", err, out)
-	}
-	return string(out)
-}
-
-// accessLine is one Caddy access-log record, in the shape the generated site
-// blocks actually write: JSON, with the three fields the awk pulls by pattern.
-func accessLine(ts int64, host string, status int) string {
-	return fmt.Sprintf(`{"level":"info","ts":%d.123,"logger":"http.log.access",`+
-		`"msg":"handled request","request":{"remote_ip":"1.2.3.4","host":%q,`+
-		`"method":"GET","uri":"/"},"status":%d,"size":12}`, ts, host, status)
 }

@@ -96,7 +96,7 @@ func fetchMonitor(t target, app string, r timeRange) tea.Cmd {
 		if app != "" {
 			args = append(args, "--app", app)
 		}
-		mon, err := runBox[box.Monitor](t, args...)
+		mon, err := fetchBox[box.Monitor](t, args...)
 		if err != nil {
 			return monitorMsg{app: app, err: err}
 		}

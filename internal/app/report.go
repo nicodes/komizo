@@ -1,8 +1,10 @@
 package app
 
 import (
-	"encoding/json"
+	"bytes"
+	"errors"
 	"fmt"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -34,7 +36,7 @@ import (
 // BoxBin is where init puts the agent.
 const BoxBin = "/usr/local/bin/komizo-box"
 
-// errNoAgent is a box that has not been updated yet.
+// errNoAgent is a box komizo has never set up.
 //
 // A distinct error because it is not a failure, it is a state -- and the only
 // state with a specific thing to do about it. Anything else from that command
@@ -43,43 +45,64 @@ type errNoAgent struct{ host string }
 
 func (e errNoAgent) Error() string {
 	return fmt.Sprintf("%s has no komizo agent installed.\n\n    komizo init --host %s\n\n"+
-		"    That installs %s, which is what komizo reads a server through now.",
+		"    That installs %s, which is how komizo reads a server.",
 		e.host, e.host, BoxBin)
 }
 
-// runBox runs one komizo-box subcommand on the far end and decodes its output.
+// askBox runs one komizo-box subcommand on the far end and returns its stdout.
 //
-// The exit status is not consulted for "is it installed": a shell reports 127
-// for a missing command, and so does a great deal else. The message is checked
-// instead, and only to turn one specific failure into one specific instruction.
-func runBox[T any](t target, args ...string) (T, error) {
-	var zero T
-	out, err := t.runCapture(BoxBin + " " + strings.Join(args, " "))
-	if err != nil {
-		if strings.Contains(out, "not found") || strings.Contains(err.Error(), "not found") {
-			return zero, errNoAgent{host: t.host}
+// The EXIT CODE decides whether the agent is there. 127 is what a shell reports
+// for a command it could not find, and ssh passes the remote status through
+// unchanged. Matching on the message instead does not work at all: the message
+// goes to the far end's stderr, so the only thing this side holds is "exit
+// status 127" -- which is why that check silently never fired.
+//
+// Stderr is captured rather than passed through. This runs under a full-screen
+// interface, and anything written to the terminal behind its back lands in the
+// middle of the frame.
+func askBox(t target, args ...string) ([]byte, error) {
+	var stdout, stderr bytes.Buffer
+	c := exec.Command("ssh", t.sshArgs(BoxBin+" "+strings.Join(args, " "))...)
+	c.Stdout, c.Stderr = &stdout, &stderr
+	if err := c.Run(); err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == 127 {
+			return nil, errNoAgent{host: t.host}
 		}
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return nil, fmt.Errorf("%s: %s", t.host, lastLine(msg))
+		}
+		return nil, fmt.Errorf("%s: %w", t.host, err)
+	}
+	return bytes.TrimSpace(stdout.Bytes()), nil
+}
+
+// lastLine is the final line of a message.
+//
+// A failing agent can print a page; the line that says what went wrong is the
+// last one, and the rest is context nobody reads in a status bar.
+func lastLine(s string) string {
+	if i := strings.LastIndexByte(strings.TrimRight(s, "\n"), '\n'); i >= 0 {
+		return strings.TrimSpace(s[i+1:])
+	}
+	return s
+}
+
+// fetchBox runs a subcommand and decodes what it said.
+//
+// Through box.Decode, never a bare Unmarshal, so the schema-version refusal
+// happens for every document rather than only for the one somebody remembered.
+func fetchBox[T box.Document](t target, args ...string) (T, error) {
+	var zero T
+	out, err := askBox(t, args...)
+	if err != nil {
 		return zero, err
 	}
-	var v T
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &v); err != nil {
+	v, err := box.Decode[T](out)
+	if err != nil {
 		return zero, fmt.Errorf("could not read what %s reported: %w", t.host, err)
 	}
 	return v, nil
-}
-
-// fetchReport reads the current state of a box.
-func fetchReport(t target) (box.Report, error) {
-	out, err := t.runCapture(BoxBin + " report")
-	if err != nil {
-		if strings.Contains(out, "not found") || strings.Contains(err.Error(), "not found") {
-			return box.Report{}, errNoAgent{host: t.host}
-		}
-		return box.Report{}, err
-	}
-	// Decoded through the box package so the schema-version refusal happens in
-	// one place, rather than each caller deciding what a newer box means.
-	return box.DecodeReport([]byte(strings.TrimSpace(out)))
 }
 
 // inventoryFromReport maps a report onto the rows the screens draw.

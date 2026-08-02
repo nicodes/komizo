@@ -172,7 +172,7 @@ func fetchApps(t target) tea.Cmd {
 		// part. A second ticker would double the connection rate against the
 		// box to draw a line that moves one column.
 		from, to := sparkRange(time.Now())
-		p, err := runBox[box.Poll](t, "poll",
+		p, err := fetchBox[box.Poll](t, "poll",
 			"--from", strconv.FormatInt(from, 10),
 			"--to", strconv.FormatInt(to, 10))
 		if err != nil {

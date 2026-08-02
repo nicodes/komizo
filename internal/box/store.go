@@ -41,24 +41,39 @@ func ReadReport(path string) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	return DecodeReport(b)
+	return Decode[Report](b)
 }
 
-// DecodeReport parses a report and refuses one from a future it cannot read.
+// Document is anything komizo-box emits. Every one of them states the schema it
+// was written against, so no reader has to know which document it is holding to
+// find out whether it can be trusted.
+type Document interface {
+	Report | Poll | Monitor
+	Schema() int
+}
+
+// Decode parses a document and refuses one from a future it cannot read.
 //
-// The version check is the reason this is a function rather than a bare
-// Unmarshal at each call site. A box running a newer binary than the CLI is a
-// normal state -- boxes are updated by hand -- and the failure has to be a
+// The version check is the reason this exists rather than a bare Unmarshal at
+// each call site. A box running a newer binary than the CLI is a NORMAL state
+// -- boxes are updated by hand, one at a time -- and the failure has to be a
 // message about versions rather than a screen of plausible zeroes.
-func DecodeReport(b []byte) (Report, error) {
-	var r Report
-	if err := json.Unmarshal(b, &r); err != nil {
-		return Report{}, err
+//
+// A document with no version at all reads as v0, which no komizo-box has ever
+// written, so it fails the same way: this is not a document komizo produced.
+func Decode[T Document](b []byte) (T, error) {
+	var v T
+	if err := json.Unmarshal(b, &v); err != nil {
+		return v, err
 	}
-	if r.V > Version {
-		return Report{}, fmt.Errorf("this server reports schema v%d and this komizo understands v%d -- update komizo", r.V, Version)
+	var zero T
+	switch got := v.Schema(); {
+	case got == 0:
+		return zero, fmt.Errorf("this is not something komizo-box wrote -- it states no schema version")
+	case got > Version:
+		return zero, fmt.Errorf("this server speaks report schema v%d and this komizo understands v%d -- update komizo", got, Version)
 	}
-	return r, nil
+	return v, nil
 }
 
 // AppendSample adds one reading to the history log and trims it if it has grown

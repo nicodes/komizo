@@ -5,8 +5,12 @@
 //
 //	rootd    root. Probes the machine and writes report.json on a timer.
 //	report   one reading to stdout. What `komizo report` runs over SSH.
-//	metrics  request counts over a range, to stdout.
-//	history  past readings over a range, to stdout.
+//	poll     a reading plus a window of request counts. The app list.
+//	monitor  a range of counts, past readings, and one app's volumes. The charts.
+//
+// Every mode but rootd prints ONE JSON document and exits. The CLI drives them
+// over SSH, and a mode per screen rather than per subject is deliberate: each
+// read costs a connection, and that -- not the probing -- is the expensive part.
 //
 // Splitting the modes across separate binaries would make agent updates three
 // questions instead of one; running them as one PROCESS would merge root with
@@ -46,10 +50,6 @@ func main() {
 		err = runRootd(os.Args[2:])
 	case "report":
 		err = runReport(os.Args[2:])
-	case "metrics":
-		err = runMetrics(os.Args[2:])
-	case "history":
-		err = runHistory(os.Args[2:])
 	case "poll":
 		err = runPoll(os.Args[2:])
 	case "monitor":
@@ -76,8 +76,6 @@ func usage() {
   komizo-box report [--cached] [--volumes]
   komizo-box poll --from UNIX --to UNIX
   komizo-box monitor --from UNIX --to UNIX [--app NAME]
-  komizo-box metrics --from UNIX --to UNIX
-  komizo-box history --from UNIX --to UNIX
   komizo-box version
 `)
 }
@@ -207,7 +205,7 @@ func runPoll(args []string) error {
 		return err
 	}
 	p := probe()
-	out := box.Poll{Report: p.Report(context.Background())}
+	out := box.Poll{V: box.Version, Report: p.Report(context.Background())}
 	if *from != 0 && *to != 0 {
 		out.Metrics = p.Metrics(*from, *to)
 	}
@@ -229,7 +227,7 @@ func runMonitor(args []string) error {
 		return fmt.Errorf("both --from and --to are required")
 	}
 	p := probe()
-	out := box.Monitor{Metrics: p.Metrics(*from, *to), History: []box.Sample{}}
+	out := box.Monitor{V: box.Version, Metrics: p.Metrics(*from, *to), History: []box.Sample{}}
 	if h, err := box.ReadSamples(*path, *from, *to); err == nil && h != nil {
 		out.History = h
 	}
@@ -237,40 +235,6 @@ func runMonitor(args []string) error {
 		out.Volumes = p.Volumes(context.Background(), *app)
 	}
 	return emit(out)
-}
-
-func runMetrics(args []string) error {
-	fs := flag.NewFlagSet("metrics", flag.ContinueOnError)
-	from := fs.Int64("from", 0, "start of the range, unix seconds")
-	to := fs.Int64("to", 0, "end of the range, unix seconds")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if *from == 0 || *to == 0 {
-		return fmt.Errorf("both --from and --to are required")
-	}
-	return emit(probe().Metrics(*from, *to))
-}
-
-func runHistory(args []string) error {
-	fs := flag.NewFlagSet("history", flag.ContinueOnError)
-	from := fs.Int64("from", 0, "start of the range, unix seconds")
-	to := fs.Int64("to", 0, "end of the range, unix seconds")
-	path := fs.String("history", box.HistoryPath, "where readings are kept")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if *from == 0 || *to == 0 {
-		return fmt.Errorf("both --from and --to are required")
-	}
-	s, err := box.ReadSamples(*path, *from, *to)
-	if err != nil {
-		return err
-	}
-	if s == nil {
-		s = []box.Sample{}
-	}
-	return emit(s)
 }
 
 // emit writes one JSON document to stdout.

@@ -1,7 +1,6 @@
 package app
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -50,32 +49,25 @@ func RunReport(args []string) error {
 	if cached {
 		args2 = append(args2, "--cached")
 	}
-	out, err := tgt.runCapture(BoxBin + " " + strings.Join(args2, " "))
-	if err != nil {
-		if strings.Contains(out, "not found") || strings.Contains(err.Error(), "not found") {
-			return errNoAgent{host: tgt.host}
-		}
-		return fmt.Errorf("could not read %s: %w", tgt.host, err)
-	}
-	raw := strings.TrimSpace(out)
 
 	// --json prints what the BOX said, byte for byte, rather than this binary's
 	// re-encoding of it. The difference matters the moment the two disagree,
-	// which is exactly when somebody would be asking for the raw document.
+	// which is exactly when somebody would be asking for the raw document -- so
+	// it deliberately skips the decode as well.
 	if asJSON {
-		var buf any
-		if err := json.Unmarshal([]byte(raw), &buf); err != nil {
-			return fmt.Errorf("could not read what %s reported: %w", tgt.host, err)
+		raw, err := askBox(tgt, args2...)
+		if err != nil {
+			return err
 		}
-		fmt.Println(raw)
+		fmt.Println(string(raw))
 		return nil
 	}
 
-	r, err := box.DecodeReport([]byte(raw))
+	r, err := fetchBox[box.Report](tgt, args2...)
 	if err != nil {
 		return err
 	}
-	printReport(r, tgt.host)
+	printReport(r, tgt.host, cached)
 	return nil
 }
 
@@ -84,14 +76,24 @@ func RunReport(args []string) error {
 // Problems FIRST, before the inventory. Everything below them is context for
 // whatever is wrong, and a page that makes you scroll past forty healthy rows
 // to find the broken one has buried the only thing you opened it for.
-func printReport(r box.Report, host string) {
-	age := time.Since(r.At).Round(time.Second)
+func printReport(r box.Report, host string, cached bool) {
 	fmt.Printf("%s -- %s, %s\n", host, r.Server.OSName(), r.Server.State)
 	if r.Server.Komizo.Installed {
-		fmt.Printf("  komizo %s, agent %s, measured %s ago\n",
-			dashIfEmpty(r.Server.Komizo.Version), dashIfEmpty(r.Server.Komizo.Agent), age)
+		fmt.Printf("  komizo %s, agent %s\n",
+			dashIfEmpty(r.Server.Komizo.Version), dashIfEmpty(r.Server.Komizo.Agent))
 	}
 	fmt.Println()
+
+	// Only --cached can be stale: without it the box measures on the spot. Said
+	// before anything else, because every line below is a claim about a moment
+	// that may have passed -- and a stale report of a healthy box is exactly
+	// what a box that died five minutes ago looks like.
+	if cached && r.Stale(time.Now(), staleAfter) {
+		warn("this reading is %s old -- the agent may not be running.\n"+
+			"    Check with: rc-service komizo-rootd status",
+			time.Since(r.At).Round(time.Second))
+		fmt.Println()
+	}
 
 	if len(r.Problems) == 0 {
 		note("nothing wrong that komizo can see.")
@@ -148,6 +150,13 @@ func printReport(r box.Report, host string) {
 		note("%s", strings.Join(parts, ", "))
 	}
 }
+
+// staleAfter is how old a cached reading may be before it is worth saying so.
+//
+// Three intervals rather than one. The agent writes every minute, so a report
+// one interval old is the normal case and two is an unlucky moment; three means
+// something actually stopped.
+const staleAfter = 3 * time.Minute
 
 func dashIfEmpty(s string) string {
 	if s == "" || s == "none" {

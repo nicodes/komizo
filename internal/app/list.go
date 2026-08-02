@@ -7,6 +7,8 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"github.com/nicodes/komizo/internal/box"
 )
 
 type appRow struct {
@@ -452,12 +454,9 @@ func RunList(args []string) error {
 		return err
 	}
 
-	rep, err := fetchReport(tgt)
+	rep, err := fetchBox[box.Report](tgt, "report")
 	if err != nil {
-		if _, missing := err.(errNoAgent); missing {
-			return err
-		}
-		return fmt.Errorf("could not read the server's inventory: %w", err)
+		return err
 	}
 
 	inv := inventoryFromReport(rep)

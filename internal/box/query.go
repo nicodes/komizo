@@ -15,12 +15,16 @@ package box
 
 // Poll is what the app list redraws from, every few seconds.
 type Poll struct {
+	V       int     `json:"v"`
 	Report  Report  `json:"report"`
 	Metrics Metrics `json:"metrics"`
 }
 
+func (p Poll) Schema() int { return p.V }
+
 // Monitor is what the charts are drawn from, for one range.
 type Monitor struct {
+	V       int      `json:"v"`
 	Metrics Metrics  `json:"metrics"`
 	History []Sample `json:"history"`
 	// Volumes is measured for ONE app, and only when asked. It costs a walk of
@@ -28,3 +32,5 @@ type Monitor struct {
 	// that cannot be read from a counter.
 	Volumes []Volume `json:"volumes,omitempty"`
 }
+
+func (m Monitor) Schema() int { return m.V }
