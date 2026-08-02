@@ -15,13 +15,33 @@ import (
 // argument is a path some future caller can pass wrongly. The tests that need
 // to point somewhere else take a root prefix instead -- see probe.Root.
 const (
-	StateDir   = "/var/lib/komizo"
-	AppsDir    = StateDir + "/apps"
-	ReportPath = StateDir + "/report.json"
+	StateDir = "/var/lib/komizo"
+	AppsDir  = StateDir + "/apps"
+
+	// RunDir is the one directory anything unprivileged may enter, and
+	// ReportPath is the one file in it.
+	//
+	// NOT under StateDir, which is 0750 root:root because apps/<app>.env names
+	// every app's deploy account and directory. A world-readable file inside a
+	// directory nothing may traverse is world-readable in name only -- which is
+	// what this was, and the mode on the file said otherwise.
+	//
+	// /run because that is what /run is for: state describing the system since
+	// it was booted. It is tmpfs, so a reboot clears it and the report is
+	// rewritten on rootd's first tick seconds later. That is the RIGHT
+	// behaviour rather than a cost: a report is a claim about now, and one that
+	// outlives the boot it describes is a lie waiting to be read.
+	RunDir     = "/run/komizo"
+	ReportPath = RunDir + "/report.json"
 	// HistoryPath is one JSON reading per line, oldest first.
 	//
 	// Append-only and trimmed by bytes. Reading it is a tail, because the
 	// question is always about recent minutes.
+	//
+	// Under StateDir, and so root-only, for two reasons. It has to SURVIVE a
+	// reboot, which is the opposite of the report; and nothing unprivileged
+	// needs it -- the agent posts each report as it is written and the service
+	// accumulates the history at its end.
 	HistoryPath = StateDir + "/history.jsonl"
 	VersionPath = StateDir + "/version"
 	// PendingDir is where signed requests land for rootd to apply. Nothing in v0

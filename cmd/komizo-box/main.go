@@ -111,12 +111,31 @@ func runRootd(args []string) error {
 	// demands /var/lib/komizo, which makes the daemon impossible to run as
 	// anyone but root even when it is writing to a temp directory.
 	//
-	// Laying out the rest of the box, PendingDir included, is the installer's
-	// job. It runs as root once, at a moment when creating directories is what
-	// it is for; a daemon that also provisions is a daemon with a reason to
-	// need privileges it otherwise would not.
-	for _, d := range []string{filepath.Dir(*reportPath), filepath.Dir(*historyPath)} {
-		if err := os.MkdirAll(d, 0o750); err != nil {
+	// The two modes differ and both are load-bearing. The report's directory is
+	// TRAVERSABLE, because an account with no privileges has to reach the file
+	// in it -- that is the whole boundary komizo is built on. The history's is
+	// not, because nothing unprivileged needs it.
+	//
+	// Recreated here as well as by the installer because the report lives on
+	// tmpfs: after a reboot the directory is simply gone, and rootd starting at
+	// boot is the first thing that could notice.
+	//
+	// Laying out the REST of the box, PendingDir included, is the installer's
+	// job. A daemon that also provisions is a daemon with a reason to need
+	// privileges it otherwise would not.
+	for _, d := range []struct {
+		path string
+		mode os.FileMode
+	}{
+		{filepath.Dir(*reportPath), 0o755},
+		{filepath.Dir(*historyPath), 0o750},
+	} {
+		if err := os.MkdirAll(d.path, d.mode); err != nil {
+			return err
+		}
+		// Explicitly, because MkdirAll leaves an existing directory alone and
+		// because umask would otherwise decide the answer.
+		if err := os.Chmod(d.path, d.mode); err != nil {
 			return err
 		}
 	}

@@ -11,8 +11,18 @@ log "Installing the komizo agent"
 
 [ -f __STAGED__ ] || { echo "error: __STAGED__ was never staged -- this is a komizo bug" >&2; exit 1; }
 
-mkdir -p /var/lib/komizo /var/lib/komizo/pending
-chmod 750 /var/lib/komizo /var/lib/komizo/pending
+# State: root only. apps/<app>.env names every app's deploy account and
+# directory, and root is the only thing that reads them.
+mkdir -p __STATE_DIR__ __PENDING_DIR__
+chown root:root __STATE_DIR__ __PENDING_DIR__
+chmod 750 __STATE_DIR__ __PENDING_DIR__
+
+# The report: the one directory anything unprivileged may enter. On tmpfs, so
+# rootd recreates it after every reboot -- this is for the minutes before the
+# service first ticks.
+mkdir -p __RUN_DIR__
+chown root:root __RUN_DIR__
+chmod 755 __RUN_DIR__
 
 # The reporting account.
 #
@@ -26,8 +36,12 @@ chmod 750 /var/lib/komizo /var/lib/komizo/pending
 # collide for any app name whatsoever -- including an app called "monitor".
 if ! id komizo_monitor >/dev/null 2>&1; then
 	# -D no password, -H no home to log into, -s /sbin/nologin no shell.
-	adduser -D -H -s /sbin/nologin komizo_monitor 2>/dev/null ||
-		adduser --system --no-create-home --shell /sbin/nologin komizo_monitor
+	# -D no password, -H no home directory, -s /sbin/nologin no shell. The home
+	# field is pointed at somewhere that does not exist rather than left naming
+	# an /home path nothing created.
+	adduser -D -H -h /nonexistent -s /sbin/nologin komizo_monitor 2>/dev/null ||
+		adduser --system --no-create-home --home-dir /nonexistent \
+			--shell /sbin/nologin komizo_monitor
 	log "Created komizo_monitor (no shell, no privileges)"
 fi
 
@@ -43,7 +57,7 @@ mv -f __STAGED__ /usr/local/bin/komizo-box
 cat > /etc/init.d/komizo-rootd <<'KOMIZO_RC_EOF'
 #!/sbin/openrc-run
 name="komizo-rootd"
-description="komizo: writes /var/lib/komizo/report.json"
+description="komizo: writes __REPORT_PATH__"
 supervisor="supervise-daemon"
 command="/usr/local/bin/komizo-box"
 command_args="rootd --interval __INTERVAL__"
@@ -73,9 +87,25 @@ fi
 # separate, exact answer to "would running the update change anything".
 printf '%s\n%s\n' __VERSION__ __STAMP__ > /var/lib/komizo/version
 
-if [ -s /var/lib/komizo/report.json ]; then
-	log "Reporting to /var/lib/komizo/report.json every __INTERVAL__"
-else
-	printf 'warning: the agent wrote no report -- komizo will not be able to read this box\n' >&2
+if [ ! -s __REPORT_PATH__ ]; then
+	printf 'error: the agent wrote no report -- komizo cannot read this box\n' >&2
 	exit 1
 fi
+
+# The property the whole design rests on, PROVEN on this box rather than
+# asserted: root writes the report, and an account with no privileges at all can
+# read it. See design/appify.md §3.
+#
+# Checked by actually reading it as that account, because the mode on the file
+# is not the answer -- a 644 file inside a directory nothing may traverse is
+# world-readable in name only, which is exactly what this was until a real
+# Alpine box said otherwise. Every directory from / down has to permit it, and
+# only trying it can say whether they all do.
+if ! su komizo_monitor -s /bin/sh -c "cat __REPORT_PATH__ >/dev/null" 2>/dev/null; then
+	printf 'error: komizo_monitor cannot read __REPORT_PATH__.\n' >&2
+	printf '       The reporting account has to read it without any privileges;\n' >&2
+	printf '       check the mode on every directory leading to it.\n' >&2
+	exit 1
+fi
+
+log "Reporting to __REPORT_PATH__ every __INTERVAL__"

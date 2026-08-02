@@ -1,5 +1,7 @@
 package scripts
 
+import "github.com/nicodes/komizo/internal/box"
+
 // The scripts that take values, built by substitution rather than by
 // formatting. See embed.go for why.
 
@@ -33,6 +35,10 @@ func AgentInstall(stamp, version string) string {
 	return render(agentInstall,
 		"__STAGED__", StagedAgent,
 		"__INTERVAL__", AgentInterval,
+		"__STATE_DIR__", box.StateDir,
+		"__PENDING_DIR__", box.PendingDir,
+		"__RUN_DIR__", box.RunDir,
+		"__REPORT_PATH__", box.ReportPath,
 		"__STAMP__", ShQuote(stamp),
 		"__VERSION__", ShQuote(version),
 	)

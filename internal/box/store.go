@@ -94,7 +94,11 @@ func AppendSample(path string, s Sample, max int64, keep int) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	// 0640, not 0644. It lives under a directory nothing unprivileged may
+	// traverse, so the mode changes nothing -- but a file whose mode says
+	// "anyone may read this" inside a directory that says otherwise is exactly
+	// the confusion that made report.json look reachable when it was not.
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640)
 	if err != nil {
 		return err
 	}
@@ -205,7 +209,7 @@ func trimLines(path string, n int) error {
 		buf = append(buf, ring[(start+i)%n]...)
 		buf = append(buf, '\n')
 	}
-	return writeFileAtomic(path, buf, 0o644)
+	return writeFileAtomic(path, buf, 0o640)
 }
 
 // writeFileAtomic writes via a temp file in the same directory and renames.

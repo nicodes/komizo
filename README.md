@@ -52,7 +52,7 @@ exactly as long as it takes.
 
 **Reading** is not. The inventory, the request counts and the cgroup reads come
 from `komizo-box` — a 2.6MB Go binary that `init` installs and runs on a timer
-as root, writing `/var/lib/komizo/report.json` and nothing else.
+as root, writing `/run/komizo/report.json` and nothing else.
 
 That split is the whole design. Root writes a file; something with no privileges
 at all reads it. Everything komizo grows next — a dashboard, a phone, alerts —

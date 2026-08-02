@@ -2,6 +2,7 @@ package box
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,20 +38,90 @@ func TestReportRoundTrips(t *testing.T) {
 	}
 }
 
-func TestReportIsWorldReadable(t *testing.T) {
-	// This is exactly what lets the reporting account have no privileges at
-	// all: root writes it, an unprivileged process reads it. See
-	// design/appify.md §3.
-	path := filepath.Join(t.TempDir(), "report.json")
+// The property the whole design rests on: root writes the report, and an
+// account with no privileges at all reads it. See design/appify.md §3.
+//
+// The mode on the FILE is not that property, and asserting it was how this got
+// missed. report.json was 0644 inside /var/lib/komizo, which is 0750 root:root
+// because apps/<app>.env names every deploy account -- so nothing could
+// traverse to it and the 644 meant nothing. This test passed the whole time.
+//
+// So: every directory from the root down has to be traversable by others, and
+// the file readable by them. That is the real chain, and it is what moved the
+// report to /run/komizo.
+func TestTheReportIsReachableBySomethingWithNoPrivileges(t *testing.T) {
+	// The layout the installer builds: /run/komizo at 0755, holding the report.
+	root := t.TempDir()
+	dir := filepath.Join(root, "run", "komizo")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "report.json")
 	if err := WriteReport(path, Report{V: Version}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reachableByOthers(path, root); err != nil {
+		t.Error(err)
+	}
+
+	// And the check itself has to be able to fail, or it is decoration -- which
+	// is exactly what the mode-only assertion this replaces turned out to be.
+	// This is the old layout: a 0644 report inside the 0750 state directory.
+	shut := filepath.Join(root, "var", "lib", "komizo")
+	if err := os.MkdirAll(shut, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	inside := filepath.Join(shut, "report.json")
+	if err := WriteReport(inside, Report{V: Version}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reachableByOthers(inside, root); err == nil {
+		t.Error("a 0644 file inside a 0750 directory reported as reachable")
+	}
+}
+
+// reachableByOthers reports whether a process that is not root and in no
+// relevant group could open this path: every directory leading to it needs
+// o+x, and the file itself o+r.
+//
+// Stops at root rather than walking to /, because a test's own fixture
+// directory is 0700 by construction -- Go makes t.TempDir() private, and on a
+// real box the chain does go all the way up.
+func reachableByOthers(path, root string) error {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if fi.Mode().Perm()&0o004 == 0 {
+		return fmt.Errorf("%s is %v -- not readable by others", path, fi.Mode().Perm())
+	}
+	for d := filepath.Dir(path); d != root && d != filepath.Dir(d); d = filepath.Dir(d) {
+		fi, err := os.Stat(d)
+		if err != nil {
+			return err
+		}
+		if fi.Mode().Perm()&0o001 == 0 {
+			return fmt.Errorf("%s is %v -- others cannot traverse it, so %s is unreachable",
+				d, fi.Mode().Perm(), path)
+		}
+	}
+	return nil
+}
+
+// The history is the mirror image: it must NOT be reachable. Nothing
+// unprivileged needs it -- the agent posts each report as it is written, and
+// the service accumulates history at its end.
+func TestTheHistoryIsNotWorldReadable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.jsonl")
+	if err := AppendSample(path, Sample{At: time.Now()}, HistoryMax, HistoryKeep); err != nil {
 		t.Fatal(err)
 	}
 	fi, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o644 {
-		t.Errorf("mode = %v, want 0644", fi.Mode().Perm())
+	if fi.Mode().Perm()&0o004 != 0 {
+		t.Errorf("mode = %v, want nothing for others", fi.Mode().Perm())
 	}
 }
 
