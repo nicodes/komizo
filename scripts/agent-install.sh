@@ -45,6 +45,17 @@ if ! id komizo_monitor >/dev/null 2>&1; then
 	log "Created komizo_monitor (no shell, no privileges)"
 fi
 
+# The agent's credential, when there is one. Root writes it at enrolment; the
+# agent reads it and cannot replace it.
+#
+# The GROUP is the boundary, and it is why this is under /etc rather than in the
+# state directory: /etc is world-traversable, /etc/komizo is not, and the state
+# directory is closed to everything -- a credential in there would be unreadable
+# by the one process that needs it.
+mkdir -p __ETC_DIR__
+chown root:komizo_monitor __ETC_DIR__
+chmod 750 __ETC_DIR__
+
 # Installed by rename, so a running rootd is replaced rather than written
 # through. Overwriting a busy executable in place is ETXTBSY at best and a
 # half-written binary at worst.
@@ -71,9 +82,40 @@ depend() {
 KOMIZO_RC_EOF
 chmod 755 /etc/init.d/komizo-rootd
 
+# The agent, as the account with nothing.
+#
+# Installed but NOT enabled. A box that has not been enrolled has nothing to
+# report to, and the agent says so once and exits -- so starting it here would
+# put a service in the "crashed" column of every box that is only ever used
+# through the CLI. `komizo enrol` enables it.
+cat > /etc/init.d/komizo-agent <<'KOMIZO_AGENT_RC_EOF'
+#!/sbin/openrc-run
+name="komizo-agent"
+description="komizo: posts __REPORT_PATH__ to the komizo service"
+supervisor="supervise-daemon"
+command="/usr/local/bin/komizo-box"
+command_args="agent"
+command_user="komizo_monitor:komizo_monitor"
+respawn_delay=5
+respawn_max=0
+
+depend() {
+	need net
+	after komizo-rootd
+}
+KOMIZO_AGENT_RC_EOF
+chmod 755 /etc/init.d/komizo-agent
+
 if command -v rc-update >/dev/null 2>&1; then
 	rc-update add komizo-rootd default >/dev/null 2>&1 || true
 	rc-service komizo-rootd restart >/dev/null 2>&1 || rc-service komizo-rootd start >/dev/null 2>&1 || true
+
+	# Restarted only if it was already running -- which means this box is
+	# enrolled and the agent should pick up the new binary. An unenrolled box
+	# is left alone.
+	if rc-service komizo-agent status >/dev/null 2>&1; then
+		rc-service komizo-agent restart >/dev/null 2>&1 || true
+	fi
 fi
 
 # Two lines, written together: the komizo VERSION that set this box up, and the

@@ -1,6 +1,12 @@
 // Command komizo-box is what komizo installs on a server.
 //
-//	rootd    a daemon. Probes the machine every minute and writes report.json.
+//	rootd    a daemon, as ROOT. Probes the machine every minute and writes
+//	         report.json.
+//	agent    a daemon, as KOMIZO_MONITOR. Posts that file to the komizo service.
+//	         No privileges: it reads one file and opens one socket.
+//	enrol    as root. Exchanges a single-use token for the agent's credential.
+//	unenrol  as root. Forgets it.
+//
 //	report   one reading to stdout. What `komizo report` asks for.
 //	poll     a reading plus a window of request counts. The app list.
 //	monitor  a range of counts, past readings, and one app's volumes. The charts.
@@ -10,19 +16,18 @@
 // the connection -- not the probing -- is the expensive part, so a screen that
 // needs three things asks once.
 //
-// rootd is the load-bearing one. It runs as root on a timer and leaves a
-// world-readable file; nothing dials in to ask it for anything. That is what
-// lets the process which will one day report to a service have no privileges at
-// all, and it is the property design/appify.md §3 exists to defend.
-//
-// The other modes are read-only and run as whoever opened the connection, which
-// today is the operator over their own root key. When the agent and the team
-// shell arrive they become two more modes here rather than two more binaries:
-// one file to install is one question about updating it, and three would be
-// three -- see design/appify.md §10, which has no answer yet.
+// rootd and agent are the pair the whole design rests on. Root probes the
+// machine and leaves a world-readable file; the agent reads that file and posts
+// it, holding no privileges and no way to make root do anything. Nothing dials
+// in to ask either of them for anything -- design/appify.md §3.
 //
 // They must stay separate PROCESSES under separate users. Merging them merges
-// the privilege, and the privilege is the whole point.
+// the privilege, and the privilege is the whole point: compromise the thing
+// that talks to the internet and you get a document that already says nothing
+// secret.
+//
+// The read-only modes run as whoever opened the connection, which is the
+// operator over their own root key.
 package main
 
 import (
@@ -58,6 +63,12 @@ func main() {
 		err = runPoll(os.Args[2:])
 	case "monitor":
 		err = runMonitor(os.Args[2:])
+	case "agent":
+		err = runAgent(os.Args[2:])
+	case "enrol":
+		err = runEnrol(os.Args[2:])
+	case "unenrol":
+		err = runUnenrol(os.Args[2:])
 	case "version":
 		fmt.Println(version)
 	case "-h", "--help", "help":
@@ -80,8 +91,20 @@ func usage() {
   komizo-box report [--cached] [--volumes]
   komizo-box poll --from UNIX --to UNIX
   komizo-box monitor --from UNIX --to UNIX [--app NAME]
+
+  komizo-box enrol --api URL --token kmz_enr_...    as root
+  komizo-box agent                                  as komizo_monitor
+  komizo-box unenrol                                as root
+
   komizo-box version
 `)
+}
+
+// signalContext cancels on interrupt or SIGTERM, which is how OpenRC stops a
+// supervised service. Every long-running mode uses it, so `rc-service stop`
+// means a clean exit rather than a kill.
+func signalContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
 
 // probe is the machine, with the version this binary was built as.
@@ -140,7 +163,7 @@ func runRootd(args []string) error {
 		}
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signalContext()
 	defer stop()
 
 	n := 0
