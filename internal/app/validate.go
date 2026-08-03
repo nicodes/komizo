@@ -34,8 +34,8 @@ func onlyChars(s, allowed string) bool {
 // does, is not the same thing: it counts escapes correctly and then passes them
 // straight through.
 //
-// Tab and newline survive, because the records are tab-separated and the logs
-// are lines. Everything else below 0x20, DEL, and the C1 range that some
+// Tab and newline survive, because logs are lines and a log line can hold a
+// tab. Everything else below 0x20, DEL, and the C1 range that some
 // terminals still decode as escape introducers becomes a space -- a space
 // rather than nothing, so a value padded with them does not silently close up
 // into a different-looking value.

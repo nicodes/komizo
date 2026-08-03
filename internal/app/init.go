@@ -59,10 +59,11 @@ func RunInit(args []string) error {
 		return fmt.Errorf("the server-side script failed -- see the output above")
 	}
 
-	step("Installing the resource sampler")
-	if err := tgt.runScript(scripts.SamplerInstall(komizoStamp(), versionText()), nil); err != nil {
-		return fmt.Errorf("the server is ready, but the resource sampler failed -- " +
-			"resource history will be empty until it is fixed")
+	step("Installing the komizo agent")
+	if err := installAgent(tgt, nil); err != nil {
+		return fmt.Errorf("the server is ready, but the agent failed to install:\n    %w\n\n"+
+			"    komizo reads a server through that agent, so `komizo list` and the\n"+
+			"    monitor will not work against this box until it is fixed.", err)
 	}
 
 	step("Installing the shared reverse proxy")

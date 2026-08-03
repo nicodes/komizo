@@ -56,12 +56,13 @@ runs:
     # files in a temp directory.
     #
     # The shell komizo pipes to a server as root is checked in here rather than
-    # in a step of its own. It used to be a step, and that step globbed
-    # scripts/*.sh -- which is the SMALLER half. The generated scripts
-    # (internal/app: the inventory, the sampler, the metrics awk) are shell too,
-    # they run as root just the same, and the inventory alone is larger than any
-    # file in scripts/. Only a Go test can reach both, since one half exists
-    # only once Go has built it: see TestShellcheck and
+    # in a step of its own. A step could only glob scripts/*.sh, which misses
+    # the deploy script and the secret helper -- those are templates INSIDE
+    # alpine.sh, so to the outer shell they are the body of a quoted heredoc,
+    # which parses whatever it contains. They run as root on every deploy.
+    #
+    # Only a Go test can reach them, because they exist only once Go has
+    # substituted them: see TestShellcheck and
     # TestEveryGeneratedScriptIsValidShell, which share one list of scripts so a
     # script added later cannot escape either check.
     - name: Go tests

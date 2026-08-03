@@ -3,8 +3,6 @@ package app
 import (
 	"math"
 	"sort"
-	"strconv"
-	"strings"
 )
 
 // Request counts, read off the shared proxy's access log and attributed to apps.
@@ -39,65 +37,6 @@ type metricRow struct {
 }
 
 func (r metricRow) total() int { return r.c2 + r.c3 + r.c4 + r.c5 }
-
-// parseMetrics reads the metric records out of a host script's output, ignoring
-// everything else -- the same output also carries the inventory.
-func parseMetrics(out string) []metricRow {
-	var rows []metricRow
-	out = scrub(out)
-	for _, ln := range strings.Split(out, "\n") {
-		f := strings.Split(strings.TrimRight(ln, "\r"), "\t")
-		if len(f) != 8 || f[0] != "metric" {
-			continue
-		}
-		min, err := strconv.ParseInt(f[1], 10, 64)
-		if err != nil {
-			continue
-		}
-		r := metricRow{minute: min, app: f[2], service: f[3]}
-		// Atoi rather than Sscanf: this runs over every row of every poll, and
-		// Sscanf reflects on a format string to do what Atoi does directly.
-		r.c2, _ = strconv.Atoi(f[4])
-		r.c3, _ = strconv.Atoi(f[5])
-		r.c4, _ = strconv.Atoi(f[6])
-		r.c5, _ = strconv.Atoi(f[7])
-		rows = append(rows, r)
-	}
-	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].minute != rows[j].minute {
-			return rows[i].minute < rows[j].minute
-		}
-		if rows[i].app != rows[j].app {
-			return rows[i].app < rows[j].app
-		}
-		return rows[i].service < rows[j].service
-	})
-	return rows
-}
-
-// parseMetricSpan is how far back the access log itself reaches, which is not
-// the same as the range asked for.
-//
-// The log is rotated by size, so it holds hours to a day at a small site's
-// traffic. A range wider than that is answered with what exists, and the charts
-// have to stop where the record does rather than run a flat line along zero
-// across it -- which is the difference between "nothing was served" and "nobody
-// wrote it down".
-func parseMetricSpan(out string) (timeRange, bool) {
-	for _, ln := range strings.Split(out, "\n") {
-		f := strings.Split(strings.TrimRight(ln, "\r"), "\t")
-		if len(f) != 3 || f[0] != "mspan" {
-			continue
-		}
-		from, err1 := strconv.ParseInt(f[1], 10, 64)
-		to, err2 := strconv.ParseInt(f[2], 10, 64)
-		if err1 != nil || err2 != nil || from <= 0 {
-			continue
-		}
-		return timeRange{from: from, to: to}, true
-	}
-	return timeRange{}, false
-}
 
 // blankOutside marks the minutes the record does not cover as unknown.
 //

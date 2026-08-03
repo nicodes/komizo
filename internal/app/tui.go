@@ -1195,18 +1195,18 @@ func (m model) gatePrompt() prompt {
 // updateKomizoPrompt re-runs the whole server setup, bringing the box to the
 // version of komizo now in your hand.
 //
-// One operation rather than three. The Docker, sampler and proxy steps were once
+// One operation rather than three. The Docker, agent and proxy steps were once
 // updated apart -- the reasoning being that a box could want a newer Docker
 // without wanting komizo's scripts rewritten -- but the thing people actually
 // need is the confidence that the box matches the CLI, and three separate
 // updates is three chances to have run only some of them. So this is a fresh
-// install over a running box: it re-runs setup, reinstalls the sampler, and
+// install over a running box: it re-runs setup, reinstalls the agent, and
 // updates the proxy IF the box has one (a box that opted out stays proxy-less),
 // then stamps this version. Apps keep running and nothing is deleted.
 func (m model) updateKomizoPrompt() prompt {
 	return prompt{
 		question: "Update komizo on " + m.tgt.host + " to " + versionLabel(versionText()) + "?",
-		detail: "Re-runs the whole setup — Docker, the resource sampler, and the " +
+		detail: "Re-runs the whole setup — Docker, the komizo agent, and the " +
 			"reverse proxy if this box has one — leaving it at " + versionLabel(versionText()) +
 			". The apps keep running, recorded history is kept, and nothing is deleted.",
 		action: func(m *model, _ string) tea.Cmd {

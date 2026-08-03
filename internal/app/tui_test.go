@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/nicodes/komizo/box"
 )
 
 func testModel() model {
@@ -515,20 +516,12 @@ func TestRotatedResultWarnsAboutTheOldKey(t *testing.T) {
 	}
 }
 
-func TestInventoryParsing(t *testing.T) {
-	out := strings.Join([]string{
-		"server\tready\tDocker version 26.1.3",
-		"app\tblog\tcd-blog\t/srv/blog\ta1b2\t2\tghcr.io/you/blog-config\tblog.example.com",
-		"route\tblog\tblog.example.com\tblog-web\t8080",
-		"app\tworker\tcd-worker\t/srv/worker\tnone\t0\tghcr.io/you/worker-config\t",
-		"proxy\trunning\tedge\tcaddy:2\tUp 3 hours\t2026-07-27T09:00:00Z\t0001-01-01T00:00:00Z\t0",
-		"net\tedge\tbridge\t172.18.0.0/16",
-		"netmember\tkomizo-proxy\tkomizo-proxy",
-		"netmember\tblog-web-1\tweb,blog-web",
-		"orphan\tghost",
-		"", // trailing blank, as the server emits
-	}, "\n")
-	inv := parseInventory(out)
+func TestAReportBecomesTheRowsTheScreensDraw(t *testing.T) {
+	r := readyBoxReport()
+	r.Apps[1] = box.App{Name: "worker", User: "cd-worker", Dir: "/srv/worker",
+		Version: "none", ConfigImage: "ghcr.io/you/worker-config"}
+	r.Orphans = []string{"ghost"}
+	inv := invOf(r)
 	apps, srv, proxy, net, orphans := inv.apps, inv.srv, inv.proxy, inv.net, inv.orphans
 	if !srv.ready() {
 		t.Errorf("server should parse as ready, got %+v", srv)
@@ -542,8 +535,10 @@ func TestInventoryParsing(t *testing.T) {
 	if got := apps[0].allRoutes(); len(got) != 1 || got[0] != "blog.example.com" {
 		t.Errorf("routes not parsed: %q", got)
 	}
-	if apps[0].routes[0].upstream != "blog-web" {
-		t.Errorf("upstream not parsed: %q", apps[0].routes[0].upstream)
+	// Always <app>-gate. Every app fronts itself with its own gate, so the
+	// shared proxy has exactly one place to hand a request to.
+	if apps[0].routes[0].upstream != "blog-gate" {
+		t.Errorf("upstream = %q, want blog-gate", apps[0].routes[0].upstream)
 	}
 	// An app with no routes is normal -- a worker or a cron job.
 	if got := apps[1].allRoutes(); len(got) != 0 {
@@ -572,7 +567,7 @@ func TestInventoryParsing(t *testing.T) {
 func TestInventoryWithoutAProxy(t *testing.T) {
 	// A box with no proxy emits no proxy record at all; that must read as
 	// "not installed" rather than as an empty-but-present proxy.
-	inv := parseInventory("app\tblog\tcd-blog\t/srv/blog\ta1b2\t2\tghcr.io/you/blog-config\t\t")
+	inv := invOf(oneApp(box.App{Name: "blog", User: "cd-blog", Dir: "/srv/blog", Version: "a1b2"}))
 	proxy := inv.proxy
 	if proxy.installed {
 		t.Errorf("no proxy record should mean not installed, got %+v", proxy)
@@ -939,7 +934,7 @@ func TestServerScreenWithNoNetwork(t *testing.T) {
 // servers too, and "alpine" about a Debian box is wrong in the row whose whole
 // job is stating facts.
 func TestTheOSIsReadOffTheBox(t *testing.T) {
-	inv := parseInventory("server\tready\tDocker version 26\nos\tAlpine Linux v3.20\n")
+	inv := invOf(box.Report{Server: box.Server{State: "ready", Docker: "Docker version 26", OS: "Alpine Linux v3.20"}})
 	srv := inv.srv
 	if srv.osName() != "Alpine Linux v3.20" {
 		t.Errorf("os = %q, want what the box reported", srv.osName())
@@ -955,12 +950,15 @@ func TestParsesRealDockerOutput(t *testing.T) {
 	// Captured verbatim from `docker network inspect` + `docker inspect` against
 	// a live daemon, with two containers deliberately sharing an alias. Pinned
 	// as a fixture because the whole clash check rests on this exact shape.
-	out := strings.Join([]string{
-		"net\tkomizo-test-edge\tbridge\t172.22.0.0/16",
-		"netmember\tkomizo-t-blog\tweb,blog-web",
-		"netmember\tkomizo-t-shop\tweb,shop-web",
-	}, "\n")
-	inv := parseInventory(out)
+	// Two containers deliberately sharing an alias. Pinned as a fixture
+	// because the whole clash check rests on this exact shape.
+	inv := invOf(box.Report{Network: &box.Network{
+		Name: "komizo-test-edge", Driver: "bridge", Subnet: "172.22.0.0/16",
+		Members: []box.NetworkMember{
+			{Container: "komizo-t-blog", Aliases: []string{"web", "blog-web"}},
+			{Container: "komizo-t-shop", Aliases: []string{"web", "shop-web"}},
+		},
+	}})
 	n := inv.net
 	if n.name != "komizo-test-edge" || n.driver != "bridge" || n.subnet != "172.22.0.0/16" {
 		t.Fatalf("network meta parsed wrong: %+v", n)
@@ -1664,16 +1662,34 @@ func TestKnownHostsDeduplicatesAndKeepsPort(t *testing.T) {
 }
 
 func TestInventoryAttachesContainersToTheirApp(t *testing.T) {
-	out := strings.Join([]string{
-		"server\tready\tDocker version 26.1.3",
-		"app\tblog\tkomizo-blog\t/srv/blog\ta1b2c3d\t2\tghcr.io/you/blog-config\t",
-		"container\tblog\tweb\tblog-web-1\trunning\tUp 3 hours\t2026-07-27T09:00:00.123456789Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-web:a1b2c3d\t8080",
-		"container\tblog\tdb\tblog-db-1\texited\tExited (1) 2 minutes ago\t2026-07-27T08:00:00Z\t2026-07-27T09:30:00Z\t1\tghcr.io/you/blog-db:a1b2c3d\t",
-		"route\tblog\tblog.example.com,www.blog.example.com\tblog-web\t8080",
-		"app\tshop\tkomizo-shop\t/srv/shop\tnone\t0\tghcr.io/you/shop-config\t",
-	}, "\n")
-
-	inv := parseInventory(out)
+	started := time.Date(2026, 7, 27, 9, 0, 0, 123456789, time.UTC)
+	inv := invOf(box.Report{
+		Server: box.Server{State: "ready", Docker: "Docker version 26.1.3"},
+		Apps: []box.App{
+			{
+				Name: "blog", User: "komizo-blog", Dir: "/srv/blog",
+				Version: "a1b2c3d", ConfigImage: "ghcr.io/you/blog-config",
+				// Both names annotated with what serves them. That arrow is the
+				// only thing on the box that knows, and without it the names
+				// land on the gate -- true of the first hop, useless as an
+				// answer to "what serves this domain".
+				Hosts: []box.Host{
+					{Name: "blog.example.com", Service: "web"},
+					{Name: "www.blog.example.com", Service: "web"},
+				},
+				Containers: []box.Container{
+					{Service: "web", Name: "blog-web-1", State: "running", Status: "Up 3 hours",
+						StartedAt: started, Image: "ghcr.io/you/blog-web:a1b2c3d", Ports: []int{8080}},
+					{Service: "db", Name: "blog-db-1", State: "exited", Status: "Exited (1) 2 minutes ago",
+						StartedAt:  time.Date(2026, 7, 27, 8, 0, 0, 0, time.UTC),
+						FinishedAt: time.Date(2026, 7, 27, 9, 30, 0, 0, time.UTC),
+						ExitCode:   1, Image: "ghcr.io/you/blog-db:a1b2c3d"},
+				},
+			},
+			{Name: "shop", User: "komizo-shop", Dir: "/srv/shop", Version: "none",
+				ConfigImage: "ghcr.io/you/shop-config"},
+		},
+	})
 	apps := inv.apps
 	if len(apps) != 2 {
 		t.Fatalf("expected 2 apps, got %d", len(apps))
@@ -3852,15 +3868,18 @@ func TestTheImageColumnDropsTheVersionItRepeats(t *testing.T) {
 // than before is the point: what a request meets after the gate is inside the
 // app, in config komizo neither writes nor reads.
 func TestHostnamesLandOnTheGatewayRow(t *testing.T) {
-	out := strings.Join([]string{
-		"server\tready\tDocker version 26.1.3",
-		"app\tblog\tkomizo-blog\t/srv/blog\ta1b2c3d\t2\tghcr.io/you/blog-config\t",
-		"container\tblog\tblog-gate\tblog-blog-gate-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-gate:a1b2c3d\t80",
-		"container\tblog\tblog-api\tblog-blog-api-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-api:a1b2c3d\t9090",
-		"route\tblog\tblog.example.com,www.blog.example.com\tblog-gate\t80",
-	}, "\n")
-
-	inv := parseInventory(out)
+	up := time.Date(2026, 7, 28, 9, 0, 0, 0, time.UTC)
+	inv := invOf(oneApp(box.App{
+		Name: "blog", User: "komizo-blog", Dir: "/srv/blog",
+		Version: "a1b2c3d", ConfigImage: "ghcr.io/you/blog-config",
+		Hosts: []box.Host{{Name: "blog.example.com"}, {Name: "www.blog.example.com"}},
+		Containers: []box.Container{
+			{Service: "blog-gate", Name: "blog-blog-gate-1", State: "running", Status: "Up 3 hours",
+				StartedAt: up, Image: "ghcr.io/you/blog-gate:a1b2c3d", Ports: []int{80}},
+			{Service: "blog-api", Name: "blog-blog-api-1", State: "running", Status: "Up 3 hours",
+				StartedAt: up, Image: "ghcr.io/you/blog-api:a1b2c3d", Ports: []int{9090}},
+		},
+	}))
 	apps := inv.apps
 	if len(apps) != 1 {
 		t.Fatalf("expected 1 app, got %d", len(apps))
@@ -3905,15 +3924,21 @@ func TestHostnamesLandOnTheGatewayRow(t *testing.T) {
 // for services nothing routes to, and absent for a container with no network
 // namespace to read.
 func TestPortsAreObservedPerContainer(t *testing.T) {
-	out := strings.Join([]string{
-		"server\tready\tDocker version 26.1.3",
-		"app\tblog\tkomizo-blog\t/srv/blog\ta1b2c3d\t2\tghcr.io/you/blog-config\t",
-		"container\tblog\tblog-gate\tblog-gw-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-gate:a1b2c3d\t80",
-		"container\tblog\tblog-worker\tblog-worker-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-worker:a1b2c3d\t",
-		"container\tblog\tblog-db\tblog-db-1\trunning\tUp 3 hours\t2026-07-28T09:00:00Z\t0001-01-01T00:00:00Z\t0\tghcr.io/you/blog-db:a1b2c3d\t5432,9187",
-		"route\tblog\tblog.example.com\tblog-gate\t80",
-	}, "\n")
-	inv := parseInventory(out)
+	up := time.Date(2026, 7, 28, 9, 0, 0, 0, time.UTC)
+	inv := invOf(oneApp(box.App{
+		Name: "blog", User: "komizo-blog", Dir: "/srv/blog",
+		Version: "a1b2c3d", ConfigImage: "ghcr.io/you/blog-config",
+		Hosts: []box.Host{{Name: "blog.example.com"}},
+		Containers: []box.Container{
+			{Service: "blog-gate", Name: "blog-gw-1", State: "running", Status: "Up 3 hours",
+				StartedAt: up, Image: "ghcr.io/you/blog-gate:a1b2c3d", Ports: []int{80}},
+			// A worker listens on nothing at all.
+			{Service: "blog-worker", Name: "blog-worker-1", State: "running", Status: "Up 3 hours",
+				StartedAt: up, Image: "ghcr.io/you/blog-worker:a1b2c3d"},
+			{Service: "blog-db", Name: "blog-db-1", State: "running", Status: "Up 3 hours",
+				StartedAt: up, Image: "ghcr.io/you/blog-db:a1b2c3d", Ports: []int{5432, 9187}},
+		},
+	}))
 	apps := inv.apps
 	byName := map[string]containerRow{}
 	for _, c := range apps[0].containers {
@@ -3950,16 +3975,11 @@ func TestPortsAreObservedPerContainer(t *testing.T) {
 // hostname. The join is the part most likely to be silently wrong, so it is what
 // this pins.
 func TestMetricsParseAndAttribute(t *testing.T) {
-	out := strings.Join([]string{
-		"app\tblog\tkomizo-blog\t/srv/blog\ta1b2c3d\t1\tghcr.io/you/blog-config\t",
-		"metric\t1785225600\tblog\t\t10\t1\t2\t3",
-		"metric\t1785225660\tblog\tapi\t20\t0\t0\t0",
-		"metric\t1785225660\tshop\t\t5\t0\t0\t0",
-		"garbage that is not a record",
-		"metric\tnotanumber\tblog\t\t1\t1\t1\t1",
-	}, "\n")
-
-	rows := parseMetrics(out)
+	rows := metricsOf(
+		box.Metric{Minute: 1785225600, App: "blog", C2: 10, C3: 1, C4: 2, C5: 3},
+		box.Metric{Minute: 1785225660, App: "blog", Service: "api", C2: 20},
+		box.Metric{Minute: 1785225660, App: "shop", C2: 5},
+	)
 	if len(rows) != 3 {
 		t.Fatalf("expected 3 metric rows, got %d: %+v", len(rows), rows)
 	}
@@ -4025,14 +4045,14 @@ func TestBucketingKeepsSpikes(t *testing.T) {
 func TestTheFirstSampleSchedulesAQuickSecondReading(t *testing.T) {
 	m := testModel()
 	next, cmd := m.Update(appsMsg{apps: m.apps, srv: m.srv, proxy: m.proxy, net: m.net,
-		sys: parseSystem("sys\tcpu\t100000\t90000\n", time.Unix(1000, 0))})
+		sys: sysSampleFrom(box.System{CPU: cpuOf(100000, 90000)}, time.Unix(1000, 0))})
 	if cmd == nil {
 		t.Fatal("the first sample should schedule a follow-up reading")
 	}
 	// Only the first. Once a pair exists the ordinary cadence is enough, and an
 	// extra tick per poll would compound into polling the box twice as often.
 	if _, cmd = next.Update(appsMsg{apps: m.apps, srv: m.srv, proxy: m.proxy, net: m.net,
-		sys: parseSystem("sys\tcpu\t200000\t180000\n", time.Unix(1005, 0))}); cmd != nil {
+		sys: sysSampleFrom(box.System{CPU: cpuOf(200000, 180000)}, time.Unix(1005, 0))}); cmd != nil {
 		t.Error("a later sample should not schedule extra polls")
 	}
 }
@@ -4242,12 +4262,12 @@ func TestAFlatBaselineDeclinesToScore(t *testing.T) {
 // komizo cannot work it out: the shared proxy only ever talks to the app's
 // gate, and what happens after that is inside the app.
 func TestRequestsAttributeToAContainerWhenTheAppSaysSo(t *testing.T) {
-	out := strings.Join([]string{
-		"metric\t600\tblog\tapi\t10\t0\t0\t2",
-		"metric\t600\tblog\tdb\t4\t0\t0\t0",
-		"metric\t600\tblog\t\t6\t0\t0\t0", // a hostname with no annotation
-	}, "\n")
-	rows := parseMetrics(out)
+	rows := metricsOf(
+		box.Metric{Minute: 600, App: "blog", Service: "api", C2: 10, C5: 2},
+		box.Metric{Minute: 600, App: "blog", Service: "db", C2: 4},
+		// A hostname with no annotation.
+		box.Metric{Minute: 600, App: "blog", C2: 6},
+	)
 	if len(rows) != 3 {
 		t.Fatalf("expected 3 rows, got %d", len(rows))
 	}
@@ -4639,9 +4659,10 @@ func stubClipboard(t *testing.T) {
 // --- on-demand TLS gate ----------------------------------------------------
 
 func TestGateIsParsedFromInventory(t *testing.T) {
-	inv := parseInventory(
-		"proxy\trunning\tedge\tcaddy:2\tUp 3 hours\t\t\t\n" +
-			"gate\thttp://ormos-gate/internal/tls-ask\n")
+	inv := invOf(box.Report{Proxy: &box.Proxy{
+		State: "running", Network: "edge", Image: "caddy:2", Status: "Up 3 hours",
+		TLSAsk: "http://ormos-gate/internal/tls-ask",
+	}})
 	proxy := inv.proxy
 	if proxy.tlsAsk != "http://ormos-gate/internal/tls-ask" {
 		t.Errorf("the gate line should set proxy.tlsAsk, got %q", proxy.tlsAsk)
@@ -4649,7 +4670,7 @@ func TestGateIsParsedFromInventory(t *testing.T) {
 }
 
 func TestNoGateLineMeansNoGate(t *testing.T) {
-	inv := parseInventory("proxy\trunning\tedge\tcaddy:2\tUp 3 hours\t\t\t\n")
+	inv := invOf(box.Report{Proxy: &box.Proxy{State: "running", Network: "edge", Image: "caddy:2", Status: "Up 3 hours"}})
 	proxy := inv.proxy
 	if proxy.tlsAsk != "" {
 		t.Errorf("absent gate line should leave tlsAsk empty, got %q", proxy.tlsAsk)

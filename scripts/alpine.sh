@@ -78,7 +78,7 @@ APP_DIR="${APP_DIR:-/srv/$APP_NAME}"
 # Where komizo records what it knows about an app, as data rather than as code.
 #
 # Everything that needs an app's directory or its config image -- the inventory,
-# the resource sampler, the volume probe, a key rotation -- reads THIS. It used
+# the agent, a key rotation, the deploy script -- reads THIS. It used
 # to sed the values back out of the generated deploy script, which meant five
 # readers were parsing komizo's own output as a database and a change to the
 # generator's formatting would break all of them at once.
@@ -354,7 +354,7 @@ chmod 755 "$PROXY_DIR" "$ROUTES_DIR"
 log "Recording $STATE_FILE"
 mkdir -p "$STATE_DIR"
 chown root:root /var/lib/komizo "$STATE_DIR"
-# 750, matching the sampler installer (system.go): the records name every app's
+# 750, matching the agent installer: the records name every app's
 # directory, deploy account and config-image path, readable only by root, which
 # is the only thing that reads them.
 chmod 750 /var/lib/komizo
