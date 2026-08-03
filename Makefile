@@ -35,7 +35,16 @@ test:
 	go test ./...
 
 # What CI runs, and what to run before pushing.
+#
+# shellcheck FIRST, and through docker when it is not installed. The Go test
+# that runs it skips itself when the tool is absent, and a skip is a green tick
+# -- which is exactly how `A && B || C` reached CI: `make check` passed locally
+# and the gate had not run at all.
 check: agents
+	@command -v shellcheck >/dev/null 2>&1 \
+		&& shellcheck -s sh scripts/*.sh \
+		|| docker run --rm -v "$(CURDIR)/scripts:/mnt:ro" -w /mnt \
+			koalaman/shellcheck:stable -s sh $(notdir $(wildcard scripts/*.sh))
 	gofmt -l . | tee /dev/stderr | (! read)
 	go vet ./...
 	go test ./...

@@ -84,6 +84,8 @@ func Main(args []string) error {
 		err = RunList(args[1:])
 	case "report":
 		err = RunReport(args[1:])
+	case "enrol":
+		err = RunEnrol(args[1:])
 	case "remove":
 		err = RunRemove(args[1:])
 	case "proxy":
@@ -142,6 +144,7 @@ The same operations are available non-interactively, for scripting:
   komizo add     --host root@HOST --app NAME --config REF
   komizo list    --host root@HOST
   komizo report  --host root@HOST
+  komizo enrol   --host root@HOST --token kmz_enr_...
   komizo remove  --host root@HOST --app NAME --yes
   komizo proxy   --host root@HOST
   komizo script [init|add|remove|proxy]
