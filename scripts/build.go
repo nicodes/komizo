@@ -21,6 +21,25 @@ const StagedAgent = "/tmp/.komizo-box.staged"
 // account having no privileges.
 const AgentInterval = "60s"
 
+// AgentEnrol exchanges an enrolment token for this box's credential.
+//
+// Both values are SHELL-QUOTED: they come from a caller rather than from a
+// constant in this file, and the token in particular is an opaque string from
+// a service. The app package validates the URL too, which is the same
+// belt-and-braces argument ShQuote carries everywhere else here.
+func AgentEnrol(api, token string) string {
+	return render(agentEnrol,
+		"__API__", ShQuote(api),
+		"__TOKEN__", ShQuote(token),
+		"__CONF__", box.AgentConfPath,
+	)
+}
+
+// AgentUnenrol stops the agent and removes the credential.
+func AgentUnenrol() string {
+	return render(agentUnenrol, "__CONF__", ShQuote(box.AgentConfPath))
+}
+
 // AgentInstall installs komizo-box and starts it under OpenRC.
 //
 // The BINARY is not in here. It is several megabytes of ELF, staged over its
@@ -38,6 +57,7 @@ func AgentInstall(stamp, version string) string {
 		"__STATE_DIR__", box.StateDir,
 		"__PENDING_DIR__", box.PendingDir,
 		"__RUN_DIR__", box.RunDir,
+		"__ETC_DIR__", box.EtcDir,
 		"__REPORT_PATH__", box.ReportPath,
 		"__STAMP__", ShQuote(stamp),
 		"__VERSION__", ShQuote(version),
