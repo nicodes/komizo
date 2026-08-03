@@ -14,4 +14,14 @@ if command -v rc-update >/dev/null 2>&1; then
 fi
 
 log "Removing the credential"
-[ -x /usr/local/bin/komizo-box ] && /usr/local/bin/komizo-box unenrol || rm -f __CONF__
+
+# if-then-else, not `A && B || C`: in that form C also runs when B FAILS, so an
+# unenrol that errored would fall through to the rm and hide why.
+if [ -x /usr/local/bin/komizo-box ]; then
+	/usr/local/bin/komizo-box unenrol
+else
+	# No binary to ask. The file is the credential, so removing it is the whole
+	# of what unenrolling means.
+	rm -f __CONF__
+	printf 'removed __CONF__\n'
+fi
