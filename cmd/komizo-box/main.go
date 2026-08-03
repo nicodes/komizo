@@ -36,7 +36,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/nicodes/komizo/internal/box"
+	"github.com/nicodes/komizo/box"
 )
 
 // version is stamped at build time by the release, and reported so the

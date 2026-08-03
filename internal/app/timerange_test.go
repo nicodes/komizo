@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nicodes/komizo/internal/box"
+	"github.com/nicodes/komizo/box"
 )
 
 func TestARangeIsAnOffsetOrTwoMoments(t *testing.T) {

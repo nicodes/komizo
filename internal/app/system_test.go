@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nicodes/komizo/internal/box"
+	"github.com/nicodes/komizo/box"
 	"github.com/nicodes/komizo/scripts"
 )
 

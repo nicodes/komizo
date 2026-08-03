@@ -10,7 +10,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/nicodes/komizo/internal/box"
+	"github.com/nicodes/komizo/box"
 	"github.com/nicodes/komizo/scripts"
 )
 

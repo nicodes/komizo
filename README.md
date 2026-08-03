@@ -72,15 +72,17 @@ per-app scripts, and the shared proxy.
 main.go            the CLI
 cmd/komizo-box/    the agent, which runs on the server
 internal/app/      the TUI and the subcommands
-internal/box/      the probes and the report -- shared by both binaries
+box/               the probes and the report -- shared by both binaries AND the service
 internal/agent/    the compiled agents, embedded into the CLI
 scripts/           the provisioning shell, embedded with go:embed
 ```
 
-`internal/box/` is imported by two programs that are **not upgraded together**:
-the agent on a server writes a report, and a CLI on a laptop reads one, possibly
-months apart. The schema rule is in `report.go` — add fields, never repurpose
-one.
+`box/` is imported by three programs that are **not upgraded together**:
+the agent on a server writes a report, a CLI on a laptop reads one, and the
+komizo service receives them from every box it knows about — possibly months
+apart, each on a different version. It is public rather than `internal/` for
+that third reader, which is a different module. The schema rule is in
+`report.go`: add fields, never repurpose one.
 
 `scripts/` is the half that runs as **root on somebody else's machine**, so it
 is tested by being executed against a fake box rather than by being read. See

@@ -1,15 +1,17 @@
 // Package box is what runs ON a server: the probes that describe a machine, and
 // the report they produce.
 //
-// It is imported by two programs that are not the same program. komizo-box runs
-// on the server, as root, and WRITES a report. The komizo CLI runs on a laptop
-// and READS one. They share this package so the schema is a Go type checked by
-// the compiler rather than a protocol two codebases agree about in prose.
+// It is imported by three programs that are not the same program and are not
+// upgraded together. komizo-box runs on a server as root and WRITES a report.
+// The komizo CLI runs on a laptop and READS one. The komizo service receives
+// them from every box it knows about, each running whatever version it was last
+// given. They share this package so the schema is a Go type checked by the
+// compiler rather than a protocol three codebases agree about in prose.
 //
-// That sharing has a limit, and the limit is the whole reason this package is
-// separate from internal/app: the two ends are not upgraded together. A box
-// keeps the binary it was given until somebody updates it, so a new CLI reads
-// old reports and an old CLI reads new ones. See Version.
+// PUBLIC, not internal/, for that third reader: the service is a different
+// module. A schema that only one module can express is a schema the other two
+// have to restate, and a restated wire format is two definitions waiting to
+// disagree. See Version for what that costs and what the rule is.
 //
 // Nothing in here may import internal/app. The CLI is allowed to know about the
 // box; the box is not allowed to know about the interface.

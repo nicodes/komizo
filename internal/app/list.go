@@ -8,7 +8,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/nicodes/komizo/internal/box"
+	"github.com/nicodes/komizo/box"
 )
 
 type appRow struct {

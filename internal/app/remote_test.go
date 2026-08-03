@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nicodes/komizo/internal/box"
+	"github.com/nicodes/komizo/box"
 )
 
 // Everything komizo displays about a box was written by something on the far

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nicodes/komizo/internal/box"
+	"github.com/nicodes/komizo/box"
 )
 
 // Reading a box through komizo-box rather than by piping shell at it.

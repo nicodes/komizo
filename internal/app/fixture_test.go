@@ -3,7 +3,7 @@ package app
 import (
 	"time"
 
-	"github.com/nicodes/komizo/internal/box"
+	"github.com/nicodes/komizo/box"
 )
 
 // Building the rows the screens draw, the way production builds them.

@@ -1,6 +1,6 @@
 package scripts
 
-import "github.com/nicodes/komizo/internal/box"
+import "github.com/nicodes/komizo/box"
 
 // The scripts that take values, built by substitution rather than by
 // formatting. See embed.go for why.
