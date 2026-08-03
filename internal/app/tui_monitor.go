@@ -3,14 +3,14 @@ package app
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/NimbleMarkets/ntcharts/linechart/timeserieslinechart"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-
-	"github.com/nicodes/komizo/scripts"
+	"github.com/nicodes/komizo/box"
 )
 
 // The one screen that shows a MEASUREMENT rather than a fact.
@@ -73,33 +73,36 @@ type monitorMsg struct {
 	// as the range asked for.
 	span    timeRange
 	hasSpan bool
-	// hist is the readings the sampler wrote. Empty on a box whose server setup
-	// predates the sampler, which the view falls back from rather than treats
-	// as an error.
+	// hist is the readings the agent has written. Empty on a box that has only just
+	// been set up, which the view falls back from rather than treats as an
+	// error.
 	hist []sysSample
 	err  error
 }
 
 func fetchMonitor(t target, app string, r timeRange) tea.Cmd {
 	return func() tea.Msg {
-		script := scripts.Metrics(r.from, r.to) + "\n" + scripts.SystemLogRange(r.from, r.to)
+		args := []string{"monitor",
+			"--from", strconv.FormatInt(r.from, 10),
+			"--to", strconv.FormatInt(r.to, 10)}
 		// Disk is measured for ONE app, here, rather than for every app on the
-		// poll: it costs a du of every volume the app mounts, which is the only
-		// number on this screen that cannot be read from a counter.
+		// poll: it costs a walk of every volume the app mounts, which is the
+		// only number on this screen that cannot be read from a counter.
 		//
-		// The box has no du at all -- df already covers the whole disk, and
-		// walking every volume to arrive at a smaller version of a number the
-		// kernel hands over instantly would be work done to be less accurate.
+		// The box itself is not walked at all -- statfs already covers the whole
+		// disk, and walking every volume to arrive at a smaller version of a
+		// number the kernel hands over instantly would be work done to be less
+		// accurate.
 		if app != "" {
-			script += "\n" + scripts.Storage(app)
+			args = append(args, "--app", app)
 		}
-		out, err := t.runCapture(script)
+		mon, err := fetchBox[box.Monitor](t, args...)
 		if err != nil {
 			return monitorMsg{app: app, err: err}
 		}
-		span, hasSpan := parseMetricSpan(out)
-		return monitorMsg{app: app, rows: parseMetrics(out), vols: parseVolumes(out),
-			hist: parseSystemLog(out), span: span, hasSpan: hasSpan}
+		span, hasSpan := metricSpanFrom(mon.Metrics)
+		return monitorMsg{app: app, rows: metricsFromBox(mon.Metrics), vols: volumesFromBox(mon.Volumes),
+			hist: samplesFrom(mon.History), span: span, hasSpan: hasSpan}
 	}
 }
 

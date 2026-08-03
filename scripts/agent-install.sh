@@ -1,0 +1,111 @@
+set -eu
+log() { printf '\n==> %s\n' "$*"; }
+
+# Installs komizo-box: the report on a timer, and the account that will read it.
+#
+# The binary itself is NOT here. It arrives on its own connection, written to
+# __STAGED__ before this runs, because it is several megabytes of ELF and
+# nothing good comes of trying to carry that through a shell heredoc.
+
+log "Installing the komizo agent"
+
+[ -f __STAGED__ ] || { echo "error: __STAGED__ was never staged -- this is a komizo bug" >&2; exit 1; }
+
+# State: root only. apps/<app>.env names every app's deploy account and
+# directory, and root is the only thing that reads them.
+mkdir -p __STATE_DIR__ __PENDING_DIR__
+chown root:root __STATE_DIR__ __PENDING_DIR__
+chmod 750 __STATE_DIR__ __PENDING_DIR__
+
+# The report: the one directory anything unprivileged may enter. On tmpfs, so
+# rootd recreates it after every reboot -- this is for the minutes before the
+# service first ticks.
+mkdir -p __RUN_DIR__
+chown root:root __RUN_DIR__
+chmod 755 __RUN_DIR__
+
+# The reporting account.
+#
+# No SSH, no doas, no docker group, no privileges at all -- see
+# design/appify.md §3. It does not exist to run anything; it exists so that the
+# process which will one day POST the report is not root, and the file it reads
+# is the entire boundary between them.
+#
+# The underscore is load-bearing. Apps get komizo-<name>, komizo's own accounts
+# get komizo_<name>, so character seven differs and the two namespaces cannot
+# collide for any app name whatsoever -- including an app called "monitor".
+if ! id komizo_monitor >/dev/null 2>&1; then
+	# -D no password, -H no home to log into, -s /sbin/nologin no shell.
+	# -D no password, -H no home directory, -s /sbin/nologin no shell. The home
+	# field is pointed at somewhere that does not exist rather than left naming
+	# an /home path nothing created.
+	adduser -D -H -h /nonexistent -s /sbin/nologin komizo_monitor 2>/dev/null ||
+		adduser --system --no-create-home --home-dir /nonexistent \
+			--shell /sbin/nologin komizo_monitor
+	log "Created komizo_monitor (no shell, no privileges)"
+fi
+
+# Installed by rename, so a running rootd is replaced rather than written
+# through. Overwriting a busy executable in place is ETXTBSY at best and a
+# half-written binary at worst.
+chmod 755 __STAGED__
+mv -f __STAGED__ /usr/local/bin/komizo-box
+
+# OpenRC, because the box is Alpine. supervise-daemon rather than start-stop-daemon
+# so a crash is restarted rather than silently leaving the box unreported --
+# which looks exactly like a box that is down.
+cat > /etc/init.d/komizo-rootd <<'KOMIZO_RC_EOF'
+#!/sbin/openrc-run
+name="komizo-rootd"
+description="komizo: writes __REPORT_PATH__"
+supervisor="supervise-daemon"
+command="/usr/local/bin/komizo-box"
+command_args="rootd --interval __INTERVAL__"
+respawn_delay=5
+respawn_max=0
+
+depend() {
+	need net
+	after docker
+}
+KOMIZO_RC_EOF
+chmod 755 /etc/init.d/komizo-rootd
+
+if command -v rc-update >/dev/null 2>&1; then
+	rc-update add komizo-rootd default >/dev/null 2>&1 || true
+	rc-service komizo-rootd restart >/dev/null 2>&1 || rc-service komizo-rootd start >/dev/null 2>&1 || true
+fi
+
+# Written now rather than waiting for the timer, so the first report exists by
+# the time anyone looks -- and so an agent that cannot run fails HERE, visibly,
+# in the output of the thing that installed it.
+/usr/local/bin/komizo-box rootd --once
+
+# Two lines, written together: the komizo VERSION that set this box up, and the
+# content STAMP of what it wrote. The version is what the interface shows beside
+# the CLI's own -- "which komizo provisioned this box" -- and the stamp is the
+# separate, exact answer to "would running the update change anything".
+printf '%s\n%s\n' __VERSION__ __STAMP__ > /var/lib/komizo/version
+
+if [ ! -s __REPORT_PATH__ ]; then
+	printf 'error: the agent wrote no report -- komizo cannot read this box\n' >&2
+	exit 1
+fi
+
+# The property the whole design rests on, PROVEN on this box rather than
+# asserted: root writes the report, and an account with no privileges at all can
+# read it. See design/appify.md §3.
+#
+# Checked by actually reading it as that account, because the mode on the file
+# is not the answer -- a 644 file inside a directory nothing may traverse is
+# world-readable in name only, which is exactly what this was until a real
+# Alpine box said otherwise. Every directory from / down has to permit it, and
+# only trying it can say whether they all do.
+if ! su komizo_monitor -s /bin/sh -c "cat __REPORT_PATH__ >/dev/null" 2>/dev/null; then
+	printf 'error: komizo_monitor cannot read __REPORT_PATH__.\n' >&2
+	printf '       The reporting account has to read it without any privileges;\n' >&2
+	printf '       check the mode on every directory leading to it.\n' >&2
+	exit 1
+fi
+
+log "Reporting to __REPORT_PATH__ every __INTERVAL__"

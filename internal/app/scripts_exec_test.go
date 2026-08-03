@@ -1,27 +1,24 @@
 package app
 
 import (
-	"fmt"
 	"os/exec"
-	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/nicodes/komizo/scripts"
 )
 
-// The scripts this package ships are shell and awk held in Go strings, and
-// nothing here used to RUN any of them.
+// The shell komizo pipes to a server runs as ROOT, and nothing here used to
+// parse any of it.
 //
-// That is not a gap in coverage, it is the gap that mattered. The request-counts
-// awk carried three defects at once -- a range filter that referenced two
-// variables nobody had defined, and a span record built from two more that were
-// never assigned -- and the test named for that behaviour asserted the numbers
-// appeared in the script TEXT and then fed a hand-written line to the parser.
-// Every assertion passed against a program that could not do what it said.
+// That is not a gap in coverage, it is the gap that mattered: a script is
+// perfectly capable of being wrong in a way that reads correctly. So everything
+// generated is syntax-checked as the box will read it -- after substitution, as
+// a whole file -- rather than being asserted about as text.
 //
-// So: syntax-check everything that is generated, and execute the part that
-// computes.
+// What this package still generates is the PROVISIONING half. The half that
+// read a box was shell too, and is now Go: see internal/box, where the same
+// question is settled by running the probes instead.
 
 func needs(t *testing.T, tool string) {
 	t.Helper()
@@ -169,128 +166,4 @@ func between(t *testing.T, s, start, end string) string {
 		t.Fatalf("could not find the end of %q", start)
 	}
 	return rest[:j]
-}
-
-// --- the awk that counts requests ------------------------------------------
-
-// awkProgram pulls the awk out of the generated script, so what runs here is
-// the text that ships rather than a copy of it.
-func awkProgram(t *testing.T, script string) string {
-	t.Helper()
-	const marker = "| awk -v from="
-	i := strings.Index(script, marker)
-	if i < 0 {
-		t.Fatal("could not find the awk in the metrics script")
-	}
-	j := strings.Index(script[i:], "'")
-	if j < 0 {
-		t.Fatal("the awk program is not quoted as expected")
-	}
-	start := i + j + 1
-	k := strings.LastIndex(script, "'")
-	if k <= start {
-		t.Fatal("could not find the end of the awk program")
-	}
-	return script[start:k]
-}
-
-func runAwk(t *testing.T, prog string, from, to int64, stdin string) string {
-	t.Helper()
-	cmd := exec.Command("awk",
-		"-v", "from="+strconv.FormatInt(from, 10),
-		"-v", "to="+strconv.FormatInt(to, 10), prog)
-	cmd.Stdin = strings.NewReader(stdin)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("awk failed: %v\n%s", err, out)
-	}
-	return string(out)
-}
-
-// accessLine is one Caddy access-log record, in the shape the generated site
-// blocks actually write: JSON, with the three fields the awk pulls by pattern.
-func accessLine(ts int64, host string, status int) string {
-	return fmt.Sprintf(`{"level":"info","ts":%d.123,"logger":"http.log.access",`+
-		`"msg":"handled request","request":{"remote_ip":"1.2.3.4","host":%q,`+
-		`"method":"GET","uri":"/"},"status":%d,"size":12}`, ts, host, status)
-}
-
-// The range is applied ON THE HOST, which is the claim the docstring makes and
-// which was false: from and to were passed to the awk and then never mentioned
-// in it, so every poll counted and shipped the whole four-megabyte tail.
-func TestTheAwkAppliesTheRangeItIsGiven(t *testing.T) {
-	needs(t, "awk")
-	prog := awkProgram(t, scripts.Metrics(0, 0))
-
-	const minute = 1753700400
-	in := strings.Join([]string{
-		"MAP\tblog.example.com\tblog\tweb",
-		accessLine(minute+30, "blog.example.com", 200),   // inside
-		accessLine(minute-600, "blog.example.com", 200),  // hours older, outside
-		accessLine(minute+9000, "blog.example.com", 500), // later, outside
-	}, "\n")
-
-	out := runAwk(t, prog, minute, minute+59, in)
-
-	rows := parseMetrics(out)
-	if len(rows) != 1 {
-		t.Fatalf("expected one minute in range, got %d: %q", len(rows), out)
-	}
-	if rows[0].minute != minute || rows[0].c2 != 1 {
-		t.Errorf("expected one 2xx at %d, got %+v", minute, rows[0])
-	}
-	if rows[0].c5 != 0 {
-		t.Errorf("a 5xx outside the range was counted: %+v", rows[0])
-	}
-}
-
-// And the span is measured over EVERYTHING the tail holds, including the lines
-// the range excludes -- they are the only evidence of how far back the log
-// goes, which is what tells a chart where to stop drawing zeroes.
-func TestTheAwkReportsHowFarBackTheLogGoes(t *testing.T) {
-	needs(t, "awk")
-	prog := awkProgram(t, scripts.Metrics(0, 0))
-
-	const minute = 1753700400
-	in := strings.Join([]string{
-		"MAP\tblog.example.com\tblog\tweb",
-		accessLine(minute-3600, "blog.example.com", 200),
-		accessLine(minute+30, "blog.example.com", 200),
-	}, "\n")
-
-	out := runAwk(t, prog, minute, minute+59, in)
-
-	span, ok := parseMetricSpan(out)
-	if !ok {
-		t.Fatalf("no mspan record: %q", out)
-	}
-	if span.from > minute-3600 {
-		t.Errorf("mspan should reach the oldest line in the tail (%d), got %d",
-			minute-3600, span.from)
-	}
-	if span.to < minute+30 {
-		t.Errorf("mspan should reach the newest line (%d), got %d", minute+30, span.to)
-	}
-}
-
-// A hostname that matches no exact entry falls back to the wildcard its parent
-// would have claimed, which is how a preview domain is attributed at all.
-func TestTheAwkAttributesWildcardHostnames(t *testing.T) {
-	needs(t, "awk")
-	prog := awkProgram(t, scripts.Metrics(0, 0))
-
-	const minute = 1753700400
-	in := strings.Join([]string{
-		"MAP\t*.preview.example.com\tblog\tweb",
-		accessLine(minute+10, "pr-42.preview.example.com", 200),
-		accessLine(minute+20, "somebody-elses.example.net", 200),
-	}, "\n")
-
-	rows := parseMetrics(runAwk(t, prog, minute, minute+59, in))
-	if len(rows) != 1 {
-		t.Fatalf("expected the wildcard to claim one row, got %d", len(rows))
-	}
-	if rows[0].app != "blog" || rows[0].c2 != 1 {
-		t.Errorf("expected one 2xx for blog, got %+v", rows[0])
-	}
 }

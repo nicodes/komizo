@@ -45,6 +45,13 @@ runs:
         rm -rf dist
         mkdir -p dist
 
+        # The agents FIRST. internal/agent embeds them, and //go:embed reads the
+        # filesystem at build time -- so a CLI compiled before they exist ships
+        # without them and fails at the moment somebody runs `komizo init`.
+        # Always linux: this is the binary that goes on the server, whatever
+        # platform the CLI beside it is for.
+        make agents VERSION="$VERSION"
+
         build() {
           goos="$1"; goarch="$2"; os_label="$3"; arch_label="$4"
           name="komizo_${os_label}_${arch_label}"

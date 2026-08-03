@@ -8,3 +8,9 @@ bin/
 
 # Release artefacts, built by .github/actions/build.
 dist/
+
+# Compiled agents, embedded into the CLI by internal/agent. Built by
+# `make agents` and by the release workflow -- never committed, because a
+# binary in git is a binary nobody can review.
+/internal/agent/bin/*
+!/internal/agent/bin/.keep

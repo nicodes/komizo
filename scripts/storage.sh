@@ -1,4 +1,0 @@
-__LIB_STATE__
-__LIB_VOLUME_PROBE__
-
-volumes_all __APP__

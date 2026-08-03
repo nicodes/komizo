@@ -431,10 +431,10 @@ func (m model) komizoServerLine() string {
 }
 
 // komizoOutOfDate is whether running the update would change anything on this
-// box. Either signal is enough: a different content stamp (the sampler changed,
+// box. Either signal is enough: a different content stamp (the agent changed,
 // which the version alone would miss while it is "dev"), or a different release
 // version (something else komizo installs changed between releases, which the
-// stamp alone would miss when that something is not the sampler).
+// stamp alone would miss when that something is not the agent).
 //
 // A box that recorded no version at all is handled before this in komizoLine --
 // it has nothing to compare and is always treated as needing an update.

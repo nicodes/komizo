@@ -211,10 +211,10 @@ func (m model) anyWildcard() bool { return len(m.wildcardApps()) > 0 }
 // startKomizoUpdate re-provisions the box: the same sequence as a fresh `komizo
 // init`, run over a server that is already live.
 //
-// A fresh install rather than a sampler rewrite, because "update" has one job --
+// A fresh install rather than an agent reinstall, because "update" has one job --
 // leave the box at the version of komizo in your hand -- and only re-running
 // everything komizo installs can promise that. So: Docker and the network, then
-// the sampler (which stamps this version), then the proxy.
+// the agent (which stamps this version), then the proxy.
 //
 // The proxy step is conditional. A box that was set up without one, or chose to
 // stop it, should not have one reinstalled by a routine update -- so it runs
@@ -239,7 +239,7 @@ func (m model) startKomizoUpdate() tea.Cmd {
 			ch <- runDoneMsg{err: fmt.Errorf("server setup failed -- see the output above")}
 			return
 		}
-		if err := streamSampler(ch, t); err != nil {
+		if err := streamAgent(ch, t); err != nil {
 			ch <- runDoneMsg{err: err}
 			return
 		}

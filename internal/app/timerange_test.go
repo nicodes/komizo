@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nicodes/komizo/scripts"
+	"github.com/nicodes/komizo/box"
 )
 
 func TestARangeIsAnOffsetOrTwoMoments(t *testing.T) {
@@ -149,22 +149,24 @@ func TestMinutesWithNoRecordAreNotPlotted(t *testing.T) {
 	}
 }
 
-// The host filters by the range, so the answer stays small however wide a range
-// is asked for and however big the logs have grown.
-func TestTheRangeIsAppliedOnTheHost(t *testing.T) {
-	r := timeRange{from: 1700000000, to: 1700003600}
-	for _, script := range []string{scripts.Metrics(r.from, r.to), scripts.SystemLogRange(r.from, r.to)} {
-		if !strings.Contains(script, "1700000000") || !strings.Contains(script, "1700003600") {
-			t.Errorf("the range is not in the script:\n%s", script)
-		}
-	}
-	// And the access log's own coverage comes back with the counts.
-	if !strings.Contains(scripts.Metrics(r.from, r.to), "mspan") {
-		t.Error("the counts do not report how far back the log reaches")
-	}
-	span, ok := parseMetricSpan("mspan\t1699000000\t1700000000\n")
-	if !ok || span.from != 1699000000 {
+// How far back the access log itself reaches comes back with the counts.
+//
+// Without it every minute before the log started charts as zero -- a confident
+// claim that nothing was served, drawn over a stretch nobody recorded. The box
+// applies the range and measures the span; this is the assertion that the span
+// survives the trip into the chart's own type.
+//
+// That the box filters by the range at all is asserted where it happens, in
+// internal/box: TestSpanCoversTheWholeLogNotTheRange.
+func TestTheLogsOwnCoverageComesBackWithTheCounts(t *testing.T) {
+	span, ok := metricSpanFrom(box.Metrics{Span: &box.Span{From: 1699000000, To: 1700000000}})
+	if !ok || span.from != 1699000000 || span.to != 1700000000 {
 		t.Errorf("span = %+v ok=%v", span, ok)
+	}
+	// A log that held nothing reports no span at all, which is not the same as
+	// a span of zero -- it is what tells the chart it has nothing to say.
+	if _, ok := metricSpanFrom(box.Metrics{}); ok {
+		t.Error("an empty log should report no span")
 	}
 }
 
@@ -203,13 +205,19 @@ func TestTheRangeKeyRefetches(t *testing.T) {
 // range the monitor is showing -- they are different questions on different
 // pages, and the poll serves every row at once.
 func TestTheIndexSparklineIgnoresTheMonitorRange(t *testing.T) {
+	now := time.Unix(1700003600, 0)
+	from, to := sparkRange(now)
+	if to != now.Unix() {
+		t.Errorf("the window should end now, got %d", to)
+	}
+	if want := now.Unix() - sparkWindow*60; from != want {
+		t.Errorf("window = %d..%d, want it %d minutes wide ending now", from, to, sparkWindow)
+	}
+	// Nothing about it can come from the monitor's range: there is nowhere for
+	// one to get in.
 	m := rollupModel("blog", "api")
 	m.monitorRange = timeRange{from: 1000, to: 2000}
-	// fetch() builds its own window from the clock; assert on the script it
-	// would send rather than on the model.
-	now := time.Now().Unix()
-	script := scripts.Metrics(now-sparkWindow*60, now)
-	if strings.Contains(script, "\t1000\t") {
-		t.Error("the poll should not inherit the monitor's range")
+	if f, _ := sparkRange(now); f == 1000 {
+		t.Error("the poll inherited the monitor's range")
 	}
 }
