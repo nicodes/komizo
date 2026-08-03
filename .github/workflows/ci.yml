@@ -44,8 +44,8 @@ jobs:
 
       # Built first: a compile error should fail before a test suite spends
       # five minutes reaching the same conclusion more slowly.
-      - name: Build
-        uses: ./.github/actions/build
-
       - name: Test
         uses: ./.github/actions/test
+
+      - name: Build
+        uses: ./.github/actions/build
