@@ -76,16 +76,21 @@ if command -v rc-update >/dev/null 2>&1; then
 	rc-service komizo-rootd restart >/dev/null 2>&1 || rc-service komizo-rootd start >/dev/null 2>&1 || true
 fi
 
-# Written now rather than waiting for the timer, so the first report exists by
-# the time anyone looks -- and so an agent that cannot run fails HERE, visibly,
-# in the output of the thing that installed it.
-/usr/local/bin/komizo-box rootd --once
-
 # Two lines, written together: the komizo VERSION that set this box up, and the
 # content STAMP of what it wrote. The version is what the interface shows beside
 # the CLI's own -- "which komizo provisioned this box" -- and the stamp is the
 # separate, exact answer to "would running the update change anything".
+#
+# BEFORE the first report, because the report reads this file. Written after, a
+# freshly installed box reports itself as having no komizo on it until the timer
+# ticks a minute later -- which is the one minute somebody is most likely to be
+# looking, having just run the installer.
 printf '%s\n%s\n' __VERSION__ __STAMP__ > /var/lib/komizo/version
+
+# Written now rather than waiting for the timer, so the first report exists by
+# the time anyone looks -- and so an agent that cannot run fails HERE, visibly,
+# in the output of the thing that installed it.
+/usr/local/bin/komizo-box rootd --once
 
 if [ ! -s __REPORT_PATH__ ]; then
 	printf 'error: the agent wrote no report -- komizo cannot read this box\n' >&2
