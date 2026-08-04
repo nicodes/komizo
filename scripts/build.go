@@ -23,13 +23,14 @@ const AgentInterval = "60s"
 
 // AgentEnrol exchanges an enrolment token for this box's credential.
 //
-// Both values are SHELL-QUOTED: they come from a caller rather than from a
+// Every value is SHELL-QUOTED: they come from a caller rather than from a
 // constant in this file, and the token in particular is an opaque string from
 // a service. The app package validates the URL too, which is the same
 // belt-and-braces argument ShQuote carries everywhere else here.
-func AgentEnrol(api, token string) string {
+func AgentEnrol(api, token, apiHost string) string {
 	return render(agentEnrol,
 		"__API__", ShQuote(api),
+		"__API_HOST__", ShQuote(apiHost),
 		"__TOKEN__", ShQuote(token),
 		"__CONF__", box.AgentConfPath,
 	)

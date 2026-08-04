@@ -32,6 +32,7 @@ func runEnrol(args []string) error {
 	api := fs.String("api", "", "the komizo service, e.g. https://api.komizo.dev")
 	token := fs.String("token", "", "the single-use enrolment token from the dashboard")
 	confPath := fs.String("config", box.AgentConfPath, "where to write the credential")
+	apiHost := fs.String("api-host", "", "the hostname this box answers on, if it has one")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -41,6 +42,15 @@ func runEnrol(args []string) error {
 	base, err := box.ValidateAPI(*api)
 	if err != nil {
 		return err
+	}
+	// Empty is a supported state: a box addressed by an IP has no endpoint,
+	// reports normally, and is read over SSH by the CLI. A non-empty one is
+	// checked here as well as by the CLI, because this command is documented as
+	// runnable by hand.
+	if *apiHost != "" {
+		if err := box.ValidateAPIHost(*apiHost); err != nil {
+			return err
+		}
 	}
 
 	// The first report rides the exchange, so a freshly enrolled server appears
@@ -57,7 +67,7 @@ func runEnrol(args []string) error {
 		fmt.Fprintf(os.Stderr, "warning: this box reports state %q -- enrolling anyway\n", rep.Server.State)
 	}
 
-	conf, err := exchange(ctx, base, *token, rep)
+	conf, err := exchange(ctx, base, *token, *apiHost, rep)
 	if err != nil {
 		return err
 	}
@@ -77,8 +87,14 @@ func runEnrol(args []string) error {
 }
 
 type enrolBody struct {
-	Token  string     `json:"token"`
-	Report box.Report `json:"report"`
+	Token string `json:"token"`
+	// Endpoint is where this box answers for itself, or empty. The BOX sends
+	// it, not the laptop, for the reason the box does the exchange at all --
+	// design/enrolment.md §3. Empty means the registry knows there is nothing
+	// to fetch from, which is what makes "the app shows nothing for this box"
+	// an answerable question rather than a mystery.
+	Endpoint string     `json:"endpoint,omitempty"`
+	Report   box.Report `json:"report"`
 }
 
 type enrolReply struct {
@@ -96,8 +112,8 @@ type enrolReply struct {
 	Message     string `json:"message"`
 }
 
-func exchange(ctx context.Context, base, token string, rep box.Report) (box.AgentConf, error) {
-	body, err := json.Marshal(enrolBody{Token: token, Report: rep})
+func exchange(ctx context.Context, base, token, endpoint string, rep box.Report) (box.AgentConf, error) {
+	body, err := json.Marshal(enrolBody{Token: token, Endpoint: endpoint, Report: rep})
 	if err != nil {
 		return box.AgentConf{}, err
 	}
