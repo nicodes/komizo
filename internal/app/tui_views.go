@@ -222,7 +222,14 @@ func (m model) boxSection() string {
 	// No docker row. Its version was a fact nobody acted on -- the update that
 	// re-runs Docker is on the komizo server row -- and a box that has got this
 	// far has a working Docker by definition.
-	b.WriteString(kv("os", dimStyle.Render(m.srv.osName())))
+	// Same reason as komizoServerLine: osName() papers an empty value over with
+	// what komizo installs, which on an unread box would name a distribution
+	// nobody has looked at.
+	if m.srv.read {
+		b.WriteString(kv("os", dimStyle.Render(m.srv.osName())))
+	} else {
+		b.WriteString(kv("os", dimStyle.Render("—")))
+	}
 	b.WriteString(kvSel("komizo server", m.komizoServerLine(), m.cursor == m.rowIndex(focusKomizo)))
 	b.WriteString(kv("komizo cli", m.komizoCliLine()))
 	b.WriteString(m.proxyRows())
@@ -414,6 +421,12 @@ func (m model) komizoCliLine() string {
 // is a box that is up to date; every other state here is a reason to press u.
 func (m model) komizoServerLine() string {
 	switch {
+	case !m.srv.read:
+		// Nothing has been read off this box, so there is nothing true to say
+		// about what is on it. "not installed" here was a claim made from a
+		// zero value, and it named a remedy -- press u -- for a problem that
+		// may not exist.
+		return dimStyle.Render("not read yet")
 	case !m.srv.komizoInstalled:
 		// Never set up.
 		return warnStyle.Render("not installed") + dimStyle.Render("  · u to install")

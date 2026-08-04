@@ -78,6 +78,8 @@ func Main(args []string) error {
 		return nil
 	case "init":
 		err = RunInit(args[1:])
+	case "update":
+		err = RunUpdate(args[1:])
 	case "add":
 		err = RunAdd(args[1:])
 	case "list":
@@ -141,6 +143,7 @@ server itself; you never run anything on the box by hand.
 The same operations are available non-interactively, for scripting:
 
   komizo init    --host root@HOST
+  komizo update  --host root@HOST
   komizo add     --host root@HOST --app NAME --config REF
   komizo list    --host root@HOST
   komizo report  --host root@HOST
@@ -152,6 +155,10 @@ The same operations are available non-interactively, for scripting:
 "komizo init" prepares a fresh server: Docker, the shared network, and the one
 Caddy that terminates TLS for every app on the box. It is a separate step from
 adding an app, so a server is either set up or it is not.
+
+"komizo update" re-runs all of that on a server that already has it, which is
+how a box is brought up to a newer komizo and how one with a missing or broken
+agent is repaired. It is the same operation as "u" in the interface.
 
 "komizo script" prints the shell this ships to the server, so you can read what
 will run as root before it does.

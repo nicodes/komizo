@@ -23,7 +23,7 @@ func testModel() model {
 	}
 	m.proxy = proxyRow{installed: true, state: "running", network: "edge",
 		image: "caddy:2", status: "Up 3 hours"}
-	m.srv = serverRow{state: "ready", docker: "Docker version 26.1.3"}
+	m.srv = serverRow{state: "ready", docker: "Docker version 26.1.3", read: true}
 	m.loaded = true
 	// The shared network, so a route's upstream resolves to a container the way
 	// it does on a real box. Without it every route looks orphaned, which is a

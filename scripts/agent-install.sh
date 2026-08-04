@@ -127,7 +127,7 @@ fi
 # freshly installed box reports itself as having no komizo on it until the timer
 # ticks a minute later -- which is the one minute somebody is most likely to be
 # looking, having just run the installer.
-printf '%s\n%s\n' __VERSION__ __STAMP__ > /var/lib/komizo/version
+printf '%s\n%s\n' __VERSION__ __STAMP__ > __STATE_DIR__/version
 
 # Written now rather than waiting for the timer, so the first report exists by
 # the time anyone looks -- and so an agent that cannot run fails HERE, visibly,
