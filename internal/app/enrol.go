@@ -24,12 +24,13 @@ import (
 func RunEnrol(args []string) error {
 	fs := flag.NewFlagSet("enrol", flag.ContinueOnError)
 	fs.Usage = func() { usageEnrol(fs) }
-	var host, api, token string
+	var host, api, token, apiHost string
 	var port int
 	var acceptHostKey, undo bool
 	fs.StringVar(&host, "host", "", "server to enrol, [user@]HOST -- must be root")
 	fs.StringVar(&api, "api", "https://api.komizo.dev", "the komizo service")
 	fs.StringVar(&token, "token", "", "the single-use enrolment token from the dashboard")
+	fs.StringVar(&apiHost, "api-host", "", "hostname the app reads this box on (default: the host you connect to, if it is a name)")
 	fs.IntVar(&port, "port", 22, "SSH port")
 	fs.BoolVar(&acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
 	fs.BoolVar(&undo, "remove", false, "stop reporting, and forget the credential")
@@ -60,6 +61,18 @@ func RunEnrol(args []string) error {
 		return err
 	}
 
+	// Which name the app will read this box on, or none.
+	//
+	// Defaulted from the SSH target rather than asked: reaching a box by name
+	// means a record already points at it, and https://<that name> reaches the
+	// Caddy on it. An IP target has no endpoint at all -- see box/endpoint.go,
+	// and the note below, which exists because a box that reports perfectly and
+	// shows nothing in the app is otherwise a mystery.
+	endpoint, err := box.APIHostFor(tgt.host, apiHost)
+	if err != nil {
+		return err
+	}
+
 	if undo {
 		step("Removing %s from the komizo service", tgt.host)
 		if err := tgt.runScript(scripts.AgentUnenrol(), nil); err != nil {
@@ -73,12 +86,24 @@ func RunEnrol(args []string) error {
 	// The token goes over stdin as part of the script rather than on the remote
 	// command line: a command line is visible in the box's process table to
 	// every account on it, for as long as the command runs.
-	if err := tgt.runScript(scripts.AgentEnrol(api, token), nil); err != nil {
+	if err := tgt.runScript(scripts.AgentEnrol(api, token, endpoint), nil); err != nil {
 		return fmt.Errorf("enrolment failed -- see the output above.\n\n" +
 			"    An enrolment token is single-use and expires in fifteen minutes.\n" +
 			"    Issue a fresh one and try again.")
 	}
 	note("this server now reports to %s.", api)
+
+	// Said plainly, because it is the difference between a box the app can open
+	// and one it can only list. A server that reports perfectly and shows
+	// nothing when you tap it is otherwise a mystery, and the reason is a
+	// certificate rather than anything wrong with the machine.
+	if endpoint == "" {
+		note("no endpoint: %s is an address, not a name, so no certificate authority", tgt.host)
+		note("will issue for it. This box reports and is readable with komizo, but the")
+		note("app cannot open it. Point a DNS record at it and re-run with --api-host.")
+	} else {
+		note("the app reads this box at https://%s -- point that name here if it does not already.", endpoint)
+	}
 	return nil
 }
 
