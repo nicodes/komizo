@@ -120,6 +120,7 @@ func inventoryFromReport(r box.Report) inventory {
 		komizo:          scrub(r.Server.Komizo.Stamp),
 		komizoVersion:   scrub(r.Server.Komizo.Version),
 		komizoInstalled: r.Server.Komizo.Installed,
+		read:            true,
 	}
 	for _, k := range r.Server.HostKeys {
 		inv.srv.hostKeys = append(inv.srv.hostKeys, [2]string{scrub(k.Type), scrub(k.Key)})
