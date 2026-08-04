@@ -118,6 +118,18 @@ func Main(args []string) error {
 			os.Exit(2)
 		}
 		if fs.NArg() > 0 {
+			// A space in `root @host`. The shell handed this two arguments and
+			// the second carries the hostname, so the address was typed
+			// correctly and split by one keystroke.
+			//
+			// Named rather than answered with the usage, which is thirty lines
+			// that do not mention the problem -- and which is what somebody who
+			// typed almost the right thing least needs to read.
+			if rest := fs.Arg(0); strings.HasPrefix(rest, "@") && !strings.Contains(args[0], "@") {
+				fmt.Fprintf(os.Stderr, "there is a space in the address, so %q was read as the whole host.\n\n    komizo %s%s\n\n",
+					args[0], args[0], rest)
+				os.Exit(2)
+			}
 			fmt.Fprintf(os.Stderr, "unexpected argument %q after a host\n\n", fs.Arg(0))
 			Usage()
 			os.Exit(2)
