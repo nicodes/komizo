@@ -65,6 +65,14 @@ func runEnrol(args []string) error {
 		return fmt.Errorf("enrolled, but could not store the credential: %w", err)
 	}
 	fmt.Printf("enrolled as %s\n", conf.ServerID)
+	// Said out loud, because it decides whether this box can be read directly
+	// or only through what it pushes. A service that offered no key is not a
+	// failure, but it is a difference somebody should not have to infer.
+	if conf.CanServe() {
+		fmt.Println("this box can answer for itself; start komizo-api to serve it")
+	} else {
+		fmt.Println("this service issued no registry key, so this box reports but does not serve")
+	}
 	return nil
 }
 
@@ -76,7 +84,16 @@ type enrolBody struct {
 type enrolReply struct {
 	ServerID   string `json:"server_id"`
 	AgentToken string `json:"agent_token"`
-	Message    string `json:"message"`
+	// RegistryKey verifies the read tokens this box will be shown, and is what
+	// lets it answer for itself without asking anybody -- see box/token.go.
+	//
+	// OPTIONAL, so a box can still enrol against a service that does not offer
+	// one. Such a box reports exactly as it always did and serves nothing,
+	// which is the same box komizo had before any of this. Refusing to enrol
+	// would make an old service unusable to a new agent for a capability
+	// neither end has yet agreed on.
+	RegistryKey string `json:"registry_key"`
+	Message     string `json:"message"`
 }
 
 func exchange(ctx context.Context, base, token string, rep box.Report) (box.AgentConf, error) {
@@ -109,7 +126,8 @@ func exchange(ctx context.Context, base, token string, rep box.Report) (box.Agen
 	if reply.AgentToken == "" || reply.ServerID == "" {
 		return box.AgentConf{}, fmt.Errorf("the service accepted the enrolment but issued no credential")
 	}
-	return box.AgentConf{API: base, ServerID: reply.ServerID, Token: reply.AgentToken}, nil
+	return box.AgentConf{API: base, ServerID: reply.ServerID, Token: reply.AgentToken,
+		RegistryKey: reply.RegistryKey}, nil
 }
 
 // unenrol removes the credential.
