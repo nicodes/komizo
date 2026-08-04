@@ -14,7 +14,7 @@ log() { printf '\n==> %s\n' "$*"; }
 }
 
 log "Exchanging the enrolment token"
-/usr/local/bin/komizo-box enrol --api __API__ --token __TOKEN__
+/usr/local/bin/komizo-box enrol --api __API__ --token __TOKEN__ --api-host __API_HOST__
 
 # The property the agent depends on, PROVEN rather than assumed: root wrote the
 # credential, and the account with no privileges can read it.
