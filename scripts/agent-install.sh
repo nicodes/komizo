@@ -106,6 +106,34 @@ depend() {
 KOMIZO_AGENT_RC_EOF
 chmod 755 /etc/init.d/komizo-agent
 
+# The read API, as the same account with nothing.
+#
+# Installed but NOT enabled, for the reason the agent is not: a box with no
+# registry key can only refuse every request, so starting it would put a
+# service in the "crashed" column of every box that never enrols. `komizo
+# enrol` is what makes it startable, because that is when the key arrives.
+#
+# A socket under __RUN_DIR__, not a port -- see cmd/komizo-box/serve.go. The
+# box's proxy reaches it through a bind mount, so nothing new listens on the
+# network.
+cat > /etc/init.d/komizo-api <<'KOMIZO_API_RC_EOF'
+#!/sbin/openrc-run
+name="komizo-api"
+description="komizo: serves this box's own report and history"
+supervisor="supervise-daemon"
+command="/usr/local/bin/komizo-box"
+command_args="serve"
+command_user="komizo_monitor:komizo_monitor"
+respawn_delay=5
+respawn_max=0
+
+depend() {
+	need net
+	after komizo-rootd
+}
+KOMIZO_API_RC_EOF
+chmod 755 /etc/init.d/komizo-api
+
 if command -v rc-update >/dev/null 2>&1; then
 	rc-update add komizo-rootd default >/dev/null 2>&1 || true
 	rc-service komizo-rootd restart >/dev/null 2>&1 || rc-service komizo-rootd start >/dev/null 2>&1 || true
@@ -115,6 +143,11 @@ if command -v rc-update >/dev/null 2>&1; then
 	# is left alone.
 	if rc-service komizo-agent status >/dev/null 2>&1; then
 		rc-service komizo-agent restart >/dev/null 2>&1 || true
+	fi
+	# Same rule for the read API: restarted onto the new binary if it was
+	# already serving, and left alone on a box that has never enrolled.
+	if rc-service komizo-api status >/dev/null 2>&1; then
+		rc-service komizo-api restart >/dev/null 2>&1 || true
 	fi
 fi
 
@@ -127,7 +160,7 @@ fi
 # freshly installed box reports itself as having no komizo on it until the timer
 # ticks a minute later -- which is the one minute somebody is most likely to be
 # looking, having just run the installer.
-printf '%s\n%s\n' __VERSION__ __STAMP__ > /var/lib/komizo/version
+printf '%s\n%s\n' __VERSION__ __STAMP__ > __STATE_DIR__/version
 
 # Written now rather than waiting for the timer, so the first report exists by
 # the time anyone looks -- and so an agent that cannot run fails HERE, visibly,

@@ -341,7 +341,15 @@ type serverRow struct {
 	// that box apart from one that was never set up at all.
 	komizoVersion   string
 	komizoInstalled bool
-	hostKeys        [][2]string // {type, base64}
+	// read is whether this row came from a report at all.
+	//
+	// The zero value of every field above is indistinguishable from a real
+	// answer -- komizoInstalled false reads as "this box has no komizo on it",
+	// which is exactly what the interface said about boxes it had simply
+	// failed to poll. A struct nobody filled in must not be able to make a
+	// claim, so the claim is gated on this.
+	read     bool
+	hostKeys [][2]string // {type, base64}
 }
 
 // osName is what the box runs, or what komizo puts on it when nothing has said

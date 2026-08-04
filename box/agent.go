@@ -51,7 +51,26 @@ type AgentConf struct {
 	// nothing else, which is what makes a leak worth fixing rather than
 	// disclosing.
 	Token string `json:"token"`
+	// RegistryKey verifies the read tokens the service signs, so this box can
+	// decide who may read it WITHOUT asking anybody -- see box/token.go. Raw
+	// base64 of an ed25519 public key.
+	//
+	// In this file rather than beside it for the reason the file exists at all:
+	// these values are issued together and replaced together, and two files are
+	// two things that can disagree about which registry this box trusts.
+	//
+	// Empty on a box enrolled against a service that does not offer one, which
+	// is every box enrolled before this existed. Such a box reports exactly as
+	// it did and serves nothing, because there is no key to verify against.
+	RegistryKey string `json:"registry_key,omitempty"`
 }
+
+// CanServe reports whether this box can answer for itself.
+//
+// Both halves are required and neither is optional: the key is what verifies a
+// caller, and the server id is what a token has to name. A box missing either
+// could only refuse every request, so it does not open a socket at all.
+func (c AgentConf) CanServe() bool { return c.RegistryKey != "" && c.ServerID != "" }
 
 // Enrolled reports whether this box has been through enrolment.
 //

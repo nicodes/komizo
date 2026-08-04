@@ -41,9 +41,10 @@ small agent it installs on **the server**.
 Three commands, each safe to re-run:
 
 ```sh
-komizo init  --host root@box      # Docker, the shared network, the agent
-komizo proxy --host root@box      # one Caddy, terminating TLS for every app
-komizo add   --host root@box ...  # a deploy account and its two privileged commands
+komizo init   --host root@box      # Docker, the shared network, the agent
+komizo update --host root@box      # re-run all of it, to upgrade or to repair
+komizo proxy  --host root@box      # one Caddy, terminating TLS for every app
+komizo add    --host root@box ...  # a deploy account and its two privileged commands
 ```
 
 **Provisioning** is shell, piped down the connection that is already open, run

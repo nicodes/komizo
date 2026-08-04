@@ -475,10 +475,43 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.loaded {
 				return m, nil
 			}
+
+			// A box that answered "no agent" HAS been read: exit 127 from the
+			// far end is the box telling us there is no komizo on it, which is
+			// what the setup screen exists to offer to fix. This used to fall
+			// through to the index, which is why a fresh server showed an
+			// inventory page instead of the start/cancel the README describes.
+			//
+			// And it is NOT an error here. errNoAgent says so itself -- "not a
+			// failure, it is a state" -- so the footer is cleared with it: a
+			// screen headed "this server is not set up yet", offering start,
+			// does not also need a red line saying the server is not set up and
+			// telling you to go and run `komizo init` in another terminal. The
+			// answer to that sentence is the button already under the cursor.
+			if _, missing := msg.err.(errNoAgent); missing {
+				m.err = nil
+				m.srv.read = true
+				m.scr = screenSetup
+				return m, nil
+			}
+
+			// Anything else and we do not know what is on this box. The rows
+			// stay unread and say so; the footer carries the reason. Rendering
+			// the zero value here is what made a dropped poll indistinguishable
+			// from a server with no komizo on it -- and the moment it was most
+			// likely to happen was the refresh immediately after setup, on a
+			// box that had just installed Docker and was still starting the
+			// agent.
 			m.scr = screenIndex
 			return m, nil
 		}
 
+		// A poll that came back IS a reading, and this is the one place that
+		// knows it. Set here rather than only in inventoryFromReport so that the
+		// invariant cannot be missed by a future path that builds a serverRow
+		// some other way -- the flag means "this came from a successful poll",
+		// and success is a fact about the message, not about the mapping.
+		msg.srv.read = true
 		m.apps, m.srv, m.proxy, m.net, m.err = msg.apps, msg.srv, msg.proxy, msg.net, nil
 		m.metrics = msg.metrics
 		m.takeSample(msg.sys)

@@ -11,6 +11,12 @@ log() { printf '\n==> %s\n' "$*"; }
 if command -v rc-update >/dev/null 2>&1; then
 	rc-service komizo-agent stop >/dev/null 2>&1 || true
 	rc-update del komizo-agent default >/dev/null 2>&1 || true
+
+	# And the read API. Un-enrolling removes the credential, so it holds the
+	# key this verified against -- a box that kept serving after it would be
+	# answering to a registry it no longer belongs to.
+	rc-service komizo-api stop >/dev/null 2>&1 || true
+	rc-update del komizo-api default >/dev/null 2>&1 || true
 fi
 
 log "Removing the credential"
