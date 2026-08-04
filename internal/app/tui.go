@@ -481,7 +481,15 @@ func (m model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// what the setup screen exists to offer to fix. This used to fall
 			// through to the index, which is why a fresh server showed an
 			// inventory page instead of the start/cancel the README describes.
+			//
+			// And it is NOT an error here. errNoAgent says so itself -- "not a
+			// failure, it is a state" -- so the footer is cleared with it: a
+			// screen headed "this server is not set up yet", offering start,
+			// does not also need a red line saying the server is not set up and
+			// telling you to go and run `komizo init` in another terminal. The
+			// answer to that sentence is the button already under the cursor.
 			if _, missing := msg.err.(errNoAgent); missing {
+				m.err = nil
 				m.srv.read = true
 				m.scr = screenSetup
 				return m, nil
