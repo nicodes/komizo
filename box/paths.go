@@ -44,6 +44,16 @@ const (
 	// accumulates the history at its end.
 	HistoryPath = StateDir + "/history.jsonl"
 	VersionPath = StateDir + "/version"
+
+	// APISocketPath is where the box answers for itself.
+	//
+	// Under RunDir with the report, not under StateDir: the state directory is
+	// 0750 root:root, and the process that opens this runs as komizo_monitor.
+	// It is also the directory the proxy already has reason to reach.
+	//
+	// A socket rather than a port, so nothing new listens on the network -- see
+	// cmd/komizo-box/serve.go.
+	APISocketPath = RunDir + "/api.sock"
 	// PendingDir is where signed requests land for rootd to apply. Nothing in v0
 	// writes here; the directory is created so the shape is visible on a box and
 	// the permissions are decided once, by the thing that owns them.

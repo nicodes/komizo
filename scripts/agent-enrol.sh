@@ -35,6 +35,15 @@ fi
 if command -v rc-update >/dev/null 2>&1; then
 	rc-update add komizo-agent default >/dev/null 2>&1 || true
 	rc-service komizo-agent restart >/dev/null 2>&1 || rc-service komizo-agent start >/dev/null 2>&1 || true
+
+	# The read API, only if this enrolment actually brought a key. A service
+	# that offered none leaves a box that reports and does not serve, which is
+	# exactly the box komizo had before it could serve at all -- so there is
+	# nothing to start and nothing to warn about.
+	if grep -q '"registry_key"' __CONF__ 2>/dev/null; then
+		rc-update add komizo-api default >/dev/null 2>&1 || true
+		rc-service komizo-api restart >/dev/null 2>&1 || rc-service komizo-api start >/dev/null 2>&1 || true
+	fi
 fi
 
 log "Reporting as $(sed -n 's/.*"server_id": *"\([^"]*\)".*/\1/p' __CONF__ 2>/dev/null)"
