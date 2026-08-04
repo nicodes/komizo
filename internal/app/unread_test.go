@@ -58,6 +58,21 @@ func TestABoxWithNoAgentGetsTheSetupScreen(t *testing.T) {
 	if !m.srv.read {
 		t.Error("a box that answered \"no agent\" was not marked as read -- that answer IS a reading")
 	}
+
+	// And it is not reported as a failure. The screen is headed "this server is
+	// not set up yet" and offers start; a red footer repeating that, and naming
+	// a CLI command to run in another terminal, is answering a question the
+	// cursor is already sitting on.
+	if m.err != nil {
+		t.Errorf("the setup screen carries an error footer: %v", m.err)
+	}
+	body := stripANSI(m.View())
+	if strings.Contains(body, "has no komizo agent installed") {
+		t.Errorf("the setup screen repeats the no-agent error:\n%s", body)
+	}
+	if strings.Contains(body, "komizo init --host") {
+		t.Errorf("the setup screen tells you to run the CLI instead of pressing start:\n%s", body)
+	}
 }
 
 // A successful poll is what makes the row able to speak.
