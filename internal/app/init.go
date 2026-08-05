@@ -30,6 +30,7 @@ type initOpts struct {
 	acceptHostKey bool
 	name          string
 	apiHost       string
+	deviceKeys    deviceKeys
 }
 
 func RunInit(args []string) error {
@@ -43,6 +44,7 @@ func RunInit(args []string) error {
 	fs.StringVar(&o.name, "name", "", "what to call this server in the app (default: the host you connect to)")
 	fs.StringVar(&o.apiHost, "api-host", "", "hostname the app reads this box on (default: the host you connect to, if it is a name)")
 	fs.IntVar(&o.port, "port", 22, "SSH port")
+	fs.Var(&o.deviceKeys, "device-key", deviceKeyUsage)
 	if err := fs.Parse(args); err != nil {
 		return ErrSilent
 	}
@@ -80,7 +82,7 @@ func RunInit(args []string) error {
 	}
 
 	step("Filing this server under your account")
-	if err := registerAndEnrol(tgt, o.name, o.apiHost, nil); err != nil {
+	if err := registerAndEnrol(tgt, o.name, o.apiHost, o.deviceKeys, nil); err != nil {
 		// NOT fatal. The box is set up and works; what failed is the half that
 		// needs the service, and komizo enrol does exactly this later. Failing
 		// the whole command would make a service outage look like a broken
@@ -140,7 +142,7 @@ func signalContextCLI() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 }
 
-func registerAndEnrol(t target, name, apiHost string, ch chan tea.Msg) error {
+func registerAndEnrol(t target, name, apiHost string, keys []string, ch chan tea.Msg) error {
 	s, err := requireSession()
 	if err != nil {
 		return err
@@ -172,7 +174,7 @@ func registerAndEnrol(t target, name, apiHost string, ch chan tea.Msg) error {
 	// The token goes over stdin as part of the script rather than on the remote
 	// command line: a command line is visible in the box's process table to
 	// every account on it, for as long as the command runs.
-	sh := scripts.AgentEnrol(s.API, created.Token, endpoint)
+	sh := scripts.AgentEnrol(s.API, created.Token, endpoint, keys)
 	if ch == nil {
 		if err := t.runScript(sh, nil); err != nil {
 			return fmt.Errorf("the server was created but did not enrol -- run `komizo enrol --host %s` to retry", t.host)

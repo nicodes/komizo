@@ -35,6 +35,8 @@ func RunEnrol(args []string) error {
 	fs.IntVar(&port, "port", 22, "SSH port")
 	fs.BoolVar(&acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
 	fs.BoolVar(&undo, "remove", false, "stop reporting, and forget the credential")
+	var keys deviceKeys
+	fs.Var(&keys, "device-key", deviceKeyUsage)
 	if err := fs.Parse(args); err != nil {
 		return ErrSilent
 	}
@@ -56,7 +58,7 @@ func RunEnrol(args []string) error {
 				return err
 			}
 			step("Filing %s under your account", tgt.host)
-			if err := registerAndEnrol(tgt, name, apiHost, nil); err != nil {
+			if err := registerAndEnrol(tgt, name, apiHost, keys, nil); err != nil {
 				return err
 			}
 			return nil
@@ -96,7 +98,7 @@ func RunEnrol(args []string) error {
 	// The token goes over stdin as part of the script rather than on the remote
 	// command line: a command line is visible in the box's process table to
 	// every account on it, for as long as the command runs.
-	if err := tgt.runScript(scripts.AgentEnrol(api, token, endpoint), nil); err != nil {
+	if err := tgt.runScript(scripts.AgentEnrol(api, token, endpoint, keys), nil); err != nil {
 		return fmt.Errorf("enrolment failed -- see the output above.\n\n" +
 			"    An enrolment token is single-use and expires in fifteen minutes.\n" +
 			"    Issue a fresh one and try again.")

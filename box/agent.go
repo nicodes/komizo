@@ -63,6 +63,18 @@ type AgentConf struct {
 	// is every box enrolled before this existed. Such a box reports exactly as
 	// it did and serves nothing, because there is no key to verify against.
 	RegistryKey string `json:"registry_key,omitempty"`
+
+	// OperatorKeys are the devices this box will take orders from -- see
+	// operator.go for what they are and why the service does not choose them.
+	//
+	// Carried here by the person setting the box up rather than returned by the
+	// exchange above, which is the whole of the difference between komizo being
+	// able to command your machines and not. Everything else in this file is
+	// issued BY the service; this one is issued TO it.
+	//
+	// Empty is the ordinary state: the box reports, serves reads, and accepts
+	// no commands.
+	OperatorKeys []string `json:"operator_keys,omitempty"`
 }
 
 // CanServe reports whether this box can answer for itself.

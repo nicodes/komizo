@@ -431,7 +431,7 @@ func (m model) startInit(o initOpts) tea.Cmd {
 		// outage look like a broken server.
 		ch <- runOutputMsg("")
 		ch <- runOutputMsg("filing this server under your account...")
-		if err := registerAndEnrol(t, "", "", ch); err != nil {
+		if err := registerAndEnrol(t, "", "", nil, ch); err != nil {
 			ch <- runOutputMsg("could not register this server: " + err.Error())
 			ch <- runOutputMsg("the box is set up. Press u once the service is reachable.")
 		}

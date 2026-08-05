@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/nicodes/komizo/box"
 )
@@ -33,6 +34,8 @@ func runEnrol(args []string) error {
 	token := fs.String("token", "", "the single-use enrolment token from the dashboard")
 	confPath := fs.String("config", box.AgentConfPath, "where to write the credential")
 	apiHost := fs.String("api-host", "", "the hostname this box answers on, if it has one")
+	var deviceKeys keyList
+	fs.Var(&deviceKeys, "device-key", "a device this box will take orders from (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -71,6 +74,11 @@ func runEnrol(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Added AFTER the exchange, and never from it. These are the keys this box
+	// takes orders from, and the difference between komizo being able to
+	// command your machines and not is that they are carried here by the person
+	// with root rather than returned by the service -- see box/operator.go.
+	conf.OperatorKeys = deviceKeys
 	if err := box.WriteAgentConf(*confPath, conf); err != nil {
 		return fmt.Errorf("enrolled, but could not store the credential: %w", err)
 	}
@@ -83,6 +91,42 @@ func runEnrol(args []string) error {
 	} else {
 		fmt.Println("this service issued no registry key, so this box reports but does not serve")
 	}
+	// And the same for commands, which is a different question with a different
+	// answer: reading is authorised by the registry's signature, commanding is
+	// authorised only by a key an operator planted. A box with none is the
+	// normal box and is not warned about -- it is TOLD, once, because "why does
+	// the app say it cannot do that" should not need a support conversation.
+	if conf.CanCommand() {
+		fmt.Printf("it will take orders from %d device(s)\n", len(conf.OperatorKeys))
+	} else {
+		fmt.Println("no device keys were given, so this box will accept no commands")
+	}
+	return nil
+}
+
+// keyList collects a repeatable --device-key.
+//
+// Validated as it is parsed rather than at the end, so the error names the one
+// value that is wrong instead of reporting that something in the set is. These
+// arrive by being copied between two windows, which is where a truncated
+// base64 string comes from.
+type keyList []string
+
+func (k *keyList) String() string { return strings.Join(*k, ",") }
+
+func (k *keyList) Set(v string) error {
+	v = strings.TrimSpace(v)
+	if _, err := box.ParseDeviceKey(v); err != nil {
+		return err
+	}
+	for _, seen := range *k {
+		if seen == v {
+			// Not an error worth failing on -- the same key twice is somebody
+			// pasting twice, and the result they wanted is the result they get.
+			return nil
+		}
+	}
+	*k = append(*k, v)
 	return nil
 }
 
