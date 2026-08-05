@@ -116,7 +116,13 @@ func runEnrol(args []string) error {
 		fmt.Printf("dropped %d device(s) this box used to take orders from\n", dropped)
 	}
 	if conf.CanCommand() {
-		fmt.Printf("it will take orders from %d device(s)\n", len(conf.OperatorKeys))
+		// PRINTED, so the person who pasted the command can see that what landed
+		// here is what their app showed them. That comparison is the only step in
+		// this design that depends on somebody looking, and it costs one line.
+		fmt.Printf("it will take orders from %d device(s):\n", len(conf.OperatorKeys))
+		for _, k := range conf.OperatorKeys {
+			fmt.Printf("    %s\n", box.Fingerprint(k))
+		}
 	} else {
 		fmt.Println("no device keys were given, so this box will accept no commands")
 	}
