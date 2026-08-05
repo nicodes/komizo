@@ -502,6 +502,15 @@ func (c Command) AddOf() (AddSpec, error) {
 	if strings.Contains(LastSegment(spec.Config), ":") {
 		return AddSpec{}, fmt.Errorf("a config image carries no tag")
 	}
+	// AND IT ENDS IN A SEGMENT. "ghcr.io/a/web:1/" has no tag by the rule above
+	// -- the last segment is empty -- and the box appends its own, producing
+	// "ghcr.io/a/web:1/:v1", which docker cannot parse. Accepted, the whole
+	// provision SUCCEEDS and every later deploy fails at `docker pull`, a long
+	// way from the field that caused it. That is worse than the mid-provision
+	// failure this function refuses two rules above, and for the same reason.
+	if strings.HasSuffix(spec.Config, "/") {
+		return AddSpec{}, fmt.Errorf("a config image does not end in %q", "/")
+	}
 
 	if spec.AppDir != "" {
 		// Absolute. Relative it becomes a path relative to whatever the applier
@@ -607,6 +616,16 @@ func onlyPathChars(s string) bool {
 }
 
 // LastSegment is the part of a registry reference a TAG would be in.
+//
+// THE RULE: a colon AFTER the last slash is a tag; a colon before it is a
+// registry port. `reg.example.com:5000/a/web` has no tag; `a/web:1` does. That
+// sentence lived in internal/app and in alpine.sh and not in the function that
+// now decides it for both, which is how a rule goes missing while three copies
+// of the code that implements it survive.
+//
+// Agrees with `${VAR##*/}`, which is what scripts/alpine.sh uses and therefore
+// what actually decides what gets pulled -- see segment_test.go, which pins this
+// against a real shell rather than against a second Go opinion.
 //
 // One function because there were two, and they disagreed. The CLI took
 // everything after the last "/" and the box used path.Base, which differ on a
