@@ -294,15 +294,10 @@ func TestOnlyRegisteringABoxNeedsAnAccount(t *testing.T) {
 	// for DNS to say no.
 	const unreachable = "root@not a host"
 
-	// init asks first, before it provisions anything: failing at the end would
-	// leave a box set up and an error.
-	err := Main([]string{"init", "--host", unreachable})
-	if err == nil || !errors.Is(err, errNotSignedIn) {
-		t.Errorf("komizo init signed out = %v, want it to ask for an account", err)
-	}
-
-	// And nothing else does.
-	for _, verb := range []string{"update", "add", "list", "report", "remove", "proxy",
+	// Nothing in the dispatch asks. The two operations that reach the service
+	// ask where they happen, and everything here is SSH to a machine whose root
+	// key the caller holds.
+	for _, verb := range []string{"init", "update", "add", "list", "report", "remove", "proxy",
 		"start", "stop", "restart", "logs"} {
 		err := Main([]string{verb, "--host", unreachable})
 		if errors.Is(err, errNotSignedIn) {
@@ -315,20 +310,47 @@ func TestOnlyRegisteringABoxNeedsAnAccount(t *testing.T) {
 
 	// enrol is the conditional one: with a token it needs nobody, because the
 	// token IS the authority and registerAndEnrol is what asks otherwise.
-	err = Main([]string{"enrol", "--host", unreachable, "--token", "kmz_enr_x"})
+	err := Main([]string{"enrol", "--host", unreachable, "--token", "kmz_enr_x"})
 	if errors.Is(err, errNotSignedIn) {
 		t.Error("komizo enrol --token asked for an account it does not need")
 	}
-	// Without one it does, and from the inner check rather than the outer gate.
+	// Without one it does, and from its own check rather than an outer gate.
 	err = Main([]string{"enrol", "--host", unreachable})
 	if err == nil || !errors.Is(err, errNotSignedIn) {
 		t.Errorf("komizo enrol with no token = %v, want it to ask for an account", err)
 	}
+
+	// AND `--remove` NEVER DOES. It is what somebody runs when they are leaving
+	// komizo or their account is already gone -- the single command most likely
+	// to be needed by a person who cannot sign in. The exemption was there and
+	// nothing tested it: deleting it left the whole suite green.
+	if err := Main([]string{"enrol", "--host", unreachable, "--remove"}); errors.Is(err, errNotSignedIn) {
+		t.Error("komizo enrol --remove asked for an account it does not need")
+	}
+
+	// The interface is a route into a server like any other. It was gated while
+	// `komizo` on its own reached the same screens without one, because the
+	// address prompt runs before that switch -- so it refused the documented way
+	// in and allowed the undocumented one.
+	if err := Main([]string{"root@not a host"}); errors.Is(err, errNotSignedIn) {
+		t.Error("the interface asked for an account to reach somebody's own server")
+	}
 }
 
 // And the gate names exactly what talks to the service.
-func TestTheSessionGateNamesOnlyRegistration(t *testing.T) {
-	if len(needsSession) != 1 || !needsSession["init"] {
-		t.Errorf("needsSession = %v, want only init -- everything else is somebody's own server", needsSession)
+// And init is not gated either.
+//
+// The reason once recorded for gating it was wrong about the code beside it: a
+// failed registration is a NOTE and the box is still set up, so the gate was not
+// preventing a half-provisioned machine. It was refusing to let somebody without
+// a komizo account provision their own server at all -- the capability gate
+// appify.md §7 says must not exist.
+func TestSettingABoxUpNeedsNoAccount(t *testing.T) {
+	orig := requireSession
+	requireSession = func() (Session, error) { return Session{}, errNotSignedIn }
+	defer func() { requireSession = orig }()
+
+	if err := Main([]string{"init", "--host", "root@not a host"}); errors.Is(err, errNotSignedIn) {
+		t.Error("komizo init refused to set a box up without a komizo account")
 	}
 }

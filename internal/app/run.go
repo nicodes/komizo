@@ -94,25 +94,18 @@ func runCommand(name string, args []string) error {
 	return fmt.Errorf("unknown command %q", name)
 }
 
-// needsSession is the commands that talk to the SERVICE.
+// NO COMMAND IS GATED ON AN ACCOUNT. The two calls that reach the service ask
+// for one themselves -- registerAndEnrol, and `komizo enrol` when it has to mint
+// the token -- and everything else is SSH to a machine whose root key you hold.
 //
-// One entry, and it is the one that files a box under somebody. `komizo enrol`
-// is deliberately NOT here: it needs a session only when it has to mint an
-// enrolment token itself, and registerAndEnrol asks for one at exactly that
-// point -- so `komizo enrol --token kmz_enr_...` works on a machine that has
-// never signed in, which is what enrolling a box against somebody else's komizo
-// looks like.
-//
-// init IS here rather than relying on the same inner check, because it sets a
-// box up before it registers one. Failing at the end would leave a provisioned
-// machine and an error, where failing at the start leaves nothing and the same
-// error.
-//
-// The old table's argument was that a command added later must not be forgotten
-// by the gate. That reasoning inverted with the rule: what needs guarding now is
-// creating rows in somebody's account, not touching their server, and a
-// box-only command left out of this map is correct rather than a hole.
-var needsSession = map[string]bool{"init": true}
+// There was a one-entry table here, keeping `init` on a front gate, and the
+// reason recorded for it was wrong about the code beside it: it said failing at
+// the end would leave "a provisioned machine and an error", but init.go was
+// deliberately written so that a failed registration is a NOTE and the box is
+// still set up. So the gate was not preventing that outcome; it was refusing to
+// let somebody without a komizo account provision their own server at all,
+// which is the capability gate appify.md §7 says must not exist and which
+// app-only.md §7 left standing.
 
 func Main(args []string) error {
 	// `komizo` on its own is the interface with nothing to connect to yet: it
@@ -131,17 +124,17 @@ func Main(args []string) error {
 	case "--version", "-v", "version":
 		fmt.Println("komizo " + versionText())
 		return nil
-	// Signing in, signing out, saying which version this is and printing the
-	// shell komizo ships are the four things that do not need an account. The
-	// first two because they are how you get one; the last two because they
-	// touch neither a service nor a server.
+	// Grouped for what they are rather than for what they need: nothing in this
+	// switch needs an account, and the two operations that do ask where they
+	// happen. Sign-in is here because it is how you get one.
 	case "login":
 		err = RunLogin(args[1:])
 	case "logout":
 		err = RunLogout(args[1:])
 	case "init", "update", "add", "list", "report", "enrol", "remove", "proxy",
 		"start", "stop", "restart", "logs":
-		// An account is needed to REGISTER a box, and for nothing else.
+		// No gate. An account is needed to REGISTER a box, and the two places
+		// that do it ask for one where they do it.
 		//
 		// registry.md §10 required one for all of these, on the argument that
 		// `komizo init` collapses three steps into one with nothing copied
@@ -155,12 +148,6 @@ func Main(args []string) error {
 		// proxy is you and your server. komizo is not in it, has never been in
 		// it, and asking it for permission first would have made an outage the
 		// reason you cannot fix your own machine.
-		if needsSession[args[0]] {
-			// Read from disk, never checked over the network -- see session.go.
-			if _, serr := requireSession(); serr != nil {
-				return serr
-			}
-		}
 		err = runCommand(args[0], args[1:])
 	case "script":
 		err = RunScript(args[1:])
@@ -204,13 +191,15 @@ func Main(args []string) error {
 			Usage()
 			os.Exit(2)
 		}
-		// The interface needs an account like every other route into a server.
-		// Refused here rather than opened and then refused inside, so somebody
-		// who is not signed in gets a sentence they can act on instead of a
-		// full-screen program that will not do anything.
-		if _, serr := requireSession(); serr != nil {
-			return serr
-		}
+		// NO ACCOUNT. The interface is a route into a server like any other, and
+		// this gate said the opposite of what the rule now is -- while `komizo`
+		// on its own already reached the same screens without one, because the
+		// address prompt runs before this switch. So it refused the documented
+		// way in and allowed the undocumented one.
+		//
+		// The only thing in here that talks to the service is setting a box up,
+		// and that asks for itself and treats a refusal as a note rather than a
+		// failure.
 		err = RunTUI(args[0], *port, portWasSet(fs), *yes)
 	}
 
@@ -251,13 +240,16 @@ The same operations are available non-interactively, for scripting:
 you are already signed in on -- a phone will do -- so a machine with no browser
 can still be signed in.
 
-AN ACCOUNT IS TO REGISTER A BOX, NOT TO OPERATE ONE. "komizo init" needs one,
-because it files the server under you, and so does "komizo enrol" when you do
-not pass a token. Everything else -- adding an app, starting or stopping one,
-reading a report, repairing the proxy -- is you and your server over SSH, and
-needs nothing from komizo at all. The session is read from disk rather than
-checked over the network, so an outage costs the two commands that genuinely
-need the service and nothing else.
+AN ACCOUNT IS TO REGISTER A BOX, NOT TO OPERATE ONE. Nothing here refuses to run
+without one. Filing a server under your account needs one -- that is what "komizo
+init" does at the end, and what "komizo enrol" does when you do not pass a token
+-- and a box set up without it works exactly as it always did; it simply does not
+appear in the app until you enrol it.
+
+Everything else -- adding an app, starting or stopping one, reading a report,
+repairing the proxy, the interface -- is you and your server over SSH, and needs
+nothing from komizo at all. The session is read from disk rather than checked
+over the network, so an outage costs registration and nothing else.
 
 "komizo init" prepares a fresh server: Docker, the shared network, and the one
 Caddy that terminates TLS for every app on the box. It is a separate step from

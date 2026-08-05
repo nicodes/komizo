@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,32 +150,28 @@ func TestRegisteringNeedsAnAccountAndOperatingDoesNot(t *testing.T) {
 	withConfigHome(t)
 	const unreachable = "root@not a host"
 
-	for _, name := range []string{"init"} {
-		err := Main([]string{name, "--host", unreachable})
-		if err == nil {
-			t.Errorf("%q ran without a session", name)
-			continue
-		}
-		if !strings.Contains(err.Error(), "komizo login") {
-			t.Errorf("%q failed for the wrong reason: %v", name, err)
-		}
-	}
-	// enrol asks only when it has to mint the token itself.
-	if err := Main([]string{"enrol", "--host", unreachable}); err == nil ||
-		!strings.Contains(err.Error(), "komizo login") {
+	// enrol asks only when it has to mint the token itself, and that is the
+	// only command in the whole dispatch that asks at all.
+	//
+	// errors.Is rather than a substring: matching on "komizo login" keeps
+	// passing if the message is reworded, which is a test about prose.
+	if err := Main([]string{"enrol", "--host", unreachable}); !errors.Is(err, errNotSignedIn) {
 		t.Errorf("enrol with no token = %v, want it to ask for an account", err)
 	}
 
-	for _, name := range []string{"update", "add", "list", "report", "remove", "proxy",
+	for _, name := range []string{"init", "update", "add", "list", "report", "remove", "proxy",
 		"start", "stop", "restart", "logs"} {
-		err := Main([]string{name, "--host", unreachable})
-		if err != nil && strings.Contains(err.Error(), "komizo login") {
+		if err := Main([]string{name, "--host", unreachable}); errors.Is(err, errNotSignedIn) {
 			t.Errorf("%q asked for an account to touch somebody's own server", name)
 		}
 	}
-	if err := Main([]string{"enrol", "--host", unreachable, "--token", "kmz_enr_x"}); err != nil &&
-		strings.Contains(err.Error(), "komizo login") {
-		t.Error("enrol --token asked for an account it does not need")
+	for _, args := range [][]string{
+		{"enrol", "--host", unreachable, "--token", "kmz_enr_x"},
+		{"enrol", "--host", unreachable, "--remove"},
+	} {
+		if err := Main(args); errors.Is(err, errNotSignedIn) {
+			t.Errorf("%v asked for an account it does not need", args)
+		}
 	}
 }
 
@@ -190,5 +187,35 @@ func TestSigningInAndReadingTheShellNeedNoAccount(t *testing.T) {
 	}
 	if err := Main([]string{"logout"}); err != nil {
 		t.Errorf("logout needs an account: %v", err)
+	}
+}
+
+// "Not signed in" is not fixed by waiting.
+//
+// Both notes after a failed registration assumed the service was down, and the
+// remedy for the other cause is `komizo login`. Reachable now that setting a box
+// up needs no account: somebody with no session provisions a machine and is told
+// to wait for something that is already up.
+func TestTheAdviceMatchesWhyRegistrationFailed(t *testing.T) {
+	signedOut := enrolAdvice(errNotSignedIn, "root@box")
+	if !strings.Contains(signedOut, "komizo login") {
+		t.Errorf("signed out = %q, want it to say how to sign in", signedOut)
+	}
+	if strings.Contains(signedOut, "reachable") {
+		t.Errorf("signed out = %q, want it not to suggest waiting", signedOut)
+	}
+
+	down := enrolAdvice(errors.New("cannot reach the service"), "root@box")
+	if !strings.Contains(down, "reachable") {
+		t.Errorf("service down = %q, want it to suggest trying again", down)
+	}
+	if strings.Contains(down, "komizo login") {
+		t.Errorf("service down = %q, want it not to suggest signing in", down)
+	}
+	// And both name the host, because the remedy is a command about one box.
+	for _, s := range []string{signedOut, down} {
+		if !strings.Contains(s, "root@box") {
+			t.Errorf("%q does not name the server", s)
+		}
 	}
 }
