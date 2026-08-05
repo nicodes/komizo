@@ -369,6 +369,27 @@ if id komizo_monitor >/dev/null 2>&1; then
 	chgrp komizo_monitor /var/lib/komizo
 fi
 chmod 750 /var/lib/komizo
+# A DELIBERATE STOP SURVIVES A RE-RUN.
+#
+# This file is rewritten wholesale below, and re-running for an existing app is
+# the documented way to change the config image or KNOWN_AS. Without this, doing
+# that to a stopped app deletes the record of the stop while leaving the app
+# down -- so the box starts reporting app_down for something somebody stopped on
+# purpose, and nothing anywhere says why it changed its mind. That is komizo#48
+# reached from the other direction, and the KNOWN_AS block above already makes
+# the same argument: a re-run that is not mentioning a thing is not saying it
+# changed.
+#
+# Read line by line, in the same shape KNOWN_AS is read, rather than copied
+# through as a block -- so what lands back in the file is three known keys and
+# never whatever else a hand-edited file happened to have on those lines.
+STOPPED_KEEP=""
+if [ -f "$STATE_FILE" ] && [ "$(sed -n 's/^STOPPED=//p' "$STATE_FILE" | head -n 1)" = "1" ]; then
+	STOPPED_KEEP="$(printf 'STOPPED=1\nSTOPPED_BY=%s\nSTOPPED_AT=%s' \
+		"$(sed -n 's/^STOPPED_BY=//p' "$STATE_FILE" | head -n 1)" \
+		"$(sed -n 's/^STOPPED_AT=//p' "$STATE_FILE" | head -n 1)")"
+fi
+
 cat > "$STATE_FILE" <<EOF
 # Written by komizo. This is what komizo knows about this app; edit with
 # 'komizo add' rather than by hand.
@@ -378,6 +399,9 @@ CI_USER=$CI_USER
 CONFIG_IMAGE=$CONFIG_IMAGE
 KNOWN_AS=$KNOWN_AS
 EOF
+if [ -n "$STOPPED_KEEP" ]; then
+	printf '%s\n' "$STOPPED_KEEP" >> "$STATE_FILE"
+fi
 chown root:root "$STATE_FILE"
 chmod 640 "$STATE_FILE"
 
