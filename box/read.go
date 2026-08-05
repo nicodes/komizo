@@ -20,6 +20,12 @@ import (
 // the product is built on, so having it be true of two routes out of four was
 // not a position worth defending.
 //
+// PRESENT TENSE, DELIBERATELY: it is STILL true, because the unsigned GETs are
+// still served. This is the half of a migration that adds the signed form; the
+// token-alone path stays open on every box, including updated ones, until the
+// step that removes it. Nothing here closes the hole on its own, and a reader
+// who takes this file for the finished state would think otherwise.
+//
 // THE TOKEN STILL GATES THE DOOR. This is a second check and not a replacement:
 // the token says the caller reached a box it was told about, the signature says
 // which device is asking. Neither alone is authority to read.

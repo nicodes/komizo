@@ -154,9 +154,23 @@ func Handler(cfg APIConfig) http.Handler {
 	// BOTH FORMS ARE SERVED, and that is a migration rather than indecision.
 	// Boxes are updated by hand, one at a time, so an app that spoke only the
 	// signed form would go blind against every box that has not been updated
-	// yet. The app prefers these and falls back to the GET on a 404. Removing
-	// the unsigned pair is the step that breaks old callers and is its own
-	// change -- see komizo-be#58.
+	// yet. Removing the unsigned pair is the step that breaks old callers and
+	// is its own change -- see komizo-be#58.
+	//
+	// AN OLD BOX ANSWERS 401 HERE, NOT 404, and the difference matters more
+	// than it looks. This comment used to say the app falls back on a 404;
+	// there is no 404 to fall back on, because the catch-all below matches an
+	// unknown path deliberately -- a 404 distinguishable from a 401 tells an
+	// unauthenticated caller which routes exist -- and answers `refuse`.
+	//
+	// So a box that predates this route refuses a perfectly good token, and
+	// §6 records that a 401 is the one status the app turns into "enrol this
+	// box again", which is a ROOT action. Getting this wrong would have had
+	// komizo's own client ask every operator in the fleet to do the exact
+	// thing §6 names as the lever a breached service wants to pull.
+	//
+	// The app therefore must not surface a signed-route 401 as anything: it
+	// falls back to the GET, and only a 401 from THAT is a real refusal.
 	mux.HandleFunc("POST /v1/report", func(w http.ResponseWriter, r *http.Request) {
 		if !authorized(cfg, r) {
 			refuse(w)
@@ -266,16 +280,25 @@ func refuse(w http.ResponseWriter) {
 // window parses the requested range, defaulting to the last hour.
 func window(r *http.Request, now time.Time) (from, to int64, ok bool) {
 	q := r.URL.Query()
+	return parseWindow(q.Get, now)
+}
+
+// parseWindow is what a window IS, wherever the two values came from.
+//
+// The default is the last hour, and it is stated once: two copies of a default
+// is two answers to "what does asking for nothing mean", and nothing would have
+// failed if they drifted.
+func parseWindow(get func(string) string, now time.Time) (from, to int64, ok bool) {
 	to = now.Unix()
 	from = now.Add(-time.Hour).Unix()
-	if v := q.Get("to"); v != "" {
+	if v := get("to"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
 			return 0, 0, false
 		}
 		to = n
 	}
-	if v := q.Get("from"); v != "" {
+	if v := get("from"); v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
 			return 0, 0, false
@@ -292,29 +315,15 @@ func window(r *http.Request, now time.Time) (from, to int64, ok bool) {
 //
 // The whole point of the signed history route is that the request came from a
 // particular device -- and a window read from the URL is a window anything that
-// relayed the request could rewrite without breaking the signature. Same
-// defaults as the query form, so the two routes answer alike when asked alike.
+// relayed the request could rewrite without breaking the signature.
+//
+// ONE PARSER, not two. read.go's own header blames a duplicated block for the
+// log route drifting into reading c.Args["app"] directly while every other path
+// used AppOf, and the first version of this function was that same duplication
+// in the same diff. What differs between the two routes is WHERE the values come
+// from, so that is the only thing that differs here.
 func signedWindow(c Command, now time.Time) (from, to int64, ok bool) {
-	to = now.Unix()
-	from = now.Add(-time.Hour).Unix()
-	if v := c.Args["to"]; v != "" {
-		n, err := strconv.ParseInt(v, 10, 64)
-		if err != nil {
-			return 0, 0, false
-		}
-		to = n
-	}
-	if v := c.Args["from"]; v != "" {
-		n, err := strconv.ParseInt(v, 10, 64)
-		if err != nil {
-			return 0, 0, false
-		}
-		from = n
-	}
-	if from > to {
-		return 0, 0, false
-	}
-	return from, to, true
+	return parseWindow(func(k string) string { return c.Args[k] }, now)
 }
 
 func writeJSON(w http.ResponseWriter, v any) { writeJSONStatus(w, http.StatusOK, v) }
