@@ -239,3 +239,55 @@ func PrepareAPISocketDir(path string) error {
 	}
 	return nil
 }
+
+// ServedDirMode is 0750 and setgid, and it is setgid for the mirror image of
+// the reason APISocketDirMode is.
+//
+// Here root creates the files and the agent account reads them, so a file would
+// be born group root and unreadable by the one process that serves it. Setgid
+// on the directory gives it the DIRECTORY's group instead -- the agent's -- and
+// AppendSample's 0640 then means what it says.
+//
+// No world bits. Every other account on the box, including every app's deploy
+// account, has no business reading what this machine measured about itself.
+const ServedDirMode = os.ModeSetgid | 0o750
+
+// PrepareServedDir makes the directory root writes into and the agent reads
+// from.
+//
+// Owned by ROOT, grouped to the agent: the opposite of the socket directory,
+// because the direction is the opposite. Called by rootd, which runs as root --
+// nothing else on the box can hand a directory to another account.
+//
+// Idempotent, and called on every start rather than only at install: StateDir
+// survives a reboot but an operator, an upgrade or a restored backup can leave
+// this directory owned by root with no group at all, and the failure that
+// produces is an empty chart rather than an error.
+func PrepareServedDir(path string) error {
+	if err := os.MkdirAll(path, 0o750); err != nil {
+		return err
+	}
+	u, err := user.Lookup(AgentUser)
+	if err != nil {
+		// No such account: not a box komizo has set up. Left alone rather than
+		// failed, so this works in a test and mid-provisioning.
+		return nil
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return nil
+	}
+	// Owner 0, explicitly. Root writes here and the account that reads must not
+	// be able to replace what it is given -- which is the same split the
+	// credential in EtcDir is on.
+	if err := os.Chown(path, 0, gid); err != nil {
+		return fmt.Errorf("could not group %s to %s: %w", path, AgentUser, err)
+	}
+	// After the chown, because chown clears the setgid bit. There is a test for
+	// this ordering in the installer for the same reason there is one here:
+	// getting it wrong looks exactly like getting it right.
+	if err := os.Chmod(path, ServedDirMode); err != nil {
+		return fmt.Errorf("could not set the mode on %s: %w", path, err)
+	}
+	return nil
+}

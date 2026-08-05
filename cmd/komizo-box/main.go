@@ -154,7 +154,6 @@ func runRootd(args []string) error {
 		mode os.FileMode
 	}{
 		{filepath.Dir(*reportPath), 0o755},
-		{filepath.Dir(*historyPath), 0o750},
 	} {
 		if err := os.MkdirAll(d.path, d.mode); err != nil {
 			return err
@@ -164,6 +163,13 @@ func runRootd(args []string) error {
 		if err := os.Chmod(d.path, d.mode); err != nil {
 			return err
 		}
+	}
+	// The history's directory is NOT one of those. It is 0750 root:agent and
+	// setgid, so that the readings root appends here are readable by the account
+	// that serves them -- see PrepareServedDir. Made with the generic mode
+	// above, it was root:root, and every GET /v1/history answered with nothing.
+	if err := box.PrepareServedDir(filepath.Dir(*historyPath)); err != nil {
+		return err
 	}
 	// The read API's socket directory: owned by the account that binds the
 	// socket, grouped to the one the proxy runs as. See PrepareAPISocketDir --
