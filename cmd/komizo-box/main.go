@@ -132,6 +132,7 @@ func runRootd(args []string) error {
 	confPath := fs.String("config", box.AgentConfPath, "the credential whose keys commands are verified against")
 	inboxDir := fs.String("inbox", box.InboxDir, "where signed commands arrive")
 	resultsDir := fs.String("results", box.ResultsDir, "where their outcomes are written")
+	logsDir := fs.String("logs", box.LogsDir, "where each app's recent output is kept")
 	reportPath := fs.String("report", box.ReportPath, "where to write the current report")
 	historyPath := fs.String("history", box.HistoryPath, "where to append readings")
 	volEvery := fs.Int("volumes-every", 15, "measure volumes every Nth reading (0 disables)")
@@ -252,6 +253,24 @@ func runRootd(args []string) error {
 	// half-second timer's justification is that a stat on tmpfs costs nothing;
 	// that is true of the poll and not of the work it dispatches.
 	go commandLoop(ctx, *confPath, *inboxDir, *resultsDir)
+
+	// Logs on their own timer too, and for the opposite reason to commands:
+	// this runs a docker command per app, where the command loop stats a
+	// directory. Off this goroutine so a slow compose does not stall the
+	// report, which is the same argument commands made.
+	go func() {
+		t := time.NewTicker(collectEvery)
+		defer t.Stop()
+		collectLogs(ctx, "", *logsDir)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				collectLogs(ctx, "", *logsDir)
+			}
+		}
+	}()
 
 	for {
 		select {

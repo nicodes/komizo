@@ -65,6 +65,9 @@ type APIConfig struct {
 	// owned by whoever writes into it -- see inbox.go.
 	InboxDir   string
 	ResultsDir string
+	// LogsDir is where rootd leaves each app's recent output. Root writes it
+	// because the account serving this has no docker group -- see logs.go.
+	LogsDir string
 
 	// Now is injectable so expiry is testable without sleeping.
 	Now func() time.Time
@@ -139,6 +142,16 @@ func Handler(cfg APIConfig) http.Handler {
 			samples = nil
 		}
 		writeJSON(w, HistoryResponse{V: APIVersion, From: from, To: to, Samples: samples})
+	})
+
+	// What an app has been saying. A read like the others: rootd collects it and
+	// this hands it over, because the account here cannot ask docker anything.
+	mux.HandleFunc("GET /v1/logs", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(cfg, r) {
+			refuse(w)
+			return
+		}
+		serveLog(cfg, w, r)
 	})
 
 	// Telling this box something. A POST, and the only route here that is not a
