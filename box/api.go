@@ -70,14 +70,6 @@ type APIConfig struct {
 	Now func() time.Time
 }
 
-// now is the clock, defaulted once rather than at each use.
-func (c APIConfig) now() time.Time {
-	if c.Now == nil {
-		return Now()
-	}
-	return c.Now()
-}
-
 // ReportResponse is the current state, whole.
 type ReportResponse struct {
 	V      int    `json:"v"`

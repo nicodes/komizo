@@ -1,10 +1,14 @@
 package box
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 )
 
 // The route that lets somebody tell this box something.
@@ -53,7 +57,7 @@ func (r resultResponse) Schema() int { return r.V }
 
 // postCommand takes a signed command and puts it where rootd will find it.
 func postCommand(cfg APIConfig, w http.ResponseWriter, r *http.Request) {
-	if cfg.InboxDir == "" || len(cfg.OperatorKeys) == 0 {
+	if cfg.InboxDir == "" || cfg.ResultsDir == "" || len(cfg.OperatorKeys) == 0 {
 		// A box nobody has given a device to. Said plainly rather than accepted
 		// and silently never applied, because "the button did nothing" is the
 		// worst version of this.
@@ -62,7 +66,14 @@ func postCommand(cfg APIConfig, w http.ResponseWriter, r *http.Request) {
 	}
 
 	raw, err := io.ReadAll(io.LimitReader(r.Body, MaxCommandBytes+1))
-	if err != nil || len(raw) > MaxCommandBytes {
+	if err != nil {
+		// A caller that went away mid-body. Not the same as one that sent too
+		// much, and answering "too large" would send somebody looking for a
+		// size problem they do not have.
+		http.Error(w, "could not read that command", http.StatusBadRequest)
+		return
+	}
+	if len(raw) > MaxCommandBytes {
 		http.Error(w, "that command is too large", http.StatusRequestEntityTooLarge)
 		return
 	}
@@ -78,11 +89,20 @@ func postCommand(cfg APIConfig, w http.ResponseWriter, r *http.Request) {
 	//
 	// The keys are PUBLIC, so holding them grants nothing. Verifying with a
 	// public key is not the same as being able to sign.
-	c, _, err := VerifyCommand(cfg.OperatorKeys, raw, cfg.ServerID, cfg.now())
+	c, _, err := VerifyCommand(cfg.OperatorKeys, raw, cfg.ServerID, cfg.Now())
 	if err != nil {
-		// One answer for every reason, the same as the read routes: which of
-		// them it was is not this caller's business. rootd writes the detail
-		// where the operator is.
+		// A version this box does not speak, or an op it does not know, is NOT a
+		// refusal: the signature has already verified, so the caller is a device
+		// this box trusts and §4 says it is entitled to a sentence rather than a
+		// silence. Collapsing these into the opaque 403 left an app that is
+		// ahead of a box unable to tell "wrong key" from "I do not know that",
+		// and made rootd's own handling of them unreachable from the app.
+		if !errors.Is(err, ErrCommandRefused) {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+		// Everything else is one answer, the same as the read routes: which
+		// reason it was is not this caller's business.
 		http.Error(w, "this box will not act on that", http.StatusForbidden)
 		return
 	}
@@ -94,19 +114,24 @@ func postCommand(cfg APIConfig, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	full, err := inboxFull(cfg.InboxDir)
-	if err != nil {
-		http.Error(w, "this box cannot take a command right now", http.StatusServiceUnavailable)
-		return
-	}
-	if full {
+	// COUNTED AND WRITTEN UNDER ONE LOCK. net/http gives every request its own
+	// goroutine with no cap, so counting and then writing let concurrent callers
+	// all see room and all take it -- four hundred at once put a hundred and
+	// fifty-nine files behind a bound of a hundred and twenty-eight. rootd's own
+	// sweep pulls that back within half a second, so it was a bounded spike on
+	// tmpfs rather than an unbounded one, but the bound should mean what it says.
+	//
+	// Cheap: the whole of it is one ReadDir and one write, on tmpfs.
+	inboxMu.Lock()
+	err = takeCommand(cfg.InboxDir, c.ID, raw)
+	inboxMu.Unlock()
+	switch {
+	case errors.Is(err, errInboxFull):
 		// 503 and not 500: it is a state that passes. rootd sweeps and applies
 		// on its own timer, so the honest answer is "not now".
 		http.Error(w, "this box has too many commands waiting", http.StatusServiceUnavailable)
 		return
-	}
-
-	if err := writeCommand(cfg.InboxDir, c.ID, raw); err != nil {
+	case err != nil:
 		http.Error(w, "this box could not take that command", http.StatusServiceUnavailable)
 		return
 	}
@@ -134,6 +159,39 @@ func getResult(cfg APIConfig, w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resultResponse{V: ResultVersion, Result: res})
 }
 
+// TempPrefix marks a command that is still being written.
+//
+// A DOT, and that is the contract with rootd rather than a convention: it reads
+// this directory on a timer and must not pick up a file mid-write. It did, and
+// the result was a command applied and then removed, so the route's rename
+// failed and the caller was told 503 for work that had already happened.
+//
+// Exported so the reader uses this and not a literal of its own. Two spellings
+// of "still being written" is one spelling that stops matching.
+const TempPrefix = ".tmp-"
+
+// IsTemporary reports whether a name in the inbox is one of those.
+func IsTemporary(name string) bool { return strings.HasPrefix(name, ".") }
+
+// inboxMu serialises the count and the write. See postCommand.
+var inboxMu sync.Mutex
+
+// errInboxFull is the bound, reported so the caller can be told to try again
+// rather than that something went wrong.
+var errInboxFull = errors.New("the inbox is full")
+
+// takeCommand is the bounded write: count, then store, with nothing in between.
+func takeCommand(dir, id string, raw []byte) error {
+	full, err := inboxFull(dir)
+	if err != nil {
+		return err
+	}
+	if full {
+		return errInboxFull
+	}
+	return writeCommand(dir, id, raw)
+}
+
 // writeCommand puts the blob where rootd looks, named by its id.
 //
 // NAMED BY THE ID, which makes arrival idempotent: the same command posted
@@ -155,11 +213,18 @@ func writeCommand(dir, id string, raw []byte) error {
 		return err
 	}
 	final := filepath.Join(dir, id)
-	if _, err := os.Stat(final); err == nil {
+	if fi, err := os.Stat(final); err == nil {
+		if !fi.Mode().IsRegular() {
+			// Something that is not a command is sitting where one would go.
+			// Refused rather than treated as "already waiting", which reported
+			// success and queued nothing -- the silent kind of failure this
+			// route exists to avoid.
+			return fmt.Errorf("%s is not a command file", final)
+		}
 		// Already waiting. Not an error: it is the same command.
 		return nil
 	}
-	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	tmp, err := os.CreateTemp(dir, TempPrefix+"*")
 	if err != nil {
 		return err
 	}
@@ -171,12 +236,10 @@ func writeCommand(dir, id string, raw []byte) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	// 0600: root reads this, and root is not subject to the mode. Nothing else
-	// on the box has any business reading what somebody asked this machine to
-	// do.
-	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
-		return err
-	}
+	// No chmod: os.CreateTemp already makes it 0600 and a umask can only clear
+	// bits further. The line that was here did nothing, and it did it inside the
+	// window between writing and renaming -- which is the window rootd was
+	// reading in.
 	return os.Rename(tmp.Name(), final)
 }
 

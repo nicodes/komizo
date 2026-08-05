@@ -119,6 +119,14 @@ mkdir -p __INBOX_DIR__
 chown komizo_monitor:root __INBOX_DIR__
 chmod 2750 __INBOX_DIR__
 
+# And the other direction: where root leaves what happened, for the account to
+# read back. Inside __SERVED_DIR__, which is already setgid to that account --
+# but created here explicitly rather than left to be inferred from that, because
+# inferring it is what failed for the history.
+mkdir -p __RESULTS_DIR__
+chown root:komizo_monitor __RESULTS_DIR__
+chmod 2750 __RESULTS_DIR__
+
 # Installed by rename, so a running rootd is replaced rather than written
 # through. Overwriting a busy executable in place is ETXTBSY at best and a
 # half-written binary at worst.
@@ -275,6 +283,19 @@ if ! su komizo_monitor -s /bin/sh -c "touch __INBOX_DIR__/.probe && rm -f __INBO
 	printf 'error: komizo_monitor cannot write to __INBOX_DIR__.\n' >&2
 	printf '       That is how a signed command reaches root; without it the app\n' >&2
 	printf '       can read this box and never command it.\n' >&2
+	exit 1
+fi
+
+# And the read side of the results, for the same reason.
+#
+# The app polls this for the outcome of everything it asks for. If the account
+# cannot enter the directory, ReadResult fails silently and every command answers
+# 404 forever -- which is indistinguishable from "not applied yet", so the app
+# spins on every button with nothing anywhere saying why.
+if ! su komizo_monitor -s /bin/sh -c "ls __RESULTS_DIR__ >/dev/null" 2>/dev/null; then
+	printf 'error: komizo_monitor cannot read __RESULTS_DIR__.\n' >&2
+	printf '       The app reads command outcomes from there; without it every\n' >&2
+	printf '       command it sends would appear to hang forever.\n' >&2
 	exit 1
 fi
 
