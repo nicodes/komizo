@@ -35,7 +35,7 @@ const AgentInterval = "60s"
 // one input here the SERVICE did not produce -- see box/operator.go. Rendered
 // as repeated flags rather than one delimited value so the box parses exactly
 // what was passed, with no separator to disagree about.
-func AgentEnrol(api, token, apiHost string, deviceKeys []string) string {
+func AgentEnrol(api, token, apiHost string, deviceKeys []string, forget bool) string {
 	var keys strings.Builder
 	for _, k := range deviceKeys {
 		if keys.Len() > 0 {
@@ -45,6 +45,14 @@ func AgentEnrol(api, token, apiHost string, deviceKeys []string) string {
 		// argument ShQuote carries everywhere in this file does not stop
 		// applying because a value looks like base64.
 		keys.WriteString("--device-key " + ShQuote(k))
+	}
+	if forget {
+		// Rendered into the same placeholder, because it is the same decision:
+		// which devices this box takes orders from after this command.
+		if keys.Len() > 0 {
+			keys.WriteByte(' ')
+		}
+		keys.WriteString("--forget-devices")
 	}
 	return render(agentEnrol,
 		"__API__", ShQuote(api),

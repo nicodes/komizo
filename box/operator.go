@@ -3,6 +3,7 @@ package box
 import (
 	"crypto/ed25519"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -70,6 +71,10 @@ func ParseDeviceKey(s string) (ed25519.PublicKey, error) {
 // refusing to work on one box out of six, months later, with nothing to read.
 // A conf carrying a value somebody meant to work is the same argument the
 // service makes about an unreadable signing key.
+// Nothing calls this yet. The enforcement point is rootd verifying a command --
+// app-only.md §9 step 3 -- and until then the only way an unparseable key
+// reaches here is somebody editing agent.json by hand, because both flag
+// parsers refuse one on the way in.
 func (c AgentConf) TrustedKeys() ([]ed25519.PublicKey, error) {
 	out := make([]ed25519.PublicKey, 0, len(c.OperatorKeys))
 	for i, raw := range c.OperatorKeys {
@@ -88,4 +93,49 @@ func (c AgentConf) TrustedKeys() ([]ed25519.PublicKey, error) {
 // key at all -- reading is authorised by the registry's signature and commanding
 // is not -- and conflating them would mean planting a device key was the price
 // of looking at a chart.
+//
+// It DOES require a server id, which couples command authority to registry
+// state: `komizo-box unenrol` deletes the whole credential, so leaving the
+// service also de-authorises every device. That follows from a command naming
+// the box it is for (app-only.md §4's srv), and it is worth knowing rather than
+// discovering -- a box taken off komizo is managed over SSH, as it was before
+// it ever joined.
 func (c AgentConf) CanCommand() bool { return len(c.OperatorKeys) > 0 && c.ServerID != "" }
+
+// DeviceKeyList collects a repeatable --device-key on any command line.
+//
+// ONE definition, used by the CLI on the laptop and by komizo-box on the
+// server. There were two, briefly, with the same TrimSpace-parse-dedupe body in
+// both -- and scripts/embed.go already records why that is wrong in this
+// codebase's own words: "The app package had its own copy; it now calls this
+// one, so there is a single definition of the rule."
+//
+// It matters more here than for a rule about shell quoting. Two parsers for
+// what counts as an authority are two chances to disagree about it, and the one
+// that is wrong is whichever the reviewer did not read.
+type DeviceKeyList []string
+
+func (d *DeviceKeyList) String() string { return strings.Join(*d, ",") }
+
+// Set validates as it goes, so an error names the value that is wrong.
+//
+// These are copied between two windows, which is where a truncated base64
+// string comes from -- and a truncated authority that failed later, on the box,
+// would fail after the connection and in the middle of somebody's setup.
+func (d *DeviceKeyList) Set(v string) error {
+	v = strings.TrimSpace(v)
+	if _, err := ParseDeviceKey(v); err != nil {
+		return err
+	}
+	if slices.Contains(*d, v) {
+		// The same key twice is somebody pasting twice, and the result they
+		// wanted is the result they get.
+		return nil
+	}
+	*d = append(*d, v)
+	return nil
+}
+
+// DeviceKeyUsage is the one wording for the flag, so the two commands that take
+// it cannot describe it differently.
+const DeviceKeyUsage = "a device that may command this box, from the app (repeatable)"
