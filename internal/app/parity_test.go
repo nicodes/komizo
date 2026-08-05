@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"flag"
+	"io"
+	"os"
 	"strings"
 	"testing"
 )
@@ -268,6 +270,233 @@ func TestAPartialLastLogLineIsNotLost(t *testing.T) {
 	w.flush()
 	if !strings.Contains(out.String(), "no trailing newline") {
 		t.Errorf("the last line was dropped: %q", out.String())
+	}
+}
+
+// --- a command that succeeded and had nothing to show ------------------------
+//
+// komizo#47. The whole transcript of the bug, on a healthy box with a real app:
+//
+//	$ komizo logs --host root@BOX --app web
+//	$ echo $?
+//	0
+//
+// Nothing. Not a blank line -- nothing. And an empty stdout with a zero exit is
+// equally what a mistyped alias, a shell function that ate the arguments, or a
+// binary that returned before doing anything leaves behind, so the person at
+// the terminal has no way to tell "your app has said nothing" from "komizo did
+// not run". The box itself does not have this problem: box/logs.go answers the
+// app's read of the same state with "nothing collected for that app yet".
+//
+// So these assert on WHAT A PERSON SEES, not on an exit code. An exit code
+// cannot fail here -- zero is the correct status both before and after the fix,
+// and a test written against it would have passed against the bug.
+
+func TestAnEmptyLogSaysSoRatherThanPrintingNothing(t *testing.T) {
+	var out bytes.Buffer
+	reportSilence(&out, "logs", "web", "komizo list --host root@box")
+
+	got := out.String()
+	if strings.TrimSpace(got) == "" {
+		t.Fatal("an empty log still produces an empty terminal -- this is komizo#47 itself")
+	}
+	// NAMED. "nothing to show" on its own is a sentence about no particular
+	// thing, and somebody who ran this against the wrong app would read it as
+	// confirmation about the right one.
+	if !strings.Contains(got, "web") {
+		t.Errorf("the message does not name the app it is about:\n%s", got)
+	}
+	// And it must not read as a failure, because it is not one. The status half
+	// of that is the signature assertion at the bottom of this block.
+	for _, bad := range []string{"error:", "failed", "could not"} {
+		if strings.Contains(strings.ToLower(got), bad) {
+			t.Errorf("an app with no output is not a failure, but the message says %q:\n%s", bad, got)
+		}
+	}
+	// BOTH CAUSES, because the box cannot tell them apart on this path.
+	// `docker compose logs` is empty for a stack with no containers and empty
+	// for a stack whose containers have said nothing, and it reports the same
+	// emptiness for both. Printing one of them would be komizo inventing a fact
+	// about somebody's server.
+	for _, want := range []string{"ever run", "written no output"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the message picks one cause instead of naming both -- %q is missing:\n%s", want, got)
+		}
+	}
+	// And it points at the command that does settle it, so the answer is one
+	// line away rather than a thing to go and work out.
+	if !strings.Contains(got, "komizo list") {
+		t.Errorf("nothing tells them how to find out which of the two it is:\n%s", got)
+	}
+}
+
+// The postscript to #47: `stop` on an app with no containers printed its own
+// "==> Running stop on web" header and then nothing at all, which is the same
+// failure wearing a hat -- the header proves komizo started, and proves nothing
+// about whether anything was stopped.
+func TestASilentStartStopOrRestartSaysWhatDidNotHappen(t *testing.T) {
+	for _, verb := range []string{"start", "stop", "restart"} {
+		var out bytes.Buffer
+		reportSilence(&out, verb, "web", "komizo list --host root@box")
+
+		got := out.String()
+		if strings.TrimSpace(got) == "" {
+			t.Errorf("%s on an empty stack still says nothing after its header", verb)
+			continue
+		}
+		if !strings.Contains(got, "web") || !strings.Contains(got, verb) {
+			t.Errorf("the %s message names neither the verb nor the app:\n%s", verb, got)
+		}
+		// No second "==>" header: the verb already printed one, and a lifecycle
+		// command that opens two blocks for one action reads as two actions.
+		if strings.Contains(got, "==>") {
+			t.Errorf("%s opened a second step for the tail of the first:\n%s", verb, got)
+		}
+	}
+}
+
+// AND THE REMARK STAYS OUT OF THE LOG.
+//
+// `komizo logs --app web > snapshot.txt` and `komizo logs --app web | grep
+// ERROR` are why this is a command and not only a screen -- this file's own
+// opening says a TUI-only capability "cannot be scripted, cannot run in CI". A
+// sentence komizo wrote is not a log line, and on stdout it would land inside a
+// file that is supposed to be the app's own output, where the next reader has
+// no way to tell whose words those are.
+//
+// The wiring, not the text: which stream it goes to is exactly the sort of
+// decision that is quietly correct until somebody simplifies it away.
+func TestTheRemarkAboutAnEmptyLogIsNotWrittenIntoTheLog(t *testing.T) {
+	if quietStream("logs") != os.Stderr {
+		t.Error("komizo's remark about an empty log goes to stdout, so `komizo logs > file` writes komizo's prose into the log")
+	}
+	// The others print komizo's own header to stdout already, so their remark
+	// belongs beside it. Nobody pipes a stop.
+	for _, verb := range []string{"start", "stop", "restart"} {
+		if quietStream(verb) != os.Stdout {
+			t.Errorf("%s reports itself on stderr, away from the header it belongs to", verb)
+		}
+	}
+}
+
+// AND SOMETHING ACTUALLY CALLS IT.
+//
+// Every test above this one calls reportSilence directly, which says nothing
+// about whether production does -- the whole of #47 is three lines in
+// lifecycle(), and deleting them restores the bug with the rest of this file
+// still green. That was demonstrated on this branch, not imagined: the lines
+// came out, the suite passed, and the transcript in the issue came back.
+//
+// Asserted against the source because lifecycle() cannot be run without a box:
+// it resolves a target and probes it over SSH before it reaches this. The
+// alternative is a seam through the middle of the one function whose job is to
+// have no seams. functionBody is the idiom parity_setup_test.go already uses
+// for exactly this class of failure.
+func TestASilentRunIsActuallyReported(t *testing.T) {
+	body := functionBody(t, sourceOf(t, "lifecycle.go"), "lifecycle")
+	if !strings.Contains(body, "heardOn(verb, onOut, onErr)") {
+		t.Error("lifecycle() does not ask whether the box said anything -- komizo#47")
+	}
+	if !strings.Contains(body, "reportSilence(quietStream(verb)") {
+		t.Error("lifecycle() never says anything when the box was silent -- komizo#47")
+	}
+}
+
+// WHICH STREAM COUNTS, per verb. The half of the decision that is invisible
+// when it is wrong.
+//
+// A box whose compose file predates the schema change prints `WARN[0000] the
+// attribute 'version' is obsolete` on stderr from every compose invocation,
+// forever. Counted as "the app said something", that box gets an empty log, a
+// zero exit and no message at all -- #47 exactly, restored on the machines
+// carrying the oldest files, and restored in a way that looks like the fix
+// merely did not fire.
+func TestOnlyStdoutCountsAsALogHavingSpoken(t *testing.T) {
+	if heardOn("logs", false, true) {
+		t.Error("a compose warning on stderr counts as the app having logged something -- komizo#47 on every box with a legacy compose file")
+	}
+	if !heardOn("logs", true, false) {
+		t.Error("a log on stdout does not count as output, so komizo would deny a log it just printed")
+	}
+
+	// The mirror image, and it is why this is per-verb rather than "stdout".
+	// compose reports a stop on STDERR: `Container web-web-1  Stopped` is not
+	// an error, it is the entire answer, and a stop that said it must not then
+	// be told it did nothing.
+	for _, verb := range []string{"start", "stop", "restart"} {
+		if !heardOn(verb, false, true) {
+			t.Errorf("%s ignores compose's own progress on stderr, so a successful %s would be reported as having done nothing", verb, verb)
+		}
+		if heardOn(verb, false, false) {
+			t.Errorf("%s counts silence as output", verb)
+		}
+	}
+}
+
+// Noticing the silence at all. Everything above is about what to SAY; this is
+// the half that decides whether there is anything to say, and it is the half
+// that would make the messages unreachable if it were wrong.
+func TestHeardWriterNoticesASingleByteAndStillPassesItOn(t *testing.T) {
+	var sink strings.Builder
+	w := &heardWriter{to: &sink}
+	if w.heard {
+		t.Error("a writer nothing was written to reports that it heard something")
+	}
+	// An EMPTY write is not a byte. io.Copy does not make them, but a Writer is
+	// entitled to receive one, and treating it as output would make the answer
+	// depend on how the copy loop happened to chunk a stream that had nothing
+	// in it.
+	if _, err := w.Write(nil); err != nil {
+		t.Fatal(err)
+	}
+	if w.heard {
+		t.Error("an empty write counted as the box having said something")
+	}
+	// A LONE NEWLINE COUNTS. A blank line is something a person sees, and a
+	// wrapper that decided otherwise would be second-guessing the box about
+	// whether its own output was worth having.
+	if _, err := w.Write([]byte("\n")); err != nil {
+		t.Fatal(err)
+	}
+	if !w.heard {
+		t.Error("a blank line from the box read as silence")
+	}
+	// And it is a pass-through, not a filter: the bytes still arrive.
+	if _, err := w.Write([]byte("Container web-web-1  Stopped\n")); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sink.String(), "Container web-web-1  Stopped") {
+		t.Errorf("the box's own output was swallowed on the way through: %q", sink.String())
+	}
+}
+
+// EXIT ZERO, STILL. An app that has gone quiet is not a failure, and turning
+// this into one would break every `komizo logs` in a CI script the moment an
+// app stopped talking. The fix for #47 is a sentence, not a status.
+//
+// Asserted as a signature, because that is what the property actually is:
+// reportSilence returns nothing, so there is no value lifecycle() could learn
+// to fail on. The edit this guards against is the plausible one -- somebody
+// giving it an error return "for consistency" with everything else in the file,
+// and the next caller dutifully returning it.
+var _ func(io.Writer, string, string, string) = reportSilence
+
+// And the command it suggests is one that would work if pasted.
+//
+// A hint that drops the login or the port answers "is my app running" with a
+// connection failure, which leaves somebody with two mysteries instead of one
+// -- and the second is komizo's fault.
+func TestTheSuggestedListNamesTheBoxTheWayThisCommandDid(t *testing.T) {
+	got := listHint(target{user: "deploy", host: "box.example.com", port: 2222})
+	for _, want := range []string{"deploy@box.example.com", "--port 2222"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("listHint = %q, want it to carry %q", got, want)
+		}
+	}
+	// And 22 is not written out, because naming the default is noise on the
+	// overwhelmingly common case.
+	if got := listHint(target{user: "root", host: "box.example.com", port: 22}); strings.Contains(got, "--port") {
+		t.Errorf("listHint = %q, want the default port left unsaid", got)
 	}
 }
 

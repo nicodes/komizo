@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 )
@@ -18,12 +19,29 @@ import (
 // is what `@v0` became.
 const actionsVersion = "v0.0.1"
 
-func step(format string, a ...any) {
-	fmt.Printf("\n==> "+format+"\n", a...)
+func step(format string, a ...any) { stepTo(os.Stdout, format, a...) }
+
+func note(format string, a ...any) { noteTo(os.Stdout, format, a...) }
+
+// stepTo and noteTo are step and note against a chosen stream.
+//
+// Two reasons, and the second is the one that made them exist. The first is
+// that not every remark belongs on stdout: `komizo logs` writes a LOG there,
+// and a sentence komizo wrote about that log is not part of it -- see
+// lifecycle.go's quietStream.
+//
+// The second is that a message nobody can capture is a message nobody can
+// assert, and the message these were added for -- what komizo says when a
+// command succeeded and produced no output -- is precisely one whose absence
+// looks like success. A test that could only check an exit code would pass
+// against the bug it exists to prevent, because the bug IS an exit code of zero
+// with nothing beside it.
+func stepTo(w io.Writer, format string, a ...any) {
+	fmt.Fprintf(w, "\n==> "+format+"\n", a...)
 }
 
-func note(format string, a ...any) {
-	fmt.Printf("    "+format+"\n", a...)
+func noteTo(w io.Writer, format string, a ...any) {
+	fmt.Fprintf(w, "    "+format+"\n", a...)
 }
 
 func warn(format string, a ...any) {
