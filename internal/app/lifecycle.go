@@ -124,16 +124,60 @@ func lifecycle(verb string, args []string) error {
 	if scrubs(verb) {
 		run = tgt.runScriptSafeHeard
 	}
-	heard, err := run(boxCmd(verb, remote...), nil)
+	onOut, onErr, err := run(boxCmd(verb, remote...), nil)
 	if err != nil {
 		return lifecycleErr(err, verb, subject, tgt)
 	}
 	// SUCCESS WITH NOTHING TO SHOW IS STILL AN ANSWER. See reportSilence: this
 	// is the whole of komizo#47, and the return below is deliberately still nil.
-	if !heard {
-		reportSilence(quietStream(verb), verb, subject, tgt.host)
+	if !heardOn(verb, onOut, onErr) {
+		reportSilence(quietStream(verb), verb, subject, listHint(tgt))
 	}
 	return nil
+}
+
+// heardOn is which stream counts as the box having said something.
+//
+// STDOUT ONLY FOR LOGS. The log is on stdout -- cmd/komizo-box hands compose's
+// two streams straight through -- and compose talks on stderr for reasons that
+// have nothing to do with whether an app has logged anything: a box whose
+// compose file predates the schema change gets `WARN[0000] the attribute
+// 'version' is obsolete` on every invocation, forever. Counting that as the app
+// having spoken is komizo#47 restored on exactly the boxes carrying the oldest
+// files, and restored silently, because it looks like the fix simply did not
+// fire.
+//
+// EITHER STREAM FOR THE REST, because compose reports start, stop and restart
+// on stderr: `Container web-web-1  Stopped` is not an error, it is the whole
+// answer, and a stop that said that must not then be told it did nothing.
+//
+// The asymmetry is deliberate and is the same call quietStream makes from the
+// other side: for logs, stderr is not part of the log, so komizo neither writes
+// its own remark into stdout nor reads the box's stderr as proof the log exists.
+//
+// A function rather than an inline || so the decision can be asserted -- the
+// same reason scrubs() is one.
+func heardOn(verb string, onOut, onErr bool) bool {
+	if verb == "logs" {
+		return onOut
+	}
+	return onOut || onErr
+}
+
+// listHint is the `komizo list` an empty log can tell somebody to run,
+// addressed the way they addressed this command.
+//
+// The login and the port are carried, because a suggestion that does not work
+// when pasted is worse than no suggestion: somebody who reached this box as
+// `deploy@BOX --port 2222` and is handed `komizo list --host BOX` gets a
+// connection failure as the answer to "is my app running", and now has two
+// mysteries.
+func listHint(t target) string {
+	s := "komizo list --host " + t.addr()
+	if t.port != 22 {
+		s += fmt.Sprintf(" --port %d", t.port)
+	}
+	return s
 }
 
 // reportSilence says what happened when the box's own output did not.
@@ -155,7 +199,7 @@ func lifecycle(verb string, args []string) error {
 // EXIT ZERO, STILL. An app with no output is not a failure, and making it one
 // would break every `komizo logs` in a CI script the moment an app went quiet.
 // The fix is a sentence, not a status.
-func reportSilence(w io.Writer, verb, subject, host string) {
+func reportSilence(w io.Writer, verb, subject, listCmd string) {
 	if verb != "logs" {
 		// start, stop and restart already printed their own "==> Running stop on
 		// web" header, so this is the second half of a sentence that was left
@@ -196,7 +240,7 @@ func reportSilence(w io.Writer, verb, subject, host string) {
 	noteTo(w, "written no output yet.")
 	// So the pair is closed by the command that settles it, rather than left as
 	// two possibilities and no next move.
-	noteTo(w, "`komizo list --host %s` will say which of the two it is.", host)
+	noteTo(w, "`%s` will say which of the two it is.", listCmd)
 }
 
 // quietStream is where komizo's own remark about a silent run goes.
