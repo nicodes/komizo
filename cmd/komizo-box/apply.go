@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"syscall"
 	"time"
 
 	"github.com/nicodes/komizo/box"
@@ -54,6 +56,18 @@ const applyEvery = 500 * time.Millisecond
 // half a second" and "applied in one".
 const maxPending = 32
 
+// maxInbox bounds how much may WAIT.
+//
+// maxPending bounds one pass; without this the directory itself grows without
+// limit and every pass re-lists all of it. On tmpfs that is RAM, filled by an
+// account that only has to be able to create files.
+const maxInbox = 256
+
+// commandSweepGrace is how long past its last possible validity a command is
+// left before it is swept, so a clock difference does not delete something that
+// was about to be applied.
+const commandSweepGrace = time.Minute
+
 // applyPending reads the inbox once.
 //
 // Errors are logged rather than returned: one unreadable command is not a
@@ -63,11 +77,33 @@ func applyPending(ctx context.Context, conf box.AgentConf, dir, results string) 
 	if err != nil || len(ents) == 0 {
 		return
 	}
+	// SWEPT FIRST, and whatever the credential says. A box with no operator keys
+	// -- which is every box today -- used to return here without removing
+	// anything, so its inbox filled and stayed full. That directory is on tmpfs,
+	// which is RAM. Anything past the age a command could still be valid at is
+	// removed, and so is anything that is not a file, because a directory left
+	// in here is re-listed every half second forever.
+	now := time.Now()
+	kept := 0
+	for _, e := range ents {
+		info, ierr := e.Info()
+		stale := ierr != nil || now.Sub(info.ModTime()) > box.MaxCommandTTL+commandSweepGrace
+		if e.IsDir() || stale || kept >= maxInbox {
+			_ = os.RemoveAll(filepath.Join(dir, e.Name()))
+			continue
+		}
+		kept++
+	}
 	// Oldest first, so a burst is applied in the order it arrived. Names are
 	// random ids and carry no order of their own, so this reads mtimes.
 	type pending struct {
 		name string
 		at   time.Time
+	}
+	// Re-listed after the sweep, so nothing removed above is acted on.
+	ents, err = os.ReadDir(dir)
+	if err != nil {
+		return
 	}
 	var list []pending
 	for _, e := range ents {
@@ -85,6 +121,11 @@ func applyPending(ctx context.Context, conf box.AgentConf, dir, results string) 
 		list = list[:maxPending]
 	}
 
+	if !conf.CanCommand() {
+		// Swept above; nothing here takes orders. Every box is in this state
+		// until an operator plants a device key with root.
+		return
+	}
 	keys, err := conf.TrustedKeys()
 	if err != nil {
 		// A credential carrying a key somebody meant to work. Said once per
@@ -113,15 +154,40 @@ func applyOne(ctx context.Context, keys []ed25519.PublicKey, serverID, path, res
 
 	c, _, err := box.VerifyCommand(keys, raw, serverID, time.Now())
 	if err != nil {
-		// Logged locally, where the operator is, and never answered to the
-		// caller -- the route that accepted this has already replied. This is
-		// the one place the reason for a refusal is written down.
+		// Logged locally, where the operator is. A REFUSAL is never answered:
+		// whoever sent it is not a device this box trusts, and the route that
+		// accepted the blob has already replied.
 		fmt.Fprintf(os.Stderr, "komizo-box: refusing a command: %v\n", err)
+
+		// But a version this box does not speak, or an op it does not know, is
+		// not a refusal -- it is a signed command from a device this box trusts,
+		// asking for something it cannot do. app-only.md §4 promises those "fail
+		// with a sentence instead of a silence", and a sentence nobody can read
+		// is a silence: the app polls the result and waits forever. So they get
+		// one. VerifyCommand returns the command for exactly these two.
+		if !errors.Is(err, box.ErrCommandRefused) && c.ID != "" {
+			_ = box.WriteResult(results, box.Result{ID: c.ID, Op: c.Op,
+				At: time.Now().UTC(), OK: false, Detail: err.Error()})
+		}
 		return
 	}
 	// The replay check, after the signature so that an unsigned id cannot be
 	// used to ask what this box has already done.
 	if box.Applied(results, c.ID) {
+		return
+	}
+
+	// CLAIMED BEFORE IT IS DONE. The record used to be written afterwards, so a
+	// results directory that could not be written to meant the command ran and
+	// left no trace -- and then ran again on the next arrival, and the next.
+	// Replay protection degraded to nothing, silently, in exactly the case
+	// somebody would least notice.
+	//
+	// A failed claim means NOT ACTING. Doing the work anyway is the behaviour
+	// this is here to prevent.
+	claim := box.Result{ID: c.ID, Op: c.Op, At: time.Now().UTC(), OK: false, Detail: applyingDetail}
+	if werr := box.WriteResult(results, claim); werr != nil {
+		fmt.Fprintf(os.Stderr, "komizo-box: could not claim %s, so it was not applied: %v\n", c.ID, werr)
 		return
 	}
 
@@ -134,6 +200,14 @@ func applyOne(ctx context.Context, keys []ed25519.PublicKey, serverID, path, res
 		fmt.Fprintf(os.Stderr, "komizo-box: could not record the result of %s: %v\n", c.ID, werr)
 	}
 }
+
+// applyingDetail marks a claim that has not finished.
+//
+// Visible to the app on purpose: "started, no outcome yet" is a real state and
+// the alternative is a spinner that cannot tell it from "never arrived". A
+// claim that stays this way is a command whose rootd died mid-apply, which is
+// worth being able to see.
+const applyingDetail = "applying"
 
 // perform maps a verified command onto the same path the CLI takes.
 //
@@ -172,16 +246,40 @@ var opVerbs = map[string]string{
 	box.OpAppRestart: "restart",
 }
 
-// readBounded reads a file and refuses one larger than max.
+// readBounded reads a regular file and refuses one larger than max.
 //
-// Bounded before it is read rather than after: this is a file an internet-facing
-// process created, and an unbounded read is an unbounded allocation at root.
+// EVERY WORD OF THAT IS LOAD-BEARING, because the inbox is owned by the account
+// that talks to the internet and this runs as root.
+//
+// O_NONBLOCK: a plain Open on a FIFO blocks in the kernel until somebody writes,
+// and this is called from rootd's loop -- so one `mkfifo` in the inbox stopped
+// commands AND the report, forever. A box that stops reporting is
+// indistinguishable from a box that is down, which is the failure
+// supervise-daemon was chosen to avoid.
+//
+// O_NOFOLLOW: otherwise the agent points a symlink at any file on the box and
+// has root read it. Nothing downstream prints those bytes today, which makes
+// this a primitive rather than a disclosure -- and a primitive that only stays
+// harmless while nobody adds a log line.
+//
+// And then it must be a REGULAR file: a device node opened non-blocking is not
+// a command, and a directory is not either.
+//
+// Bounded before it is read rather than after, because an unbounded read at
+// root is an unbounded allocation.
 func readBounded(path string, max int) ([]byte, error) {
-	f, err := os.Open(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
 	b, err := io.ReadAll(io.LimitReader(f, int64(max)+1))
 	if err != nil {
 		return nil, err

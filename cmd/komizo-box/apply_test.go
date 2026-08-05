@@ -3,11 +3,15 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -365,5 +369,253 @@ func TestReadBoundedRefusesAnOversizedFile(t *testing.T) {
 	}
 	if _, err := readBounded(path, box.MaxCommandBytes); err != nil {
 		t.Errorf("a file at the bound was refused: %v", err)
+	}
+}
+
+// A FIFO IN THE INBOX MUST NOT HANG ROOTD.
+//
+// The inbox is owned by the account that talks to the internet, so it can
+// mkfifo there. A plain Open on a FIFO blocks in the kernel until somebody
+// writes, and this ran inside rootd's loop -- so one command-shaped pipe stopped
+// commands AND the report, forever. A box that stops reporting is
+// indistinguishable from a box that is down.
+func TestAFifoInTheInboxDoesNotHang(t *testing.T) {
+	captureCompose(t)
+	inbox, results := t.TempDir(), t.TempDir()
+	fifo := filepath.Join(inbox, "looks-like-a-command")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("cannot make a fifo here: %v", err)
+	}
+	pub, _ := device(t)
+	conf := box.AgentConf{ServerID: "srv_mine", OperatorKeys: []string{box.FormatDeviceKey(pub)}}
+
+	done := make(chan struct{})
+	go func() {
+		applyPending(context.Background(), conf, inbox, results)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("applyPending blocked on a fifo -- rootd would stop reporting")
+	}
+	if _, err := os.Stat(fifo); !os.IsNotExist(err) {
+		t.Error("the fifo was left behind to block the next pass too")
+	}
+}
+
+// And a symlink is not followed, so root cannot be made to read an arbitrary
+// file on the box.
+func TestASymlinkInTheInboxIsNotFollowed(t *testing.T) {
+	inbox := t.TempDir()
+	secret := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(secret, []byte("shhh"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(inbox, "link")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Skipf("cannot symlink here: %v", err)
+	}
+	if _, err := readBounded(link, box.MaxCommandBytes); err == nil {
+		t.Error("root followed a symlink out of the inbox")
+	}
+	// And the target survives: removing the entry unlinks the link, not the file.
+	_ = os.Remove(link)
+	if _, err := os.Stat(secret); err != nil {
+		t.Errorf("the symlink's target was removed: %v", err)
+	}
+}
+
+// A COMMAND THAT CANNOT BE RECORDED IS NOT PERFORMED.
+//
+// The record used to be written after the work, so a results directory that
+// could not be written to meant the command ran and left no trace -- and then
+// ran again on every arrival. Replay protection degraded to nothing, silently,
+// in the case somebody would least notice.
+func TestACommandIsNotAppliedIfItCannotBeClaimed(t *testing.T) {
+	runs := captureCompose(t)
+	pub, priv := device(t)
+	inbox, results := t.TempDir(), t.TempDir()
+	root := appFixture(t, "web", "/srv/web")
+	if err := os.Chmod(results, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(results, 0o750) })
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the mode this test depends on")
+	}
+
+	conf := box.AgentConf{ServerID: "srv_mine", OperatorKeys: []string{box.FormatDeviceKey(pub)}}
+	c := box.Command{ID: "unclaimable", Srv: "srv_mine", Exp: time.Now().Add(time.Minute).Unix(),
+		Op: box.OpAppStop, Args: map[string]string{"app": "web"}}
+
+	withRoot(t, root, func() {
+		for i := 0; i < 3; i++ {
+			drop(t, inbox, priv, c)
+			applyPending(context.Background(), conf, inbox, results)
+		}
+	})
+	if len(*runs) != 0 {
+		t.Errorf("a command ran %d times with no record of it: %v", len(*runs), *runs)
+	}
+}
+
+// The inbox is bounded, and it is swept whether or not this box takes orders.
+//
+// A box with no operator keys -- which is every box today -- used to return
+// without removing anything, so its inbox filled and stayed full. That
+// directory is on tmpfs, which is RAM.
+func TestTheInboxIsSweptEvenWhenNothingCanCommand(t *testing.T) {
+	captureCompose(t)
+	inbox, results := t.TempDir(), t.TempDir()
+	for i := 0; i < maxInbox+50; i++ {
+		if err := os.WriteFile(filepath.Join(inbox, "junk"+strconv.Itoa(i)), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A directory, which is re-listed every pass forever if it is never removed.
+	if err := os.Mkdir(filepath.Join(inbox, "adir"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	// No operator keys at all.
+	applyPending(context.Background(), box.AgentConf{ServerID: "srv_mine"}, inbox, results)
+
+	left, err := os.ReadDir(inbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) > maxInbox {
+		t.Errorf("%d entries left, want at most %d -- the inbox is unbounded", len(left), maxInbox)
+	}
+	for _, e := range left {
+		if e.IsDir() {
+			t.Error("a directory was left in the inbox")
+		}
+	}
+}
+
+// And anything too old to still be valid is removed.
+func TestStaleCommandsAreSweptOut(t *testing.T) {
+	captureCompose(t)
+	inbox, results := t.TempDir(), t.TempDir()
+	old := filepath.Join(inbox, "ancient")
+	if err := os.WriteFile(old, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-2 * (box.MaxCommandTTL + commandSweepGrace))
+	if err := os.Chtimes(old, past, past); err != nil {
+		t.Fatal(err)
+	}
+	applyPending(context.Background(), box.AgentConf{ServerID: "srv_mine"}, inbox, results)
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Error("a command older than it could possibly be valid was kept")
+	}
+}
+
+func b64url(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
+
+// "A SENTENCE INSTEAD OF A SILENCE" HAS TO BE READABLE.
+//
+// app-only.md §4 promises that an op a box does not know fails with a sentence.
+// It was printed to the box's stderr and nowhere else, so the app polled a
+// result that never appeared and waited forever. This caller is signed by a
+// device the box trusts and is entitled to be told.
+func TestATrustedCallerIsToldWhatThisBoxCannotDo(t *testing.T) {
+	captureCompose(t)
+	pub, priv := device(t)
+	inbox, results := t.TempDir(), t.TempDir()
+	conf := box.AgentConf{ServerID: "srv_mine", OperatorKeys: []string{box.FormatDeviceKey(pub)}}
+
+	payload := []byte(fmt.Sprintf(
+		`{"v":1,"id":"unknownop","srv":"srv_mine","exp":%d,"op":"app.hibernate","args":{"app":"web"}}`,
+		time.Now().Add(time.Minute).Unix()))
+	raw, err := json.Marshal(box.Signed{Payload: b64url(payload), Sig: b64url(ed25519.Sign(priv, payload))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(inbox, "unknownop"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	applyPending(context.Background(), conf, inbox, results)
+
+	r, found := box.ReadResult(results, "unknownop")
+	if !found {
+		t.Fatal("an op this box cannot do left no result, so the app waits forever")
+	}
+	if r.OK || !strings.Contains(r.Detail, "app.hibernate") {
+		t.Errorf("result = %+v, want a failure naming the op", r)
+	}
+
+	// The same for a version this box does not speak, which is the other thing
+	// an app that is ahead of a box runs into.
+	payload = []byte(fmt.Sprintf(
+		`{"v":99,"id":"newversion","srv":"srv_mine","exp":%d,"op":"app.stop","args":{"app":"web"}}`,
+		time.Now().Add(time.Minute).Unix()))
+	raw, err = json.Marshal(box.Signed{Payload: b64url(payload), Sig: b64url(ed25519.Sign(priv, payload))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(inbox, "newversion"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	applyPending(context.Background(), conf, inbox, results)
+
+	r, found = box.ReadResult(results, "newversion")
+	if !found {
+		t.Fatal("a version this box does not speak left no result")
+	}
+	if r.OK || !strings.Contains(r.Detail, "speaks v") {
+		t.Errorf("result = %+v, want a failure naming both versions", r)
+	}
+}
+
+// A BOX WITH NO SERVER ID OBEYS NOBODY.
+//
+// Held by two guards -- the credential's CanCommand and the envelope's audience
+// check -- and pinned by neither: removing both left the suite green. No command
+// can name a machine no registry has heard of.
+func TestABoxWithNoServerIDAppliesNothing(t *testing.T) {
+	runs := captureCompose(t)
+	pub, priv := device(t)
+	inbox, results := t.TempDir(), t.TempDir()
+
+	// Keys planted, no server id -- an un-enrolled box that somebody gave a
+	// device key to.
+	conf := box.AgentConf{OperatorKeys: []string{box.FormatDeviceKey(pub)}}
+	drop(t, inbox, priv, box.Command{ID: "nosrv", Srv: "srv_mine",
+		Exp: time.Now().Add(time.Minute).Unix(), Op: box.OpAppStop,
+		Args: map[string]string{"app": "web"}})
+
+	applyPending(context.Background(), conf, inbox, results)
+	if len(*runs) != 0 {
+		t.Errorf("a box no registry has heard of obeyed a command: %v", *runs)
+	}
+	if _, found := box.ReadResult(results, "nosrv"); found {
+		t.Error("it answered one, too")
+	}
+
+	// And the case the two guards actually overlap on: a command that names NO
+	// server, at a box that has none. Both empty compare equal, so an audience
+	// check written as a plain inequality would accept it. SignCommand refuses
+	// to mint one, so it is built by hand.
+	payload := []byte(fmt.Sprintf(
+		`{"v":1,"id":"nosrv2","srv":"","exp":%d,"op":"app.stop","args":{"app":"web"}}`,
+		time.Now().Add(time.Minute).Unix()))
+	raw, err := json.Marshal(box.Signed{Payload: b64url(payload), Sig: b64url(ed25519.Sign(priv, payload))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(inbox, "nosrv2"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// With a REAL app, so that if both guards were gone the command would reach
+	// docker rather than dying at a lookup -- which is what made an earlier
+	// version of this pass against the hole it was written for.
+	withRoot(t, appFixture(t, "web", "/srv/web"), func() {
+		applyPending(context.Background(), conf, inbox, results)
+	})
+	if len(*runs) != 0 {
+		t.Errorf("a command naming no server was applied at a box with none: %v", *runs)
 	}
 }

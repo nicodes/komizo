@@ -59,6 +59,12 @@ const InboxDirMode = os.ModeSetgid | 0o750
 // Called on every start as well as by the installer, because RunDir is tmpfs
 // and this is simply gone after a reboot -- the same reason the report's
 // directory is recreated there.
+// The CALLER must have made RunDir first, and rootd does. That ordering is
+// load-bearing rather than incidental: the chown and chmod below are
+// unconditional, so a directory the agent had pre-created -- or a symlink it
+// had left in its place -- would be handed root's blessing. RunDir is 0755
+// root:root and made before this runs, so there is no window in which the agent
+// could put anything at this path.
 func PrepareInboxDir(path string) error {
 	if err := os.MkdirAll(path, 0o750); err != nil {
 		return err
@@ -79,8 +85,8 @@ func PrepareInboxDir(path string) error {
 		return fmt.Errorf("could not give %s to %s: %w", path, AgentUser, err)
 	}
 	// After the chown, because chown clears the setgid bit. Third time this
-	// ordering has mattered on this box and there is a test for it each time,
-	// because getting it wrong looks exactly like getting it right.
+	// ordering has mattered here, and it is tested each time, because getting it
+	// wrong looks exactly like getting it right.
 	if err := os.Chmod(path, InboxDirMode); err != nil {
 		return fmt.Errorf("could not set the mode on %s: %w", path, err)
 	}

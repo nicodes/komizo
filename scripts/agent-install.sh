@@ -104,6 +104,21 @@ if [ -f __STATE_DIR__/history.jsonl ] && [ ! -e __HISTORY_PATH__ ]; then
 	log "Moved this box's readings into __SERVED_DIR__"
 fi
 
+# Where a signed command arrives: the account CREATES here and root reads, which
+# is the socket directory's shape in the opposite direction. Setgid so a command
+# the account drops is born in root's group rather than its own.
+#
+# Under __RUN_DIR__, which is tmpfs -- a command carries an expiry in minutes and
+# one that survived a reboot would be a machine acting, at boot, on something
+# somebody asked for before it went down. rootd remakes it on every start; this
+# is for the window before the first tick, and so that komizo-api never comes up
+# to a directory that is not there.
+#
+# chmod AFTER chown, because chown clears the setgid bit.
+mkdir -p __INBOX_DIR__
+chown komizo_monitor:root __INBOX_DIR__
+chmod 2750 __INBOX_DIR__
+
 # Installed by rename, so a running rootd is replaced rather than written
 # through. Overwriting a busy executable in place is ETXTBSY at best and a
 # half-written binary at worst.
@@ -246,6 +261,20 @@ if ! su komizo_monitor -s /bin/sh -c "cat __HISTORY_PATH__ >/dev/null" 2>/dev/nu
 	printf '       The read API serves this history as that account, so every\n' >&2
 	printf '       request for it would answer with nothing and say no more;\n' >&2
 	printf '       check the group and mode on __SERVED_DIR__.\n' >&2
+	exit 1
+fi
+
+# And the write side of the same boundary, PROVEN rather than asserted.
+#
+# The account has to CREATE a file in the inbox -- that is the whole of how a
+# command reaches root -- and whether it can depends on the owner and mode of a
+# directory rather than on anything visible where the writing happens. Every
+# previous failure in this shape was found on a real box instead of in review,
+# which is why this is a check and not a comment.
+if ! su komizo_monitor -s /bin/sh -c "touch __INBOX_DIR__/.probe && rm -f __INBOX_DIR__/.probe" 2>/dev/null; then
+	printf 'error: komizo_monitor cannot write to __INBOX_DIR__.\n' >&2
+	printf '       That is how a signed command reaches root; without it the app\n' >&2
+	printf '       can read this box and never command it.\n' >&2
 	exit 1
 fi
 

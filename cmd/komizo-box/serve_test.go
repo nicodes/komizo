@@ -309,3 +309,33 @@ func TestTheInstallerMovesAnOlderBoxsReadings(t *testing.T) {
 		t.Error("the moved history keeps root's group, which is the group that could not read it")
 	}
 }
+
+// And the installer makes it, since the account cannot make it for itself.
+func TestTheInstallerCreatesAndProvesTheInbox(t *testing.T) {
+	sh := scripts.AgentInstall("stamp", "v0.0.0")
+	if !strings.Contains(sh, box.InboxDir) {
+		t.Fatalf("the installer never mentions %s", box.InboxDir)
+	}
+	adduser := strings.Index(sh, "adduser")
+	chown := strings.Index(sh, "chown komizo_monitor:root "+box.InboxDir)
+	if adduser < 0 || chown < 0 {
+		t.Fatalf("adduser=%d chown=%d", adduser, chown)
+	}
+	if chown < adduser {
+		t.Error("the inbox is given away before the account exists")
+	}
+	if !strings.Contains(sh, "chmod 2750 "+box.InboxDir) {
+		t.Error("the inbox is not setgid")
+	}
+	if strings.Index(sh, "chmod 2750 "+box.InboxDir) < chown {
+		t.Error("the mode is set before the chown, which clears the setgid bit")
+	}
+
+	// PROVEN, not asserted -- app-only.md §4 asks for this specifically, because
+	// the failure is silent and every previous one in this shape was found on a
+	// real box rather than in review.
+	if !strings.Contains(sh, `su komizo_monitor -s /bin/sh -c "touch `+box.InboxDir+`/.probe`) {
+		t.Error("the installer never writes to the inbox as the account that will, " +
+			"so a box where it cannot finishes install and can never be commanded")
+	}
+}
