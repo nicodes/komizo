@@ -88,3 +88,24 @@ func TestOldResultsAreSweptAndRecentOnesKept(t *testing.T) {
 		t.Error("a recent result was swept")
 	}
 }
+
+// 0640, and the group bit is the boundary rather than decoration.
+//
+// Root writes these and the serving account reads them to hand back; ServedDir
+// is setgid to that account, so the file is born in a group that can open it.
+// Without the mode this is a result only root can see, and the app polls
+// forever.
+func TestAResultIsReadableByTheAccountThatServesIt(t *testing.T) {
+	dir := t.TempDir()
+	id := "abc123"
+	if err := WriteResult(dir, Result{ID: id, Op: OpAppStop, OK: true}); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(filepath.Join(dir, id+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o640 {
+		t.Errorf("a result is %04o, want 0640 -- the group is what lets it be served", perm)
+	}
+}
