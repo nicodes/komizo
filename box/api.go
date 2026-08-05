@@ -144,6 +144,59 @@ func Handler(cfg APIConfig) http.Handler {
 		writeJSON(w, HistoryResponse{V: APIVersion, From: from, To: to, Samples: samples})
 	})
 
+	// THE SAME TWO READS, ASKED FOR BY A DEVICE.
+	//
+	// komizo-be#58. The GET routes above are authorised by the registry's token
+	// alone, which means whoever holds the service's signing key reads every
+	// enrolled box -- so these exist to take a signed envelope as well, the way
+	// logs and commands already do.
+	//
+	// BOTH FORMS ARE SERVED, and that is a migration rather than indecision.
+	// Boxes are updated by hand, one at a time, so an app that spoke only the
+	// signed form would go blind against every box that has not been updated
+	// yet. The app prefers these and falls back to the GET on a 404. Removing
+	// the unsigned pair is the step that breaks old callers and is its own
+	// change -- see komizo-be#58.
+	mux.HandleFunc("POST /v1/report", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(cfg, r) {
+			refuse(w)
+			return
+		}
+		if _, ok := verifiedRead(cfg, w, r, OpReportRead); !ok {
+			return
+		}
+		rep, err := ReadReport(cfg.ReportPath)
+		if err != nil {
+			http.Error(w, "no report yet", http.StatusServiceUnavailable)
+			return
+		}
+		writeJSON(w, ReportResponse{V: APIVersion, Report: rep})
+	})
+
+	mux.HandleFunc("POST /v1/history", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(cfg, r) {
+			refuse(w)
+			return
+		}
+		c, ok := verifiedRead(cfg, w, r, OpHistoryRead)
+		if !ok {
+			return
+		}
+		// FROM THE ARGUMENTS, not from the query string. The point of this route
+		// is that what is being asked for was signed, and a window taken from
+		// the URL is a window anybody who relayed the request could change.
+		from, to, ok := signedWindow(c, cfg.Now())
+		if !ok {
+			http.Error(w, "from and to must be unix seconds, and from must not be after to", http.StatusBadRequest)
+			return
+		}
+		samples, err := ReadSamples(cfg.HistoryPath, from, to)
+		if err != nil {
+			samples = nil
+		}
+		writeJSON(w, HistoryResponse{V: APIVersion, From: from, To: to, Samples: samples})
+	})
+
 	// What an app has been saying. NOT a read like the others: §5 asks that logs
 	// be authorised by the device rather than by the registry, so this takes a
 	// signed envelope as well as a token -- see logs.go.
@@ -223,6 +276,35 @@ func window(r *http.Request, now time.Time) (from, to int64, ok bool) {
 		to = n
 	}
 	if v := q.Get("from"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return 0, 0, false
+		}
+		from = n
+	}
+	if from > to {
+		return 0, 0, false
+	}
+	return from, to, true
+}
+
+// signedWindow is the same window, taken from what was SIGNED.
+//
+// The whole point of the signed history route is that the request came from a
+// particular device -- and a window read from the URL is a window anything that
+// relayed the request could rewrite without breaking the signature. Same
+// defaults as the query form, so the two routes answer alike when asked alike.
+func signedWindow(c Command, now time.Time) (from, to int64, ok bool) {
+	to = now.Unix()
+	from = now.Add(-time.Hour).Unix()
+	if v := c.Args["to"]; v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return 0, 0, false
+		}
+		to = n
+	}
+	if v := c.Args["from"]; v != "" {
 		n, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
 			return 0, 0, false
