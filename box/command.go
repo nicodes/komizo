@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"path"
 	"slices"
 	"strings"
 	"time"
@@ -354,6 +355,23 @@ const (
 	OpAppStop    = "app.stop"
 	OpAppRestart = "app.restart"
 
+	// OpAppAdd sets an app up.
+	//
+	// NOT "or updates one", which is what this said and could not do. `pubkey`
+	// is mandatory and alpine.sh WRITES authorized_keys, so pointing this at an
+	// app that already exists rotates its deploy key and breaks that repository's
+	// CI -- where `komizo add` reads the existing values back off the box first.
+	// Updating over this transport is a separate op with its own arguments, not
+	// this one used twice.
+	//
+	// The op that mints nothing. `komizo add` on the command line generates a
+	// deploy keypair and prints the private half; a command carries only the
+	// PUBLIC half, because a result file lives where the account that talks to
+	// the internet can read it and report.go says never, in anything it can
+	// read, "registry tokens, private keys". The app generates the pair and
+	// shows the private half once -- app-only.md §5a.
+	OpAppAdd = "app.add"
+
 	// OpLogsRead is a READ, and the only op here that nothing applies.
 	//
 	// It exists because app-only.md §5 asks for logs to be authorised by the
@@ -375,16 +393,16 @@ const (
 )
 
 // commandOps is every op an ENVELOPE may name.
-var commandOps = []string{OpAppStart, OpAppStop, OpAppRestart, OpLogsRead}
+var commandOps = []string{OpAppStart, OpAppStop, OpAppRestart, OpAppAdd, OpLogsRead}
 
 // ApplyOps is the subset /v1/commands accepts, which is every op that CHANGES
-// something.
+// something. app.add is one of them: it provisions, which is work for root.
 //
 // Two sets because they answer different questions, and one set answering both
 // is how a read envelope became something root would pick up, parse and write
 // two files about. apply.go asserts its own dispatch against this, so adding an
 // op to one and not the other is a refusal rather than a silent success.
-var ApplyOps = []string{OpAppStart, OpAppStop, OpAppRestart}
+var ApplyOps = []string{OpAppStart, OpAppStop, OpAppRestart, OpAppAdd}
 
 // Applies reports whether this op is one the command route takes.
 func Applies(op string) bool { return slices.Contains(ApplyOps, op) }
@@ -414,4 +432,214 @@ func (c Command) AppOf() (string, error) {
 		}
 	}
 	return name, nil
+}
+
+// AddSpec is app.add's arguments, checked.
+//
+// A separate step from verifying the envelope, and a separate one again from
+// running anything: the signature says a device this box trusts sent it, and
+// says nothing about whether "web; rm -rf /" is an app name.
+type AddSpec struct {
+	App       string
+	Config    string
+	PubKey    string
+	User      string
+	AppDir    string
+	KnownAs   []string
+	HardenSSH bool
+}
+
+// AddOf reads app.add's arguments, refusing anything that is not what it claims.
+func (c Command) AddOf() (AddSpec, error) {
+	app, err := c.AppOf()
+	if err != nil {
+		return AddSpec{}, err
+	}
+	spec := AddSpec{
+		App:       app,
+		Config:    c.Args["config"],
+		PubKey:    c.Args["pubkey"],
+		User:      c.Args["user"],
+		AppDir:    c.Args["app_dir"],
+		HardenSSH: c.Args["harden_ssh"] == "1",
+	}
+
+	// The PUBLIC half of a deploy key, and one line of it. A second line would
+	// be a second key nobody asked to authorise.
+	if spec.PubKey == "" {
+		return AddSpec{}, fmt.Errorf("app.add needs the public half of a deploy key")
+	}
+	if strings.ContainsAny(spec.PubKey, "\n\r") {
+		return AddSpec{}, fmt.Errorf("a deploy key is one line")
+	}
+	if !strings.HasPrefix(spec.PubKey, "ssh-ed25519 ") {
+		// komizo issues ed25519 and nothing else. Refusing the rest here means
+		// the box never authorises a key type this project has not thought
+		// about, whoever signed for it.
+		return AddSpec{}, fmt.Errorf("a deploy key is ssh-ed25519")
+	}
+
+	// RESERVED. validateApp and alpine.sh both refuse a leading underscore --
+	// it is komizo's own namespace under /srv, where the shared proxy lives --
+	// and AppOf does not, because until this op existed AppOf only ever named an
+	// app that already exists. Routing it into PROVISIONING is what made the gap
+	// reachable, so the refusal belongs to the op that provisions.
+	if strings.HasPrefix(spec.App, "_") {
+		return AddSpec{}, fmt.Errorf("%q is reserved", spec.App)
+	}
+
+	// A registry reference with NO tag: alpine.sh appends its own, and a tag
+	// here would produce something docker cannot pull.
+	//
+	// REQUIRED, because the script requires it. Optional here it was accepted,
+	// claimed, and then died inside a shell as a failure mid-provision rather
+	// than as a refusal -- and a caller cannot tell those apart.
+	if spec.Config == "" {
+		return AddSpec{}, fmt.Errorf("app.add needs the image its compose file comes from")
+	}
+	if !onlyImageChars(spec.Config) {
+		return AddSpec{}, fmt.Errorf("%q is not a registry path", spec.Config)
+	}
+	if strings.Contains(path.Base(spec.Config), ":") {
+		return AddSpec{}, fmt.Errorf("a config image carries no tag")
+	}
+
+	if spec.AppDir != "" {
+		// Absolute. Relative it becomes a path relative to whatever the applier
+		// happens to be in, and leading with a dash it becomes a flag.
+		if !strings.HasPrefix(spec.AppDir, "/") {
+			return AddSpec{}, fmt.Errorf("app_dir must be absolute")
+		}
+		if !onlyPathChars(spec.AppDir) {
+			return AddSpec{}, fmt.Errorf("%q is not a path", spec.AppDir)
+		}
+		// NO "..", which is the guard this path had lost while the CLI's
+		// validateAppDir kept it -- so the newer, internet-reachable trigger was
+		// the weaker of the two, which is the wrong way round.
+		//
+		// The reason is validateAppDir's, unchanged: the path is recorded and
+		// later handed to `rm -rf` on removal, and the removal guard refuses a
+		// fixed set of LITERAL paths, which /srv/../etc walks straight past. It
+		// is also chown'd and chmod'd as root on the way in, so a traversal
+		// component points those at somewhere they were never meant to reach --
+		// `chmod 750 /etc` takes the box off the network and needs a console to
+		// undo.
+		if hasDotDot(spec.AppDir) {
+			return AddSpec{}, fmt.Errorf("app_dir must not contain a %q component", "..")
+		}
+	}
+
+	for _, n := range strings.Split(c.Args["known_as"], ",") {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
+		}
+		// validHostname, NOT ValidateAPIHost. The latter decides whether THIS
+		// BOX's own endpoint can be issued a public certificate, and refused
+		// `box`, `10.0.0.5` and `my_host.example.com` here -- every one of which
+		// `komizo add --known-as` accepts, because this field is the names CI
+		// dials the APP by and has nothing to do with certificates. Two
+		// unrelated jobs sharing one validator also means relaxing it for
+		// endpoints would silently widen what a signed command may write.
+		if err := validHostname(n); err != nil {
+			return AddSpec{}, fmt.Errorf("known_as: %w", err)
+		}
+		spec.KnownAs = append(spec.KnownAs, n)
+	}
+
+	// The deploy account. Defaulted rather than required, because the CLI
+	// defaults it too and a command that must state it is one more thing an app
+	// can get wrong.
+	if spec.User == "" {
+		spec.User = "komizo-" + spec.App
+	}
+	// CHECKED EITHER WAY. The default was exempt, and it is derived from an app
+	// name -- which may be longer than an account may be, and which allows
+	// uppercase where an account does not.
+	if !validAccount(spec.User) {
+		return AddSpec{}, fmt.Errorf("%q is not an account name", spec.User)
+	}
+	if spec.User == "root" {
+		// Refused here as well as by alpine.sh, and said as its own sentence:
+		// "root" passes every character rule and is the one account this must
+		// never be. The deploy account exists to be unprivileged.
+		return AddSpec{}, fmt.Errorf("the deploy account must not be root")
+	}
+	return spec, nil
+}
+
+// hasDotDot reports whether a path has a ".." COMPONENT.
+//
+// Component rather than substring: "/srv/..foo" is a directory whose name
+// begins with two dots and is not traversal.
+func hasDotDot(s string) bool {
+	return s == ".." || strings.HasPrefix(s, "../") ||
+		strings.HasSuffix(s, "/..") || strings.Contains(s, "/../")
+}
+
+// validHostname is a name CI connects by, which is not the same question as
+// whether a certificate authority would issue for it. internal/app's
+// validateHost, in the terms this package can check.
+func validHostname(s string) error {
+	// A leading hyphen would let the name be read as an option by ssh or
+	// ssh-keyscan, which is the argv-injection class rather than a naming one.
+	if s == "" || len(s) > 253 || strings.HasPrefix(s, "-") {
+		return fmt.Errorf("%q is not a hostname", s)
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
+			r == '.' || r == '_' || r == '-') {
+			return fmt.Errorf("%q is not a hostname", s)
+		}
+	}
+	return nil
+}
+
+func onlyPathChars(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '-' || r == '_' || r == '/':
+		default:
+			return false
+		}
+	}
+	return s != ""
+}
+
+func onlyImageChars(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '-' || r == '_' || r == '/' || r == ':':
+		default:
+			return false
+		}
+	}
+	return s != ""
+}
+
+// validAccount is the deploy account, in the same characters internal/app's
+// validateUser and alpine.sh's CI_USER case both allow.
+//
+// UPPERCASE IS ALLOWED, which it was not: this was lowercase-only, so
+// `--user Web` was a name the CLI took and a signed command could not carry --
+// a field the app could do less with than the CLI, which is the one direction
+// the parity rule does not permit. See TestASignedCommandTakesWhatTheCLITakes.
+//
+// The length bound is a deliberate exception to that agreement, and the only
+// one: an account name longer than 32 characters is one `adduser` refuses on
+// the far end, so the CLI's silence about it is a failure that happens over
+// SSH minutes later rather than a capability the app is missing.
+func validAccount(s string) bool {
+	if s == "" || len(s) > 32 || s[0] == '-' {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' ||
+			r >= '0' && r <= '9' || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
 }

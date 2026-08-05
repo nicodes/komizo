@@ -712,3 +712,54 @@ func TestACommandDroppedForCapacityGetsAResult(t *testing.T) {
 		t.Error("commands were removed for capacity with no result, so the app polls forever")
 	}
 }
+
+// A COMMAND DROPPED IN THE SWEEP STILL GETS AN ANSWER.
+//
+// This loop is serial and provisionTimeout is fifteen minutes, against a
+// command that stops being valid after six -- so a stop pressed while an
+// app.add was running was deleted in silence, and the screen waited out its
+// own deadline for an answer that had already been thrown away.
+//
+// The command really did expire. What was missing was saying so, and the app
+// tells "the box refused this" and "the box never answered" apart.
+func TestASweptCommandIsToldItWasSwept(t *testing.T) {
+	runs := captureCompose(t)
+	pub, priv := device(t)
+	inbox, results := t.TempDir(), t.TempDir()
+	conf := box.AgentConf{ServerID: "srv_mine", OperatorKeys: []string{box.FormatDeviceKey(pub)}}
+
+	id := "sweptCommandId"
+	path := drop(t, inbox, priv, box.Command{ID: id, Srv: "srv_mine",
+		Exp: time.Now().Add(time.Minute).Unix(),
+		Op:  box.OpAppStop, Args: map[string]string{"app": "web"}})
+	// Renamed to its id, because that is what the route writes and what the
+	// sweep files a result under.
+	filed := filepath.Join(inbox, id)
+	if err := os.Rename(path, filed); err != nil {
+		t.Fatal(err)
+	}
+	// Old enough that no clock difference could still make it valid.
+	old := time.Now().Add(-(box.MaxCommandTTL + commandSweepGrace + time.Hour))
+	if err := os.Chtimes(filed, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	applyPending(context.Background(), conf, inbox, results)
+
+	if len(*runs) != 0 {
+		t.Fatalf("an expired command was applied: %v", *runs)
+	}
+	if _, err := os.Stat(filed); !os.IsNotExist(err) {
+		t.Error("the expired command was left in the inbox")
+	}
+	r, found := box.ReadResult(results, id)
+	if !found {
+		t.Fatal("a swept command wrote no result, so the app waits out its whole deadline for nothing")
+	}
+	if r.OK {
+		t.Error("a swept command was reported as having succeeded")
+	}
+	if !strings.Contains(r.Detail, "expired") {
+		t.Errorf("detail = %q, want it to say the command expired", r.Detail)
+	}
+}
