@@ -619,3 +619,96 @@ func TestABoxWithNoServerIDAppliesNothing(t *testing.T) {
 		t.Errorf("a command naming no server was applied at a box with none: %v", *runs)
 	}
 }
+
+// ROOTD NEVER READS A FILE THAT IS STILL BEING WRITTEN.
+//
+// The route writes to `.tmp-*` and renames, which is only atomic if nothing
+// reads the temporary -- and this loop filtered on IsDir alone. A complete but
+// unrenamed temp was applied and then removed, so the rename failed and the
+// caller was told 503 for a command that had run. A partial one was removed, so
+// the caller was told 503 for a command that was discarded. Both are the
+// "silently might have" the design exists to prevent.
+func TestRootdIgnoresTheRoutesTemporaries(t *testing.T) {
+	runs := captureCompose(t)
+	pub, priv := device(t)
+	inbox, results := t.TempDir(), t.TempDir()
+	root := appFixture(t, "web", "/srv/web")
+	conf := box.AgentConf{ServerID: "srv_mine", OperatorKeys: []string{box.FormatDeviceKey(pub)}}
+
+	// A complete, valid, correctly signed command -- sitting under a temporary
+	// name, exactly as it does for the moment between write and rename.
+	c := box.Command{ID: "inflight", Srv: "srv_mine", Exp: time.Now().Add(time.Minute).Unix(),
+		Op: box.OpAppStop, Args: map[string]string{"app": "web"}}
+	env, err := box.SignCommand(priv, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmp := filepath.Join(inbox, ".tmp-123456")
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	withRoot(t, root, func() {
+		applyPending(context.Background(), conf, inbox, results)
+	})
+	if len(*runs) != 0 {
+		t.Errorf("root applied a command that was still being written: %v", *runs)
+	}
+	if _, err := os.Stat(tmp); err != nil {
+		t.Error("the temporary was removed, so the rename would fail and the caller " +
+			"would be told 503 for a command that was discarded")
+	}
+	if _, found := box.ReadResult(results, c.ID); found {
+		t.Error("a result was written for a command that had not arrived")
+	}
+
+	// And the installer's own probe file is not a command either.
+	probe := filepath.Join(inbox, ".probe")
+	if err := os.WriteFile(probe, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	applyPending(context.Background(), conf, inbox, results)
+	if _, err := os.Stat(probe); err != nil {
+		t.Error("the installer's probe was treated as a command")
+	}
+}
+
+// A COMMAND DROPPED FOR CAPACITY IS TOLD, NOT DISCARDED.
+//
+// Readdir order on tmpfs is roughly hash order rather than arrival order, so
+// the bound removes arbitrary valid, signed, unapplied commands -- and with no
+// result the app polls a 404 forever for something nothing ever refused.
+func TestACommandDroppedForCapacityGetsAResult(t *testing.T) {
+	captureCompose(t)
+	pub, _ := device(t)
+	inbox, results := t.TempDir(), t.TempDir()
+	conf := box.AgentConf{ServerID: "srv_mine", OperatorKeys: []string{box.FormatDeviceKey(pub)}}
+
+	var ids []string
+	for i := 0; i < maxInbox+20; i++ {
+		id, err := box.NewCommandID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+		if err := os.WriteFile(filepath.Join(inbox, id), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	applyPending(context.Background(), conf, inbox, results)
+
+	dropped := 0
+	for _, id := range ids {
+		if r, found := box.ReadResult(results, id); found && !r.OK &&
+			strings.Contains(r.Detail, "too many") {
+			dropped++
+		}
+	}
+	if dropped == 0 {
+		t.Error("commands were removed for capacity with no result, so the app polls forever")
+	}
+}

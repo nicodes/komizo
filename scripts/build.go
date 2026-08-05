@@ -90,6 +90,7 @@ func AgentInstall(stamp, version string) string {
 		"__ETC_DIR__", box.EtcDir,
 		"__SERVED_DIR__", box.ServedDir,
 		"__INBOX_DIR__", box.InboxDir,
+		"__RESULTS_DIR__", box.ResultsDir,
 		"__REPORT_PATH__", box.ReportPath,
 		"__HISTORY_PATH__", box.HistoryPath,
 		"__STAMP__", ShQuote(stamp),
