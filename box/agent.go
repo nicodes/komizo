@@ -188,3 +188,26 @@ func ValidateAPI(raw string) (string, error) {
 	}
 	return strings.TrimRight(u.String(), "/"), nil
 }
+
+// ChownToAgent gives a path to the account the agent runs as.
+//
+// Exported because rootd lays out the socket directory at boot -- it runs as
+// root, and the account that opens the socket cannot create a directory inside
+// one owned by root. Same reasoning as chownToAgentGroup above, one level up.
+func ChownToAgent(path string) error {
+	u, err := user.Lookup(AgentUser)
+	if err != nil {
+		// No such account: not a box komizo has set up. Left alone rather than
+		// failed, so this works in a test and mid-provisioning.
+		return nil
+	}
+	uid, err1 := strconv.Atoi(u.Uid)
+	gid, err2 := strconv.Atoi(u.Gid)
+	if err1 != nil || err2 != nil {
+		return nil
+	}
+	if err := os.Chown(path, uid, gid); err != nil {
+		return fmt.Errorf("could not give %s to %s: %w", path, AgentUser, err)
+	}
+	return nil
+}
