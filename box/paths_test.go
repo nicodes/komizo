@@ -3,6 +3,7 @@ package box
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -45,9 +46,17 @@ func TestAppDirComesFromKomizosOwnRecord(t *testing.T) {
 // A name is joined into a path, so a separator in one is refused rather than
 // cleaned up. This is reached from a route on the internet in step 3.
 func TestAppDirRefusesANameThatIsAPath(t *testing.T) {
+	// A real apps directory, so the lookup is not what fails. Against a bare
+	// temp dir every one of these also fails at readState, and the test passed
+	// with the guard deleted.
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, AppsDir), 0o750); err != nil {
+		t.Fatal(err)
+	}
 	for _, bad := range []string{"", "..", "../../etc", "a/b", "web.env", "./web"} {
-		if _, err := AppDir(t.TempDir(), bad); err == nil {
-			t.Errorf("%q was accepted as an app name", bad)
+		_, err := AppDir(root, bad)
+		if err == nil || !strings.Contains(err.Error(), "is not an app name") {
+			t.Errorf("AppDir(%q) = %v, want it refused as a name", bad, err)
 		}
 	}
 }
