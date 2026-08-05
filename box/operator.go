@@ -102,6 +102,26 @@ func (c AgentConf) TrustedKeys() ([]ed25519.PublicKey, error) {
 // it ever joined.
 func (c AgentConf) CanCommand() bool { return len(c.OperatorKeys) > 0 && c.ServerID != "" }
 
+// Fingerprint is a device key in the form somebody compares by eye.
+//
+// The first and last eight characters of the key ITSELF, not a hash of it. A
+// hash would be a second thing to compute in two places and get wrong once, and
+// what a person actually does is look at a screen and look at a terminal and
+// see whether they match. The app renders exactly this form, and the two ends
+// agreeing is the whole of the check.
+//
+// It is not a security boundary on its own. The key is carried in the command
+// the operator pastes, so this catches a truncated paste and a key that went
+// somewhere unexpected -- not a browser that was served a dishonest bundle,
+// which would show a matching fingerprint for a key that was never yours.
+func Fingerprint(key string) string {
+	body := strings.TrimPrefix(key, DeviceKeyPrefix)
+	if len(body) <= 16 {
+		return body
+	}
+	return body[:8] + "…" + body[len(body)-8:]
+}
+
 // DeviceKeyList collects a repeatable --device-key on any command line.
 //
 // ONE definition, used by the CLI on the laptop and by komizo-box on the

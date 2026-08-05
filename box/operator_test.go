@@ -139,3 +139,38 @@ func TestTheConfCarriesOperatorKeysAcrossAWrite(t *testing.T) {
 		t.Errorf("operator keys = %v, want %v", out.OperatorKeys, in.OperatorKeys)
 	}
 }
+
+// The fingerprint is what a person compares between a screen and a terminal.
+//
+// The same form on both ends, and it is the key itself rather than a hash of it
+// -- a hash would be a second thing to compute in two places and get wrong
+// once. app/src/lib/device.ts renders this exact shape.
+func TestAFingerprintIsTheKeyShortened(t *testing.T) {
+	pub, key := testKey(t)
+	_ = pub
+
+	got := Fingerprint(key)
+	body := strings.TrimPrefix(key, DeviceKeyPrefix)
+	if got != body[:8]+"…"+body[len(body)-8:] {
+		t.Errorf("Fingerprint = %q", got)
+	}
+	// The prefix is not part of it: every key has the same one, so including it
+	// would be eight characters that are identical on every comparison.
+	if strings.Contains(got, DeviceKeyPrefix) {
+		t.Error("the fingerprint repeats the prefix every key shares")
+	}
+	// Both ends of the key are in it, so a truncated paste changes it. A prefix
+	// alone would not: a key cut short keeps its first eight characters.
+	if !strings.HasPrefix(got, body[:8]) || !strings.HasSuffix(got, body[len(body)-8:]) {
+		t.Error("the fingerprint does not cover both ends, so a truncated key would match")
+	}
+	// Two different keys do not share one.
+	_, other := testKey(t)
+	if Fingerprint(other) == got {
+		t.Error("two keys share a fingerprint")
+	}
+	// And a short string is returned whole rather than sliced out of range.
+	if Fingerprint("kmz_dev_abc") != "abc" {
+		t.Errorf("a short key = %q", Fingerprint("kmz_dev_abc"))
+	}
+}
