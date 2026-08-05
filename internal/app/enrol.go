@@ -24,13 +24,14 @@ import (
 func RunEnrol(args []string) error {
 	fs := flag.NewFlagSet("enrol", flag.ContinueOnError)
 	fs.Usage = func() { usageEnrol(fs) }
-	var host, api, token, apiHost string
+	var host, api, token, apiHost, name string
 	var port int
 	var acceptHostKey, undo bool
 	fs.StringVar(&host, "host", "", "server to enrol, [user@]HOST -- must be root")
 	fs.StringVar(&api, "api", "https://api.komizo.dev", "the komizo service")
 	fs.StringVar(&token, "token", "", "the single-use enrolment token from the dashboard")
 	fs.StringVar(&apiHost, "api-host", "", "hostname the app reads this box on (default: the host you connect to, if it is a name)")
+	fs.StringVar(&name, "name", "", "what to call this server in the app (default: the host you connect to)")
 	fs.IntVar(&port, "port", 22, "SSH port")
 	fs.BoolVar(&acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
 	fs.BoolVar(&undo, "remove", false, "stop reporting, and forget the credential")
@@ -45,11 +46,20 @@ func RunEnrol(args []string) error {
 		return err
 	}
 	if !undo {
+		// No token needed when you are signed in: this creates the server and
+		// spends the token inside one command, which is the same thing `komizo
+		// init` does at the end of setting a box up. Passing one explicitly
+		// still works, for a box being enrolled against a service this machine
+		// is not signed in to.
 		if token == "" {
-			return fmt.Errorf("--token is required.\n\n" +
-				"    Issue one from the komizo dashboard. It is single-use and\n" +
-				"    expires in fifteen minutes, so it is safe on a command line\n" +
-				"    in a way the credential it becomes would not be.")
+			if err := ensureReachable(tgt, acceptHostKey); err != nil {
+				return err
+			}
+			step("Filing %s under your account", tgt.host)
+			if err := registerAndEnrol(tgt, name, apiHost, nil); err != nil {
+				return err
+			}
+			return nil
 		}
 		// Checked HERE as well as on the box, so a typo fails before anything
 		// connects rather than after.

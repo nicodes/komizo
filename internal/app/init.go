@@ -4,8 +4,11 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"os/exec"
 	"os/signal"
 	"syscall"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/nicodes/komizo/box"
 	"github.com/nicodes/komizo/scripts"
@@ -75,7 +78,7 @@ func RunInit(args []string) error {
 	}
 
 	step("Filing this server under your account")
-	if err := registerAndEnrol(tgt, o.name, o.apiHost); err != nil {
+	if err := registerAndEnrol(tgt, o.name, o.apiHost, nil); err != nil {
 		// NOT fatal. The box is set up and works; what failed is the half that
 		// needs the service, and komizo enrol does exactly this later. Failing
 		// the whole command would make a service outage look like a broken
@@ -135,7 +138,7 @@ func signalContextCLI() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 }
 
-func registerAndEnrol(t target, name, apiHost string) error {
+func registerAndEnrol(t target, name, apiHost string, ch chan tea.Msg) error {
 	s, err := requireSession()
 	if err != nil {
 		return err
@@ -158,12 +161,33 @@ func registerAndEnrol(t target, name, apiHost string) error {
 	// The token goes over stdin as part of the script rather than on the remote
 	// command line: a command line is visible in the box's process table to
 	// every account on it, for as long as the command runs.
-	if err := t.runScript(scripts.AgentEnrol(s.API, created.Token, endpoint), nil); err != nil {
-		return fmt.Errorf("the server was created but did not enrol -- run `komizo enrol --host %s` to retry", t.host)
+	sh := scripts.AgentEnrol(s.API, created.Token, endpoint)
+	if ch == nil {
+		if err := t.runScript(sh, nil); err != nil {
+			return fmt.Errorf("the server was created but did not enrol -- run `komizo enrol --host %s` to retry", t.host)
+		}
+	} else if err := stream(ch, exec.Command("ssh", t.sshArgs("sh -s")...), sh); err != nil {
+		return fmt.Errorf("the server was created but did not enrol -- press u to retry")
 	}
-	note("this server is in your app as %q.", name)
+
+	say(ch, fmt.Sprintf("this server is in your app as %q.", name))
 	if endpoint == "" {
-		note("no endpoint: %s is an address, not a name, so the app cannot open it.", t.host)
+		say(ch, fmt.Sprintf("no endpoint: %s is an address, not a name, so the app cannot open it.", t.host))
 	}
 	return nil
+}
+
+// say reports progress to whichever surface asked for the work.
+//
+// The two are not interchangeable: note() writes to stdout, which under a
+// full-screen interface lands in the middle of the frame. This is the same
+// split installAgent already makes, and forgetting it is how the interface
+// ended up not registering a server at all -- the capability was written for
+// one surface and the other was never given it.
+func say(ch chan tea.Msg, line string) {
+	if ch == nil {
+		note("%s", line)
+		return
+	}
+	ch <- runOutputMsg(line)
 }
