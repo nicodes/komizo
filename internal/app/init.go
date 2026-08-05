@@ -1,9 +1,13 @@
 package app
 
 import (
+	"context"
 	"flag"
 	"fmt"
+	"os/signal"
+	"syscall"
 
+	"github.com/nicodes/komizo/box"
 	"github.com/nicodes/komizo/scripts"
 )
 
@@ -19,6 +23,8 @@ type initOpts struct {
 	port    int
 	// See addOpts.acceptHostKey.
 	acceptHostKey bool
+	name          string
+	apiHost       string
 }
 
 func RunInit(args []string) error {
@@ -29,6 +35,8 @@ func RunInit(args []string) error {
 	fs.StringVar(&o.network, "network", defaultNetwork, "docker network apps join to be reachable")
 	fs.StringVar(&o.image, "proxy-image", defaultProxy, "caddy image to run")
 	fs.BoolVar(&o.acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
+	fs.StringVar(&o.name, "name", "", "what to call this server in the app (default: the host you connect to)")
+	fs.StringVar(&o.apiHost, "api-host", "", "hostname the app reads this box on (default: the host you connect to, if it is a name)")
 	fs.IntVar(&o.port, "port", 22, "SSH port")
 	if err := fs.Parse(args); err != nil {
 		return ErrSilent
@@ -66,6 +74,16 @@ func RunInit(args []string) error {
 			"    monitor will not work against this box until it is fixed.", err)
 	}
 
+	step("Filing this server under your account")
+	if err := registerAndEnrol(tgt, o.name, o.apiHost); err != nil {
+		// NOT fatal. The box is set up and works; what failed is the half that
+		// needs the service, and komizo enrol does exactly this later. Failing
+		// the whole command would make a service outage look like a broken
+		// server.
+		note("could not register this server: %v", err)
+		note("the box is set up. Run `komizo enrol --host %s` when the service is reachable.", tgt.host)
+	}
+
 	step("Installing the shared reverse proxy")
 	if err := tgt.runScript(scripts.AlpineProxyScript, proxyEnv(proxyOpts{
 		network: o.network,
@@ -99,4 +117,53 @@ Flags:
 `)
 	fs.PrintDefaults()
 	fmt.Println()
+}
+
+// registerAndEnrol files a box under whoever is signed in, and enrols it.
+//
+// The point of the CLI having an account. The enrolment token is minted and
+// spent inside this one command, so nothing is carried between two surfaces --
+// and the server appears in the app the moment the box is genuinely ready,
+// rather than as a pending row that may never become anything.
+//
+// Called AFTER the box is set up, deliberately. A failure before this point
+// leaves nothing behind, which is what design/enrolment.md §3 promises and what
+// creating the row first would quietly break.
+// signalContextCLI cancels on ctrl-c, so a slow service call does not have to
+// be waited out.
+func signalContextCLI() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+}
+
+func registerAndEnrol(t target, name, apiHost string) error {
+	s, err := requireSession()
+	if err != nil {
+		return err
+	}
+	if name == "" {
+		name = t.host
+	}
+	endpoint, err := box.APIHostFor(t.host, apiHost)
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signalContextCLI()
+	defer stop()
+	created, err := createServer(ctx, s, name)
+	if err != nil {
+		return err
+	}
+
+	// The token goes over stdin as part of the script rather than on the remote
+	// command line: a command line is visible in the box's process table to
+	// every account on it, for as long as the command runs.
+	if err := t.runScript(scripts.AgentEnrol(s.API, created.Token, endpoint), nil); err != nil {
+		return fmt.Errorf("the server was created but did not enrol -- run `komizo enrol --host %s` to retry", t.host)
+	}
+	note("this server is in your app as %q.", name)
+	if endpoint == "" {
+		note("no endpoint: %s is an address, not a name, so the app cannot open it.", t.host)
+	}
+	return nil
 }
