@@ -155,10 +155,6 @@ func runRootd(args []string) error {
 	}{
 		{filepath.Dir(*reportPath), 0o755},
 		{filepath.Dir(*historyPath), 0o750},
-		// The read API's socket directory. Made by ROOT, owned by the account
-		// that opens the socket -- which cannot create it itself, because the
-		// directory above is root's.
-		{box.APISocketDir, 0o750},
 	} {
 		if err := os.MkdirAll(d.path, d.mode); err != nil {
 			return err
@@ -169,10 +165,11 @@ func runRootd(args []string) error {
 			return err
 		}
 	}
-	// Given to the agent account, for the same reason the credential is: the
-	// mode says who may write here, and the owner says who they are. Not fatal
-	// when the account does not exist, which is how this behaves in a test.
-	if err := box.ChownToAgent(box.APISocketDir); err != nil {
+	// The read API's socket directory: owned by the account that binds the
+	// socket, grouped to the one the proxy runs as. See PrepareAPISocketDir --
+	// the proxy has no CAP_DAC_OVERRIDE, so this is not the formality it looks
+	// like.
+	if err := box.PrepareAPISocketDir(box.APISocketDir); err != nil {
 		return err
 	}
 
