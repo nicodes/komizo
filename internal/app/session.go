@@ -123,7 +123,10 @@ var errNotSignedIn = fmt.Errorf("you are not signed in.\n\n    komizo login\n\n"
 	"    your phone will do, so this works on a machine with no browser.")
 
 // requireSession is the gate.
-func requireSession() (Session, error) {
+// requireSession is a var so the dispatch's gate can be tested on a machine
+// whose answer would otherwise decide the result. A test that reads whether the
+// person running it happens to be signed in is a test about the environment.
+var requireSession = func() (Session, error) {
 	s, err := readSession()
 	if err != nil {
 		return Session{}, err
