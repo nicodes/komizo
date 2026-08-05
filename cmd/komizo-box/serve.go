@@ -108,7 +108,13 @@ func runServe(args []string) error {
 		// internet. An unbounded header read is a connection somebody else
 		// decides the lifetime of.
 		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		// And the BODY, now that a route reads one. Header timeouts were enough
+		// while every route was a bodyless GET; a caller holding a valid read
+		// token can otherwise trickle one byte a minute of an eight-kilobyte
+		// command and pin a goroutine for as long as it likes. Caddy does not
+		// bound it either -- read_body_timeout is unset by default.
+		ReadTimeout: 30 * time.Second,
+		IdleTimeout: 60 * time.Second,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

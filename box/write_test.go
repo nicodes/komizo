@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -372,4 +374,182 @@ func itoa(i int) string {
 		i /= 10
 	}
 	return string(b)
+}
+
+// TWO DIFFERENT COMMANDS ARE TWO FILES.
+//
+// The idempotency test posts the same command three times and expects one file,
+// which passes just as happily if the name is a constant -- and a constant name
+// means one operator's stop silently overwrites another's restart. Nothing
+// noticed that until it was mutated.
+func TestTwoDifferentCommandsBothLand(t *testing.T) {
+	cfg, dev, tok, inbox := writeFixture(t)
+	var ids []string
+	for i := 0; i < 2; i++ {
+		c := stopCmd()
+		id, err := NewCommandID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.ID = id
+		ids = append(ids, id)
+		if w := post(t, cfg, tok, signedCommand(t, dev, c)); w.Code != http.StatusAccepted {
+			t.Fatalf("post %d = %d", i, w.Code)
+		}
+	}
+	if n := inboxCount(t, inbox); n != 2 {
+		t.Errorf("%d files for 2 distinct commands, want 2", n)
+	}
+	for _, id := range ids {
+		if _, err := os.Stat(filepath.Join(inbox, id)); err != nil {
+			t.Errorf("nothing is named %q, so a command was stored under a name that is not its id", id)
+		}
+	}
+}
+
+// The temporary is dot-prefixed, which is what tells rootd not to read it.
+//
+// Asserted on the TEMPORARY rather than the final name: an id is base64url and
+// can never begin with a dot, so checking the final name only catches a rename
+// that never happened.
+func TestTheTemporaryIsHiddenFromRootd(t *testing.T) {
+	dir := t.TempDir()
+	// A directory where the final name will be, so the rename fails and the
+	// temporary is what is left to look at.
+	id, err := NewCommandID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, id), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCommand(dir, id, []byte("x")); err == nil {
+		t.Fatal("writing over a directory succeeded")
+	}
+	// And it cleans up after itself: a failed write leaves nothing for rootd to
+	// sweep later.
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		if e.Name() != id {
+			t.Errorf("a temporary was left behind: %q", e.Name())
+		}
+	}
+}
+
+// A device the box trusts is told what the box cannot do.
+//
+// §4: an op a box does not know "fails with a sentence instead of a silence".
+// The signature has already verified in this case, so the caller is entitled to
+// one -- and collapsing it into the opaque refusal made rootd's own handling of
+// it unreachable from the app.
+func TestATrustedDeviceIsToldWhatThisBoxCannotDo(t *testing.T) {
+	cfg, dev, tok, inbox := writeFixture(t)
+
+	payload := []byte(`{"v":1,"id":"abc123","srv":"srv_mine","exp":` +
+		itoa(int(time.Now().Add(time.Minute).Unix())) +
+		`,"op":"app.hibernate","args":{"app":"web"}}`)
+	body, err := json.Marshal(Signed{Payload: b64(payload), Sig: b64(ed25519.Sign(dev, payload))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := post(t, cfg, tok, body)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("an unknown op = %d, want 422 with a sentence", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "app.hibernate") {
+		t.Errorf("body = %q, want it to name the op", w.Body.String())
+	}
+	// It is still not queued: this box cannot do it whoever asked.
+	if n := inboxCount(t, inbox); n != 0 {
+		t.Error("an op the box does not know was queued anyway")
+	}
+	// And a stranger gets none of that.
+	_, stranger, _ := ed25519.GenerateKey(nil)
+	if w := post(t, cfg, tok, signedCommand(t, stranger, stopCmd())); w.Code != http.StatusForbidden {
+		t.Errorf("a stranger = %d, want the opaque 403", w.Code)
+	}
+}
+
+// The temporary is hidden from the reader by the same rule the reader uses.
+//
+// Two spellings of "still being written" is one spelling that stops matching,
+// and the consequence of a mismatch is root applying a half-written command.
+func TestTheTemporaryAndTheReaderAgree(t *testing.T) {
+	if !strings.HasPrefix(TempPrefix, ".") {
+		t.Errorf("TempPrefix = %q, which rootd would read as a command", TempPrefix)
+	}
+	if !IsTemporary(TempPrefix + "123") {
+		t.Error("the reader does not recognise the writer's temporaries")
+	}
+	// And an ordinary id is never mistaken for one: base64url has no dot, but
+	// asserting it here is what keeps the two rules from drifting apart.
+	id, err := NewCommandID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if IsTemporary(id) {
+		t.Errorf("a command id %q reads as a temporary, so it would never be applied", id)
+	}
+}
+
+// A caller that goes away mid-body is not a caller that sent too much.
+//
+// Answering "too large" would send somebody looking for a size problem they do
+// not have.
+func TestADroppedBodyIsNotReportedAsOversized(t *testing.T) {
+	cfg, _, tok, inbox := writeFixture(t)
+	r := httptest.NewRequest(http.MethodPost, "/v1/commands", errorReader{})
+	r.Header.Set("Authorization", "Bearer "+tok)
+	w := httptest.NewRecorder()
+	Handler(cfg).ServeHTTP(w, r)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("a body that could not be read = %d, want 400", w.Code)
+	}
+	if n := inboxCount(t, inbox); n != 0 {
+		t.Error("it was stored anyway")
+	}
+}
+
+type errorReader struct{}
+
+func (errorReader) Read([]byte) (int, error) { return 0, errors.New("connection went away") }
+
+// THE BOUND MEANS WHAT IT SAYS UNDER CONCURRENCY.
+//
+// net/http gives every request its own goroutine with no cap, so counting and
+// then writing let concurrent callers all see room and all take it. Four hundred
+// at once put a hundred and fifty-nine files behind a bound of a hundred and
+// twenty-eight.
+func TestTheInboxBoundHoldsWhenCallersRace(t *testing.T) {
+	cfg, dev, tok, inbox := writeFixture(t)
+
+	const callers = 200
+	bodies := make([][]byte, callers)
+	for i := range bodies {
+		c := stopCmd()
+		id, err := NewCommandID()
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.ID = id
+		bodies[i] = signedCommand(t, dev, c)
+	}
+
+	var wg sync.WaitGroup
+	for _, body := range bodies {
+		wg.Add(1)
+		go func(b []byte) {
+			defer wg.Done()
+			post(t, cfg, tok, b)
+		}(body)
+	}
+	wg.Wait()
+
+	if n := inboxCount(t, inbox); n > InboxFull {
+		t.Errorf("%d files behind a bound of %d", n, InboxFull)
+	}
 }
