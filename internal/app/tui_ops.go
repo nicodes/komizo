@@ -2,6 +2,7 @@ package app
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -433,7 +434,13 @@ func (m model) startInit(o initOpts) tea.Cmd {
 		ch <- runOutputMsg("filing this server under your account...")
 		if err := registerAndEnrol(t, "", "", nil, false, ch); err != nil {
 			ch <- runOutputMsg("could not register this server: " + err.Error())
-			ch <- runOutputMsg("the box is set up. Press u once the service is reachable.")
+			// The same two causes as the command line's, and the same reason to
+			// tell them apart: waiting for a service that is up fixes nothing.
+			if errors.Is(err, errNotSignedIn) {
+				ch <- runOutputMsg("the box is set up. Run `komizo login`, then press u, to file it under your account.")
+			} else {
+				ch <- runOutputMsg("the box is set up. Press u once the service is reachable.")
+			}
 		}
 		// The interface has nowhere to type a device key, so a box set up here
 		// takes orders from nothing. Said rather than left to be discovered: the

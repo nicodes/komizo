@@ -9,9 +9,10 @@ import (
 
 // Who is running this, held on this machine.
 //
-// komizo-be design/registry.md §10: the CLI requires an account, so that
-// setting a box up files it under somebody and it appears in the app with
-// nothing copied between two surfaces.
+// komizo-be design/app-only.md §7: an account REGISTERS a box, it does not
+// operate one. registry.md §10 required one for every command; that argument
+// held for filing a server under somebody -- so that it appears in the app with
+// nothing copied between two surfaces -- and for nothing else.
 //
 // READ FROM DISK, never checked over the network. That is the constraint the
 // same section makes, and it is not a performance argument: the CLI is what

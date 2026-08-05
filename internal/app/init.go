@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os/exec"
@@ -90,7 +91,7 @@ func RunInit(args []string) error {
 		// the whole command would make a service outage look like a broken
 		// server.
 		note("could not register this server: %v", err)
-		note("the box is set up. Run `komizo enrol --host %s` when the service is reachable.", tgt.host)
+		note("the box is set up. %s", enrolAdvice(err, tgt.host))
 	}
 
 	step("Installing the shared reverse proxy")
@@ -126,6 +127,18 @@ Flags:
 `)
 	fs.PrintDefaults()
 	fmt.Println()
+}
+
+// enrolAdvice says what to do about a registration that did not happen.
+//
+// Two causes with two different remedies, and telling them apart matters now
+// that operating a box needs no account: "not signed in" is fixed by signing in,
+// and waiting for a service that is already up would be waiting forever.
+func enrolAdvice(err error, host string) string {
+	if errors.Is(err, errNotSignedIn) {
+		return fmt.Sprintf("run `komizo login`, then `komizo enrol --host %s`, to file it under your account.", host)
+	}
+	return fmt.Sprintf("run `komizo enrol --host %s` when the service is reachable.", host)
 }
 
 // registerAndEnrol files a box under whoever is signed in, and enrols it.
