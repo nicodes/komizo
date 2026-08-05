@@ -88,7 +88,20 @@ func applyPending(ctx context.Context, conf box.AgentConf, dir, results string) 
 	for _, e := range ents {
 		info, ierr := e.Info()
 		stale := ierr != nil || now.Sub(info.ModTime()) > box.MaxCommandTTL+commandSweepGrace
-		if e.IsDir() || stale || kept >= maxInbox {
+		over := kept >= maxInbox
+		if !e.IsDir() && !stale && over {
+			// DROPPED FOR CAPACITY, and told so. Readdir order is roughly hash
+			// order on tmpfs rather than arrival order, so this removes
+			// arbitrary valid, signed, unapplied commands -- and without a
+			// result the app polls a 404 forever for something nothing ever
+			// refused out loud. An id that cannot be filed gets nothing, which
+			// is the same answer it gets everywhere else.
+			if id := e.Name(); box.ValidCommandID(id) == nil && !box.Applied(results, id) {
+				_ = box.WriteResult(results, box.Result{ID: id, At: now.UTC(), OK: false,
+					Detail: "this box had too many commands waiting"})
+			}
+		}
+		if e.IsDir() || stale || over {
 			_ = os.RemoveAll(filepath.Join(dir, e.Name()))
 			continue
 		}
@@ -107,7 +120,20 @@ func applyPending(ctx context.Context, conf box.AgentConf, dir, results string) 
 	}
 	var list []pending
 	for _, e := range ents {
-		if e.IsDir() {
+		// DOTFILES ARE NOT COMMANDS. The route writes to `.tmp-*` and renames,
+		// which is only atomic if nothing reads the temporary -- and this loop
+		// filtered on IsDir alone, so root read files mid-write. Both outcomes
+		// were the "silently might have" §4 exists to prevent: a complete but
+		// unrenamed temp was APPLIED and then removed, so the rename failed and
+		// the caller was told 503 for a command that had run; a partial one was
+		// removed, so the caller was told 503 for a command that was discarded.
+		//
+		// The installer's own .probe file was being handed to root as a command
+		// for the same reason.
+		//
+		// The sweep above still removes a stale temporary, which is the right
+		// fallback for a route that died between writing and renaming.
+		if e.IsDir() || box.IsTemporary(e.Name()) {
 			continue
 		}
 		info, err := e.Info()

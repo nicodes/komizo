@@ -47,9 +47,24 @@ type APIConfig struct {
 	// RegistryKey verifies read tokens. Planted at enrolment; see token.go.
 	RegistryKey ed25519.PublicKey
 
+	// OperatorKeys are the devices this box takes orders from, from the same
+	// credential -- see operator.go. PUBLIC, so this process holding them grants
+	// it nothing: verifying with a public key is not signing.
+	//
+	// Empty on a box nobody has given a device to, which is every box until an
+	// operator plants one. Such a box serves reads and refuses commands, and
+	// says which.
+	OperatorKeys []ed25519.PublicKey
+
 	// ReportPath and HistoryPath are the files rootd writes.
 	ReportPath  string
 	HistoryPath string
+
+	// InboxDir is where a signed command is left for rootd, and ResultsDir is
+	// where rootd leaves what happened. Two directions, two directories, each
+	// owned by whoever writes into it -- see inbox.go.
+	InboxDir   string
+	ResultsDir string
 
 	// Now is injectable so expiry is testable without sleeping.
 	Now func() time.Time
@@ -124,6 +139,26 @@ func Handler(cfg APIConfig) http.Handler {
 			samples = nil
 		}
 		writeJSON(w, HistoryResponse{V: APIVersion, From: from, To: to, Samples: samples})
+	})
+
+	// Telling this box something. A POST, and the only route here that is not a
+	// read -- see write.go for why it still does not act.
+	mux.HandleFunc("POST /v1/commands", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(cfg, r) {
+			refuse(w)
+			return
+		}
+		postCommand(cfg, w, r)
+	})
+
+	// And what happened to one. A read, authorised like every other read: the
+	// caller is asking about a command it sent.
+	mux.HandleFunc("GET /v1/commands/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(cfg, r) {
+			refuse(w)
+			return
+		}
+		getResult(cfg, w, r)
 	})
 
 	// Anything else, including an unknown path, answers exactly as an

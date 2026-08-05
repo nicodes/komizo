@@ -48,6 +48,8 @@ func runServe(args []string) error {
 	confPath := fs.String("config", box.AgentConfPath, "the credential to read")
 	reportPath := fs.String("report", box.ReportPath, "the report to serve")
 	historyPath := fs.String("history", box.HistoryPath, "the history to serve")
+	inboxDir := fs.String("inbox", box.InboxDir, "where to leave a signed command for rootd")
+	resultsDir := fs.String("results", box.ResultsDir, "where rootd leaves what happened")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -69,6 +71,22 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("%s holds an unusable registry key: %w", *confPath, err)
 	}
+	// The devices this box takes orders from. PUBLIC keys, so holding them
+	// grants this process nothing -- verifying with one is not signing with it.
+	// An unreadable set is fatal here for the reason it is everywhere else: it
+	// is a credential carrying a value somebody meant to work.
+	opKeys, err := conf.TrustedKeys()
+	if err != nil {
+		return fmt.Errorf("%s holds an unusable device key: %w", *confPath, err)
+	}
+	// Said once, because it decides whether the app can do anything here beyond
+	// look. A box with no device keys serves reads and refuses commands, which
+	// is the normal box today and not a fault -- but "the button does nothing"
+	// should not be how somebody finds out.
+	if !conf.CanCommand() {
+		fmt.Fprintln(os.Stderr, "this box has no device keys, so it serves reads and refuses commands.")
+		fmt.Fprintln(os.Stderr, "    komizo enrol --host <this box> --device-key kmz_dev_...")
+	}
 
 	ln, err := listenUnix(*sock)
 	if err != nil {
@@ -78,16 +96,25 @@ func runServe(args []string) error {
 
 	srv := &http.Server{
 		Handler: box.Handler(box.APIConfig{
-			ServerID:    conf.ServerID,
-			RegistryKey: key,
-			ReportPath:  *reportPath,
-			HistoryPath: *historyPath,
+			ServerID:     conf.ServerID,
+			RegistryKey:  key,
+			OperatorKeys: opKeys,
+			ReportPath:   *reportPath,
+			HistoryPath:  *historyPath,
+			InboxDir:     *inboxDir,
+			ResultsDir:   *resultsDir,
 		}),
 		// Bounded, because the reader is on the other side of a proxy on the
 		// internet. An unbounded header read is a connection somebody else
 		// decides the lifetime of.
 		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		// And the BODY, now that a route reads one. Header timeouts were enough
+		// while every route was a bodyless GET; a caller holding a valid read
+		// token can otherwise trickle one byte a minute of an eight-kilobyte
+		// command and pin a goroutine for as long as it likes. Caddy does not
+		// bound it either -- read_body_timeout is unset by default.
+		ReadTimeout: 30 * time.Second,
+		IdleTimeout: 60 * time.Second,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
