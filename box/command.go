@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"path"
 	"slices"
 	"strings"
 	"time"
@@ -83,6 +84,14 @@ type Command struct {
 	// signed command containing a shell string would be remote code execution by
 	// design, with the signature as the thing that authorised it.
 	Op string `json:"op"`
+
+	// AddArgs is what app.add carries, checked here so the one place that turns
+	// a signed document into arguments on this machine is the place that decides
+	// what they may be.
+	//
+	// Every value is validated as what it is rather than passed through: this is
+	// the widest set of arguments any op takes, and it is the only one that
+	// creates an account.
 
 	// Args are flat strings, deliberately.
 	//
@@ -353,9 +362,19 @@ const (
 	OpAppStart   = "app.start"
 	OpAppStop    = "app.stop"
 	OpAppRestart = "app.restart"
+
+	// OpAppAdd sets an app up, or updates one.
+	//
+	// The op that mints nothing. `komizo add` on the command line generates a
+	// deploy keypair and prints the private half; a command carries only the
+	// PUBLIC half, because a result file lives where the account that talks to
+	// the internet can read it and report.go says never, in anything it can
+	// read, "registry tokens, private keys". The app generates the pair and
+	// shows the private half once -- app-only.md §5a.
+	OpAppAdd = "app.add"
 )
 
-var commandOps = []string{OpAppStart, OpAppStop, OpAppRestart}
+var commandOps = []string{OpAppStart, OpAppStop, OpAppRestart, OpAppAdd}
 
 func knownOp(op string) bool { return slices.Contains(commandOps, op) }
 
@@ -382,4 +401,112 @@ func (c Command) AppOf() (string, error) {
 		}
 	}
 	return name, nil
+}
+
+// AddSpec is app.add's arguments, checked.
+//
+// A separate step from verifying the envelope, and a separate one again from
+// running anything: the signature says a device this box trusts sent it, and
+// says nothing about whether "web; rm -rf /" is an app name.
+type AddSpec struct {
+	App       string
+	Config    string
+	PubKey    string
+	User      string
+	AppDir    string
+	KnownAs   []string
+	HardenSSH bool
+}
+
+// AddOf reads app.add's arguments, refusing anything that is not what it claims.
+func (c Command) AddOf() (AddSpec, error) {
+	app, err := c.AppOf()
+	if err != nil {
+		return AddSpec{}, err
+	}
+	spec := AddSpec{
+		App:       app,
+		Config:    c.Args["config"],
+		PubKey:    c.Args["pubkey"],
+		User:      c.Args["user"],
+		AppDir:    c.Args["app_dir"],
+		HardenSSH: c.Args["harden_ssh"] == "1",
+	}
+
+	// The PUBLIC half of a deploy key, and one line of it. A second line would
+	// be a second key nobody asked to authorise.
+	if spec.PubKey == "" {
+		return AddSpec{}, fmt.Errorf("app.add needs the public half of a deploy key")
+	}
+	if strings.ContainsAny(spec.PubKey, "\n\r") {
+		return AddSpec{}, fmt.Errorf("a deploy key is one line")
+	}
+	if !strings.HasPrefix(spec.PubKey, "ssh-ed25519 ") {
+		// komizo issues ed25519 and nothing else. Refusing the rest here means
+		// the box never authorises a key type this project has not thought
+		// about, whoever signed for it.
+		return AddSpec{}, fmt.Errorf("a deploy key is ssh-ed25519")
+	}
+
+	// A registry reference with NO tag: alpine.sh appends its own, and a tag
+	// here would produce something docker cannot pull.
+	if spec.Config != "" {
+		if !onlyImageChars(spec.Config) {
+			return AddSpec{}, fmt.Errorf("%q is not a registry path", spec.Config)
+		}
+		if strings.Contains(path.Base(spec.Config), ":") {
+			return AddSpec{}, fmt.Errorf("a config image carries no tag")
+		}
+	}
+
+	// Absolute, or nothing. Relative it becomes a path relative to whatever the
+	// applier happens to be in, and leading with a dash it becomes a flag.
+	if spec.AppDir != "" && !strings.HasPrefix(spec.AppDir, "/") {
+		return AddSpec{}, fmt.Errorf("--app-dir must be absolute")
+	}
+
+	for _, n := range strings.Split(c.Args["known_as"], ",") {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
+		}
+		if err := ValidateAPIHost(n); err != nil {
+			return AddSpec{}, fmt.Errorf("known_as: %w", err)
+		}
+		spec.KnownAs = append(spec.KnownAs, n)
+	}
+
+	// The deploy account. Defaulted rather than required, because the CLI
+	// defaults it too and a command that must state it is one more thing an app
+	// can get wrong.
+	if spec.User == "" {
+		spec.User = "komizo-" + spec.App
+	} else if !validAccount(spec.User) {
+		return AddSpec{}, fmt.Errorf("%q is not an account name", spec.User)
+	}
+	return spec, nil
+}
+
+func onlyImageChars(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.' || r == '-' || r == '_' || r == '/' || r == ':':
+		default:
+			return false
+		}
+	}
+	return s != ""
+}
+
+func validAccount(s string) bool {
+	if s == "" || len(s) > 32 || s[0] == '-' {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
 }

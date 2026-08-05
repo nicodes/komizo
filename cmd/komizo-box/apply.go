@@ -6,13 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/nicodes/komizo/box"
+	"github.com/nicodes/komizo/scripts"
 )
 
 // rootd, doing what it has been told -- and only what it can verify.
@@ -242,6 +247,12 @@ const applyingDetail = "applying"
 // containing a command line is remote code execution by design, with the
 // signature as the thing that authorised it.
 func perform(ctx context.Context, c box.Command) error {
+	// app.add is not a compose verb. It runs the same provisioning script
+	// `komizo add` runs -- app-only.md §8's condition that both triggers end in
+	// one implementation -- and it is the only op that creates an account.
+	if c.Op == box.OpAppAdd {
+		return performAdd(ctx, c)
+	}
 	verb, ok := opVerbs[c.Op]
 	if !ok {
 		// VerifyCommand refuses an unknown op already; this is the second half
@@ -314,4 +325,91 @@ func readBounded(path string, max int) ([]byte, error) {
 		return nil, fmt.Errorf("that command is larger than %d bytes", max)
 	}
 	return b, nil
+}
+
+// performAdd sets an app up, from a command a device this box trusts signed.
+//
+// The SAME SCRIPT `komizo add` pipes over SSH, with the same environment. That
+// is app-only.md §8's condition stated as code: two triggers, one
+// implementation, so there is never a second opinion about what adding an app
+// means.
+//
+// The deploy key arrives already made. `komizo add` generates a keypair on the
+// operator's machine and prints the private half; a command carries only the
+// public half, because a result file lives where the account that talks to the
+// internet can read it. So nothing here generates, holds or returns a private
+// key — see box/command.go's OpAppAdd.
+func performAdd(ctx context.Context, c box.Command) error {
+	spec, err := c.AddOf()
+	if err != nil {
+		return err
+	}
+	env := map[string]string{
+		"APP_NAME":     spec.App,
+		"CI_PUBKEY":    spec.PubKey,
+		"CI_USER":      spec.User,
+		"CONFIG_IMAGE": spec.Config,
+		"KNOWN_AS":     strings.Join(spec.KnownAs, ","),
+		"HARDEN_SSH":   boolArg(spec.HardenSSH),
+	}
+	if spec.AppDir != "" {
+		env["APP_DIR"] = spec.AppDir
+	}
+	return runProvision(ctx, scripts.AlpineScript, env)
+}
+
+func boolArg(b bool) string {
+	if b {
+		return "1"
+	}
+	return "0"
+}
+
+// runProvision runs a komizo script here, as root, with its values in the
+// ENVIRONMENT rather than on a command line.
+//
+// A command line is visible in this box's process table to every account on it
+// for as long as it runs, which is the argument the CLI already makes about
+// piping these over stdin instead of as arguments. The values here include a
+// public key and an image reference — not secrets — but the rule is the rule,
+// and the next op to use this may carry something that is.
+func runProvision(ctx context.Context, script string, env map[string]string) error {
+	ctx, cancel := context.WithTimeout(ctx, provisionTimeout)
+	defer cancel()
+
+	cmd := execProvision(ctx, "/bin/sh", "-s")
+	cmd.Stdin = strings.NewReader(script)
+	cmd.Env = append(os.Environ(), envPairs(env)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// The script's own last words, which is what says WHY rather than that
+		// something failed. Bounded: this ends up in a result the app reads.
+		return fmt.Errorf("%s", lastLines(string(out), 12))
+	}
+	return nil
+}
+
+// provisionTimeout bounds it. Generous, because adding an app pulls a config
+// image on a box that may be on a slow link; bounded at all, because this is
+// reached from a route on the internet.
+const provisionTimeout = 15 * time.Minute
+
+// execProvision is a seam, so what this would run can be asserted.
+var execProvision = exec.CommandContext
+
+func envPairs(env map[string]string) []string {
+	out := make([]string, 0, len(env))
+	for _, k := range slices.Sorted(maps.Keys(env)) {
+		out = append(out, k+"="+env[k])
+	}
+	return out
+}
+
+// lastLines keeps the end of a script's output, which is where the reason is.
+func lastLines(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
 }
