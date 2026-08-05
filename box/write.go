@@ -135,8 +135,7 @@ func postCommand(cfg APIConfig, w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "this box could not take that command", http.StatusServiceUnavailable)
 		return
 	}
-	w.WriteHeader(http.StatusAccepted)
-	writeJSON(w, acceptedResponse{V: CommandVersion, ID: c.ID, Status: "accepted"})
+	writeJSONStatus(w, http.StatusAccepted, acceptedResponse{V: CommandVersion, ID: c.ID, Status: "accepted"})
 }
 
 // getResult answers what happened to one command.

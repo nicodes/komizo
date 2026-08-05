@@ -221,10 +221,19 @@ func window(r *http.Request, now time.Time) (from, to int64, ok bool) {
 	return from, to, true
 }
 
-func writeJSON(w http.ResponseWriter, v any) {
+func writeJSON(w http.ResponseWriter, v any) { writeJSONStatus(w, http.StatusOK, v) }
+
+// writeJSONStatus writes the headers BEFORE the status, which is the only order
+// that works.
+//
+// WriteHeader flushes what is set at the moment it is called and ignores
+// everything added after -- so a route that wrote 202 and then called writeJSON
+// sent its body as text/plain with no nosniff at all. That was the one
+// browser-reachable POST on this API, and nosniff is load-bearing here: a JSON
+// document a browser decides to treat as HTML is a document that can run.
+func writeJSONStatus(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	// nosniff, because this is served through a proxy to a browser: a JSON
-	// document a browser decides to treat as HTML is a document that can run.
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
