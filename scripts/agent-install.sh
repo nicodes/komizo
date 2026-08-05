@@ -11,8 +11,15 @@ log "Installing the komizo agent"
 
 [ -f __STAGED__ ] || { echo "error: __STAGED__ was never staged -- this is a komizo bug" >&2; exit 1; }
 
-# State: root only. apps/<app>.env names every app's deploy account and
-# directory, and root is the only thing that reads them.
+# State: closed, but TRAVERSABLE by the account that serves this box.
+#
+# apps/<app>.env names every app's deploy account and directory, and root is the
+# only thing that reads them -- so this stays 0750 and apps/ and pending/ stay
+# root:root. But __SERVED_DIR__ lives in here, and the agent has to reach it: a
+# directory whose parent cannot be entered is one nothing can reach, whatever
+# mode is set beneath it.
+#
+# The group is given away AFTER the account exists, further down.
 mkdir -p __STATE_DIR__ __PENDING_DIR__
 chown root:root __STATE_DIR__ __PENDING_DIR__
 chmod 750 __STATE_DIR__ __PENDING_DIR__
@@ -76,6 +83,15 @@ chmod 2750 __API_SOCKET_DIR__
 
 chown root:komizo_monitor __ETC_DIR__
 chmod 750 __ETC_DIR__
+
+# The state directory, now that komizo_monitor exists to be given it.
+#
+# Group r-x: traverse and list. Listing shows four directory names and no
+# contents, and apps/ and pending/ are root:root so they stay unreachable. This
+# is the same boundary __ETC_DIR__ uses -- the group is what decides, not the
+# mode alone.
+chown root:komizo_monitor __STATE_DIR__
+chmod 750 __STATE_DIR__
 
 # What root writes for the read API to hand out.
 #

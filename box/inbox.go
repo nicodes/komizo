@@ -50,6 +50,50 @@ const InboxDirMode = os.ModeSetgid | 0o750
 // before it went down -- which is the opposite of what they would want by then.
 // The report makes the same argument in paths.go for the same reason.
 
+// StateDirMode is 0750, and the GROUP is the whole of it.
+//
+// /var/lib/komizo is closed because apps/<app>.env names every app's deploy
+// account and directory. But ServedDir lives inside it, and the account that
+// serves this box has to reach that -- so the directory has to be TRAVERSABLE
+// by that account while its contents stay closed.
+//
+// It was root:root, so the agent could not enter at all and every mode set on
+// anything beneath it was decorative. That is the same confusion paths.go
+// records about report.json: "a world-readable file inside a directory nothing
+// may traverse is world-readable in name only". This is the other direction of
+// it, and it survived review because nothing walked the chain -- the installer
+// caught it on the first real box.
+//
+// Group r-x, which is traverse and list. Listing shows four directory names and
+// no contents; apps/ and pending/ are 0750 root:root and stay unreachable. The
+// same boundary EtcDir already uses, in its own words: "/etc is
+// world-traversable; /etc/komizo is not. The GROUP is the boundary."
+const StateDirMode = os.FileMode(0o750)
+
+// PrepareStateDir makes the state directory reachable by the account that
+// serves the box, without opening anything in it.
+//
+// Called before PrepareServedDir, because a directory whose parent cannot be
+// entered is a directory nothing can reach.
+func PrepareStateDir(path string) error {
+	if err := os.MkdirAll(path, 0o750); err != nil {
+		return err
+	}
+	u, err := user.Lookup(AgentUser)
+	if err != nil {
+		return nil
+	}
+	gid, err := strconv.Atoi(u.Gid)
+	if err != nil {
+		return nil
+	}
+	// Owner ROOT: the agent may pass through and must not write here.
+	if err := os.Chown(path, 0, gid); err != nil {
+		return fmt.Errorf("could not group %s to %s: %w", path, AgentUser, err)
+	}
+	return os.Chmod(path, StateDirMode)
+}
+
 // PrepareInboxDir makes the directory the write route drops commands into.
 //
 // Owned by the AGENT account, because that is what creates files here, and
