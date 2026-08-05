@@ -80,8 +80,8 @@ $API_HOST {
 	handle @preflight {
 		header {
 			Access-Control-Allow-Origin "https://app.komizo.dev"
-			Access-Control-Allow-Methods "GET, OPTIONS"
-			Access-Control-Allow-Headers "Authorization"
+			Access-Control-Allow-Methods "GET, POST, OPTIONS"
+			Access-Control-Allow-Headers "Authorization, Content-Type"
 			Access-Control-Max-Age "600"
 		}
 		respond 204
