@@ -413,18 +413,35 @@ func TestAReadEnvelopeIsRefusedByTheCommandRoute(t *testing.T) {
 	}
 }
 
-// The two sets are one set apart, and the dispatch agrees with them.
+// The two sets differ by exactly the READS, and the dispatch agrees with them.
+//
+// Named as a set rather than counted, because counting was a rule that had to be
+// edited every time a read was added -- and an assertion you edit to make it
+// pass is not an assertion.
 func TestTheAppliedOpsAreASubsetOfWhatAnEnvelopeMayName(t *testing.T) {
+	reads := []string{OpLogsRead, OpReportRead, OpHistoryRead}
+
 	for _, op := range ApplyOps {
 		if !knownOp(op) {
 			t.Errorf("%s is applied and no envelope may name it", op)
 		}
 	}
-	if Applies(OpLogsRead) {
-		t.Error("a read is accepted by the command route")
+	// No read is ever something the command route hands to root. This is the
+	// property that stopped a log read being picked up, verified and written
+	// about by rootd, and it has to hold for each of them by name.
+	for _, op := range reads {
+		if !knownOp(op) {
+			t.Errorf("%s is a read no envelope may name", op)
+		}
+		if Applies(op) {
+			t.Errorf("%s is a read and the command route accepts it", op)
+		}
 	}
-	if len(ApplyOps) != len(commandOps)-1 {
-		t.Errorf("ApplyOps=%v commandOps=%v -- the difference should be the read", ApplyOps, commandOps)
+	// And the two sets differ by those reads and nothing else, so an op added to
+	// one and forgotten in the other fails here rather than shipping.
+	if len(ApplyOps)+len(reads) != len(commandOps) {
+		t.Errorf("ApplyOps=%v reads=%v commandOps=%v -- the difference should be exactly the reads",
+			ApplyOps, reads, commandOps)
 	}
 }
 
