@@ -50,6 +50,19 @@ func collectLogs(ctx context.Context, root, dir string) {
 	// The shared proxy, which is where Caddy records its certificate work -- the
 	// only place a TLS failure is explained, and the thing tui_server.go says is
 	// worth having on its own.
+	//
+	// AND IT IS NOT THE ACCESS LOG, which is the question this raises and the
+	// reason it is answered here. alpine-proxy.sh sends access logging to a file
+	// rather than to stdout, in its own words, "so that the proxy's own log --
+	// the one that explains a certificate failure -- does not become a request
+	// firehose". That file is 0750 root:root because "they carry client IPs and
+	// request paths, which is the one thing on this box that is about the people
+	// using it rather than about the box", and nothing here reads it.
+	//
+	// So what is collected is Caddy's operational log and only that. If anybody
+	// ever points access logging at stdout, this line starts copying client IPs
+	// into a file an internet-facing process can read, and box/access.go's
+	// standing promise -- "COUNTS, NEVER LINES" -- stops being true of this box.
 	write(ctx, dir, box.ProxyLogName, subject{dir: box.ProxyDir, project: ProxyProject})
 
 	// An app that was removed leaves its log behind otherwise.
