@@ -331,26 +331,38 @@ func (t target) runScriptSafeHeard(script string, env map[string]string) (bool, 
 }
 
 func (t target) runScriptTo(script string, env map[string]string, out io.Writer) error {
-	_, err := t.runScriptHeardTo(script, env, out)
-	return err
+	return t.sshScript(script, env, out, os.Stderr)
 }
 
-// runScriptHeardTo is the one exec every streaming run goes through.
+// runScriptHeardTo is runScriptTo with both streams watched.
 //
-// BOTH streams are watched, because which one a verb speaks on is docker's
-// choice and not komizo's: `docker compose logs` writes log lines to stdout,
-// while `docker compose stop` writes its per-container progress to stderr.
-// Watching stdout alone would have made every successful stop look silent, and
-// komizo would have announced "nothing happened" over the top of compose saying
-// exactly what happened.
+// BOTH, because which one a verb speaks on is docker's choice and not komizo's:
+// `docker compose logs` writes log lines to stdout, while `docker compose stop`
+// writes its per-container progress to stderr. Watching stdout alone would have
+// made every successful stop look silent, and komizo would have announced
+// "nothing happened" over the top of compose saying exactly what happened.
+//
+// Only the lifecycle verbs come through here, and that is deliberate rather
+// than incidental. Wrapping a stream in anything at all costs the direct file
+// descriptor: os/exec hands a child an *os.File as its own fd and copies
+// through a pipe and a goroutine for everything else. The bootstraps -- init,
+// proxy, add, update, enrol, remove -- are the long-running streams where that
+// matters most and the ones with no question to answer, so they keep the plain
+// path in runScriptTo above.
 func (t target) runScriptHeardTo(script string, env map[string]string, out io.Writer) (bool, error) {
 	o, e := &heardWriter{to: out}, &heardWriter{to: os.Stderr}
+	err := t.sshScript(script, env, o, e)
+	return o.heard || e.heard, err
+}
+
+// sshScript is the one exec every streaming run goes through, so there is a
+// single place where what komizo pipes to a box as root is decided.
+func (t target) sshScript(script string, env map[string]string, out, errOut io.Writer) error {
 	c := exec.Command("ssh", t.sshArgs(envPrefix(env)+"sh -s")...)
 	c.Stdin = strings.NewReader(script)
-	c.Stdout = o
-	c.Stderr = e
-	err := c.Run()
-	return o.heard || e.heard, err
+	c.Stdout = out
+	c.Stderr = errOut
+	return c.Run()
 }
 
 // heardWriter passes everything through and remembers that there was something
