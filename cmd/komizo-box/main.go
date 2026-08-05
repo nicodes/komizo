@@ -67,6 +67,8 @@ func main() {
 		err = runAgent(os.Args[2:])
 	case "serve":
 		err = runServe(os.Args[2:])
+	case "app":
+		err = runApp(os.Args[2:])
 	case "enrol":
 		err = runEnrol(os.Args[2:])
 	case "unenrol":
@@ -94,6 +96,9 @@ func usage() {
   komizo-box poll --from UNIX --to UNIX
   komizo-box serve [--socket PATH]
   komizo-box monitor --from UNIX --to UNIX [--app NAME]
+
+  komizo-box app start|stop|restart --app NAME      as root
+  komizo-box app logs --app NAME [--tail N] [--service S]
 
   komizo-box enrol --api URL --token kmz_enr_...    as root
   komizo-box agent                                  as komizo_monitor
