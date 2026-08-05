@@ -176,6 +176,12 @@ func runRootd(args []string) error {
 	// setgid, so that the readings root appends here are readable by the account
 	// that serves them -- see PrepareServedDir. Made with the generic mode
 	// above, it was root:root, and every GET /v1/history answered with nothing.
+	// The PARENT first. ServedDir is inside the state directory, which is closed
+	// so that apps/<app>.env stays closed -- and a directory whose parent cannot
+	// be entered is one nothing can reach, whatever its own mode says.
+	if err := box.PrepareStateDir(box.StateDir); err != nil {
+		return err
+	}
 	if err := box.PrepareServedDir(filepath.Dir(*historyPath)); err != nil {
 		return err
 	}
