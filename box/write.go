@@ -107,6 +107,14 @@ func postCommand(cfg APIConfig, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !Applies(c.Op) {
+		// A well-formed envelope naming something this route does not take --
+		// a logs.read, say. Refused HERE rather than left for rootd to pick up,
+		// verify, and write two files about.
+		http.Error(w, "that is not something this route does", http.StatusUnprocessableEntity)
+		return
+	}
+
 	// Already done. Answered from the record rather than queued again, so a
 	// retry after a dropped response is idempotent instead of a second stop.
 	if res, ok := ReadResult(cfg.ResultsDir, c.ID); ok {
