@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -226,5 +227,25 @@ func TestThePlantedKeyRoundTrips(t *testing.T) {
 		if _, err := ParsePublicKey(bad); err == nil {
 			t.Errorf("%s was accepted as a registry key", name)
 		}
+	}
+}
+
+// The socket directory has to be reachable by the box's proxy, which runs with
+// every capability dropped but CAP_NET_BIND_SERVICE.
+//
+// That is komizo's own hardening and it means the proxy's root is NOT exempt
+// from permission checks -- it cannot traverse a directory it does not own.
+// This shipped as 0750 agent:agent and the proxy answered 502 with
+// "connect: permission denied" on every request.
+func TestTheSocketDirectoryIsSetgidSoTheProxyCanReachIt(t *testing.T) {
+	if APISocketDirMode&os.ModeSetgid == 0 {
+		t.Error("the socket directory is not setgid, so the socket inherits the agent's " +
+			"group and the proxy -- which has no CAP_DAC_OVERRIDE -- cannot connect to it")
+	}
+	if perm := APISocketDirMode.Perm(); perm&0o050 == 0 {
+		t.Errorf("the socket directory is %04o: the group cannot traverse it", perm)
+	}
+	if perm := APISocketDirMode.Perm(); perm&0o007 != 0 {
+		t.Errorf("the socket directory is %04o: it is reachable by anything on the box", perm)
 	}
 }

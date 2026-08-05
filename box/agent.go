@@ -189,25 +189,53 @@ func ValidateAPI(raw string) (string, error) {
 	return strings.TrimRight(u.String(), "/"), nil
 }
 
-// ChownToAgent gives a path to the account the agent runs as.
+// APISocketDirMode is 0750 AND SETGID, and the setgid bit is the whole point.
 //
-// Exported because rootd lays out the socket directory at boot -- it runs as
-// root, and the account that opens the socket cannot create a directory inside
-// one owned by root. Same reasoning as chownToAgentGroup above, one level up.
-func ChownToAgent(path string) error {
+// The box's proxy has to connect to the socket in here, and it runs with every
+// capability dropped but CAP_NET_BIND_SERVICE -- komizo's own hardening, in
+// alpine-proxy.sh. So its root is NOT exempt from permission checks the way
+// root usually is: it cannot traverse a directory it does not own, and it
+// cannot connect to a socket it has no write bit on.
+//
+// A socket is created by whoever binds it, which is the agent account, and it
+// would inherit that account's group. Setgid on the directory makes it inherit
+// the DIRECTORY's group instead -- root -- which the proxy is in. Nothing else
+// on the box is.
+//
+// The alternative was 0666 on the socket. That works, and it means any local
+// process can open the one door on this machine that answers questions about
+// it. A valid token would still be required; being able to knock is not
+// nothing.
+const APISocketDirMode = os.ModeSetgid | 0o750
+
+// PrepareAPISocketDir makes the socket directory reachable by the two things
+// that need it and nothing else.
+//
+// Owned by the agent account, so it can create the socket. Grouped to root, so
+// the proxy can reach it. Called by rootd, which runs as root -- the agent
+// cannot chgrp to a group it is not in, and root is not one of its groups.
+func PrepareAPISocketDir(path string) error {
+	if err := os.MkdirAll(path, 0o750); err != nil {
+		return err
+	}
 	u, err := user.Lookup(AgentUser)
 	if err != nil {
 		// No such account: not a box komizo has set up. Left alone rather than
 		// failed, so this works in a test and mid-provisioning.
 		return nil
 	}
-	uid, err1 := strconv.Atoi(u.Uid)
-	gid, err2 := strconv.Atoi(u.Gid)
-	if err1 != nil || err2 != nil {
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
 		return nil
 	}
-	if err := os.Chown(path, uid, gid); err != nil {
+	// Group 0. Explicit rather than looked up: it is the group the proxy runs
+	// as, not a name that might mean something else on another distribution.
+	if err := os.Chown(path, uid, 0); err != nil {
 		return fmt.Errorf("could not give %s to %s: %w", path, AgentUser, err)
+	}
+	// After the chown, because chown clears the setgid bit.
+	if err := os.Chmod(path, APISocketDirMode); err != nil {
+		return fmt.Errorf("could not set the mode on %s: %w", path, err)
 	}
 	return nil
 }

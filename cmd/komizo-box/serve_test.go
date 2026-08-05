@@ -201,11 +201,21 @@ func TestTheInstallerCreatesAndGivesAwayTheSocketDirectory(t *testing.T) {
 	// After the account exists, or the chown fails quietly and leaves a service
 	// that starts and cannot bind -- which is exactly what happened.
 	adduser := strings.Index(sh, "adduser")
-	chown := strings.Index(sh, "chown komizo_monitor:komizo_monitor "+box.APISocketDir)
+	chown := strings.Index(sh, "chown komizo_monitor:root "+box.APISocketDir)
 	if adduser < 0 || chown < 0 {
 		t.Fatalf("adduser=%d chown=%d", adduser, chown)
 	}
 	if chown < adduser {
 		t.Error("the socket directory is given away before the account exists")
+	}
+
+	// Grouped to ROOT and setgid, so the socket inherits a group the proxy is
+	// in -- it has no CAP_DAC_OVERRIDE and is not exempt from the mode.
+	if !strings.Contains(sh, "chmod 2750 "+box.APISocketDir) {
+		t.Error("the socket directory is not setgid, so the proxy cannot reach the socket")
+	}
+	// And after the chown, because chown clears the setgid bit.
+	if strings.Index(sh, "chmod 2750 "+box.APISocketDir) < chown {
+		t.Error("the mode is set before the chown, which clears the setgid bit")
 	}
 }

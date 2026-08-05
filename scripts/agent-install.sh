@@ -62,8 +62,17 @@ mkdir -p __ETC_DIR__
 # Its own directory rather than the socket loose in __RUN_DIR__, because the
 # box's proxy has to reach it and mounting __RUN_DIR__ would lend the one
 # internet-facing container a writable path beside report.json.
-chown komizo_monitor:komizo_monitor __API_SOCKET_DIR__
-chmod 750 __API_SOCKET_DIR__
+# Owned by the account that binds the socket, GROUPED TO ROOT, and setgid.
+#
+# The box's proxy connects to that socket and runs with every capability
+# dropped but CAP_NET_BIND_SERVICE, so its root is not exempt from permission
+# checks: it cannot traverse a directory it does not own or connect to a socket
+# it has no write bit on. Setgid makes the socket inherit this directory's
+# group rather than the agent's, and root is a group the proxy is in.
+#
+# chmod AFTER chown, because chown clears the setgid bit.
+chown komizo_monitor:root __API_SOCKET_DIR__
+chmod 2750 __API_SOCKET_DIR__
 
 chown root:komizo_monitor __ETC_DIR__
 chmod 750 __ETC_DIR__
