@@ -6,7 +6,6 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
-	"path"
 	"slices"
 	"strings"
 	"time"
@@ -500,7 +499,7 @@ func (c Command) AddOf() (AddSpec, error) {
 	if !onlyImageChars(spec.Config) {
 		return AddSpec{}, fmt.Errorf("%q is not a registry path", spec.Config)
 	}
-	if strings.Contains(path.Base(spec.Config), ":") {
+	if strings.Contains(LastSegment(spec.Config), ":") {
 		return AddSpec{}, fmt.Errorf("a config image carries no tag")
 	}
 
@@ -605,6 +604,25 @@ func onlyPathChars(s string) bool {
 		}
 	}
 	return s != ""
+}
+
+// LastSegment is the part of a registry reference a TAG would be in.
+//
+// One function because there were two, and they disagreed. The CLI took
+// everything after the last "/" and the box used path.Base, which differ on a
+// trailing slash: for "ghcr.io/a/web:1/" the first yields "" -- no colon, no
+// tag, accepted -- and the second yields "web:1", refused. So there was a value
+// `komizo add` took and a signed app.add would not, which is the app able to do
+// less than the CLI.
+//
+// Not exploitable, since both refuse the shapes that matter. Fixed by removing
+// the second opinion rather than by picking a winner: two ways of finding the
+// last segment is how this happened, and it is how it would happen again.
+func LastSegment(s string) string {
+	if i := strings.LastIndex(s, "/"); i >= 0 {
+		return s[i+1:]
+	}
+	return s
 }
 
 func onlyImageChars(s string) bool {
