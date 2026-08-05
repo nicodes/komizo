@@ -33,16 +33,35 @@ const (
 	// outlives the boot it describes is a lie waiting to be read.
 	RunDir     = "/run/komizo"
 	ReportPath = RunDir + "/report.json"
+	// ServedDir is what root writes for somebody else to read.
+	//
+	// Its own directory, and for the reason APISocketDir got one. StateDir is
+	// 0750 root:root because apps/<app>.env names every app's deploy account and
+	// directory -- so the account that serves this box cannot traverse it, and
+	// the history that was kept in there was unreadable by the one process whose
+	// job is to hand it out.
+	//
+	// That failed SILENTLY, which is why it survived a release: ReadSamples
+	// treats an unreadable file the same as an absent one, because a box that
+	// has never sampled is a new box rather than a broken one. So GET /v1/history
+	// answered "no readings" on every box, forever, and nothing anywhere said
+	// permission.
+	//
+	// The fix is the smaller thing to lend, the same as it was for the socket: a
+	// directory containing only what a reader was going to be given anyway.
+	// Under StateDir still, because this has to SURVIVE a reboot -- which is the
+	// one property that separates it from the report.
+	ServedDir = StateDir + "/served"
+
 	// HistoryPath is one JSON reading per line, oldest first.
 	//
 	// Append-only and trimmed by bytes. Reading it is a tail, because the
 	// question is always about recent minutes.
 	//
-	// Under StateDir, and so root-only, for two reasons. It has to SURVIVE a
-	// reboot, which is the opposite of the report; and nothing unprivileged
-	// needs it -- the agent posts each report as it is written and the service
-	// accumulates the history at its end.
-	HistoryPath = StateDir + "/history.jsonl"
+	// Written by root and read by the account with nothing, which is the same
+	// boundary the report is on. It moved here from StateDir when the box became
+	// the store rather than a courier -- komizo-be design/registry.md.
+	HistoryPath = ServedDir + "/history.jsonl"
 	VersionPath = StateDir + "/version"
 
 	// APISocketDir holds the socket the box answers on, and it is its OWN

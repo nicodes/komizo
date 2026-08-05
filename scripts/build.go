@@ -61,7 +61,9 @@ func AgentInstall(stamp, version string) string {
 		"__RUN_DIR__", box.RunDir,
 		"__API_SOCKET_DIR__", box.APISocketDir,
 		"__ETC_DIR__", box.EtcDir,
+		"__SERVED_DIR__", box.ServedDir,
 		"__REPORT_PATH__", box.ReportPath,
+		"__HISTORY_PATH__", box.HistoryPath,
 		"__STAMP__", ShQuote(stamp),
 		"__VERSION__", ShQuote(version),
 	)
