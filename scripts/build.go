@@ -31,6 +31,7 @@ func AgentEnrol(api, token, apiHost string) string {
 	return render(agentEnrol,
 		"__API__", ShQuote(api),
 		"__API_HOST__", ShQuote(apiHost),
+		"__API_SOCKET__", box.APISocketPath,
 		"__TOKEN__", ShQuote(token),
 		"__CONF__", box.AgentConfPath,
 	)
