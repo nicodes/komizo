@@ -155,6 +155,47 @@ func addWith(over map[string]string) error {
 	return err
 }
 
+// SHAPES, not only characters.
+//
+// The rune probe above puts one character inside an otherwise-ordinary value,
+// so it can never produce a trailing separator, an empty segment or a bare
+// punctuation mark -- and that is exactly where the two sides drifted: the CLI
+// took everything after the last "/" and the box used path.Base, which disagree
+// on "ghcr.io/a/web:1/". One accepted it and the other refused.
+//
+// So this is a second corpus of whole VALUES, chosen to be awkward at the edges
+// rather than in the middle.
+func TestASignedCommandTakesTheSameSHAPESTheCLITakes(t *testing.T) {
+	for _, v := range []string{
+		"ghcr.io/a/web",
+		"ghcr.io/a/web/",
+		"ghcr.io/a/web:1/",
+		"ghcr.io/a:b/web",
+		"reg.example.com:5000/a/web",
+		"web",
+		"web/",
+		"/web",
+		"a//b",
+		".",
+		"..",
+		"a.b",
+	} {
+		cliOK := validateConfigImage(v) == nil
+		signedOK := addWith(map[string]string{"config": v}) == nil
+		if cliOK == signedOK {
+			continue
+		}
+		if cliOK {
+			t.Errorf("config: the CLI takes %q and a signed command does not.\n"+
+				"    The app can do less than the CLI with this field, which is the\n"+
+				"    direction app-only.md does not allow.", v)
+			continue
+		}
+		t.Errorf("config: a signed command takes %q and the CLI does not.\n"+
+			"    The internet-reachable trigger is the looser of the two.", v)
+	}
+}
+
 // And the one place they are deliberately NOT the same, stated out loud so it
 // cannot be mistaken for drift.
 //
