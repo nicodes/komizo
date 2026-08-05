@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/nicodes/komizo/box"
 	"github.com/nicodes/komizo/scripts"
 )
 
@@ -193,12 +194,15 @@ func validateConfigImage(s string) error {
 	if !onlyChars(s, imageChars) {
 		return fmt.Errorf("--config contains characters that are not valid in an image reference: %q", s)
 	}
-	last := s
-	if i := strings.LastIndex(s, "/"); i >= 0 {
-		last = s[i+1:]
-	}
-	if strings.Contains(last, ":") {
+	if strings.Contains(box.LastSegment(s), ":") {
 		return fmt.Errorf("--config must not include a tag (got %q); the deploy supplies it", s)
+	}
+	// And it ends in a segment. A trailing slash leaves the last one empty, so
+	// the tag rule above passes and the deploy appends its tag to nothing --
+	// producing a reference docker cannot parse, at `docker pull`, long after
+	// this command reported success.
+	if strings.HasSuffix(s, "/") {
+		return fmt.Errorf("--config must not end in %q, got %q", "/", s)
 	}
 	return nil
 }
