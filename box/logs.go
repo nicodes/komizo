@@ -36,7 +36,12 @@ import (
 // a storage bill, and registry.md §1's test -- could the box answer this about
 // itself -- says the answer lives on the box or nowhere."
 
-// LogsDir holds one file per app, plus the shared proxy's.
+// LogsDir holds one file per app, and NOT the shared proxy's.
+//
+// It said "plus the shared proxy's" while the two guards fourteen lines below
+// it exist to make sure that never happens -- which is the same
+// re-add-the-leak instruction the design doc was corrected for, sitting in the
+// code. Caddy's error logger writes full requests to stdout; see collect.go.
 //
 // Under ServedDir, which is root-writes-agent-reads and setgid, so a file root
 // puts here is born in a group the serving account can open.
