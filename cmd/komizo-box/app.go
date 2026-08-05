@@ -78,32 +78,57 @@ func runApp(args []string) error {
 		return err
 	}
 
-	dir, project := box.ProxyDir, ProxyProject
-	if !*proxy {
-		var err error
-		if dir, err = box.AppDir("", *name); err != nil {
-			return err
-		}
-		// Compose derives a project from the directory, which is what the deploy
-		// path does too, so naming one here would resolve to a different stack.
-		project = ""
-	}
-	if err := validDir(dir); err != nil {
+	sub, err := resolveSubject("", *name, *proxy)
+	if err != nil {
 		return err
 	}
 
 	ctx, stop := signalContext()
 	defer stop()
+	return runVerb(ctx, verb, sub, *tail, *svc)
+}
 
+// subject is which stack a verb acts on.
+type subject struct{ dir, project string }
+
+// resolveSubject turns a name into a stack, and is the one place that does.
+//
+// root prefixes the lookup so this is testable without a box, the same seam
+// Probe.Root is.
+func resolveSubject(root, name string, proxy bool) (subject, error) {
+	if proxy {
+		return subject{dir: box.ProxyDir, project: ProxyProject}, nil
+	}
+	dir, err := box.AppDir(root, name)
+	if err != nil {
+		return subject{}, err
+	}
+	if err := validDir(dir); err != nil {
+		return subject{}, err
+	}
+	// No project name: compose derives one from the directory, which is what the
+	// deploy path does too, so naming one here would resolve to a different
+	// stack from the one that was deployed.
+	return subject{dir: dir}, nil
+}
+
+// runVerb is what BOTH triggers end in.
+//
+// komizo-be design/app-only.md §8: the CLI over SSH and a signed command
+// applied by rootd must end in the same implementation, or parity stops being
+// Go against Go in one process and becomes Go against TypeScript across a
+// network. This function is that promise, kept in one place -- runApp parses
+// flags into it, and applyCommand parses a verified envelope into it.
+func runVerb(ctx context.Context, verb string, sub subject, tail int, svc string) error {
 	if verb == "restart" {
 		// Restarting nothing succeeds silently, which is the failure paths.go
 		// argues against in its own words: a command that "does nothing, and has
 		// no reason to say so".
-		if out, err := composeOut(ctx, dir, project, "ps", "-q"); err == nil && strings.TrimSpace(out) == "" {
+		if out, err := composeOut(ctx, sub.dir, sub.project, "ps", "-q"); err == nil && strings.TrimSpace(out) == "" {
 			return fmt.Errorf("nothing is running here -- start it instead")
 		}
 	}
-	return compose(ctx, dir, project, composeArgs(verb, *tail, *svc)...)
+	return compose(ctx, sub.dir, sub.project, composeArgs(verb, tail, svc)...)
 }
 
 // composeArgs is the arguments for one verb, and it is a pure function so that

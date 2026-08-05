@@ -129,6 +129,9 @@ func probe() *box.Probe {
 func runRootd(args []string) error {
 	fs := flag.NewFlagSet("rootd", flag.ContinueOnError)
 	interval := fs.Duration("interval", time.Minute, "how often to probe")
+	confPath := fs.String("config", box.AgentConfPath, "the credential whose keys commands are verified against")
+	inboxDir := fs.String("inbox", box.InboxDir, "where signed commands arrive")
+	resultsDir := fs.String("results", box.ResultsDir, "where their outcomes are written")
 	reportPath := fs.String("report", box.ReportPath, "where to write the current report")
 	historyPath := fs.String("history", box.HistoryPath, "where to append readings")
 	volEvery := fs.Int("volumes-every", 15, "measure volumes every Nth reading (0 disables)")
@@ -183,6 +186,14 @@ func runRootd(args []string) error {
 	if err := box.PrepareAPISocketDir(box.APISocketDir); err != nil {
 		return err
 	}
+	// Where a signed command lands. Made by root, owned by the account that
+	// will write into it -- see box/inbox.go. On tmpfs, so it is gone after a
+	// reboot and remade here, which is correct: a command carries an expiry in
+	// minutes and one that survived a restart would be a machine acting on
+	// something somebody asked for before it went down.
+	if err := box.PrepareInboxDir(*inboxDir); err != nil {
+		return err
+	}
 
 	ctx, stop := signalContext()
 	defer stop()
@@ -221,12 +232,31 @@ func runRootd(args []string) error {
 	}
 	t := time.NewTicker(*interval)
 	defer t.Stop()
+
+	// Commands are on their OWN, much shorter timer -- see apply.go. The report
+	// is a measurement on a schedule; a command is somebody waiting for a button
+	// to do something, and a minute of that is a product that feels broken.
+	//
+	// The credential is re-read each pass rather than held: `komizo enrol`
+	// rewrites it while this is running, and a rootd holding the keys it started
+	// with would keep obeying a device that had just been removed.
+	cmds := time.NewTicker(applyEvery)
+	defer cmds.Stop()
+	prune := time.NewTicker(time.Hour)
+	defer prune.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
 			tick()
+		case <-cmds.C:
+			if conf, err := box.ReadAgentConf(*confPath); err == nil && conf.CanCommand() {
+				applyPending(ctx, conf, *inboxDir, *resultsDir)
+			}
+		case <-prune.C:
+			_ = box.PruneResults(*resultsDir, time.Now())
 		}
 	}
 }
