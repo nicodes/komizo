@@ -6,13 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/nicodes/komizo/box"
+	"github.com/nicodes/komizo/scripts"
 )
 
 // rootd, doing what it has been told -- and only what it can verify.
@@ -89,16 +94,27 @@ func applyPending(ctx context.Context, conf box.AgentConf, dir, results string) 
 		info, ierr := e.Info()
 		stale := ierr != nil || now.Sub(info.ModTime()) > box.MaxCommandTTL+commandSweepGrace
 		over := kept >= maxInbox
-		if !e.IsDir() && !stale && over {
-			// DROPPED FOR CAPACITY, and told so. Readdir order is roughly hash
-			// order on tmpfs rather than arrival order, so this removes
-			// arbitrary valid, signed, unapplied commands -- and without a
-			// result the app polls a 404 forever for something nothing ever
-			// refused out loud. An id that cannot be filed gets nothing, which
-			// is the same answer it gets everywhere else.
+		if !e.IsDir() && (stale || over) {
+			// DROPPED, and told so. Readdir order is roughly hash order on
+			// tmpfs rather than arrival order, so capacity removes arbitrary
+			// valid, signed, unapplied commands -- and without a result the app
+			// polls a 404 forever for something nothing ever refused out loud.
+			// An id that cannot be filed gets nothing, which is the same answer
+			// it gets everywhere else.
+			//
+			// STALE COUNTS TOO, which it did not. This loop is serial and
+			// provisionTimeout is fifteen minutes, against a command that stops
+			// being valid after six -- so a stop pressed while an app.add was
+			// running was deleted in silence, and the screen waited out its own
+			// deadline for an answer that had already been thrown away. The
+			// command really did expire; what was missing was saying so.
+			why := "this box had too many commands waiting"
+			if stale {
+				why = "this box did not get to this command before it expired"
+			}
 			if id := e.Name(); box.ValidCommandID(id) == nil && !box.Applied(results, id) {
 				_ = box.WriteResult(results, box.Result{ID: id, At: now.UTC(), OK: false,
-					Detail: "this box had too many commands waiting"})
+					Detail: why})
 			}
 		}
 		if e.IsDir() || stale || over {
@@ -242,6 +258,12 @@ const applyingDetail = "applying"
 // containing a command line is remote code execution by design, with the
 // signature as the thing that authorised it.
 func perform(ctx context.Context, c box.Command) error {
+	// app.add is not a compose verb. It runs the same provisioning script
+	// `komizo add` runs -- app-only.md §8's condition that both triggers end in
+	// one implementation -- and it is the only op that creates an account.
+	if c.Op == box.OpAppAdd {
+		return performAdd(ctx, c)
+	}
 	verb, ok := opVerbs[c.Op]
 	if !ok {
 		// VerifyCommand refuses an unknown op already; this is the second half
@@ -314,4 +336,115 @@ func readBounded(path string, max int) ([]byte, error) {
 		return nil, fmt.Errorf("that command is larger than %d bytes", max)
 	}
 	return b, nil
+}
+
+// performAdd sets an app up, from a command a device this box trusts signed.
+//
+// The SAME SCRIPT `komizo add` pipes over SSH, with the same environment. That
+// is app-only.md §8's condition stated as code: two triggers, one
+// implementation, so there is never a second opinion about what adding an app
+// means.
+//
+// The deploy key arrives already made. `komizo add` generates a keypair on the
+// operator's machine and prints the private half; a command carries only the
+// public half, because a result file lives where the account that talks to the
+// internet can read it. So nothing here generates, holds or returns a private
+// key — see box/command.go's OpAppAdd.
+func performAdd(ctx context.Context, c box.Command) error {
+	spec, err := c.AddOf()
+	if err != nil {
+		return err
+	}
+	env := map[string]string{
+		"APP_NAME":     spec.App,
+		"CI_PUBKEY":    spec.PubKey,
+		"CI_USER":      spec.User,
+		"CONFIG_IMAGE": spec.Config,
+		"KNOWN_AS":     strings.Join(spec.KnownAs, ","),
+		"HARDEN_SSH":   boolArg(spec.HardenSSH),
+	}
+	if spec.AppDir != "" {
+		env["APP_DIR"] = spec.AppDir
+	}
+	return runProvision(ctx, scripts.AlpineScript, env)
+}
+
+func boolArg(b bool) string {
+	if b {
+		return "1"
+	}
+	return "0"
+}
+
+// runProvision runs a komizo script here, as root, with its values in the
+// ENVIRONMENT rather than on a command line.
+//
+// A command line is visible in this box's process table to every account on it
+// for as long as it runs, which is the argument the CLI already makes about
+// piping these over stdin instead of as arguments. The values here include a
+// public key and an image reference — not secrets — but the rule is the rule,
+// and the next op to use this may carry something that is.
+func runProvision(ctx context.Context, script string, env map[string]string) error {
+	ctx, cancel := context.WithTimeout(ctx, provisionTimeout)
+	defer cancel()
+
+	cmd := execProvision(ctx, "/bin/sh", "-s")
+	cmd.Stdin = strings.NewReader(script)
+	cmd.Env = append(os.Environ(), envPairs(env)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		// The script's own last words, which is what says WHY rather than that
+		// something failed. Bounded: this ends up in a result the app reads.
+		said := lastLines(string(out), 12)
+		if strings.TrimSpace(said) == "" {
+			// IT SAID NOTHING. `err` was being discarded, so a script killed by
+			// a signal or one that died before printing produced Detail: "" --
+			// which is omitempty, so the app was shown ok:false with no reason
+			// at all. That is the one state §4 says a result exists to prevent.
+			return fmt.Errorf("the setup script failed without saying why: %w", err)
+		}
+		// AND the error, when what came back is only progress. A timeout kill
+		// leaves "==> Preparing /srv/web" as the last thing written, which read
+		// on its own is an ordinary step presented as the failure.
+		return fmt.Errorf("%s\n(%w)", said, err)
+	}
+	return nil
+}
+
+// provisionTimeout bounds it. Generous, because adding an app pulls a config
+// image on a box that may be on a slow link; bounded at all, because this is
+// reached from a route on the internet.
+const provisionTimeout = 15 * time.Minute
+
+// execProvision is a seam, so what this would run can be asserted.
+var execProvision = exec.CommandContext
+
+func envPairs(env map[string]string) []string {
+	out := make([]string, 0, len(env))
+	for _, k := range slices.Sorted(maps.Keys(env)) {
+		out = append(out, k+"="+env[k])
+	}
+	return out
+}
+
+// lastLines keeps the end of a script's output, which is where the reason is.
+// lastLines is the tail of what something said, bounded in LINES AND BYTES.
+//
+// Both, because a line is not a bounded quantity: a script that emits a
+// megabyte without a newline -- a progress bar, a base64 blob, a compiler --
+// produced one "line" that went whole into a result file the app then reads.
+const detailMax = 4 << 10
+
+func lastLines(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	out := strings.Join(lines, "\n")
+	if len(out) > detailMax {
+		// From the FRONT, so the end -- which is where a script says why it
+		// stopped -- is the part that survives.
+		out = "…" + out[len(out)-detailMax:]
+	}
+	return out
 }
