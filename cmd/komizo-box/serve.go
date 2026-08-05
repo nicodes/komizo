@@ -50,6 +50,7 @@ func runServe(args []string) error {
 	historyPath := fs.String("history", box.HistoryPath, "the history to serve")
 	inboxDir := fs.String("inbox", box.InboxDir, "where to leave a signed command for rootd")
 	resultsDir := fs.String("results", box.ResultsDir, "where rootd leaves what happened")
+	logsDir := fs.String("logs", box.LogsDir, "where rootd leaves each app's recent output")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -103,6 +104,7 @@ func runServe(args []string) error {
 			HistoryPath:  *historyPath,
 			InboxDir:     *inboxDir,
 			ResultsDir:   *resultsDir,
+			LogsDir:      *logsDir,
 		}),
 		// Bounded, because the reader is on the other side of a proxy on the
 		// internet. An unbounded header read is a connection somebody else

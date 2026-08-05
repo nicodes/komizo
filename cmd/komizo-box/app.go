@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -247,6 +248,34 @@ func compose(ctx context.Context, dir, project string, args ...string) error {
 		return fmt.Errorf("docker compose %s: %w", args[0], err)
 	}
 	return nil
+}
+
+// composeCapped runs one and captures at most max bytes of it.
+//
+// Output() buffers without limit, which is fine for the short answers this asks
+// itself and is not fine for a log: the caller is root, on a timer, and how long
+// a line is belongs to whatever is running in somebody's container.
+func composeCapped(ctx context.Context, dir, project string, max int, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, composeTimeout)
+	defer cancel()
+
+	cmd := execCompose(ctx, "docker", append(composeBase(dir, project), args...)...)
+	pipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+	b, readErr := io.ReadAll(io.LimitReader(pipe, int64(max)))
+	// Drained to the limit and then closed, so a process still writing gets a
+	// broken pipe rather than blocking this one forever.
+	_ = pipe.Close()
+	waitErr := cmd.Wait()
+	if readErr != nil {
+		return string(b), readErr
+	}
+	return string(b), waitErr
 }
 
 // composeOut runs one and captures it, for the questions this asks itself.
