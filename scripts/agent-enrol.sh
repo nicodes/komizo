@@ -14,7 +14,12 @@ log() { printf '\n==> %s\n' "$*"; }
 }
 
 log "Exchanging the enrolment token"
-/usr/local/bin/komizo-box enrol --api __API__ --token __TOKEN__ --api-host __API_HOST__
+# __DEVICE_KEYS__ expands to zero or more `--device-key <key>` pairs, each
+# shell-quoted where it is rendered. They are PUBLIC keys and carry no secret,
+# but they are the list of who may command this box, so they go down the
+# connection in this script with everything else rather than on a remote command
+# line every account on the machine can read from the process table.
+/usr/local/bin/komizo-box enrol --api __API__ --token __TOKEN__ --api-host __API_HOST__ __DEVICE_KEYS__
 
 # The property the agent depends on, PROVEN rather than assumed: root wrote the
 # credential, and the account with no privileges can read it.
