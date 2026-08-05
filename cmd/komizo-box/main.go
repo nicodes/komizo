@@ -129,6 +129,9 @@ func probe() *box.Probe {
 func runRootd(args []string) error {
 	fs := flag.NewFlagSet("rootd", flag.ContinueOnError)
 	interval := fs.Duration("interval", time.Minute, "how often to probe")
+	confPath := fs.String("config", box.AgentConfPath, "the credential whose keys commands are verified against")
+	inboxDir := fs.String("inbox", box.InboxDir, "where signed commands arrive")
+	resultsDir := fs.String("results", box.ResultsDir, "where their outcomes are written")
 	reportPath := fs.String("report", box.ReportPath, "where to write the current report")
 	historyPath := fs.String("history", box.HistoryPath, "where to append readings")
 	volEvery := fs.Int("volumes-every", 15, "measure volumes every Nth reading (0 disables)")
@@ -183,6 +186,17 @@ func runRootd(args []string) error {
 	if err := box.PrepareAPISocketDir(box.APISocketDir); err != nil {
 		return err
 	}
+	// Where a signed command lands. Made by root, owned by the account that
+	// will write into it -- see box/inbox.go. On tmpfs, so it is gone after a
+	// reboot and remade here, which is correct: a command carries an expiry in
+	// minutes and one that survived a restart would be a machine acting on
+	// something somebody asked for before it went down.
+	if err := box.PrepareInboxDir(*inboxDir); err != nil {
+		return err
+	}
+	if err := box.PrepareResultsDir(*resultsDir); err != nil {
+		return err
+	}
 
 	ctx, stop := signalContext()
 	defer stop()
@@ -221,12 +235,55 @@ func runRootd(args []string) error {
 	}
 	t := time.NewTicker(*interval)
 	defer t.Stop()
+
+	// Commands run on their OWN GOROUTINE, not in this loop.
+	//
+	// Two reasons, and the second is the one that bites. A command is somebody
+	// waiting for a button, so it wants a much shorter timer than a measurement
+	// on a schedule. And applying one runs `docker compose`, which can take
+	// minutes -- inside this select that would stall the report, and a box that
+	// stops reporting is indistinguishable from a box that is down. The
+	// half-second timer's justification is that a stat on tmpfs costs nothing;
+	// that is true of the poll and not of the work it dispatches.
+	go commandLoop(ctx, *confPath, *inboxDir, *resultsDir)
+
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
 		case <-t.C:
 			tick()
+		}
+	}
+}
+
+// commandLoop applies what arrives, and sweeps what nobody collected.
+//
+// The credential is re-read each pass rather than held: `komizo enrol` rewrites
+// it while this is running, and a rootd holding the keys it started with would
+// keep obeying a device that had just been removed.
+//
+// The inbox is swept even when the box takes orders from nobody, because it is
+// on tmpfs and an account that can create files there should not be able to
+// fill memory by doing so.
+func commandLoop(ctx context.Context, confPath, inboxDir, resultsDir string) {
+	cmds := time.NewTicker(applyEvery)
+	defer cmds.Stop()
+	prune := time.NewTicker(time.Hour)
+	defer prune.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-cmds.C:
+			conf, err := box.ReadAgentConf(confPath)
+			if err != nil {
+				continue
+			}
+			applyPending(ctx, conf, inboxDir, resultsDir)
+		case <-prune.C:
+			_ = box.PruneResults(resultsDir, time.Now())
 		}
 	}
 }
