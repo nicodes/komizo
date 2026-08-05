@@ -553,3 +553,53 @@ func TestTheInboxBoundHoldsWhenCallersRace(t *testing.T) {
 		t.Errorf("%d files behind a bound of %d", n, InboxFull)
 	}
 }
+
+// EVERY JSON ANSWER KEEPS ITS HEADERS, INCLUDING THE 202.
+//
+// WriteHeader flushes what is set at the moment it is called and ignores
+// anything added afterwards, so writing the status first and the headers second
+// sent the body as text/plain with no nosniff. This is the one browser-reachable
+// POST on this API, and api.go calls nosniff load-bearing: "a JSON document a
+// browser decides to treat as HTML is a document that can run".
+func TestEveryJSONAnswerCarriesItsHeaders(t *testing.T) {
+	cfg, dev, tok, _ := writeFixture(t)
+
+	// The 202.
+	w := post(t, cfg, tok, signedCommand(t, dev, stopCmd()))
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("= %d", w.Code)
+	}
+	assertJSONHeaders(t, "202", w)
+
+	// The already-applied 200.
+	c := stopCmd()
+	c.ID = "alreadydone"
+	if err := WriteResult(cfg.ResultsDir, Result{ID: c.ID, Op: c.Op, OK: true}); err != nil {
+		t.Fatal(err)
+	}
+	assertJSONHeaders(t, "200 from a record", post(t, cfg, tok, signedCommand(t, dev, c)))
+
+	// And a read, which was always right and is what the others must match.
+	r := httptest.NewRequest(http.MethodGet, "/v1/commands/"+c.ID, nil)
+	r.Header.Set("Authorization", "Bearer "+tok)
+	rec := httptest.NewRecorder()
+	Handler(cfg).ServeHTTP(rec, r)
+	assertJSONHeaders(t, "a result read", rec)
+}
+
+// Result().Header, NOT Header().
+//
+// The recorder's Header() returns the live map, so a header set after
+// WriteHeader is still in it -- which is exactly the bug, and a test written
+// that way passes against it. Result() reads the snapshot the recorder takes
+// when WriteHeader is called, which is what a real client would receive.
+func assertJSONHeaders(t *testing.T, what string, w *httptest.ResponseRecorder) {
+	t.Helper()
+	h := w.Result().Header
+	if got := h.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+		t.Errorf("%s: Content-Type = %q, want application/json", what, got)
+	}
+	if got := h.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("%s: X-Content-Type-Options = %q, want nosniff", what, got)
+	}
+}
