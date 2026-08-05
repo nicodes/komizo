@@ -117,18 +117,45 @@ func TestTheLifecycleCommandsRefuseANameThatIsNotOne(t *testing.T) {
 	}
 }
 
-// Every one of them is reachable as `komizo <verb>`.
+// Every one of them is reachable as `komizo <verb>`, from BOTH lists.
 //
-// parity_test.go calls the Run* functions directly, so a capability that exists
-// and is not wired into the dispatch would pass every other test in this file
-// while being unreachable from the command line -- which is the exact failure
-// this file exists to prevent.
-func TestTheLifecycleVerbsAreWiredIntoTheDispatch(t *testing.T) {
+// The other tests here call the Run* functions directly, so a capability that
+// exists and is not wired into the dispatch would pass all of them while being
+// unreachable from the command line -- which is the exact failure this file
+// exists to prevent. And the name appears twice in run.go: once in the
+// session-gated case in Main, once in runAccountCommand's table. Nothing
+// asserted that the two agree.
+//
+// Neither half asserts what happens AFTER routing, because that depends on the
+// machine: signed in these fail on a missing subject, signed out on the session.
+// The first version asserted the --app message, passed on a laptop with a
+// session, and failed in CI -- a test reading the environment rather than the
+// code.
+func TestTheLifecycleVerbsAreWiredIntoBothDispatchLists(t *testing.T) {
 	for _, verb := range []string{"start", "stop", "restart", "logs"} {
-		err := Main([]string{verb, "--host", "root@box"})
-		if err == nil || !strings.Contains(err.Error(), "--app") {
-			t.Errorf("komizo %s = %v, want the command to have run", verb, err)
+		// The table.
+		err := runAccountCommand(verb, []string{"--host", "root@box"})
+		if err == nil || strings.Contains(err.Error(), "unknown command") {
+			t.Errorf("komizo %s is not in runAccountCommand: %v", verb, err)
 		}
+
+		// And Main's list. A verb missing from it falls through to the
+		// `komizo <host>` form and is treated as a HOSTNAME -- which is why this
+		// looks for a resolution failure rather than for success.
+		err = Main([]string{verb, "--host", "root@box"})
+		if err == nil {
+			t.Errorf("komizo %s succeeded with no subject", verb)
+			continue
+		}
+		if strings.Contains(err.Error(), "resolve hostname") {
+			t.Errorf("komizo %s is missing from Main's list, so it was read as a host: %v", verb, err)
+		}
+	}
+
+	// Not vacuous: the table names a word it does not know.
+	if err := runAccountCommand("definitely-not-a-command", nil); err == nil ||
+		!strings.Contains(err.Error(), "unknown command") {
+		t.Errorf("an unknown command = %v, want it named as unknown", err)
 	}
 }
 
