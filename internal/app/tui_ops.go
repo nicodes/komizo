@@ -424,6 +424,18 @@ func (m model) startInit(o initOpts) tea.Cmd {
 			ch <- runDoneMsg{err: err}
 			return
 		}
+
+		// Filing it under whoever is signed in, so it appears in the app on its
+		// own. NOT fatal: the box is set up and works, and what failed is the
+		// half that needs the service -- failing the whole setup would make an
+		// outage look like a broken server.
+		ch <- runOutputMsg("")
+		ch <- runOutputMsg("filing this server under your account...")
+		if err := registerAndEnrol(t, "", "", ch); err != nil {
+			ch <- runOutputMsg("could not register this server: " + err.Error())
+			ch <- runOutputMsg("the box is set up. Press u once the service is reachable.")
+		}
+
 		ch <- runOutputMsg("")
 		ch <- runOutputMsg("installing the shared reverse proxy...")
 		pc := exec.Command("ssh", t.sshArgs(envPrefix(proxyEnv(proxyOpts{
