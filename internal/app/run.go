@@ -59,6 +59,33 @@ func versionText() string {
 	return strings.TrimPrefix(bi.Main.Version, "v")
 }
 
+// runAccountCommand is every command that needs somebody signed in.
+//
+// One table, so a command added later cannot be added to the dispatch and
+// forgotten by the gate -- which would be a route into somebody's servers that
+// nobody remembered to close.
+func runAccountCommand(name string, args []string) error {
+	switch name {
+	case "init":
+		return RunInit(args)
+	case "update":
+		return RunUpdate(args)
+	case "add":
+		return RunAdd(args)
+	case "list":
+		return RunList(args)
+	case "report":
+		return RunReport(args)
+	case "enrol":
+		return RunEnrol(args)
+	case "remove":
+		return RunRemove(args)
+	case "proxy":
+		return RunProxy(args)
+	}
+	return fmt.Errorf("unknown command %q", name)
+}
+
 func Main(args []string) error {
 	// `komizo` on its own is the interface with nothing to connect to yet: it
 	// opens and asks for an address. It used to print the usage and exit 2,
@@ -76,22 +103,23 @@ func Main(args []string) error {
 	case "--version", "-v", "version":
 		fmt.Println("komizo " + versionText())
 		return nil
-	case "init":
-		err = RunInit(args[1:])
-	case "update":
-		err = RunUpdate(args[1:])
-	case "add":
-		err = RunAdd(args[1:])
-	case "list":
-		err = RunList(args[1:])
-	case "report":
-		err = RunReport(args[1:])
-	case "enrol":
-		err = RunEnrol(args[1:])
-	case "remove":
-		err = RunRemove(args[1:])
-	case "proxy":
-		err = RunProxy(args[1:])
+	// Signing in, signing out, saying which version this is and printing the
+	// shell komizo ships are the four things that do not need an account. The
+	// first two because they are how you get one; the last two because they
+	// touch neither a service nor a server.
+	case "login":
+		err = RunLogin(args[1:])
+	case "logout":
+		err = RunLogout(args[1:])
+	case "init", "update", "add", "list", "report", "enrol", "remove", "proxy":
+		// Read from disk, never checked over the network -- see session.go.
+		// The CLI is what repairs a broken box, and requiring a reachable
+		// service to fix a server is requiring it at the moment it is least
+		// likely to be there.
+		if _, serr := requireSession(); serr != nil {
+			return serr
+		}
+		err = runAccountCommand(args[0], args[1:])
 	case "script":
 		err = RunScript(args[1:])
 	case "-h", "--help", "help":
@@ -134,6 +162,13 @@ func Main(args []string) error {
 			Usage()
 			os.Exit(2)
 		}
+		// The interface needs an account like every other route into a server.
+		// Refused here rather than opened and then refused inside, so somebody
+		// who is not signed in gets a sentence they can act on instead of a
+		// full-screen program that will not do anything.
+		if _, serr := requireSession(); serr != nil {
+			return serr
+		}
 		err = RunTUI(args[0], *port, portWasSet(fs), *yes)
 	}
 
@@ -154,6 +189,8 @@ server itself; you never run anything on the box by hand.
 
 The same operations are available non-interactively, for scripting:
 
+  komizo login
+  komizo logout
   komizo init    --host root@HOST
   komizo update  --host root@HOST
   komizo add     --host root@HOST --app NAME --config REF
@@ -163,6 +200,12 @@ The same operations are available non-interactively, for scripting:
   komizo remove  --host root@HOST --app NAME --yes
   komizo proxy   --host root@HOST
   komizo script [init|add|remove|proxy]
+
+"komizo login" signs this machine in. It shows a code to approve from a device
+you are already signed in on -- a phone will do -- so a machine with no browser
+can still be signed in. Every other command needs it, and the session is read
+from disk rather than checked over the network: a komizo outage must never stop
+somebody repairing their own server.
 
 "komizo init" prepares a fresh server: Docker, the shared network, and the one
 Caddy that terminates TLS for every app on the box. It is a separate step from
