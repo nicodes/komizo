@@ -144,9 +144,10 @@ func Handler(cfg APIConfig) http.Handler {
 		writeJSON(w, HistoryResponse{V: APIVersion, From: from, To: to, Samples: samples})
 	})
 
-	// What an app has been saying. A read like the others: rootd collects it and
-	// this hands it over, because the account here cannot ask docker anything.
-	mux.HandleFunc("GET /v1/logs", func(w http.ResponseWriter, r *http.Request) {
+	// What an app has been saying. NOT a read like the others: §5 asks that logs
+	// be authorised by the device rather than by the registry, so this takes a
+	// signed envelope as well as a token -- see logs.go.
+	mux.HandleFunc("POST /v1/logs", func(w http.ResponseWriter, r *http.Request) {
 		if !authorized(cfg, r) {
 			refuse(w)
 			return

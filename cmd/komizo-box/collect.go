@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/nicodes/komizo/box"
@@ -39,7 +40,7 @@ const collectTail = 500
 // Errors are not returned: one app whose compose file is broken is not a reason
 // to stop collecting for the others, and rootd's job is to keep running.
 func collectLogs(ctx context.Context, root, dir string) {
-	names := appNames(root, dir)
+	names, ok := appNames(root, dir)
 	for _, name := range names {
 		sub, err := resolveSubject(root, name, false)
 		if err != nil {
@@ -47,35 +48,53 @@ func collectLogs(ctx context.Context, root, dir string) {
 		}
 		write(ctx, dir, name, sub)
 	}
-	// The shared proxy, which is where Caddy records its certificate work -- the
-	// only place a TLS failure is explained, and the thing tui_server.go says is
-	// worth having on its own.
+	// THE SHARED PROXY IS NOT COLLECTED, and this is the correction that matters
+	// most on this path.
 	//
-	// AND IT IS NOT THE ACCESS LOG, which is the question this raises and the
-	// reason it is answered here. alpine-proxy.sh sends access logging to a file
-	// rather than to stdout, in its own words, "so that the proxy's own log --
-	// the one that explains a certificate failure -- does not become a request
-	// firehose". That file is 0750 root:root because "they carry client IPs and
-	// request paths, which is the one thing on this box that is about the people
-	// using it rather than about the box", and nothing here reads it.
+	// It looked safe by reading: alpine-proxy.sh sends ACCESS logging to a file
+	// rather than to stdout, deliberately, "so that the proxy's own log -- the
+	// one that explains a certificate failure -- does not become a request
+	// firehose". That is true and it is not the whole log.
 	//
-	// So what is collected is Caddy's operational log and only that. If anybody
-	// ever points access logging at stdout, this line starts copying client IPs
-	// into a file an internet-facing process can read, and box/access.go's
-	// standing promise -- "COUNTS, NEVER LINES" -- stops being true of this box.
-	write(ctx, dir, box.ProxyLogName, subject{dir: box.ProxyDir, project: ProxyProject})
+	// Caddy's ERROR logger is a separate sink and it goes to stdout, carrying a
+	// full request: remote_ip, client_ip, the URI with its query string, and the
+	// User-Agent. Every 502, every upstream timeout, every handshake failure --
+	// and on the error path that stdout line is the ONLY place the request
+	// appears at all. Found by running it, not by reading it.
+	//
+	// So collecting it would copy client IPs and request paths into a file the
+	// internet-facing account reads and serves, which is precisely what
+	// access.go's "COUNTS, NEVER LINES" and the 0750 on the access log directory
+	// exist to prevent. The file-not-stdout decision would have been undone by
+	// collecting the stdout instead.
+	//
+	// `komizo logs --proxy` over SSH stays, and is what §5 actually justified: a
+	// root command an operator runs is not a file an internet-facing process
+	// hands out. Serving it here needs filtering that makes a promise about
+	// Caddy's log shape, and that is a decision on its own rather than a line
+	// slipped into a collector.
 
-	// An app that was removed leaves its log behind otherwise.
-	_ = box.PruneLogs(dir, names)
+	// An app that was removed leaves its log behind otherwise -- but ONLY when
+	// the enumeration worked. A directory that could not be read looks exactly
+	// like a box with no apps, and pruning against that would delete every log
+	// on the machine.
+	if ok {
+		_ = box.PruneLogs(dir, names)
+	}
 }
 
 func write(ctx context.Context, dir, name string, sub subject) {
 	out, err := composeOut(ctx, sub.dir, sub.project,
 		"logs", "--tail", strconv.Itoa(collectTail), "--no-color")
-	if err != nil && out == "" {
-		// Nothing running, or no compose file. Not an error worth recording: an
-		// app that has never started has nothing to say, and writing an empty
-		// file over a previous tail would throw away the last thing it said.
+	_ = err
+	if strings.TrimSpace(out) == "" {
+		// NOTHING TO SAY IS NOT THE SAME AS SAYING NOTHING.
+		//
+		// This used to fire only when compose FAILED -- and compose on a project
+		// with no containers exits 0 with empty output, which is exactly what an
+		// app mid-deploy and an app that just crashed and was recreated both
+		// look like. So the two moments somebody is most likely to be watching
+		// were the two that wiped the last thing the app said.
 		return
 	}
 	_ = box.WriteLog(dir, name, []byte(out))
@@ -86,10 +105,11 @@ func write(ctx context.Context, dir, name string, sub subject) {
 // From komizo's own records rather than by globbing /srv, for the reason
 // paths.go gives: an app placed elsewhere with --app-dir is invisible to a glob,
 // so its logs would be permanently empty.
-func appNames(root, dir string) []string {
+func appNames(root, dir string) ([]string, bool) {
 	ents, err := os.ReadDir(root + box.AppsDir)
 	if err != nil {
-		return nil
+		// Told apart from "no apps", because the caller prunes against this.
+		return nil, false
 	}
 	var out []string
 	for _, e := range ents {
@@ -107,7 +127,7 @@ func appNames(root, dir string) []string {
 		}
 		out = append(out, name)
 	}
-	return out
+	return out, true
 }
 
 func cutSuffix(s, suffix string) (string, bool) {

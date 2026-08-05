@@ -204,6 +204,14 @@ func runRootd(args []string) error {
 	if err := box.PrepareResultsDir(*resultsDir); err != nil {
 		return err
 	}
+	// The same for logs. Created lazily it lands in a usable group only because
+	// Linux propagates setgid from ServedDir -- and PrepareServedDir runs every
+	// start precisely because an upgrade or a restored backup can leave that
+	// without one. A logs directory made in that window is 0750 root:root
+	// forever, and every request answers "nothing collected yet".
+	if err := box.PrepareServedDir(*logsDir); err != nil {
+		return err
+	}
 
 	ctx, stop := signalContext()
 	defer stop()

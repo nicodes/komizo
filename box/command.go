@@ -353,9 +353,25 @@ const (
 	OpAppStart   = "app.start"
 	OpAppStop    = "app.stop"
 	OpAppRestart = "app.restart"
+
+	// OpLogsRead is a READ, and the only op here that nothing applies.
+	//
+	// It exists because app-only.md §5 asks for logs to be authorised by the
+	// DEVICE rather than by the registry: a read token names a server and an
+	// expiry and no user, so the ownership check is the service's to make, and
+	// whoever holds its signing key could otherwise mint one for any box. That
+	// is already true of the report and the history -- registry.md §6 decided it
+	// -- and §5 refuses to put the most sensitive bytes on the machine behind
+	// the same single environment variable.
+	//
+	// The serving account verifies this itself, which grants it nothing: the
+	// keys are public, and verifying with a public key is not signing with one.
+	// rootd has no verb for it, so an envelope carrying it that is posted to the
+	// command route is refused there rather than applied.
+	OpLogsRead = "logs.read"
 )
 
-var commandOps = []string{OpAppStart, OpAppStop, OpAppRestart}
+var commandOps = []string{OpAppStart, OpAppStop, OpAppRestart, OpLogsRead}
 
 func knownOp(op string) bool { return slices.Contains(commandOps, op) }
 

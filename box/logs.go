@@ -2,7 +2,10 @@ package box
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -47,26 +50,28 @@ const LogsDir = ServedDir + "/logs"
 // forever, on a disk that is somebody else's.
 const LogsMax = 256 << 10
 
-// ProxyLogName is what the shared proxy's log is filed under.
-//
-// Underscore-prefixed, which is the one namespace an app cannot have -- komizo
-// reserves it, and validateApp refuses it -- so this can never collide with an
-// app's file.
-const ProxyLogName = "_proxy"
+// The proxy is not served here. See cmd/komizo-box/collect.go: Caddy's error
+// logger writes full requests -- client IP, URI, query string -- to stdout, so
+// collecting it would put them in a file the internet-facing account reads.
 
 // LogPath is where one subject's log lives, and it refuses a name that is not
 // one.
 //
 // Checked rather than trusted: this is joined into a path, and the name arrives
 // from a query string on a route reachable through the box's proxy.
+// errNotAnApp is a name this will not file, which is a bad request rather than
+// a thing that is missing.
+var errNotAnApp = errors.New("not an app")
+
 func LogPath(dir, name string) (string, error) {
 	if name == "" || len(name) > 100 || strings.ContainsAny(name, "/.") {
-		return "", fmt.Errorf("%q is not an app", name)
+		return "", fmt.Errorf("%w: %q", errNotAnApp, name)
 	}
-	if name != ProxyLogName && strings.HasPrefix(name, "_") {
-		// The rest of the underscore namespace is komizo's own and holds no
-		// logs, so asking for one is asking about something that is not there.
-		return "", fmt.Errorf("%q is not an app", name)
+	if strings.HasPrefix(name, "_") {
+		// komizo's own namespace, which validateApp refuses for apps and which
+		// holds no logs this serves. The proxy lives in here and is deliberately
+		// not collected -- see collect.go.
+		return "", fmt.Errorf("%w: %q", errNotAnApp, name)
 	}
 	return filepath.Join(dir, name+".log"), nil
 }
@@ -132,12 +137,15 @@ func PruneLogs(dir string, keep []string) error {
 	if err != nil {
 		return nil
 	}
-	live := map[string]bool{ProxyLogName + ".log": true}
+	live := map[string]bool{}
 	for _, k := range keep {
 		live[k+".log"] = true
 	}
 	for _, e := range ents {
-		if e.IsDir() || live[e.Name()] {
+		// ONLY WHAT THIS WRITES. --logs is an operator flag, and pointed one
+		// directory up it would otherwise delete history.jsonl every fifteen
+		// seconds, silently.
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".log") || live[e.Name()] {
 			continue
 		}
 		_ = os.Remove(filepath.Join(dir, e.Name()))
@@ -160,19 +168,49 @@ func (l LogsResponse) Schema() int { return l.V }
 // unbounded one is a different product.
 const logTailMax = 2000
 
-// serveLog hands over what rootd collected.
+// serveLog hands over what rootd collected, to a device this box takes orders
+// from.
+//
+// A POST, and not because it changes anything -- it changes nothing. It carries
+// a SIGNED ENVELOPE, which is what app-only.md §5 requires of logs and what a
+// GET has nowhere to put. The token that came with it still gates the door;
+// this gates who may look.
 func serveLog(cfg APIConfig, w http.ResponseWriter, r *http.Request) {
 	if cfg.LogsDir == "" {
 		http.Error(w, "this box is not collecting logs", http.StatusServiceUnavailable)
 		return
 	}
-	name := r.URL.Query().Get("app")
+	if len(cfg.OperatorKeys) == 0 {
+		// Nobody may read these, because nobody has been given the means to ask.
+		// Said plainly rather than answered with an empty log.
+		http.Error(w, "this box takes orders from nobody", http.StatusConflict)
+		return
+	}
+
+	raw, err := io.ReadAll(io.LimitReader(r.Body, MaxCommandBytes+1))
+	if err != nil {
+		http.Error(w, "could not read that request", http.StatusBadRequest)
+		return
+	}
+	if len(raw) > MaxCommandBytes {
+		http.Error(w, "that request is too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	c, _, err := VerifyCommand(cfg.OperatorKeys, raw, cfg.ServerID, cfg.Now())
+	if err != nil || c.Op != OpLogsRead {
+		// One answer for every reason, the same as everywhere else here: which
+		// of them it was is not this caller's business.
+		http.Error(w, "this box will not answer that", http.StatusForbidden)
+		return
+	}
+
+	name := c.Args["app"]
 	if name == "" {
 		http.Error(w, "which app?", http.StatusBadRequest)
 		return
 	}
 	tail := 200
-	if v := r.URL.Query().Get("tail"); v != "" {
+	if v := c.Args["tail"]; v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 1 || n > logTailMax {
 			http.Error(w, "tail must be a number between 1 and 2000", http.StatusBadRequest)
@@ -180,11 +218,26 @@ func serveLog(cfg APIConfig, w http.ResponseWriter, r *http.Request) {
 		}
 		tail = n
 	}
+
 	lines, err := ReadLog(cfg.LogsDir, name, tail)
-	if err != nil {
+	switch {
+	case errors.Is(err, errNotAnApp):
+		// A name this box will not file. A bad request rather than a missing
+		// thing, and telling them apart is the point -- see below.
+		http.Error(w, "that is not an app", http.StatusBadRequest)
+		return
+	case errors.Is(err, fs.ErrNotExist):
 		// Absent is not an error about the caller: an app that has never started
 		// has nothing to say, and one collected a moment from now will.
 		http.Error(w, "nothing collected for that app yet", http.StatusNotFound)
+		return
+	case err != nil:
+		// UNREADABLE IS NOT ABSENT. Collapsing the two is the bug paths.go
+		// records as having shipped: ReadSamples treated an unreadable file as
+		// an empty one, so /v1/history said "no readings" on every box forever
+		// and nothing anywhere mentioned permission.
+		fmt.Fprintf(os.Stderr, "komizo-box: could not read %s's log: %v\n", name, err)
+		http.Error(w, "this box could not read that log", http.StatusServiceUnavailable)
 		return
 	}
 	writeJSON(w, LogsResponse{V: APIVersion, App: name, Lines: lines})

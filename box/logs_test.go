@@ -1,7 +1,9 @@
 package box
 
 import (
+	"bytes"
 	"crypto/ed25519"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,19 +13,45 @@ import (
 	"time"
 )
 
-func logsFixture(t *testing.T) (APIConfig, string, string) {
+func logsFixture(t *testing.T) (APIConfig, string, string, ed25519.PrivateKey) {
 	t.Helper()
 	regPub, regPriv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	devPub, devPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
-	cfg := APIConfig{ServerID: "srv_mine", RegistryKey: regPub, LogsDir: dir}
+	cfg := APIConfig{ServerID: "srv_mine", RegistryKey: regPub,
+		OperatorKeys: []ed25519.PublicKey{devPub}, LogsDir: dir}
 	tok, err := SignReadToken(regPriv, cfg.ServerID, time.Now().Add(5*time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return cfg, dir, tok
+	return cfg, dir, tok, devPriv
+}
+
+// ask posts a signed logs.read, which is what §5 requires of a log.
+func ask(t *testing.T, cfg APIConfig, tok string, dev ed25519.PrivateKey, args map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	env, err := SignCommand(dev, Command{Srv: cfg.ServerID,
+		Exp: time.Now().Add(time.Minute).Unix(), Op: OpLogsRead, Args: args})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "/v1/logs", bytes.NewReader(body))
+	if tok != "" {
+		r.Header.Set("Authorization", "Bearer "+tok)
+	}
+	w := httptest.NewRecorder()
+	Handler(cfg).ServeHTTP(w, r)
+	return w
 }
 
 // A NAME IS NEVER JOINED TO A PATH UNCHECKED.
@@ -37,13 +65,13 @@ func TestALogNameThatIsAPathIsRefused(t *testing.T) {
 			t.Errorf("%q was accepted as an app", bad)
 		}
 	}
-	// The proxy is the one underscore name that exists; the rest of that
-	// namespace is komizo's own and holds no logs.
-	if _, err := LogPath(dir, ProxyLogName); err != nil {
-		t.Errorf("the proxy's own log was refused: %v", err)
-	}
-	if _, err := LogPath(dir, "_secret"); err == nil {
-		t.Error("a reserved name was accepted")
+	// THE PROXY IS NOT SERVED HERE. Caddy's error logger puts full requests --
+	// client IP, URI, query string -- on stdout, so collecting it would hand
+	// them to the account that talks to the internet.
+	for _, reserved := range []string{"_proxy", "_secret", "_"} {
+		if _, err := LogPath(dir, reserved); err == nil {
+			t.Errorf("%q was accepted", reserved)
+		}
 	}
 	if _, err := LogPath(dir, "web"); err != nil {
 		t.Errorf("an ordinary app was refused: %v", err)
@@ -96,48 +124,140 @@ func TestALogIsBoundedAndKeepsTheRecentEnd(t *testing.T) {
 	}
 }
 
-// The route needs a token like every other route here, and bounds the tail.
-func TestServingALog(t *testing.T) {
-	cfg, dir, tok := logsFixture(t)
+// BOTH, NOT EITHER — and for logs the signature is the half §5 insists on.
+//
+// A read token names a server and an expiry and no user, so the ownership check
+// is the service's to make: whoever holds its signing key could mint one for any
+// box. §5 refuses to put the most sensitive bytes on the machine behind that
+// same single environment variable.
+func TestALogNeedsATokenAndASignature(t *testing.T) {
+	cfg, dir, tok, dev := logsFixture(t)
 	if err := WriteLog(dir, "web", []byte("one\ntwo\nthree\n")); err != nil {
 		t.Fatal(err)
 	}
-	get := func(q, token string) *httptest.ResponseRecorder {
-		r := httptest.NewRequest(http.MethodGet, "/v1/logs?"+q, nil)
-		if token != "" {
-			r.Header.Set("Authorization", "Bearer "+token)
-		}
-		w := httptest.NewRecorder()
-		Handler(cfg).ServeHTTP(w, r)
-		return w
-	}
+	args := map[string]string{"app": "web"}
 
-	if w := get("app=web", ""); w.Code != http.StatusUnauthorized {
+	if w := ask(t, cfg, "", dev, args); w.Code != http.StatusUnauthorized {
 		t.Errorf("no token = %d, want 401", w.Code)
 	}
-	w := get("app=web&tail=2", tok)
-	if w.Code != http.StatusOK {
-		t.Fatalf("= %d", w.Code)
+	// A valid token and a key this box does not trust: the door opens, the
+	// answer does not.
+	_, stranger, _ := ed25519.GenerateKey(nil)
+	if w := ask(t, cfg, tok, stranger, args); w.Code != http.StatusForbidden {
+		t.Errorf("an untrusted device = %d, want 403", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "three") || strings.Contains(w.Body.String(), "one") {
-		t.Errorf("tail=2 returned %q, want the last two lines", w.Body.String())
+	// And a signed request for a DIFFERENT box is refused here too.
+	other := cfg
+	other.ServerID = "srv_theirs"
+	env, err := SignCommand(dev, Command{Srv: "srv_theirs",
+		Exp: time.Now().Add(time.Minute).Unix(), Op: OpLogsRead, Args: args})
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, bad := range []string{"app=web&tail=0", "app=web&tail=99999", "app=web&tail=x", "app=../etc"} {
-		if w := get(bad, tok); w.Code == http.StatusOK {
-			t.Errorf("%q was served", bad)
+	body, _ := json.Marshal(env)
+	r := httptest.NewRequest(http.MethodPost, "/v1/logs", bytes.NewReader(body))
+	r.Header.Set("Authorization", "Bearer "+tok)
+	w := httptest.NewRecorder()
+	Handler(cfg).ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("a request for another box = %d, want 403", w.Code)
+	}
+
+	if w := ask(t, cfg, tok, dev, args); w.Code != http.StatusOK {
+		t.Fatalf("a signed request with a good token = %d", w.Code)
+	}
+}
+
+// An op that is not logs.read cannot be spent here.
+func TestALogRouteRefusesAnotherOp(t *testing.T) {
+	cfg, dir, tok, dev := logsFixture(t)
+	if err := WriteLog(dir, "web", []byte("x\n")); err != nil {
+		t.Fatal(err)
+	}
+	env, err := SignCommand(dev, Command{Srv: cfg.ServerID,
+		Exp: time.Now().Add(time.Minute).Unix(), Op: OpAppStop,
+		Args: map[string]string{"app": "web"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(env)
+	r := httptest.NewRequest(http.MethodPost, "/v1/logs", bytes.NewReader(body))
+	r.Header.Set("Authorization", "Bearer "+tok)
+	w := httptest.NewRecorder()
+	Handler(cfg).ServeHTTP(w, r)
+	if w.Code != http.StatusForbidden {
+		t.Errorf("a stop signed for this box read a log: %d", w.Code)
+	}
+}
+
+// The document states its schema, the default tail is the default, and every
+// refusal is the status it should be.
+func TestTheLogResponseAndItsRefusals(t *testing.T) {
+	cfg, dir, tok, dev := logsFixture(t)
+	if err := WriteLog(dir, "web", []byte("one\ntwo\nthree\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Decoded rather than grepped, so the schema and the app name are checked
+	// rather than merely present somewhere in the body.
+	w := ask(t, cfg, tok, dev, map[string]string{"app": "web"})
+	var doc LogsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.V != APIVersion || doc.App != "web" {
+		t.Errorf("document = %+v", doc)
+	}
+	// No tail asked for, so all three lines come back -- which pins the default
+	// rather than leaving it to be whatever it is.
+	if strings.Count(doc.Lines, "\n") != 2 || !strings.Contains(doc.Lines, "one") {
+		t.Errorf("default tail returned %q, want all three lines", doc.Lines)
+	}
+
+	w = ask(t, cfg, tok, dev, map[string]string{"app": "web", "tail": "2"})
+	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(doc.Lines, "one") || !strings.Contains(doc.Lines, "three") {
+		t.Errorf("tail=2 returned %q", doc.Lines)
+	}
+
+	// Told apart, because "that is not an app" and "nothing yet" are different
+	// answers and only one is about the request.
+	for name, want := range map[string]int{
+		"":             http.StatusBadRequest,
+		"../etc":       http.StatusBadRequest,
+		"_proxy":       http.StatusBadRequest,
+		"neverstarted": http.StatusNotFound,
+	} {
+		if w := ask(t, cfg, tok, dev, map[string]string{"app": name}); w.Code != want {
+			t.Errorf("app=%q = %d, want %d", name, w.Code, want)
 		}
 	}
-	// An app that has never started has nothing to say, and that is not an
-	// error about the caller.
-	if w := get("app=neverstarted", tok); w.Code != http.StatusNotFound {
-		t.Errorf("an uncollected app = %d, want 404", w.Code)
+	for _, bad := range []string{"0", "99999", "x"} {
+		if w := ask(t, cfg, tok, dev, map[string]string{"app": "web", "tail": bad}); w.Code != http.StatusBadRequest {
+			t.Errorf("tail=%s = %d, want 400", bad, w.Code)
+		}
+	}
+
+	// A box not collecting says so, rather than answering with an empty log.
+	off := cfg
+	off.LogsDir = ""
+	if w := ask(t, off, tok, dev, map[string]string{"app": "web"}); w.Code != http.StatusServiceUnavailable {
+		t.Errorf("a box not collecting = %d, want 503", w.Code)
+	}
+	// And one that takes orders from nobody cannot be asked at all.
+	none := cfg
+	none.OperatorKeys = nil
+	if w := ask(t, none, tok, dev, map[string]string{"app": "web"}); w.Code != http.StatusConflict {
+		t.Errorf("a box with no devices = %d, want 409", w.Code)
 	}
 }
 
 // A removed app's log goes with it.
-func TestLogsOfRemovedAppsAreSweptAndTheProxyIsKept(t *testing.T) {
+func TestLogsOfRemovedAppsAreSwept(t *testing.T) {
 	dir := t.TempDir()
-	for _, n := range []string{"web", "gone", ProxyLogName} {
+	for _, n := range []string{"web", "gone"} {
 		if err := WriteLog(dir, n, []byte("x\n")); err != nil {
 			t.Fatal(err)
 		}
@@ -148,9 +268,110 @@ func TestLogsOfRemovedAppsAreSweptAndTheProxyIsKept(t *testing.T) {
 	if _, err := ReadLog(dir, "gone", 1); err == nil {
 		t.Error("an app that no longer exists kept its log")
 	}
-	for _, n := range []string{"web", ProxyLogName} {
-		if _, err := ReadLog(dir, n, 1); err != nil {
-			t.Errorf("%s lost its log: %v", n, err)
+	if _, err := ReadLog(dir, "web", 1); err != nil {
+		t.Errorf("web lost its log: %v", err)
+	}
+}
+
+// The directory is the permission that decides whether any of this works.
+//
+// Nothing covered it: the file's 0640 was asserted and the directory it lives in
+// was not, and a logs directory created 0750 root:root is one where every
+// request answers "nothing collected yet" forever.
+func TestTheLogsDirectoryIsGroupReadable(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "logs")
+	if err := WriteLog(dir, "web", []byte("x\n")); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm&0o050 != 0o050 {
+		t.Errorf("the logs directory is %04o: the account that serves it cannot enter", perm)
+	}
+	if perm := fi.Mode().Perm(); perm&0o007 != 0 {
+		t.Errorf("the logs directory is %04o: anything on the box can read the logs", perm)
+	}
+}
+
+// Pruning removes what this writes and nothing else.
+//
+// --logs is an operator flag; pointed one directory up, an unbounded prune would
+// delete history.jsonl every fifteen seconds, silently.
+func TestPruningTouchesOnlyLogs(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteLog(dir, "gone", []byte("x\n")); err != nil {
+		t.Fatal(err)
+	}
+	for _, other := range []string{"history.jsonl", "report.json", "notes"} {
+		if err := os.WriteFile(filepath.Join(dir, other), []byte("keep me"), 0o640); err != nil {
+			t.Fatal(err)
 		}
+	}
+	if err := os.Mkdir(filepath.Join(dir, "results"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := PruneLogs(dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadLog(dir, "gone", 1); err == nil {
+		t.Error("a removed app kept its log")
+	}
+	for _, other := range []string{"history.jsonl", "report.json", "notes", "results"} {
+		if _, err := os.Stat(filepath.Join(dir, other)); err != nil {
+			t.Errorf("pruning removed %s, which is not a log it wrote", other)
+		}
+	}
+}
+
+// Trimming cuts at a line boundary even when the overflow lands exactly on one.
+func TestTrimmingHandlesAnExactBoundary(t *testing.T) {
+	dir := t.TempDir()
+	line := strings.Repeat("a", 63) + "\n"
+	var b strings.Builder
+	for b.Len() < LogsMax+len(line)*2 {
+		b.WriteString(line)
+	}
+	if err := WriteLog(dir, "web", []byte(b.String())); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "web.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ln := range strings.Split(strings.TrimRight(string(body), "\n"), "\n") {
+		if len(ln) != 63 {
+			t.Fatalf("a fragment survived trimming: %d chars", len(ln))
+		}
+	}
+}
+
+// UNREADABLE IS NOT ABSENT.
+//
+// Collapsing the two is the bug paths.go records as having shipped: ReadSamples
+// treated an unreadable file as an empty one, so /v1/history said "no readings"
+// on every box forever and nothing anywhere mentioned permission. A 404 here
+// would send somebody looking for an app that never started, when what they have
+// is a directory the serving account cannot open.
+func TestAnUnreadableLogIsNotReportedAsUncollected(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the mode this test depends on")
+	}
+	cfg, dir, tok, dev := logsFixture(t)
+	if err := WriteLog(dir, "web", []byte("x\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "web.log"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, "web.log"), 0o640) })
+
+	w := ask(t, cfg, tok, dev, map[string]string{"app": "web"})
+	if w.Code == http.StatusNotFound {
+		t.Error("a log that exists and cannot be read was reported as never collected")
+	}
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("= %d, want 503", w.Code)
 	}
 }
