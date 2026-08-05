@@ -353,12 +353,22 @@ chmod 755 "$PROXY_DIR" "$ROUTES_DIR"
 
 log "Recording $STATE_FILE"
 mkdir -p "$STATE_DIR"
-chown root:root /var/lib/komizo "$STATE_DIR"
-# 750, matching the agent installer: the records name every app's
-# directory, deploy account and config-image path, readable only by root, which
-# is the only thing that reads them.
-chmod 750 /var/lib/komizo
+chown root:root "$STATE_DIR"
+# 750: the records name every app's directory, deploy account and config-image
+# path, and root is the only thing that reads them.
 chmod 750 "$STATE_DIR"
+
+# The PARENT keeps its group, and this line is why it is separate.
+#
+# It used to be chowned root:root here, on every `komizo add` -- so adding an app
+# to a working box silently took the agent's traversal away and every request for
+# that box's history started answering "no readings" with nothing to say why.
+# Closed, and traversable by the one account that has to pass through it.
+chown root:root /var/lib/komizo
+if id komizo_monitor >/dev/null 2>&1; then
+	chgrp komizo_monitor /var/lib/komizo
+fi
+chmod 750 /var/lib/komizo
 cat > "$STATE_FILE" <<EOF
 # Written by komizo. This is what komizo knows about this app; edit with
 # 'komizo add' rather than by hand.

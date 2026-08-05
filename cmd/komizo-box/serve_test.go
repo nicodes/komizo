@@ -339,3 +339,31 @@ func TestTheInstallerCreatesAndProvesTheInbox(t *testing.T) {
 			"so a box where it cannot finishes install and can never be commanded")
 	}
 }
+
+// The installer hands the state directory's group away, and does it after the
+// account exists.
+//
+// It also has to survive `komizo add`, which used to chown the same directory
+// root:root on every run -- so adding an app to a working box silently took the
+// agent's traversal away and its history started answering "no readings".
+func TestTheStateDirectoryStaysTraversableByTheAgent(t *testing.T) {
+	sh := scripts.AgentInstall("stamp", "v0.0.0")
+	adduser := strings.Index(sh, "adduser")
+	// The WHOLE line. Matching the path as a substring also matches
+	// ".../komizo/served" and ".../komizo/served/results", so the first version
+	// of this passed with the state directory's chown deleted.
+	chown := strings.Index(sh, "chown root:komizo_monitor "+box.StateDir+"\n")
+	if adduser < 0 || chown < 0 {
+		t.Fatalf("adduser=%d chown=%d -- the installer never gives the state directory away", adduser, chown)
+	}
+	if chown < adduser {
+		t.Error("the state directory is given away before the account exists")
+	}
+
+	// And the script that adds an app must not take it back.
+	add := scripts.AlpineScript
+	if !strings.Contains(add, "chgrp komizo_monitor /var/lib/komizo") {
+		t.Error("`komizo add` resets the state directory's group, so adding an app to a " +
+			"working box stops its history being readable")
+	}
+}
