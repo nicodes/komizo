@@ -1,6 +1,10 @@
 package scripts
 
-import "github.com/nicodes/komizo/box"
+import (
+	"strings"
+
+	"github.com/nicodes/komizo/box"
+)
 
 // The scripts that take values, built by substitution rather than by
 // formatting. See embed.go for why.
@@ -27,12 +31,35 @@ const AgentInterval = "60s"
 // constant in this file, and the token in particular is an opaque string from
 // a service. The app package validates the URL too, which is the same
 // belt-and-braces argument ShQuote carries everywhere else here.
-func AgentEnrol(api, token, apiHost string) string {
+// deviceKeys are the devices the box will take orders from, and they are the
+// one input here the SERVICE did not produce -- see box/operator.go. Rendered
+// as repeated flags rather than one delimited value so the box parses exactly
+// what was passed, with no separator to disagree about.
+func AgentEnrol(api, token, apiHost string, deviceKeys []string, forget bool) string {
+	var keys strings.Builder
+	for _, k := range deviceKeys {
+		if keys.Len() > 0 {
+			keys.WriteByte(' ')
+		}
+		// Quoted like everything else here. These come from a caller, and the
+		// argument ShQuote carries everywhere in this file does not stop
+		// applying because a value looks like base64.
+		keys.WriteString("--device-key " + ShQuote(k))
+	}
+	if forget {
+		// Rendered into the same placeholder, because it is the same decision:
+		// which devices this box takes orders from after this command.
+		if keys.Len() > 0 {
+			keys.WriteByte(' ')
+		}
+		keys.WriteString("--forget-devices")
+	}
 	return render(agentEnrol,
 		"__API__", ShQuote(api),
 		"__API_HOST__", ShQuote(apiHost),
 		"__API_SOCKET__", box.APISocketPath,
 		"__TOKEN__", ShQuote(token),
+		"__DEVICE_KEYS__", keys.String(),
 		"__CONF__", box.AgentConfPath,
 	)
 }

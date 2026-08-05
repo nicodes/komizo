@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"slices"
 
 	"github.com/nicodes/komizo/box"
 )
@@ -33,6 +34,9 @@ func runEnrol(args []string) error {
 	token := fs.String("token", "", "the single-use enrolment token from the dashboard")
 	confPath := fs.String("config", box.AgentConfPath, "where to write the credential")
 	apiHost := fs.String("api-host", "", "the hostname this box answers on, if it has one")
+	var deviceKeys box.DeviceKeyList
+	fs.Var(&deviceKeys, "device-key", box.DeviceKeyUsage)
+	forget := fs.Bool("forget-devices", false, "drop the devices this box already takes orders from")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -53,6 +57,14 @@ func runEnrol(args []string) error {
 		}
 	}
 
+	// Read BEFORE the exchange, because the exchange replaces this file. What is
+	// in it decides whether the devices this box already trusts survive -- see
+	// carryOperatorKeys.
+	prev, err := box.ReadAgentConf(*confPath)
+	if err != nil {
+		return err
+	}
+
 	// The first report rides the exchange, so a freshly enrolled server appears
 	// populated rather than as an empty row that fills in a minute later -- and
 	// so a box that cannot produce one fails HERE, in front of the operator,
@@ -71,6 +83,12 @@ func runEnrol(args []string) error {
 	if err != nil {
 		return err
 	}
+	// Added AFTER the exchange, and never from it. These are the keys this box
+	// takes orders from, and the difference between komizo being able to
+	// command your machines and not is that they are carried here by the person
+	// with root rather than returned by the service -- see box/operator.go.
+	var dropped int
+	conf.OperatorKeys, dropped = carryOperatorKeys(prev, conf.ServerID, deviceKeys, *forget)
 	if err := box.WriteAgentConf(*confPath, conf); err != nil {
 		return fmt.Errorf("enrolled, but could not store the credential: %w", err)
 	}
@@ -83,7 +101,73 @@ func runEnrol(args []string) error {
 	} else {
 		fmt.Println("this service issued no registry key, so this box reports but does not serve")
 	}
+	// And the same for commands, which is a different question with a different
+	// answer: reading is authorised by the registry's signature, commanding is
+	// authorised only by a key an operator planted. A box with none is the
+	// normal box and is not warned about -- it is TOLD, once, because "why does
+	// the app say it cannot do that" should not need a support conversation.
+	if dropped > 0 && !*forget {
+		// Said loudly, because this is the one way the service can reduce what a
+		// box trusts and the operator did not ask for it.
+		fmt.Fprintf(os.Stderr, "warning: this box now reports as %s, which is not the server it "+
+			"was enrolled as,\n         so the %d device(s) it trusted were dropped.\n",
+			conf.ServerID, dropped)
+	} else if dropped > 0 {
+		fmt.Printf("dropped %d device(s) this box used to take orders from\n", dropped)
+	}
+	if conf.CanCommand() {
+		fmt.Printf("it will take orders from %d device(s)\n", len(conf.OperatorKeys))
+	} else {
+		fmt.Println("no device keys were given, so this box will accept no commands")
+	}
 	return nil
+}
+
+// carryOperatorKeys decides which devices survive an enrolment.
+//
+// Re-enrolment is ROTATION -- komizo-be#24 made it the way to replace an agent
+// token you suspect has leaked, precisely so that responding to a leak does not
+// mean deleting the server. If that also silently un-trusted every device, the
+// app would stop working on that box with nothing anywhere saying why, and the
+// person who did it was in the middle of handling an incident.
+//
+// So the existing keys are kept and --device-key ADDS. --forget-devices is the
+// way to say otherwise, out loud.
+//
+// UNLESS THE BOX IS NOW A DIFFERENT SERVER. A different id means this box
+// belongs to another row, and usually another account -- komizo#28's fallback
+// covers exactly that. Carrying the previous owner's devices in would leave
+// them able to command a machine that is no longer theirs.
+//
+// The id comes from the service, so THE SERVICE CAN FORCE THIS. It cannot add a
+// key -- that is the property this whole file is for and it holds -- but it can
+// answer with a new id and make a box forget every device it trusted, which
+// denies the app path entirely. That is a real power and it is accepted,
+// because the alternative is a box that keeps trusting the devices of whoever
+// owned it last. What is NOT accepted is doing it quietly: the caller says so
+// out loud, naming the count, rather than reporting the same "no device keys
+// were given" a fresh box gets.
+func carryOperatorKeys(prev box.AgentConf, serverID string, added []string, forget bool) (keys []string, dropped int) {
+	out := []string{}
+	switch {
+	case forget:
+		dropped = len(prev.OperatorKeys)
+	case prev.ServerID != "" && prev.ServerID != serverID:
+		dropped = len(prev.OperatorKeys)
+	default:
+		out = append(out, prev.OperatorKeys...)
+	}
+	for _, k := range added {
+		if !slices.Contains(out, k) {
+			out = append(out, k)
+		}
+	}
+	if len(out) == 0 {
+		// nil rather than an empty slice, so the field is omitted from the file
+		// entirely and a box that trusts nothing looks like one.
+		return nil, dropped
+	}
+	return out, dropped
 }
 
 type enrolBody struct {

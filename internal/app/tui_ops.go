@@ -431,10 +431,18 @@ func (m model) startInit(o initOpts) tea.Cmd {
 		// outage look like a broken server.
 		ch <- runOutputMsg("")
 		ch <- runOutputMsg("filing this server under your account...")
-		if err := registerAndEnrol(t, "", "", ch); err != nil {
+		if err := registerAndEnrol(t, "", "", nil, false, ch); err != nil {
 			ch <- runOutputMsg("could not register this server: " + err.Error())
 			ch <- runOutputMsg("the box is set up. Press u once the service is reachable.")
 		}
+		// The interface has nowhere to type a device key, so a box set up here
+		// takes orders from nothing. Said rather than left to be discovered: the
+		// whole urgency of komizo-be app-only.md §9 step 1 is that planting one
+		// later means going back to every box, and this is the path most boxes
+		// take.
+		ch <- runOutputMsg("")
+		ch <- runOutputMsg("to command this box from the app, run:")
+		ch <- runOutputMsg("    komizo enrol --host " + t.host + " --device-key kmz_dev_...")
 
 		ch <- runOutputMsg("")
 		ch <- runOutputMsg("installing the shared reverse proxy...")
