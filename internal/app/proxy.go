@@ -3,6 +3,7 @@ package app
 import (
 	"flag"
 	"fmt"
+	"github.com/nicodes/komizo/box"
 	"strings"
 
 	"github.com/nicodes/komizo/scripts"
@@ -82,6 +83,11 @@ func proxyEnv(o proxyOpts) map[string]string {
 		"SHARED_NETWORK": o.network,
 		"PROXY_IMAGE":    o.image,
 		"TLS_ASK":        o.tlsAsk,
+		// Where komizo's own read API answers, so the proxy can reach it. From
+		// the Go constant rather than written into the shell, because the
+		// agent creates this directory from the same one -- and a second copy
+		// of a path is how the two stop agreeing.
+		"API_SOCKET_DIR": box.APISocketDir,
 	}
 }
 
