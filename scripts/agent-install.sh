@@ -20,9 +20,10 @@ chmod 750 __STATE_DIR__ __PENDING_DIR__
 # The report: the one directory anything unprivileged may enter. On tmpfs, so
 # rootd recreates it after every reboot -- this is for the minutes before the
 # service first ticks.
-mkdir -p __RUN_DIR__
+mkdir -p __RUN_DIR__ __API_SOCKET_DIR__
 chown root:root __RUN_DIR__
 chmod 755 __RUN_DIR__
+
 
 # The reporting account.
 #
@@ -53,6 +54,17 @@ fi
 # directory is closed to everything -- a credential in there would be unreadable
 # by the one process that needs it.
 mkdir -p __ETC_DIR__
+# The socket directory belongs to the account that opens the socket, and this
+# is AFTER the account exists -- __RUN_DIR__ above is root's, so komizo_monitor
+# cannot create anything in it, and a chown before adduser would have failed
+# quietly and left a service that starts and cannot bind.
+#
+# Its own directory rather than the socket loose in __RUN_DIR__, because the
+# box's proxy has to reach it and mounting __RUN_DIR__ would lend the one
+# internet-facing container a writable path beside report.json.
+chown komizo_monitor:komizo_monitor __API_SOCKET_DIR__
+chmod 750 __API_SOCKET_DIR__
+
 chown root:komizo_monitor __ETC_DIR__
 chmod 750 __ETC_DIR__
 
