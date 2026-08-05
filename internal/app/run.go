@@ -59,12 +59,12 @@ func versionText() string {
 	return strings.TrimPrefix(bi.Main.Version, "v")
 }
 
-// runAccountCommand is every command that needs somebody signed in.
+// runCommand is every command that acts on a box or on the service.
 //
-// One table, so a command added later cannot be added to the dispatch and
-// forgotten by the gate -- which would be a route into somebody's servers that
-// nobody remembered to close.
-func runAccountCommand(name string, args []string) error {
+// It used to be called runAccountCommand and every entry needed somebody signed
+// in. komizo-be design/app-only.md §7 narrows that: an account is required to
+// REGISTER a box, not to OPERATE one. See needsSession.
+func runCommand(name string, args []string) error {
 	switch name {
 	case "init":
 		return RunInit(args)
@@ -94,6 +94,26 @@ func runAccountCommand(name string, args []string) error {
 	return fmt.Errorf("unknown command %q", name)
 }
 
+// needsSession is the commands that talk to the SERVICE.
+//
+// One entry, and it is the one that files a box under somebody. `komizo enrol`
+// is deliberately NOT here: it needs a session only when it has to mint an
+// enrolment token itself, and registerAndEnrol asks for one at exactly that
+// point -- so `komizo enrol --token kmz_enr_...` works on a machine that has
+// never signed in, which is what enrolling a box against somebody else's komizo
+// looks like.
+//
+// init IS here rather than relying on the same inner check, because it sets a
+// box up before it registers one. Failing at the end would leave a provisioned
+// machine and an error, where failing at the start leaves nothing and the same
+// error.
+//
+// The old table's argument was that a command added later must not be forgotten
+// by the gate. That reasoning inverted with the rule: what needs guarding now is
+// creating rows in somebody's account, not touching their server, and a
+// box-only command left out of this map is correct rather than a hole.
+var needsSession = map[string]bool{"init": true}
+
 func Main(args []string) error {
 	// `komizo` on its own is the interface with nothing to connect to yet: it
 	// opens and asks for an address. It used to print the usage and exit 2,
@@ -121,14 +141,27 @@ func Main(args []string) error {
 		err = RunLogout(args[1:])
 	case "init", "update", "add", "list", "report", "enrol", "remove", "proxy",
 		"start", "stop", "restart", "logs":
-		// Read from disk, never checked over the network -- see session.go.
-		// The CLI is what repairs a broken box, and requiring a reachable
-		// service to fix a server is requiring it at the moment it is least
-		// likely to be there.
-		if _, serr := requireSession(); serr != nil {
-			return serr
+		// An account is needed to REGISTER a box, and for nothing else.
+		//
+		// registry.md §10 required one for all of these, on the argument that
+		// `komizo init` collapses three steps into one with nothing copied
+		// between two surfaces. That argument holds for init and for nothing
+		// else -- app-only.md §7 -- and narrowing it makes §10's own constraint
+		// structural instead of something a cached session provides:
+		//
+		//	The CLI must work when the service does not.
+		//
+		// Adding an app to a box, starting one, reading a report or repairing a
+		// proxy is you and your server. komizo is not in it, has never been in
+		// it, and asking it for permission first would have made an outage the
+		// reason you cannot fix your own machine.
+		if needsSession[args[0]] {
+			// Read from disk, never checked over the network -- see session.go.
+			if _, serr := requireSession(); serr != nil {
+				return serr
+			}
 		}
-		err = runAccountCommand(args[0], args[1:])
+		err = runCommand(args[0], args[1:])
 	case "script":
 		err = RunScript(args[1:])
 	case "-h", "--help", "help":
@@ -216,9 +249,15 @@ The same operations are available non-interactively, for scripting:
 
 "komizo login" signs this machine in. It shows a code to approve from a device
 you are already signed in on -- a phone will do -- so a machine with no browser
-can still be signed in. Every other command needs it, and the session is read
-from disk rather than checked over the network: a komizo outage must never stop
-somebody repairing their own server.
+can still be signed in.
+
+AN ACCOUNT IS TO REGISTER A BOX, NOT TO OPERATE ONE. "komizo init" needs one,
+because it files the server under you, and so does "komizo enrol" when you do
+not pass a token. Everything else -- adding an app, starting or stopping one,
+reading a report, repairing the proxy -- is you and your server over SSH, and
+needs nothing from komizo at all. The session is read from disk rather than
+checked over the network, so an outage costs the two commands that genuinely
+need the service and nothing else.
 
 "komizo init" prepares a fresh server: Docker, the shared network, and the one
 Caddy that terminates TLS for every app on the box. It is a separate step from

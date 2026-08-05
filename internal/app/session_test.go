@@ -129,13 +129,28 @@ func TestSigningOutForgetsButDoesNotClaimToRevoke(t *testing.T) {
 	}
 }
 
-// The gate is a table, so a command added to the dispatch cannot be added
-// without one -- which would be a route into somebody's servers that nobody
-// remembered to close.
-func TestEveryServerCommandIsBehindTheGate(t *testing.T) {
+// REGISTERING A BOX IS WHAT NEEDS AN ACCOUNT.
+//
+// This used to assert the opposite, and asserting it is how the old rule was
+// kept: every command in the dispatch had to be behind the gate, "which would
+// be a route into somebody's servers that nobody remembered to close".
+//
+// komizo-be design/app-only.md §7 reverses that. The gate was never protecting
+// somebody's servers -- SSH and a root key do that, and komizo is not in it. It
+// protects creating rows in somebody's komizo account, which is exactly two
+// commands. Leaving a box-only command out of the table is now correct rather
+// than a hole, and registry.md §10's own constraint -- "the CLI must work when
+// the service does not" -- stops being something a cached session provides.
+//
+// A host that fails VALIDATION, so nothing here opens a connection: what is
+// under test is which commands ask, and the alternative spent thirty seconds
+// waiting for DNS to refuse a name.
+func TestRegisteringNeedsAnAccountAndOperatingDoesNot(t *testing.T) {
 	withConfigHome(t)
-	for _, name := range []string{"init", "update", "add", "list", "report", "enrol", "remove", "proxy"} {
-		err := Main([]string{name, "--host", "root@box"})
+	const unreachable = "root@not a host"
+
+	for _, name := range []string{"init"} {
+		err := Main([]string{name, "--host", unreachable})
 		if err == nil {
 			t.Errorf("%q ran without a session", name)
 			continue
@@ -143,6 +158,23 @@ func TestEveryServerCommandIsBehindTheGate(t *testing.T) {
 		if !strings.Contains(err.Error(), "komizo login") {
 			t.Errorf("%q failed for the wrong reason: %v", name, err)
 		}
+	}
+	// enrol asks only when it has to mint the token itself.
+	if err := Main([]string{"enrol", "--host", unreachable}); err == nil ||
+		!strings.Contains(err.Error(), "komizo login") {
+		t.Errorf("enrol with no token = %v, want it to ask for an account", err)
+	}
+
+	for _, name := range []string{"update", "add", "list", "report", "remove", "proxy",
+		"start", "stop", "restart", "logs"} {
+		err := Main([]string{name, "--host", unreachable})
+		if err != nil && strings.Contains(err.Error(), "komizo login") {
+			t.Errorf("%q asked for an account to touch somebody's own server", name)
+		}
+	}
+	if err := Main([]string{"enrol", "--host", unreachable, "--token", "kmz_enr_x"}); err != nil &&
+		strings.Contains(err.Error(), "komizo login") {
+		t.Error("enrol --token asked for an account it does not need")
 	}
 }
 

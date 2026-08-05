@@ -45,6 +45,20 @@ func RunEnrol(args []string) error {
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))
 	}
+	// ASKED FIRST, and before anything is parsed or reached for.
+	//
+	// Without a token this command mints one itself, which needs an account --
+	// and that is knowable from a file on this machine, instantly, where
+	// resolving a target is argument parsing and reaching a box is a network
+	// round trip that can take half a minute to fail. The outer gate used to
+	// catch it; now that operating a box needs no session, the check belongs
+	// where the session is actually required, and it belongs at the front.
+	if !undo && token == "" {
+		if _, serr := requireSession(); serr != nil {
+			return serr
+		}
+	}
+
 	tgt, err := resolveTarget(fs, host, port)
 	if err != nil {
 		return err

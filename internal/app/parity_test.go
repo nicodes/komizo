@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"strings"
 	"testing"
@@ -134,9 +135,9 @@ func TestTheLifecycleCommandsRefuseANameThatIsNotOne(t *testing.T) {
 func TestTheLifecycleVerbsAreWiredIntoBothDispatchLists(t *testing.T) {
 	for _, verb := range []string{"start", "stop", "restart", "logs"} {
 		// The table.
-		err := runAccountCommand(verb, []string{"--host", "root@box"})
+		err := runCommand(verb, []string{"--host", "root@box"})
 		if err == nil || strings.Contains(err.Error(), "unknown command") {
-			t.Errorf("komizo %s is not in runAccountCommand: %v", verb, err)
+			t.Errorf("komizo %s is not in runCommand: %v", verb, err)
 		}
 
 		// And Main's list. A verb missing from it falls through to the
@@ -153,7 +154,7 @@ func TestTheLifecycleVerbsAreWiredIntoBothDispatchLists(t *testing.T) {
 	}
 
 	// Not vacuous: the table names a word it does not know.
-	if err := runAccountCommand("definitely-not-a-command", nil); err == nil ||
+	if err := runCommand("definitely-not-a-command", nil); err == nil ||
 		!strings.Contains(err.Error(), "unknown command") {
 		t.Errorf("an unknown command = %v, want it named as unknown", err)
 	}
@@ -267,5 +268,67 @@ func TestAPartialLastLogLineIsNotLost(t *testing.T) {
 	w.flush()
 	if !strings.Contains(out.String(), "no trailing newline") {
 		t.Errorf("the last line was dropped: %q", out.String())
+	}
+}
+
+// AN ACCOUNT IS TO REGISTER A BOX, NOT TO OPERATE ONE.
+//
+// komizo-be design/app-only.md §7 narrows registry.md §10, which required a
+// session for every command. That argument holds for init -- it files a box
+// under somebody -- and for nothing else. Adding an app, starting one, reading
+// a report or repairing a proxy is you and your server, and asking komizo for
+// permission first would make an outage the reason somebody cannot fix their
+// own machine.
+//
+// requireSession is swapped rather than read, because a test that consults
+// whether the person running it happens to be signed in is a test about the
+// environment. That exact mistake failed in CI on this branch's predecessor.
+func TestOnlyRegisteringABoxNeedsAnAccount(t *testing.T) {
+	orig := requireSession
+	requireSession = func() (Session, error) { return Session{}, errNotSignedIn }
+	defer func() { requireSession = orig }()
+
+	// A host that fails VALIDATION, so nothing here opens a connection. What is
+	// under test is only whether the gate fired, and the alternative -- a real
+	// hostname that does not resolve -- spent forty seconds of the suite waiting
+	// for DNS to say no.
+	const unreachable = "root@not a host"
+
+	// init asks first, before it provisions anything: failing at the end would
+	// leave a box set up and an error.
+	err := Main([]string{"init", "--host", unreachable})
+	if err == nil || !errors.Is(err, errNotSignedIn) {
+		t.Errorf("komizo init signed out = %v, want it to ask for an account", err)
+	}
+
+	// And nothing else does.
+	for _, verb := range []string{"update", "add", "list", "report", "remove", "proxy",
+		"start", "stop", "restart", "logs"} {
+		err := Main([]string{verb, "--host", unreachable})
+		if errors.Is(err, errNotSignedIn) {
+			t.Errorf("komizo %s asked for an account to touch somebody's own server", verb)
+		}
+		if err == nil {
+			t.Errorf("komizo %s succeeded against %q", verb, unreachable)
+		}
+	}
+
+	// enrol is the conditional one: with a token it needs nobody, because the
+	// token IS the authority and registerAndEnrol is what asks otherwise.
+	err = Main([]string{"enrol", "--host", unreachable, "--token", "kmz_enr_x"})
+	if errors.Is(err, errNotSignedIn) {
+		t.Error("komizo enrol --token asked for an account it does not need")
+	}
+	// Without one it does, and from the inner check rather than the outer gate.
+	err = Main([]string{"enrol", "--host", unreachable})
+	if err == nil || !errors.Is(err, errNotSignedIn) {
+		t.Errorf("komizo enrol with no token = %v, want it to ask for an account", err)
+	}
+}
+
+// And the gate names exactly what talks to the service.
+func TestTheSessionGateNamesOnlyRegistration(t *testing.T) {
+	if len(needsSession) != 1 || !needsSession["init"] {
+		t.Errorf("needsSession = %v, want only init -- everything else is somebody's own server", needsSession)
 	}
 }
