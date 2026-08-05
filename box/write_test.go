@@ -587,12 +587,19 @@ func TestEveryJSONAnswerCarriesItsHeaders(t *testing.T) {
 	assertJSONHeaders(t, "a result read", rec)
 }
 
+// Result().Header, NOT Header().
+//
+// The recorder's Header() returns the live map, so a header set after
+// WriteHeader is still in it -- which is exactly the bug, and a test written
+// that way passes against it. Result() reads the snapshot the recorder takes
+// when WriteHeader is called, which is what a real client would receive.
 func assertJSONHeaders(t *testing.T, what string, w *httptest.ResponseRecorder) {
 	t.Helper()
-	if got := w.Header().Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
+	h := w.Result().Header
+	if got := h.Get("Content-Type"); !strings.HasPrefix(got, "application/json") {
 		t.Errorf("%s: Content-Type = %q, want application/json", what, got)
 	}
-	if got := w.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+	if got := h.Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Errorf("%s: X-Content-Type-Options = %q, want nosniff", what, got)
 	}
 }
