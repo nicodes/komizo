@@ -84,7 +84,12 @@ func collectLogs(ctx context.Context, root, dir string) {
 }
 
 func write(ctx context.Context, dir, name string, sub subject) {
-	out, err := composeOut(ctx, sub.dir, sub.project,
+	// BOUNDED IN BYTES, not just in lines. --tail bounds how many lines docker
+	// returns and says nothing about how long one is, and the capture ran
+	// unbounded at root on a fifteen-second timer -- so a single very long line
+	// was an allocation the size of that line, over and over. LogsMax is applied
+	// after, which was too late to be the bound.
+	out, err := composeCapped(ctx, sub.dir, sub.project, box.LogsMax,
 		"logs", "--tail", strconv.Itoa(collectTail), "--no-color")
 	_ = err
 	if strings.TrimSpace(out) == "" {

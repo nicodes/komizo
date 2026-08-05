@@ -102,6 +102,13 @@ func WriteLog(dir, name string, body []byte) error {
 			body = body[i+1:]
 		}
 	}
+	// UNCHANGED IS NOT WRITTEN. This runs four times a minute per app, forever,
+	// and writeFileAtomic rewrites and fsyncs the whole file -- so an idle app
+	// was costing hundreds of megabytes of writes a day to store bytes that were
+	// already there, on a disk this file itself calls "somebody else's".
+	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, body) {
+		return nil
+	}
 	// 0640: root writes, the serving account reads, and nothing else on the box
 	// does. Log lines are the most sensitive bytes this machine produces.
 	return writeFileAtomic(path, body, 0o640)
@@ -175,6 +182,14 @@ const logTailMax = 2000
 // a SIGNED ENVELOPE, which is what app-only.md §5 requires of logs and what a
 // GET has nowhere to put. The token that came with it still gates the door;
 // this gates who may look.
+//
+// THE ID IS NOT CONSUMED, and that is a decision rather than an omission. §4's
+// replay record exists so a command is not APPLIED twice; reading a log twice is
+// reading a log twice. Spending an envelope here would also mean a read could
+// deny a later one by using up its id, and would put a write on the path of
+// every log view. What bounds a captured envelope instead is its expiry, which
+// is minutes -- and a caller who has one also needs the read token that came
+// with it.
 func serveLog(cfg APIConfig, w http.ResponseWriter, r *http.Request) {
 	if cfg.LogsDir == "" {
 		http.Error(w, "this box is not collecting logs", http.StatusServiceUnavailable)
@@ -197,16 +212,28 @@ func serveLog(cfg APIConfig, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c, _, err := VerifyCommand(cfg.OperatorKeys, raw, cfg.ServerID, cfg.Now())
-	if err != nil || c.Op != OpLogsRead {
+	switch {
+	case err != nil && !errors.Is(err, ErrCommandRefused):
+		// A version this box does not speak. The signature already verified, so
+		// the caller is a device this box trusts and §4 says it is entitled to a
+		// sentence rather than a silence -- the same split the command route
+		// makes.
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+		return
+	case err != nil || c.Op != OpLogsRead:
 		// One answer for every reason, the same as everywhere else here: which
 		// of them it was is not this caller's business.
 		http.Error(w, "this box will not answer that", http.StatusForbidden)
 		return
 	}
 
-	name := c.Args["app"]
-	if name == "" {
-		http.Error(w, "which app?", http.StatusBadRequest)
+	// ONE RULE for an app name. This read c.Args["app"] directly, so "-x", "a b"
+	// and "wéb" were answered as ordinary apps here while AppOf refused all
+	// three for every other op -- two rules for one signed field, which is one
+	// rule that stops matching.
+	name, err := c.AppOf()
+	if err != nil {
+		http.Error(w, "that is not an app", http.StatusBadRequest)
 		return
 	}
 	tail := 200

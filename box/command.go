@@ -366,12 +366,28 @@ const (
 	//
 	// The serving account verifies this itself, which grants it nothing: the
 	// keys are public, and verifying with a public key is not signing with one.
-	// rootd has no verb for it, so an envelope carrying it that is posted to the
-	// command route is refused there rather than applied.
+	//
+	// It is NOT an op /v1/commands accepts -- see ApplyOps. A comment here once
+	// claimed rootd would refuse it, and rootd did: it took the file, verified
+	// it, wrote a claim and wrote a failure. Refusing it costs a public-key
+	// operation and two writes; refusing it at the route costs nothing.
 	OpLogsRead = "logs.read"
 )
 
+// commandOps is every op an ENVELOPE may name.
 var commandOps = []string{OpAppStart, OpAppStop, OpAppRestart, OpLogsRead}
+
+// ApplyOps is the subset /v1/commands accepts, which is every op that CHANGES
+// something.
+//
+// Two sets because they answer different questions, and one set answering both
+// is how a read envelope became something root would pick up, parse and write
+// two files about. apply.go asserts its own dispatch against this, so adding an
+// op to one and not the other is a refusal rather than a silent success.
+var ApplyOps = []string{OpAppStart, OpAppStop, OpAppRestart}
+
+// Applies reports whether this op is one the command route takes.
+func Applies(op string) bool { return slices.Contains(ApplyOps, op) }
 
 func knownOp(op string) bool { return slices.Contains(commandOps, op) }
 

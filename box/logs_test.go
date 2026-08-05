@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -373,5 +374,147 @@ func TestAnUnreadableLogIsNotReportedAsUncollected(t *testing.T) {
 	}
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("= %d, want 503", w.Code)
+	}
+}
+
+// A READ ENVELOPE IS NOT SOMETHING THE COMMAND ROUTE TAKES.
+//
+// A comment once claimed rootd would refuse one. rootd did: it took the file,
+// verified it, wrote a claim and wrote a failure. Refusing it at the route costs
+// nothing, and keeps the two sets from disagreeing with only a comment holding
+// the line.
+func TestAReadEnvelopeIsRefusedByTheCommandRoute(t *testing.T) {
+	cfg, dev, tok, inbox := writeFixture(t)
+
+	env, err := SignCommand(dev, Command{Srv: cfg.ServerID,
+		Exp: time.Now().Add(time.Minute).Unix(), Op: OpLogsRead,
+		Args: map[string]string{"app": "web"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := post(t, cfg, tok, body); w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("a logs.read at /v1/commands = %d, want 422", w.Code)
+	}
+	if n := inboxCount(t, inbox); n != 0 {
+		t.Errorf("%d files left for root to pick up and write two results about", n)
+	}
+
+	// And every op the route DOES take is still taken.
+	for _, op := range ApplyOps {
+		c := stopCmd()
+		c.Op = op
+		if w := post(t, cfg, tok, signedCommand(t, dev, c)); w.Code != http.StatusAccepted {
+			t.Errorf("%s = %d, want 202", op, w.Code)
+		}
+	}
+}
+
+// The two sets are one set apart, and the dispatch agrees with them.
+func TestTheAppliedOpsAreASubsetOfWhatAnEnvelopeMayName(t *testing.T) {
+	for _, op := range ApplyOps {
+		if !knownOp(op) {
+			t.Errorf("%s is applied and no envelope may name it", op)
+		}
+	}
+	if Applies(OpLogsRead) {
+		t.Error("a read is accepted by the command route")
+	}
+	if len(ApplyOps) != len(commandOps)-1 {
+		t.Errorf("ApplyOps=%v commandOps=%v -- the difference should be the read", ApplyOps, commandOps)
+	}
+}
+
+// UNCHANGED IS NOT WRITTEN.
+//
+// Four times a minute per app, forever, rewriting and fsyncing up to a quarter
+// of a megabyte of bytes that were already there.
+func TestAnUnchangedLogIsNotRewritten(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("one\ntwo\n")
+	if err := WriteLog(dir, "web", body); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.Stat(filepath.Join(dir, "web.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Backdated, so a rewrite is visible as a changed modification time.
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "web.log"), past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteLog(dir, "web", body); err != nil {
+		t.Fatal(err)
+	}
+	again, err := os.Stat(filepath.Join(dir, "web.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.ModTime().Equal(past) {
+		t.Error("identical bytes were written again")
+	}
+	_ = first
+
+	// And changed bytes are written.
+	if err := WriteLog(dir, "web", []byte("one\ntwo\nthree\n")); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := ReadLog(dir, "web", 10); !strings.Contains(got, "three") {
+		t.Errorf("a changed log was not written: %q", got)
+	}
+}
+
+// An app name follows ONE rule, whatever route asks about it.
+func TestTheLogRouteUsesTheSameAppRuleAsEverythingElse(t *testing.T) {
+	cfg, dir, tok, dev := logsFixture(t)
+	if err := WriteLog(dir, "web", []byte("x\n")); err != nil {
+		t.Fatal(err)
+	}
+	// AppOf refuses all three for every other op; this route answered them as
+	// ordinary apps.
+	for _, bad := range []string{"-x", "a b", "wéb"} {
+		if w := ask(t, cfg, tok, dev, map[string]string{"app": bad}); w.Code != http.StatusBadRequest {
+			t.Errorf("app=%q = %d, want it refused as a name", bad, w.Code)
+		}
+	}
+}
+
+// A device this box trusts, asking in a dialect it does not speak, is told.
+//
+// §4: an app ahead of a box must "fail with a sentence instead of a silence".
+// This route collapsed that into the opaque refusal, so the identical envelope
+// got a sentence at /v1/commands and nothing here.
+func TestALogRouteTellsATrustedDeviceAboutVersionSkew(t *testing.T) {
+	cfg, dir, tok, dev := logsFixture(t)
+	if err := WriteLog(dir, "web", []byte("x\n")); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte(fmt.Sprintf(
+		`{"v":99,"id":"abc123","srv":"srv_mine","exp":%d,"op":"logs.read","args":{"app":"web"}}`,
+		time.Now().Add(time.Minute).Unix()))
+	raw, err := json.Marshal(Signed{Payload: b64(payload), Sig: b64(ed25519.Sign(dev, payload))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest(http.MethodPost, "/v1/logs", bytes.NewReader(raw))
+	r.Header.Set("Authorization", "Bearer "+tok)
+	w := httptest.NewRecorder()
+	Handler(cfg).ServeHTTP(w, r)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("a version this box does not speak = %d, want 422", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "speaks v") {
+		t.Errorf("body = %q, want it to name both versions", w.Body.String())
+	}
+	// And a stranger still gets one answer for everything.
+	_, stranger, _ := ed25519.GenerateKey(nil)
+	if w := ask(t, cfg, tok, stranger, map[string]string{"app": "web"}); w.Code != http.StatusForbidden {
+		t.Errorf("a stranger = %d, want the opaque 403", w.Code)
 	}
 }

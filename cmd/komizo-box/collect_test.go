@@ -5,8 +5,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nicodes/komizo/box"
 )
@@ -122,18 +124,26 @@ func TestWhatTheCollectorRuns(t *testing.T) {
 // account reads and serves. Found by running Caddy, not by reading the config
 // that sends the ACCESS log elsewhere.
 func TestTheProxyIsNotCollected(t *testing.T) {
-	root := appsFixture(t, "web")
+	// A _proxy RECORD, so the guard has something to refuse. Without one the
+	// assertion cannot fail however the guard is written, which is what the
+	// first version of this did.
+	root := appsFixture(t, "web", "_proxy")
 	logs := t.TempDir()
 	runs := stubCompose(t, "x\n", 0)
 	collectLogs(context.Background(), root, logs)
 
 	for _, r := range *runs {
-		if strings.Contains(strings.Join(r, " "), box.ProxyDir) {
+		line := strings.Join(r, " ")
+		if strings.Contains(line, box.ProxyDir) || strings.Contains(line, "_proxy") {
 			t.Errorf("the proxy was collected: %v", r)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(logs, "_proxy.log")); err == nil {
 		t.Error("a proxy log was written")
+	}
+	// And an app IS collected, so this is not passing because nothing ran.
+	if _, err := box.ReadLog(logs, "web", 1); err != nil {
+		t.Errorf("nothing was collected at all: %v", err)
 	}
 }
 
@@ -181,5 +191,52 @@ func TestAnUnreadableAppsDirectoryDoesNotPruneEverything(t *testing.T) {
 	collectLogs(context.Background(), appsFixture(t), logs)
 	if _, err := box.ReadLog(logs, "web", 1); err == nil {
 		t.Error("a genuinely empty box kept a log for an app it does not have")
+	}
+}
+
+// WHAT ROOT BUFFERS IS BOUNDED IN BYTES, not just in lines.
+//
+// --tail bounds how many lines docker returns and says nothing about how long
+// one is, and how long one is belongs to whatever is running in somebody's
+// container. This runs at root on a fifteen-second timer.
+func TestTheCaptureIsBoundedInBytes(t *testing.T) {
+	root := appsFixture(t, "web")
+	logs := t.TempDir()
+
+	// One line, far larger than the bound.
+	orig := execCompose
+	execCompose = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.CommandContext(ctx, "sh", "-c",
+			"yes abcdefghijklmnopqrstuvwxyz | head -c "+strconv.Itoa(box.LogsMax*4))
+	}
+	defer func() { execCompose = orig }()
+
+	done := make(chan struct{})
+	go func() { collectLogs(context.Background(), root, logs); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("collecting an enormous log did not finish")
+	}
+
+	// Asserted on what the CAPTURE returned, not on the file: WriteLog trims to
+	// LogsMax as well, so the file is bounded either way and a test looking at
+	// it passes with the capture unbounded -- which is what the first version of
+	// this did. The bound that matters is the one at root, before the bytes
+	// exist in this process at all.
+	out, err := composeCapped(context.Background(), "/srv/web", "", 4096, "logs")
+	if err != nil && out == "" {
+		t.Fatalf("captured nothing: %v", err)
+	}
+	if len(out) > 4096 {
+		t.Errorf("captured %d bytes with a bound of 4096", len(out))
+	}
+
+	fi, err := os.Stat(filepath.Join(logs, "web.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() > int64(box.LogsMax) {
+		t.Errorf("%d bytes written, want at most %d", fi.Size(), box.LogsMax)
 	}
 }
