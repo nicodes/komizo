@@ -1,8 +1,10 @@
 package app
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -281,11 +283,66 @@ func (t target) quiet(cmd string) (string, error) {
 // runScript pipes a script to the far end and runs it there, with its output
 // streamed straight through so a long bootstrap shows progress as it happens.
 func (t target) runScript(script string, env map[string]string) error {
+	return t.runScriptTo(script, env, os.Stdout)
+}
+
+// runScriptSafe is runScript for output nobody on this side wrote.
+//
+// Everything the box prints during a bootstrap is komizo's own script prose.
+// LOG LINES ARE NOT: anyone who can make a request to a hosted app can put text
+// in one, and validate.go's scrub exists for exactly that -- rendered raw, an
+// escape sequence can move the cursor, clear the screen, retitle the window, or
+// write the local clipboard through OSC 52.
+//
+// The interface has always scrubbed what it fetched. `komizo logs` is the first
+// command-line path whose output is attacker-authored, so it is the first that
+// needs this.
+func (t target) runScriptSafe(script string, env map[string]string) error {
+	w := &scrubWriter{to: os.Stdout}
+	err := t.runScriptTo(script, env, w)
+	w.flush()
+	return err
+}
+
+func (t target) runScriptTo(script string, env map[string]string, out io.Writer) error {
 	c := exec.Command("ssh", t.sshArgs(envPrefix(env)+"sh -s")...)
 	c.Stdin = strings.NewReader(script)
-	c.Stdout = os.Stdout
+	c.Stdout = out
 	c.Stderr = os.Stderr
 	return c.Run()
+}
+
+// scrubWriter passes text through scrub, a line at a time.
+//
+// Line at a time because scrub keeps newlines and an escape sequence does not
+// span one, and because a tail is bounded so buffering the remainder costs
+// nothing. A partial last line is flushed by the caller rather than dropped --
+// a log whose final line has no newline is ordinary.
+type scrubWriter struct {
+	to   io.Writer
+	rest []byte
+}
+
+func (w *scrubWriter) Write(p []byte) (int, error) {
+	w.rest = append(w.rest, p...)
+	for {
+		i := bytes.IndexByte(w.rest, '\n')
+		if i < 0 {
+			return len(p), nil
+		}
+		line := string(w.rest[:i+1])
+		w.rest = w.rest[i+1:]
+		if _, err := io.WriteString(w.to, scrub(line)); err != nil {
+			return len(p), err
+		}
+	}
+}
+
+func (w *scrubWriter) flush() {
+	if len(w.rest) > 0 {
+		_, _ = io.WriteString(w.to, scrub(string(w.rest))+"\n")
+		w.rest = nil
+	}
 }
 
 // envPrefix renders the environment as VAR='value' assignments in front of the

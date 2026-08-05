@@ -80,6 +80,14 @@ func runAccountCommand(name string, args []string) error {
 		return RunEnrol(args)
 	case "remove":
 		return RunRemove(args)
+	case "start":
+		return RunStart(args)
+	case "stop":
+		return RunStop(args)
+	case "restart":
+		return RunRestart(args)
+	case "logs":
+		return RunLogs(args)
 	case "proxy":
 		return RunProxy(args)
 	}
@@ -111,7 +119,8 @@ func Main(args []string) error {
 		err = RunLogin(args[1:])
 	case "logout":
 		err = RunLogout(args[1:])
-	case "init", "update", "add", "list", "report", "enrol", "remove", "proxy":
+	case "init", "update", "add", "list", "report", "enrol", "remove", "proxy",
+		"start", "stop", "restart", "logs":
 		// Read from disk, never checked over the network -- see session.go.
 		// The CLI is what repairs a broken box, and requiring a reachable
 		// service to fix a server is requiring it at the moment it is least
@@ -198,6 +207,10 @@ The same operations are available non-interactively, for scripting:
   komizo report  --host root@HOST
   komizo enrol   --host root@HOST --token kmz_enr_...
   komizo remove  --host root@HOST --app NAME --yes
+  komizo start   --host root@HOST --app NAME
+  komizo stop    --host root@HOST --app NAME
+  komizo restart --host root@HOST --app NAME
+  komizo logs    --host root@HOST --app NAME [--tail N] [--service S]
   komizo proxy   --host root@HOST
   komizo script [init|add|remove|proxy]
 
@@ -214,6 +227,12 @@ adding an app, so a server is either set up or it is not.
 "komizo update" re-runs all of that on a server that already has it, which is
 how a box is brought up to a newer komizo and how one with a missing or broken
 agent is repaired. It is the same operation as "u" in the interface.
+
+"komizo start", "stop", "restart" and "logs" act on one app. They run through
+the agent on the box rather than composing a docker command here, so they take
+exactly the path a signed command from the app will take and the two cannot
+drift apart. "stop" is durable: a stopped app stays stopped across a deploy,
+and pages nobody.
 
 "komizo script" prints the shell this ships to the server, so you can read what
 will run as root before it does.
