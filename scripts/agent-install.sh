@@ -77,6 +77,33 @@ chmod 2750 __API_SOCKET_DIR__
 chown root:komizo_monitor __ETC_DIR__
 chmod 750 __ETC_DIR__
 
+# What root writes for the read API to hand out.
+#
+# Owned by ROOT and grouped to komizo_monitor, which is the mirror of the socket
+# directory above: there the account creates and root reads, here root creates
+# and the account reads. Setgid so a file root appends in here inherits this
+# directory's group instead of root's -- without it the readings are 0640
+# root:root and the process serving them cannot open one.
+#
+# This is the fix for a real failure and not a precaution: the history lived in
+# __STATE_DIR__, which is closed to everything, so GET /v1/history answered "no
+# readings" on every box and said nothing about why.
+#
+# chmod AFTER chown, because chown clears the setgid bit.
+mkdir -p __SERVED_DIR__
+chown root:komizo_monitor __SERVED_DIR__
+chmod 2750 __SERVED_DIR__
+
+# A box that was installed before this directory existed keeps its readings.
+# A rename does NOT take the setgid group -- setgid decides the group of files
+# CREATED here -- so both are set by hand.
+if [ -f __STATE_DIR__/history.jsonl ] && [ ! -e __HISTORY_PATH__ ]; then
+	mv __STATE_DIR__/history.jsonl __HISTORY_PATH__
+	chown root:komizo_monitor __HISTORY_PATH__
+	chmod 640 __HISTORY_PATH__
+	log "Moved this box's readings into __SERVED_DIR__"
+fi
+
 # Installed by rename, so a running rootd is replaced rather than written
 # through. Overwriting a busy executable in place is ETXTBSY at best and a
 # half-written binary at worst.
@@ -206,6 +233,19 @@ if ! su komizo_monitor -s /bin/sh -c "cat __REPORT_PATH__ >/dev/null" 2>/dev/nul
 	printf 'error: komizo_monitor cannot read __REPORT_PATH__.\n' >&2
 	printf '       The reporting account has to read it without any privileges;\n' >&2
 	printf '       check the mode on every directory leading to it.\n' >&2
+	exit 1
+fi
+
+# The same proof for the readings, and it is here because asserting it is what
+# failed last time. The read API serves this box's history as komizo_monitor,
+# the history is written by root, and whether the account can open it depends on
+# the group and mode of a directory rather than on anything visible in the code
+# that reads it.
+if ! su komizo_monitor -s /bin/sh -c "cat __HISTORY_PATH__ >/dev/null" 2>/dev/null; then
+	printf 'error: komizo_monitor cannot read __HISTORY_PATH__.\n' >&2
+	printf '       The read API serves this history as that account, so every\n' >&2
+	printf '       request for it would answer with nothing and say no more;\n' >&2
+	printf '       check the group and mode on __SERVED_DIR__.\n' >&2
 	exit 1
 fi
 
