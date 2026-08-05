@@ -94,16 +94,27 @@ func applyPending(ctx context.Context, conf box.AgentConf, dir, results string) 
 		info, ierr := e.Info()
 		stale := ierr != nil || now.Sub(info.ModTime()) > box.MaxCommandTTL+commandSweepGrace
 		over := kept >= maxInbox
-		if !e.IsDir() && !stale && over {
-			// DROPPED FOR CAPACITY, and told so. Readdir order is roughly hash
-			// order on tmpfs rather than arrival order, so this removes
-			// arbitrary valid, signed, unapplied commands -- and without a
-			// result the app polls a 404 forever for something nothing ever
-			// refused out loud. An id that cannot be filed gets nothing, which
-			// is the same answer it gets everywhere else.
+		if !e.IsDir() && (stale || over) {
+			// DROPPED, and told so. Readdir order is roughly hash order on
+			// tmpfs rather than arrival order, so capacity removes arbitrary
+			// valid, signed, unapplied commands -- and without a result the app
+			// polls a 404 forever for something nothing ever refused out loud.
+			// An id that cannot be filed gets nothing, which is the same answer
+			// it gets everywhere else.
+			//
+			// STALE COUNTS TOO, which it did not. This loop is serial and
+			// provisionTimeout is fifteen minutes, against a command that stops
+			// being valid after six -- so a stop pressed while an app.add was
+			// running was deleted in silence, and the screen waited out its own
+			// deadline for an answer that had already been thrown away. The
+			// command really did expire; what was missing was saying so.
+			why := "this box had too many commands waiting"
+			if stale {
+				why = "this box did not get to this command before it expired"
+			}
 			if id := e.Name(); box.ValidCommandID(id) == nil && !box.Applied(results, id) {
 				_ = box.WriteResult(results, box.Result{ID: id, At: now.UTC(), OK: false,
-					Detail: "this box had too many commands waiting"})
+					Detail: why})
 			}
 		}
 		if e.IsDir() || stale || over {
@@ -384,7 +395,18 @@ func runProvision(ctx context.Context, script string, env map[string]string) err
 	if err != nil {
 		// The script's own last words, which is what says WHY rather than that
 		// something failed. Bounded: this ends up in a result the app reads.
-		return fmt.Errorf("%s", lastLines(string(out), 12))
+		said := lastLines(string(out), 12)
+		if strings.TrimSpace(said) == "" {
+			// IT SAID NOTHING. `err` was being discarded, so a script killed by
+			// a signal or one that died before printing produced Detail: "" --
+			// which is omitempty, so the app was shown ok:false with no reason
+			// at all. That is the one state §4 says a result exists to prevent.
+			return fmt.Errorf("the setup script failed without saying why: %w", err)
+		}
+		// AND the error, when what came back is only progress. A timeout kill
+		// leaves "==> Preparing /srv/web" as the last thing written, which read
+		// on its own is an ordinary step presented as the failure.
+		return fmt.Errorf("%s\n(%w)", said, err)
 	}
 	return nil
 }
@@ -406,10 +428,23 @@ func envPairs(env map[string]string) []string {
 }
 
 // lastLines keeps the end of a script's output, which is where the reason is.
+// lastLines is the tail of what something said, bounded in LINES AND BYTES.
+//
+// Both, because a line is not a bounded quantity: a script that emits a
+// megabyte without a newline -- a progress bar, a base64 blob, a compiler --
+// produced one "line" that went whole into a result file the app then reads.
+const detailMax = 4 << 10
+
 func lastLines(s string, n int) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
 	if len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
-	return strings.Join(lines, "\n")
+	out := strings.Join(lines, "\n")
+	if len(out) > detailMax {
+		// From the FRONT, so the end -- which is where a script says why it
+		// stopped -- is the part that survives.
+		out = "…" + out[len(out)-detailMax:]
+	}
+	return out
 }
