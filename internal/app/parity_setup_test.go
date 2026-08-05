@@ -100,3 +100,31 @@ func functionBody(t *testing.T, src, name string) string {
 	}
 	return rest
 }
+
+// Enrolling a box that has already enrolled must not leave a second server
+// behind.
+//
+// It did, and the result was two rows with the same name in somebody's app --
+// one reporting, one that never would again, and nothing on either to say
+// which. Found by enrolling the same box twice while checking something else.
+func TestEnrollingTwiceReusesTheServerItIsAlreadyFiledUnder(t *testing.T) {
+	body := functionBody(t, sourceOf(t, "init.go"), "registerAndEnrol")
+
+	if strings.Contains(body, "createServer(ctx, s, name)") {
+		t.Error("registerAndEnrol creates a server unconditionally -- a box that has " +
+			"enrolled before would get a second row")
+	}
+	if !strings.Contains(body, "reuseOrCreate") {
+		t.Error("registerAndEnrol does not ask whether this box is already filed under a server")
+	}
+
+	// And the reuse path has to read the id from the BOX, because this machine
+	// is not the only thing that ever enrols it.
+	reuse := functionBody(t, sourceOf(t, "init.go"), "reuseOrCreate")
+	if !strings.Contains(reuse, "existingServerID") {
+		t.Error("reuseOrCreate does not read the id the box already holds")
+	}
+	if !strings.Contains(reuse, "createServer") {
+		t.Error("reuseOrCreate cannot fall back to creating one, so a fresh box could not enrol")
+	}
+}
