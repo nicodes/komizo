@@ -45,6 +45,9 @@ TLS_ASK="${TLS_ASK:-}"
 
 # The leading underscore is reserved: komizo refuses to create an app whose name
 # starts with one, so this can never collide with /srv/<app>.
+API_SOCKET_DIR="${API_SOCKET_DIR:-/run/komizo/api}"
+mkdir -p "$API_SOCKET_DIR"
+
 PROXY_DIR=/srv/_proxy
 # One generated route per app, plus the catch-all below. The only part of the
 # host filesystem the proxy container can see.
@@ -214,6 +217,18 @@ services:
       # Named explicitly rather than making /srv writable: this is the only
       # thing the proxy has any business writing.
       - $PROXY_DIR/logs:/var/log/caddy:rw
+      # The socket komizo's own read API answers on, when this box has one.
+      #
+      # A DIRECTORY with nothing in it but that socket, and writable because
+      # connecting to a unix socket needs write permission on it. Mounting
+      # /run/komizo instead would have been simpler and would have handed the
+      # one internet-facing container on this box a writable path beside
+      # report.json.
+      #
+      # Bind-mounted whether or not the box serves itself: an empty directory
+      # costs nothing, and a mount that appears only sometimes is a proxy that
+      # has to be recreated the day somebody enrols.
+      - $API_SOCKET_DIR:$API_SOCKET_DIR:rw
       # ACME account key and issued certificates. Losing this volume means
       # every certificate is re-issued, and Let's Encrypt rate limits are per
       # domain per week -- so it is the one volume on the box worth backing up.

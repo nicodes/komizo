@@ -19,6 +19,15 @@ if command -v rc-update >/dev/null 2>&1; then
 	rc-update del komizo-api default >/dev/null 2>&1 || true
 fi
 
+# The route goes with the credential. A box still answering on its endpoint
+# after being un-enrolled is one serving its report to whoever asks -- the
+# token it verified against is gone, so every request would 401, but publishing
+# a hostname that says "there is a komizo box here" is itself an answer.
+if [ -f /srv/_proxy/routes/_komizo.caddy ]; then
+	rm -f /srv/_proxy/routes/_komizo.caddy
+	docker exec komizo-proxy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 || true
+fi
+
 log "Removing the credential"
 
 # if-then-else, not `A && B || C`: in that form C also runs when B FAILS, so an

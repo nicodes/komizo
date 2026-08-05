@@ -46,4 +46,68 @@ if command -v rc-update >/dev/null 2>&1; then
 	fi
 fi
 
+# The route that makes this box readable from the app.
+#
+# Only when it has an endpoint: a box addressed by an IP has none, because no
+# certificate authority issues for an address and a browser refuses a
+# self-signed origin outright for an app's requests.
+#
+# REFUSED rather than written if an app already claims the name. Two site blocks
+# for one hostname is a config Caddy will not load, and this proxy is shared --
+# so getting it wrong would take every app on the box down, not just komizo.
+API_HOST=__API_HOST__
+if [ -n "$API_HOST" ] && [ -d /srv/_proxy/routes ]; then
+	if grep -rlF "$API_HOST" /srv/_proxy/routes 2>/dev/null | grep -qv "_komizo.caddy"; then
+		printf 'warning: %s is already served by an app on this box; leaving the proxy alone.\n' "$API_HOST" >&2
+		printf '         The app cannot read this server until it has a name of its own.\n' >&2
+	else
+		log "Publishing $API_HOST"
+		cat > /srv/_proxy/routes/_komizo.caddy <<KOMIZO_ROUTE_EOF
+# Written by komizo. This box answering for itself -- see komizo-be
+# design/registry.md. The upstream is a unix socket, so nothing new listens on
+# the network and no port is opened.
+$API_HOST {
+	# The app is served from another origin, so a browser asks first. It sends
+	# Authorization, which is not a simple header, so the preflight is not
+	# optional -- without this the request never happens and the console says
+	# only that it was blocked.
+	@preflight method OPTIONS
+	handle @preflight {
+		header {
+			Access-Control-Allow-Origin "https://app.komizo.dev"
+			Access-Control-Allow-Methods "GET, OPTIONS"
+			Access-Control-Allow-Headers "Authorization"
+			Access-Control-Max-Age "600"
+		}
+		respond 204
+	}
+
+	header {
+		# ONE origin, not a wildcard. A wildcard here would let any page on the
+		# internet read this server with a token it happened to obtain, and the
+		# whole point of the token being short-lived is that it is not the only
+		# thing standing there.
+		Access-Control-Allow-Origin "https://app.komizo.dev"
+		Vary "Origin"
+		X-Content-Type-Options "nosniff"
+	}
+
+	reverse_proxy unix/__API_SOCKET__
+}
+KOMIZO_ROUTE_EOF
+		chown root:root /srv/_proxy/routes/_komizo.caddy
+		chmod 644 /srv/_proxy/routes/_komizo.caddy
+
+		# Validated BEFORE reloading, because this proxy is shared: a config
+		# that will not load is every app on the box, not just this route.
+		if docker exec komizo-proxy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
+			docker exec komizo-proxy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 ||
+				printf 'warning: the route was written but the proxy did not reload.\n' >&2
+		else
+			rm -f /srv/_proxy/routes/_komizo.caddy
+			printf 'warning: that route would not load, so it was removed and nothing changed.\n' >&2
+		fi
+	fi
+fi
+
 log "Reporting as $(sed -n 's/.*"server_id": *"\([^"]*\)".*/\1/p' __CONF__ 2>/dev/null)"

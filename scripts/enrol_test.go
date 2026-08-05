@@ -48,3 +48,54 @@ func TestTheEndpointIsShellQuoted(t *testing.T) {
 		t.Errorf("the endpoint reached the shell unquoted:\n%s", got)
 	}
 }
+
+// The route that makes a box readable from the app.
+//
+// Written into the SHARED proxy, which is what makes every check around it
+// matter: a config Caddy will not load is every app on the box, not just this
+// one.
+func TestEnrolPublishesTheBoxWhenItHasAName(t *testing.T) {
+	got := AgentEnrol("https://api.komizo.dev", "kmz_enr_x", "komizo.example.com")
+
+	for _, want := range []string{
+		// The upstream is the socket, so nothing new listens on the network.
+		"reverse_proxy unix/",
+		// One origin, never a wildcard.
+		`Access-Control-Allow-Origin "https://app.komizo.dev"`,
+		// The preflight, without which a request carrying Authorization never
+		// happens and the console says only that it was blocked.
+		"@preflight method OPTIONS",
+		// Validated before reloading, because the proxy is shared.
+		"caddy validate",
+		// And refused outright if an app already claims the name.
+		"already served by an app",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the enrol script is missing %q", want)
+		}
+	}
+}
+
+// A box with no endpoint publishes nothing. There is nothing to publish, and a
+// route for an empty hostname is a Caddyfile that will not load.
+func TestEnrolPublishesNothingWithoutAName(t *testing.T) {
+	got := AgentEnrol("https://api.komizo.dev", "kmz_enr_x", "")
+	if !strings.Contains(got, "API_HOST=''") {
+		t.Errorf("an empty endpoint did not reach the script as empty:\n%s", got)
+	}
+	// The guard is what stops it writing a route: the block is there, the
+	// condition is what decides.
+	if !strings.Contains(got, `[ -n "$API_HOST" ]`) {
+		t.Error("the route is written without checking there is a hostname to write")
+	}
+}
+
+// Un-enrolling takes the route with the credential. A box still publishing its
+// endpoint afterwards is announcing that there is a komizo box here, which is
+// itself an answer.
+func TestUnenrolWithdrawsTheRoute(t *testing.T) {
+	got := AgentUnenrol()
+	if !strings.Contains(got, "_komizo.caddy") {
+		t.Error("un-enrolling leaves the route published")
+	}
+}
