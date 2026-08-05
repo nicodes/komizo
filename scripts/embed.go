@@ -82,11 +82,23 @@ func render(script string, subs ...string) string {
 	if len(subs)%2 != 0 {
 		panic("scripts.render: odd number of substitution arguments")
 	}
-	out := strings.NewReplacer(subs...).Replace(script)
-	if m := leftover.FindString(out); m != "" {
-		panic(fmt.Sprintf("scripts.render: %s was never substituted -- this is a komizo bug", m))
+	// Checked against the TEMPLATE, not the output.
+	//
+	// Against the output it also fires on VALUES, and one of the values is now a
+	// device key: base64url includes uppercase and underscore, so a key with
+	// __BC__ anywhere in it crashed the CLI claiming a komizo bug. The check is
+	// about placeholders somebody forgot to pass, which is a property of the
+	// script, so the script is what it reads.
+	seen := map[string]bool{}
+	for i := 0; i < len(subs); i += 2 {
+		seen[subs[i]] = true
 	}
-	return out
+	for _, m := range leftover.FindAllString(script, -1) {
+		if !seen[m] {
+			panic(fmt.Sprintf("scripts.render: %s was never substituted -- this is a komizo bug", m))
+		}
+	}
+	return strings.NewReplacer(subs...).Replace(script)
 }
 
 // ShQuote wraps a value for a shell command line.
