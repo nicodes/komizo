@@ -116,6 +116,14 @@ func createServer(ctx context.Context, s Session, name string) (createdServer, e
 		map[string]string{"name": name})
 }
 
+// reissueEnrolmentFor mints a fresh enrolment token for a server that already
+// exists, which is how a box that has enrolled before enrols again without
+// leaving a duplicate behind.
+func reissueEnrolmentFor(ctx context.Context, s Session, serverID string) (createdServer, error) {
+	return call[createdServer](ctx, s.API, http.MethodPost,
+		"/v1/servers/"+serverID+"/enrolment", s.Token, nil)
+}
+
 func firstLine(b []byte) string {
 	if i := bytes.IndexByte(b, '\n'); i >= 0 {
 		b = b[:i]

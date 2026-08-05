@@ -1,7 +1,9 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os/exec"
@@ -153,7 +155,16 @@ func registerAndEnrol(t target, name, apiHost string, ch chan tea.Msg) error {
 
 	ctx, stop := signalContextCLI()
 	defer stop()
-	created, err := createServer(ctx, s, name)
+
+	// A box that has enrolled before already HAS a row, and its id is in the
+	// credential root wrote there. Re-enrolling one must reissue against that
+	// row rather than create a second: a duplicate is a server in somebody's
+	// app that will never report again, beside the one that does, with the same
+	// name and no way to tell them apart.
+	//
+	// Asked of the BOX rather than remembered here, because this laptop is not
+	// the only thing that ever enrols it.
+	created, err := reuseOrCreate(ctx, t, s, name)
 	if err != nil {
 		return err
 	}
@@ -175,6 +186,42 @@ func registerAndEnrol(t target, name, apiHost string, ch chan tea.Msg) error {
 		say(ch, fmt.Sprintf("no endpoint: %s is an address, not a name, so the app cannot open it.", t.host))
 	}
 	return nil
+}
+
+// reuseOrCreate reissues for the server this box is already filed under, or
+// creates one if it is not filed under anything.
+//
+// A failure to READ the existing id is not a failure to enrol -- an unreadable
+// credential means a box that has never enrolled, or one whose file is gone,
+// and both of those want a new row.
+func reuseOrCreate(ctx context.Context, t target, s Session, name string) (createdServer, error) {
+	if id := existingServerID(t); id != "" {
+		c, err := reissueEnrolmentFor(ctx, s, id)
+		if err == nil {
+			return c, nil
+		}
+		// The row may have been removed in the app, or belong to another
+		// account now. Creating one is the right answer to both, and is what
+		// somebody re-running this expects.
+		note("this box named a server that could not be reissued; filing it as a new one.")
+	}
+	return createServer(ctx, s, name)
+}
+
+// existingServerID reads what enrolment last wrote on the box.
+func existingServerID(t target) string {
+	var stdout bytes.Buffer
+	c := exec.Command("ssh", t.sshArgs("cat "+box.AgentConfPath+" 2>/dev/null")...)
+	c.Stdout = &stdout
+	if err := c.Run(); err != nil {
+		return ""
+	}
+	out := stdout.Bytes()
+	var conf box.AgentConf
+	if err := json.Unmarshal(out, &conf); err != nil {
+		return ""
+	}
+	return conf.ServerID
 }
 
 // say reports progress to whichever surface asked for the work.
