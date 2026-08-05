@@ -389,10 +389,23 @@ const (
 	// it, wrote a claim and wrote a failure. Refusing it costs a public-key
 	// operation and two writes; refusing it at the route costs nothing.
 	OpLogsRead = "logs.read"
+
+	// OpReportRead and OpHistoryRead are the same shape, for the same reason.
+	//
+	// komizo-be#58: the report and the history were behind the registry token
+	// alone, so whoever held the service's signing key could read every enrolled
+	// box -- which is the sentence komizo.dev is built on, being true of two
+	// routes out of four. §5 had already refused that trade for logs; this is the
+	// same refusal applied consistently rather than a new argument.
+	//
+	// Neither is applied. See ApplyOps.
+	OpReportRead  = "report.read"
+	OpHistoryRead = "history.read"
 )
 
 // commandOps is every op an ENVELOPE may name.
-var commandOps = []string{OpAppStart, OpAppStop, OpAppRestart, OpAppAdd, OpLogsRead}
+var commandOps = []string{OpAppStart, OpAppStop, OpAppRestart, OpAppAdd,
+	OpLogsRead, OpReportRead, OpHistoryRead}
 
 // ApplyOps is the subset /v1/commands accepts, which is every op that CHANGES
 // something. app.add is one of them: it provisions, which is work for root.
