@@ -1,6 +1,7 @@
 package box
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
@@ -115,6 +116,11 @@ func SignCommand(priv ed25519.PrivateKey, c Command) (Signed, error) {
 	if c.Srv == "" {
 		return Signed{}, fmt.Errorf("a command must name the server it is for")
 	}
+	if c.ID != "" {
+		if err := ValidCommandID(c.ID); err != nil {
+			return Signed{}, err
+		}
+	}
 	if c.Op == "" {
 		return Signed{}, fmt.Errorf("a command must say what to do")
 	}
@@ -134,6 +140,29 @@ func SignCommand(priv ed25519.PrivateKey, c Command) (Signed, error) {
 		return Signed{}, fmt.Errorf("that command is larger than %d bytes", MaxCommandBytes)
 	}
 	return Signed{Payload: b64(payload), Sig: b64(ed25519.Sign(priv, payload))}, nil
+}
+
+// ValidCommandID is what an id may be.
+//
+// The alphabet NewCommandID produces and nothing else, because this string is
+// joined into a path to name a result -- and the id is chosen by whoever
+// signed, which is not the same as being safe. A device that was planted is
+// still a device somebody can lose.
+//
+// Checked in the ENVELOPE rather than only where a file is opened. That was the
+// bug: the one place that looked at an id was resultPath, so an id it refused
+// made the box unable to record the command and unable to notice a replay of
+// it, which is worse than refusing the command outright.
+func ValidCommandID(id string) error {
+	if id == "" || len(id) > 64 {
+		return fmt.Errorf("a command id is 1 to 64 characters; this one is %d", len(id))
+	}
+	for _, r := range id {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-') {
+			return fmt.Errorf("%q is not a command id", id)
+		}
+	}
+	return nil
 }
 
 // NewCommandID is 128 random bits, hex-free and URL-safe.
@@ -187,6 +216,15 @@ func VerifyCommand(keys []ed25519.PublicKey, raw []byte, serverID string, now ti
 		return Command{}, nil, ErrCommandRefused
 	}
 
+	// ONE DOCUMENT, ONE READING. Go resolves a repeated key last-wins and says
+	// nothing, so {"srv":"srv_theirs","srv":"srv_mine"} is a single signature
+	// that two conforming parsers can disagree about the audience of. The
+	// audience check is what stops one signature being spent on every box the
+	// operator owns, and it must not rest on every present and future reader of
+	// a permanent format agreeing about which duplicate wins.
+	if hasDuplicateKeys(payload) {
+		return Command{}, nil, ErrCommandRefused
+	}
 	var c Command
 	if err := json.Unmarshal(payload, &c); err != nil {
 		return Command{}, nil, ErrCommandRefused
@@ -196,14 +234,25 @@ func VerifyCommand(keys []ed25519.PublicKey, raw []byte, serverID string, now ti
 		// Said differently from a refusal, because it is not one: a box and an
 		// app are separate releases and one being ahead is a normal state that
 		// somebody can act on.
-		return Command{}, nil, fmt.Errorf("this command is v%d and this box speaks v%d", c.V, CommandVersion)
-	case c.ID == "":
+		//
+		// The COMMAND comes back with it. Everything from here down has already
+		// passed the signature, so the caller is a device this box trusts and is
+		// entitled to be told -- and telling them means filing a result under
+		// the id, which needs the id. A refusal still returns nothing.
+		return c, signer, fmt.Errorf("this command is v%d and this box speaks v%d", c.V, CommandVersion)
+	case ValidCommandID(c.ID) != nil:
+		// Refused by the ENVELOPE, not merely by whatever files it later.
+		// resultPath used to be the only thing that looked at an id, and an id
+		// it could not file -- "a.b", "..", anything with a separator --
+		// bypassed replay protection completely: Applied could not find a
+		// record, and WriteResult could not write one, so the same signed bytes
+		// applied again every time they arrived.
 		return Command{}, nil, ErrCommandRefused
 	case serverID == "" || c.Srv != serverID:
 		// The audience check. A box with no id of its own refuses everything,
 		// which is correct for a machine no registry has heard of.
 		return Command{}, nil, ErrCommandRefused
-	case c.Exp <= now.Unix():
+	case time.Unix(c.Exp, 0).Add(commandLeeway).Before(now):
 		return Command{}, nil, ErrCommandRefused
 	case time.Unix(c.Exp, 0).After(now.Add(MaxCommandTTL + commandLeeway)):
 		// Dated too far out. Without this the signer chooses how long a captured
@@ -211,7 +260,7 @@ func VerifyCommand(keys []ed25519.PublicKey, raw []byte, serverID string, now ti
 		// for.
 		return Command{}, nil, ErrCommandRefused
 	case !knownOp(c.Op):
-		return Command{}, nil, fmt.Errorf("this box does not know how to %q", c.Op)
+		return c, signer, fmt.Errorf("this box does not know how to %q", c.Op)
 	}
 	for k, v := range c.Args {
 		if len(k) > 64 || len(v) > 256 {
@@ -221,8 +270,70 @@ func VerifyCommand(keys []ed25519.PublicKey, raw []byte, serverID string, now ti
 	return c, signer, nil
 }
 
-// commandLeeway lets a box whose clock runs a little slow accept a command the
-// app has just signed, the same allowance read tokens make.
+// hasDuplicateKeys reports whether any object in the document names a key twice.
+//
+// A token walk, because encoding/json offers no other way to see it: Unmarshal
+// has already collapsed them by the time a caller could look.
+func hasDuplicateKeys(b []byte) bool {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	type frame struct {
+		obj       bool
+		keys      map[string]bool
+		expectKey bool
+	}
+	var st []*frame
+	for {
+		t, err := dec.Token()
+		if err != nil {
+			// Malformed or finished. Unmarshal reports the first; the second is
+			// a document with no duplicate in it.
+			return false
+		}
+		top := func() *frame {
+			if len(st) == 0 {
+				return nil
+			}
+			return st[len(st)-1]
+		}
+		if f := top(); f != nil && f.obj && f.expectKey {
+			if k, ok := t.(string); ok {
+				if f.keys[k] {
+					return true
+				}
+				f.keys[k] = true
+				f.expectKey = false
+				continue
+			}
+		}
+		switch v := t.(type) {
+		case json.Delim:
+			switch v {
+			case '{':
+				st = append(st, &frame{obj: true, keys: map[string]bool{}, expectKey: true})
+			case '[':
+				st = append(st, &frame{})
+			case '}', ']':
+				if len(st) > 0 {
+					st = st[:len(st)-1]
+				}
+				if f := top(); f != nil && f.obj {
+					f.expectKey = true
+				}
+			}
+		default:
+			if f := top(); f != nil && f.obj {
+				f.expectKey = true
+			}
+		}
+	}
+}
+
+// commandLeeway is the allowance for a clock that is not quite ours.
+//
+// Applied to BOTH ends, which is a correction: it was on the ceiling only, so a
+// box running fast refused everything as expired with no allowance at all, and
+// the symptom was an app whose buttons did nothing. token.go extends validity
+// past expiry for the same reason.
 const commandLeeway = 30 * time.Second
 
 // ErrCommandRefused is every reason a command was not accepted.

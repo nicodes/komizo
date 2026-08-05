@@ -150,4 +150,8 @@ func ParsePublicKey(s string) (ed25519.PublicKey, error) {
 
 func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 
-func unb64(s string) ([]byte, error) { return base64.RawURLEncoding.DecodeString(s) }
+// STRICT. Without it RawURLEncoding accepts non-canonical trailing bits, so one
+// signature has several spellings -- and a format described as permanent should
+// have one encoding per document, before anything downstream ever dedupes or
+// caches on the bytes.
+func unb64(s string) ([]byte, error) { return base64.RawURLEncoding.Strict().DecodeString(s) }

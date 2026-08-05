@@ -2,8 +2,10 @@ package box
 
 import (
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -31,8 +33,15 @@ func signed(t *testing.T, priv ed25519.PrivateKey, c Command) []byte {
 	return raw
 }
 
+// stopWeb is a command that is correct in every way a test is not varying.
+//
+// V is SET. A hand-built payload leaves it zero, and the version check runs
+// before almost everything else -- so a fixture without it makes every test that
+// builds its own envelope pass for the same wrong reason, whatever it thought it
+// was checking.
 func stopWeb(exp time.Time) Command {
-	return Command{Srv: "srv_mine", Exp: exp.Unix(), Op: OpAppStop, Args: map[string]string{"app": "web"}}
+	return Command{V: CommandVersion, ID: "abc123", Srv: "srv_mine", Exp: exp.Unix(),
+		Op: OpAppStop, Args: map[string]string{"app": "web"}}
 }
 
 func TestACommandRoundTrips(t *testing.T) {
@@ -111,9 +120,18 @@ func TestExpiryIsBoundedAtBothEnds(t *testing.T) {
 	pub, priv := device(t)
 	now := time.Now()
 
-	expired := signed(t, priv, stopWeb(now.Add(-time.Second)))
+	expired := signed(t, priv, stopWeb(now.Add(-2*commandLeeway)))
 	if _, _, err := VerifyCommand([]ed25519.PublicKey{pub}, expired, "srv_mine", now); err == nil {
 		t.Error("an expired command was accepted")
+	}
+
+	// A LITTLE past expiry is allowed, at both ends, because the two clocks are
+	// not the same clock. This was on the ceiling only: a box running fast
+	// refused everything as expired with no allowance, and the symptom was an
+	// app whose buttons did nothing and a log that said nothing about clocks.
+	justPast := signed(t, priv, stopWeb(now.Add(-commandLeeway/2)))
+	if _, _, err := VerifyCommand([]ed25519.PublicKey{pub}, justPast, "srv_mine", now); err != nil {
+		t.Errorf("a command a few seconds past expiry was refused: %v", err)
 	}
 
 	// Dated far out. Without this bound the SIGNER decides how long a captured
@@ -347,5 +365,153 @@ func TestARefusedCommandComesBackEmpty(t *testing.T) {
 	}
 	if c.Op != "" || c.ID != "" || c.Srv != "" || len(c.Args) != 0 {
 		t.Errorf("a refusal returned the payload it refused: %+v", c)
+	}
+}
+
+// AN ID THIS BOX CANNOT FILE IS AN ID IT CANNOT REMEMBER.
+//
+// resultPath was the only thing that looked at an id, so one it refused --
+// anything with a separator, anything empty -- bypassed replay protection
+// entirely: Applied found no record and WriteResult could write none, so the
+// same signed bytes applied again on every arrival, for the whole of their life.
+func TestAnIDMustBeOneTheBoxCanFile(t *testing.T) {
+	pub, priv := device(t)
+	now := time.Now()
+
+	for _, bad := range []string{"", "a.b", "..", "../../etc/cron.d/x", "a/b", "a b", strings.Repeat("x", 65), "\n"} {
+		c := stopWeb(now.Add(time.Minute))
+		c.ID = bad
+		payload, err := json.Marshal(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := json.Marshal(Signed{Payload: b64(payload), Sig: b64(ed25519.Sign(priv, payload))})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := VerifyCommand([]ed25519.PublicKey{pub}, raw, "srv_mine", now); err == nil {
+			t.Errorf("id %q was accepted", bad)
+		}
+	}
+
+	// And signing refuses one too, so a caller cannot mint what no box will take.
+	c := stopWeb(now.Add(time.Minute))
+	c.ID = "../../etc/x"
+	if _, err := SignCommand(priv, c); err == nil {
+		t.Error("a command with an unfilable id was signed")
+	}
+
+	// The generator's own output is always acceptable.
+	id, err := NewCommandID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidCommandID(id); err != nil {
+		t.Errorf("NewCommandID produced %q, which ValidCommandID refuses: %v", id, err)
+	}
+}
+
+// ONE DOCUMENT, ONE READING.
+//
+// Go resolves a repeated key last-wins and says nothing, so a single signature
+// could name two audiences and let two conforming parsers disagree about which.
+// The audience check is what stops one signature being spent on every box the
+// operator owns; it must not depend on every reader of a permanent format
+// agreeing about which duplicate wins.
+func TestARepeatedKeyIsRefused(t *testing.T) {
+	pub, priv := device(t)
+	now := time.Now()
+	exp := now.Add(time.Minute).Unix()
+
+	payload := []byte(fmt.Sprintf(
+		`{"v":1,"id":"abc123","srv":"srv_theirs","srv":"srv_mine","exp":%d,"op":"app.stop","args":{"app":"web"}}`, exp))
+	raw, err := json.Marshal(Signed{Payload: b64(payload), Sig: b64(ed25519.Sign(priv, payload))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := VerifyCommand([]ed25519.PublicKey{pub}, raw, "srv_mine", now); err == nil {
+		t.Error("a document naming two audiences was accepted at one of them")
+	}
+
+	// Nested objects too, since args is one.
+	payload = []byte(fmt.Sprintf(
+		`{"v":1,"id":"abc123","srv":"srv_mine","exp":%d,"op":"app.stop","args":{"app":"web","app":"other"}}`, exp))
+	raw, _ = json.Marshal(Signed{Payload: b64(payload), Sig: b64(ed25519.Sign(priv, payload))})
+	if _, _, err := VerifyCommand([]ed25519.PublicKey{pub}, raw, "srv_mine", now); err == nil {
+		t.Error("a nested object with a repeated key was accepted")
+	}
+
+	// And an ordinary document still verifies, so this is not refusing everything.
+	if _, _, err := VerifyCommand([]ed25519.PublicKey{pub}, signed(t, priv, stopWeb(now.Add(time.Minute))), "srv_mine", now); err != nil {
+		t.Errorf("an ordinary command was refused: %v", err)
+	}
+}
+
+// One encoding per document.
+func TestANonCanonicalSignatureIsRefused(t *testing.T) {
+	pub, priv := device(t)
+	now := time.Now()
+	raw := signed(t, priv, stopWeb(now.Add(time.Minute)))
+
+	var env Signed
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatal(err)
+	}
+	// A 64-byte signature is 86 base64 characters, and the final one carries two
+	// real bits and four of slack -- so sixteen different characters decode to
+	// the same signature under a lenient decoder. Built here rather than
+	// searched for, because a search that finds nothing passes silently.
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	last := env.Sig[len(env.Sig)-1]
+	idx := strings.IndexByte(alphabet, last)
+	if idx < 0 {
+		t.Fatalf("signature ends in %q, which is not base64url", last)
+	}
+	alt := alphabet[(idx&0x30)|((idx+1)&0x0F)]
+	if alt == last {
+		t.Fatal("could not build a different spelling")
+	}
+	noncanonical := env.Sig[:len(env.Sig)-1] + string(alt)
+
+	// It really is the same signature to a lenient decoder -- otherwise this
+	// would be testing that a corrupted signature is refused, which is a
+	// different and much easier thing.
+	a, err := base64.RawURLEncoding.DecodeString(noncanonical)
+	if err != nil {
+		t.Fatalf("the alternative spelling does not decode: %v", err)
+	}
+	b, err := base64.RawURLEncoding.DecodeString(env.Sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(a) != string(b) {
+		t.Fatalf("the alternative spelling is a different signature, not another spelling")
+	}
+
+	bad, err := json.Marshal(Signed{Payload: env.Payload, Sig: noncanonical})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := VerifyCommand([]ed25519.PublicKey{pub}, bad, "srv_mine", now); err == nil {
+		t.Error("a non-canonical spelling of the signature was accepted, so one command has several encodings")
+	}
+}
+
+// The arg KEY is bounded as well as the value.
+func TestAnArgumentKeyCannotBeEnormous(t *testing.T) {
+	pub, priv := device(t)
+	now := time.Now()
+	c := stopWeb(now.Add(time.Minute))
+	c.Args[strings.Repeat("k", 100)] = "x"
+	payload, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(Signed{Payload: b64(payload), Sig: b64(ed25519.Sign(priv, payload))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := VerifyCommand([]ed25519.PublicKey{pub}, raw, "srv_mine", now); err == nil {
+		t.Error("a 100-byte argument key was accepted")
 	}
 }

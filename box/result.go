@@ -2,10 +2,8 @@ package box
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -69,8 +67,11 @@ func (r Result) Schema() int { return r.V }
 // join into a path: it is chosen by whoever signed, and a device that has been
 // planted can still be a device somebody lost. Checked rather than trusted.
 func resultPath(dir, id string) (string, error) {
-	if id == "" || len(id) > 64 || strings.ContainsAny(id, "/.") {
-		return "", fmt.Errorf("%q is not a command id", id)
+	// ONE definition of what an id may be, shared with the envelope. It used to
+	// be only here, which meant an id the envelope accepted and this refused
+	// was a command the box could neither record nor recognise a replay of.
+	if err := ValidCommandID(id); err != nil {
+		return "", err
 	}
 	return filepath.Join(dir, id+".json"), nil
 }
@@ -129,8 +130,29 @@ func ReadResult(dir, id string) (Result, bool) {
 // forgot every id it had seen would accept every one of them again for the rest
 // of that window.
 func Applied(dir, id string) bool {
-	_, ok := ReadResult(dir, id)
-	return ok
+	path, err := resultPath(dir, id)
+	if err != nil {
+		return false
+	}
+	// STAT, not parse. Reading it meant a truncated or corrupt result read as
+	// "never applied", so a command whose record was damaged ran a second time
+	// -- and a half-written file is exactly what a box that lost power mid-write
+	// has.
+	_, serr := os.Stat(path)
+	return serr == nil
+}
+
+// PrepareResultsDir makes the directory rootd writes outcomes into.
+//
+// Explicit, because MkdirAll leaves an existing directory alone and umask would
+// otherwise decide the answer -- which is the argument main.go already makes
+// about the report's directory. It worked without this only because ServedDir
+// is setgid and rootd's umask happened to be 022.
+func PrepareResultsDir(path string) error {
+	if err := os.MkdirAll(path, 0o750); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o750)
 }
 
 // PruneResults removes what is older than ResultKept.

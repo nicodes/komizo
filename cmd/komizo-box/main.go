@@ -194,6 +194,9 @@ func runRootd(args []string) error {
 	if err := box.PrepareInboxDir(*inboxDir); err != nil {
 		return err
 	}
+	if err := box.PrepareResultsDir(*resultsDir); err != nil {
+		return err
+	}
 
 	ctx, stop := signalContext()
 	defer stop()
@@ -233,13 +236,37 @@ func runRootd(args []string) error {
 	t := time.NewTicker(*interval)
 	defer t.Stop()
 
-	// Commands are on their OWN, much shorter timer -- see apply.go. The report
-	// is a measurement on a schedule; a command is somebody waiting for a button
-	// to do something, and a minute of that is a product that feels broken.
+	// Commands run on their OWN GOROUTINE, not in this loop.
 	//
-	// The credential is re-read each pass rather than held: `komizo enrol`
-	// rewrites it while this is running, and a rootd holding the keys it started
-	// with would keep obeying a device that had just been removed.
+	// Two reasons, and the second is the one that bites. A command is somebody
+	// waiting for a button, so it wants a much shorter timer than a measurement
+	// on a schedule. And applying one runs `docker compose`, which can take
+	// minutes -- inside this select that would stall the report, and a box that
+	// stops reporting is indistinguishable from a box that is down. The
+	// half-second timer's justification is that a stat on tmpfs costs nothing;
+	// that is true of the poll and not of the work it dispatches.
+	go commandLoop(ctx, *confPath, *inboxDir, *resultsDir)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-t.C:
+			tick()
+		}
+	}
+}
+
+// commandLoop applies what arrives, and sweeps what nobody collected.
+//
+// The credential is re-read each pass rather than held: `komizo enrol` rewrites
+// it while this is running, and a rootd holding the keys it started with would
+// keep obeying a device that had just been removed.
+//
+// The inbox is swept even when the box takes orders from nobody, because it is
+// on tmpfs and an account that can create files there should not be able to
+// fill memory by doing so.
+func commandLoop(ctx context.Context, confPath, inboxDir, resultsDir string) {
 	cmds := time.NewTicker(applyEvery)
 	defer cmds.Stop()
 	prune := time.NewTicker(time.Hour)
@@ -248,15 +275,15 @@ func runRootd(args []string) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
-		case <-t.C:
-			tick()
+			return
 		case <-cmds.C:
-			if conf, err := box.ReadAgentConf(*confPath); err == nil && conf.CanCommand() {
-				applyPending(ctx, conf, *inboxDir, *resultsDir)
+			conf, err := box.ReadAgentConf(confPath)
+			if err != nil {
+				continue
 			}
+			applyPending(ctx, conf, inboxDir, resultsDir)
 		case <-prune.C:
-			_ = box.PruneResults(*resultsDir, time.Now())
+			_ = box.PruneResults(resultsDir, time.Now())
 		}
 	}
 }
