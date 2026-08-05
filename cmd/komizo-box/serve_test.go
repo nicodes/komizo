@@ -219,3 +219,93 @@ func TestTheInstallerCreatesAndGivesAwayTheSocketDirectory(t *testing.T) {
 		t.Error("the mode is set before the chown, which clears the setgid bit")
 	}
 }
+
+// The history is not in a directory the account that serves it cannot enter.
+//
+// It was, and this is the FIFTH time this shape has bitten -- the report, the
+// state directory, the credential, the socket, and now the readings. Every one
+// of them was a process handed a path whose modes were decided somewhere else.
+//
+// This one hid better than the others. ReadSamples treats an unreadable file
+// exactly as it treats an absent one, because a box that has never sampled is a
+// new box rather than a broken one -- so /v1/history answered "no readings" on
+// every box, with nothing anywhere mentioning permission.
+func TestTheHistoryIsNotInADirectoryTheAgentCannotRead(t *testing.T) {
+	if box.ServedDir == box.StateDir {
+		t.Fatal("the history is in the state directory, which is 0750 root:root -- " +
+			"the account that serves it cannot traverse it")
+	}
+	if filepath.Dir(box.HistoryPath) != box.ServedDir {
+		t.Errorf("the history is at %q, which is not in %q", box.HistoryPath, box.ServedDir)
+	}
+	// Setgid, so a reading root appends is born in the agent's group rather
+	// than root's. Without it the directory is reachable and every file in it
+	// is still 0640 root:root.
+	if box.ServedDirMode&os.ModeSetgid == 0 {
+		t.Error("the served directory is not setgid, so root's readings stay in root's group")
+	}
+	if perm := box.ServedDirMode.Perm(); perm&0o050 == 0 {
+		t.Errorf("the served directory is %04o: the group cannot read it", perm)
+	}
+	if perm := box.ServedDirMode.Perm(); perm&0o007 != 0 {
+		t.Errorf("the served directory is %04o: anything on the box can read what this machine measured", perm)
+	}
+}
+
+// And the installer has to make it, since rootd is not the first thing to run.
+func TestTheInstallerCreatesAndGivesAwayTheServedDirectory(t *testing.T) {
+	sh := scripts.AgentInstall("stamp", "v0.0.0")
+	if !strings.Contains(sh, box.ServedDir) {
+		t.Fatalf("the installer never mentions %s", box.ServedDir)
+	}
+	// After the account exists. A chgrp to an account that is not there yet
+	// fails quietly and leaves a directory nothing can read out of.
+	adduser := strings.Index(sh, "adduser")
+	chown := strings.Index(sh, "chown root:komizo_monitor "+box.ServedDir)
+	if adduser < 0 || chown < 0 {
+		t.Fatalf("adduser=%d chown=%d", adduser, chown)
+	}
+	if chown < adduser {
+		t.Error("the served directory is given away before the account exists")
+	}
+	if !strings.Contains(sh, "chmod 2750 "+box.ServedDir) {
+		t.Error("the served directory is not setgid, so the readings inherit root's group")
+	}
+	// After the chown, because chown clears the setgid bit.
+	if strings.Index(sh, "chmod 2750 "+box.ServedDir) < chown {
+		t.Error("the mode is set before the chown, which clears the setgid bit")
+	}
+}
+
+// And it PROVES the account can read them, rather than asserting it.
+//
+// Asserting it is exactly what failed: the mode on the file said 0640 and the
+// directory above it said nothing may enter, and only reading it as that
+// account can tell the difference. The installer already does this for the
+// report -- see design/appify.md §3 -- and the history is on the same boundary.
+func TestTheInstallerProvesTheAgentCanReadTheHistory(t *testing.T) {
+	sh := scripts.AgentInstall("stamp", "v0.0.0")
+	if !strings.Contains(sh, `su komizo_monitor -s /bin/sh -c "cat `+box.HistoryPath+` >/dev/null"`) {
+		t.Error("the installer never reads the history as the account that will serve it, " +
+			"so a box where it cannot finishes install and answers every history request with nothing")
+	}
+}
+
+// A box upgrading from before ServedDir existed keeps what it recorded.
+//
+// registry.md §7 accepts losing a box's history when the BOX dies. Losing it to
+// an upgrade is not that trade, and it would be silent -- new readings would
+// start accumulating and only the chart's left edge would ever have said so.
+func TestTheInstallerMovesAnOlderBoxsReadings(t *testing.T) {
+	sh := scripts.AgentInstall("stamp", "v0.0.0")
+	old := box.StateDir + "/history.jsonl"
+	if !strings.Contains(sh, "mv "+old+" "+box.HistoryPath) {
+		t.Fatalf("the installer does not move %s into %s", old, box.HistoryPath)
+	}
+	// A rename does not take the setgid group -- setgid decides the group of
+	// files CREATED in a directory -- so a moved file that is not chgrped is a
+	// history the serving account still cannot open.
+	if !strings.Contains(sh, "chown root:komizo_monitor "+box.HistoryPath) {
+		t.Error("the moved history keeps root's group, which is the group that could not read it")
+	}
+}

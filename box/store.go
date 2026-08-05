@@ -94,10 +94,11 @@ func AppendSample(path string, s Sample, max int64, keep int) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
-	// 0640, not 0644. It lives under a directory nothing unprivileged may
-	// traverse, so the mode changes nothing -- but a file whose mode says
-	// "anyone may read this" inside a directory that says otherwise is exactly
-	// the confusion that made report.json look reachable when it was not.
+	// 0640, and the GROUP bit is load-bearing now rather than decorative. This
+	// used to live under a directory nothing unprivileged could traverse, where
+	// the mode changed nothing; it lives in ServedDir, which is setgid to the
+	// account that serves this file, so 0640 is exactly what lets the read API
+	// open it and nothing else on the box do so.
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640)
 	if err != nil {
 		return err
