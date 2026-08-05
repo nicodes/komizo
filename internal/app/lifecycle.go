@@ -4,6 +4,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"strconv"
 )
@@ -118,14 +120,106 @@ func lifecycle(verb string, args []string) error {
 	if verb != "logs" {
 		step("Running %s on %s", verb, subject)
 	}
-	run := tgt.runScript
+	run := tgt.runScriptHeard
 	if scrubs(verb) {
-		run = tgt.runScriptSafe
+		run = tgt.runScriptSafeHeard
 	}
-	if err := run(boxCmd(verb, remote...), nil); err != nil {
+	heard, err := run(boxCmd(verb, remote...), nil)
+	if err != nil {
 		return lifecycleErr(err, verb, subject, tgt)
 	}
+	// SUCCESS WITH NOTHING TO SHOW IS STILL AN ANSWER. See reportSilence: this
+	// is the whole of komizo#47, and the return below is deliberately still nil.
+	if !heard {
+		reportSilence(quietStream(verb), verb, subject, tgt.host)
+	}
 	return nil
+}
+
+// reportSilence says what happened when the box's own output did not.
+//
+// komizo#47: `komizo logs --host ... --app web` printed nothing and exited 0.
+// The command had worked. Nothing about the terminal said so -- an empty stdout
+// and a zero exit are also what a command that never ran leaves behind, and
+// they are what a mistyped alias, a shell function that swallowed the arguments
+// and a binary that returned early all leave behind too. The person is left to
+// tell those apart by rerunning it and watching harder.
+//
+// The box does not have this problem, which is the part that made it a bug
+// rather than a rough edge. box/logs.go answers the app's read with "nothing
+// collected for that app yet" -- a sentence -- while the CLI, reading the same
+// state over SSH, said less than nothing. komizo-be design/app-only.md §9 keeps
+// the CLI entire, and "entire" cannot mean the surface that explains itself
+// worse.
+//
+// EXIT ZERO, STILL. An app with no output is not a failure, and making it one
+// would break every `komizo logs` in a CI script the moment an app went quiet.
+// The fix is a sentence, not a status.
+func reportSilence(w io.Writer, verb, subject, host string) {
+	if verb != "logs" {
+		// start, stop and restart already printed their own "==> Running stop on
+		// web" header, so this is the second half of a sentence that was left
+		// hanging -- issue #47's postscript, where `stop` on an app with no
+		// containers printed the header and then nothing whatsoever.
+		//
+		// The inference is safe to state because compose names every container it
+		// touches: `stop` prints a line per container it stops, `up -d` one per
+		// container it creates or finds running, `restart` one per container it
+		// restarts. None of them is capable of acting on something quietly, so an
+		// empty run means an empty stack. (A box running a current agent refuses
+		// `restart` with nothing running before it gets here -- cmd/komizo-box's
+		// runVerb -- but an older agent does not, and this is the surface that
+		// still has to say something on that box.)
+		noteTo(w, "Nothing happened -- compose names every container it acts on, and it")
+		noteTo(w, "named none, so %s found nothing under %s to act on.", verb, subject)
+		return
+	}
+
+	stepTo(w, "%s has logged nothing", subject)
+	// "This command ran" first, because that is the sentence the whole issue is
+	// about. Everything after it is detail; without it the person is still
+	// wondering whether komizo did anything at all, which is where they were
+	// before this function existed.
+	noteTo(w, "This command ran, and `docker compose logs` came back empty.")
+	// TWO CAUSES, NAMED, RATHER THAN ONE GUESSED. The box genuinely cannot tell
+	// them apart here: this path is `docker compose logs`, which is empty for a
+	// stack with no containers and empty for a stack whose containers have said
+	// nothing, and it reports the same emptiness for both. box/logs.go CAN
+	// distinguish its own case -- a collected file that does not exist yet is a
+	// 404 with "nothing collected for that app yet" -- but that is the app's HTTP
+	// route reading a file rootd writes on a timer, and no part of it is on this
+	// path. Picking one of the two to print would be komizo inventing a fact
+	// about somebody's server, and a wrong reassurance costs more than an honest
+	// pair: "nothing collected yet" told to somebody whose app has actually died
+	// is a bug report that never gets filed.
+	noteTo(w, "Either nothing has ever run under %s, or its containers have", subject)
+	noteTo(w, "written no output yet.")
+	// So the pair is closed by the command that settles it, rather than left as
+	// two possibilities and no next move.
+	noteTo(w, "`komizo list --host %s` will say which of the two it is.", host)
+}
+
+// quietStream is where komizo's own remark about a silent run goes.
+//
+// STDERR FOR LOGS, and stdout for everything else. `komizo logs > snapshot.txt`
+// and `komizo logs --app web | grep ERROR` are the reason the command exists as
+// a command rather than only as a screen in the interface -- parity_test.go
+// says it directly, a TUI-only capability "cannot be scripted, cannot run in
+// CI". A sentence komizo wrote is not a log line, and writing it to stdout
+// would put komizo's prose inside a file that is supposed to be the app's
+// output, where the next reader has no way to tell whose words those are.
+//
+// start, stop and restart print komizo's own header to stdout already, so their
+// remark belongs beside it. Nobody pipes a stop.
+//
+// A function rather than an inline branch so the decision can be asserted --
+// the same reason scrubs() is one, and for the same failure: this is wiring,
+// and wiring is the half that regresses without anything looking wrong.
+func quietStream(verb string) *os.File {
+	if verb == "logs" {
+		return os.Stderr
+	}
+	return os.Stdout
 }
 
 // scrubs reports whether a verb's output was written by somebody else.

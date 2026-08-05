@@ -286,7 +286,25 @@ func (t target) runScript(script string, env map[string]string) error {
 	return t.runScriptTo(script, env, os.Stdout)
 }
 
-// runScriptSafe is runScript for output nobody on this side wrote.
+// runScriptHeard is runScript that also reports whether the far end said
+// anything at all.
+//
+// The distinction exists because two outcomes are identical in a terminal and
+// are not the same thing: a command that ran and had nothing to report, and a
+// command that never ran. komizo#47 is that bug in its finished form --
+// `komizo logs --app web` printed not one character and exited 0, so "your app
+// has logged nothing" and "komizo silently did nothing" were the same
+// transcript. The exit status cannot tell them apart either, because both are
+// zero and both are correct.
+//
+// Reported as a bool rather than a byte count on purpose: the only question
+// anybody asks of it is whether there was anything at all, and a count invites
+// a caller to invent a threshold below which a box's output does not count.
+func (t target) runScriptHeard(script string, env map[string]string) (bool, error) {
+	return t.runScriptHeardTo(script, env, os.Stdout)
+}
+
+// runScriptSafeHeard is runScriptHeard for output nobody on this side wrote.
 //
 // Everything the box prints during a bootstrap is komizo's own script prose.
 // LOG LINES ARE NOT: anyone who can make a request to a hosted app can put text
@@ -297,19 +315,62 @@ func (t target) runScript(script string, env map[string]string) error {
 // The interface has always scrubbed what it fetched. `komizo logs` is the first
 // command-line path whose output is attacker-authored, so it is the first that
 // needs this.
-func (t target) runScriptSafe(script string, env map[string]string) error {
+//
+// The count is taken BEFORE the scrub, which is not an accident: scrub maps a
+// control character to a space rather than deleting it, so the two are the same
+// length today -- and keeping the measurement on the box's own bytes means the
+// answer stays "did the box say anything" even if scrub ever learns to drop
+// something. A log made entirely of escape sequences was still a log the box
+// had; claiming the app logged nothing would be komizo lying about its own
+// filtering.
+func (t target) runScriptSafeHeard(script string, env map[string]string) (bool, error) {
 	w := &scrubWriter{to: os.Stdout}
-	err := t.runScriptTo(script, env, w)
+	heard, err := t.runScriptHeardTo(script, env, w)
 	w.flush()
-	return err
+	return heard, err
 }
 
 func (t target) runScriptTo(script string, env map[string]string, out io.Writer) error {
+	_, err := t.runScriptHeardTo(script, env, out)
+	return err
+}
+
+// runScriptHeardTo is the one exec every streaming run goes through.
+//
+// BOTH streams are watched, because which one a verb speaks on is docker's
+// choice and not komizo's: `docker compose logs` writes log lines to stdout,
+// while `docker compose stop` writes its per-container progress to stderr.
+// Watching stdout alone would have made every successful stop look silent, and
+// komizo would have announced "nothing happened" over the top of compose saying
+// exactly what happened.
+func (t target) runScriptHeardTo(script string, env map[string]string, out io.Writer) (bool, error) {
+	o, e := &heardWriter{to: out}, &heardWriter{to: os.Stderr}
 	c := exec.Command("ssh", t.sshArgs(envPrefix(env)+"sh -s")...)
 	c.Stdin = strings.NewReader(script)
-	c.Stdout = out
-	c.Stderr = os.Stderr
-	return c.Run()
+	c.Stdout = o
+	c.Stderr = e
+	err := c.Run()
+	return o.heard || e.heard, err
+}
+
+// heardWriter passes everything through and remembers that there was something
+// to pass.
+//
+// A single byte counts, including a lone newline: a blank line is something a
+// person sees on their terminal, and a wrapper that decided otherwise would be
+// second-guessing the box about whether its own output was worth having. The
+// judgement about what silence MEANS belongs to the caller that knows which
+// command it ran -- see lifecycle.go -- not to the pipe it came down.
+type heardWriter struct {
+	to    io.Writer
+	heard bool
+}
+
+func (w *heardWriter) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		w.heard = true
+	}
+	return w.to.Write(p)
 }
 
 // scrubWriter passes text through scrub, a line at a time.
