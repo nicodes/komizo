@@ -9,10 +9,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/nicodes/komizo/box"
+	"github.com/nicodes/komizo/scripts"
 )
 
 // The read API over a real socket.
@@ -170,5 +172,40 @@ func TestABoxWithNoRegistryKeyServesNothing(t *testing.T) {
 	}
 	if _, err := os.Stat(sock); !os.IsNotExist(err) {
 		t.Error("a box with no registry key opened a socket anyway")
+	}
+}
+
+// The socket lives in a directory the serving account can write to.
+//
+// It did not, and that is how this shipped: /run/komizo is 0755 root:root, the
+// process opening the socket runs as komizo_monitor, and `bind: permission
+// denied` was the whole of what a box said about it. Found by running it on a
+// real machine rather than by reading it, which is the fourth time this exact
+// shape -- a process given a path it can read and not write -- has bitten.
+func TestTheSocketIsNotInADirectoryTheAgentCannotWrite(t *testing.T) {
+	if box.APISocketDir == box.RunDir {
+		t.Fatal("the socket directory is the run directory, which is root's -- " +
+			"the account that opens the socket cannot create anything in it")
+	}
+	if filepath.Dir(box.APISocketPath) != box.APISocketDir {
+		t.Errorf("the socket is at %q, which is not in %q", box.APISocketPath, box.APISocketDir)
+	}
+}
+
+// And the installer has to make it, since the account cannot.
+func TestTheInstallerCreatesAndGivesAwayTheSocketDirectory(t *testing.T) {
+	sh := scripts.AgentInstall("stamp", "v0.0.0")
+	if !strings.Contains(sh, box.APISocketDir) {
+		t.Fatalf("the installer never mentions %s", box.APISocketDir)
+	}
+	// After the account exists, or the chown fails quietly and leaves a service
+	// that starts and cannot bind -- which is exactly what happened.
+	adduser := strings.Index(sh, "adduser")
+	chown := strings.Index(sh, "chown komizo_monitor:komizo_monitor "+box.APISocketDir)
+	if adduser < 0 || chown < 0 {
+		t.Fatalf("adduser=%d chown=%d", adduser, chown)
+	}
+	if chown < adduser {
+		t.Error("the socket directory is given away before the account exists")
 	}
 }

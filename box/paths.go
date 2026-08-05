@@ -45,15 +45,25 @@ const (
 	HistoryPath = StateDir + "/history.jsonl"
 	VersionPath = StateDir + "/version"
 
-	// APISocketPath is where the box answers for itself.
+	// APISocketDir holds the socket the box answers on, and it is its OWN
+	// directory for two reasons that arrived a day apart.
 	//
-	// Under RunDir with the report, not under StateDir: the state directory is
-	// 0750 root:root, and the process that opens this runs as komizo_monitor.
-	// It is also the directory the proxy already has reason to reach.
+	// The first is that RunDir is 0755 root:root, so the account that opens the
+	// socket cannot create a file in it. That is the fourth time this shape has
+	// bitten -- the report, the state directory, the credential, and now this --
+	// and every time it was a process that could READ where it needed to WRITE.
+	//
+	// The second is what comes next: the box's proxy has to reach this socket,
+	// which means a bind mount, and mounting RunDir would hand the one
+	// internet-facing container on the box a writable path next to report.json.
+	// A directory with nothing in it but a socket is the smaller thing to lend.
+	APISocketDir = RunDir + "/api"
+
+	// APISocketPath is where the box answers for itself.
 	//
 	// A socket rather than a port, so nothing new listens on the network -- see
 	// cmd/komizo-box/serve.go.
-	APISocketPath = RunDir + "/api.sock"
+	APISocketPath = APISocketDir + "/api.sock"
 	// PendingDir is where signed requests land for rootd to apply. Nothing in v0
 	// writes here; the directory is created so the shape is visible on a box and
 	// the permissions are decided once, by the thing that owns them.
