@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -394,6 +395,8 @@ func TestUnknownOpenRCNamesFindsATypo(t *testing.T) {
 	got := unknownOpenRCNames(`#!/sbin/openrc-run
 name="komizo-agent"
 comand_args="agent"
+export respwan_delay=5
+readonly command_user="komizo_monitor"
 respawn_delay=5
 
 depend() {
@@ -401,9 +404,11 @@ depend() {
 	need net
 }
 `)
-	if len(got) != 1 || got[0] != "comand_args" {
-		t.Errorf("unknownOpenRCNames = %v, want exactly [comand_args] -- a local inside a\n"+
-			"function is not a service variable, and the three real names are", got)
+	want := []string{"comand_args", "respwan_delay"}
+	if !slices.Equal(got, want) {
+		t.Errorf("unknownOpenRCNames = %v, want %v.\n"+
+			"  A local inside a function is not a service variable; `export` and `readonly`\n"+
+			"  are assignments and must not hide one; and the real names must not be reported.", got, want)
 	}
 }
 
@@ -414,8 +419,13 @@ depend() {
 // Assignments inside depend() and the like are ordinary shell variables in an
 // ordinary function, used by the code around them, and SC2034 is not disabled
 // on their account.
+//
+// `export` and `readonly` are consumed first because they are assignments too,
+// and a regexp that only knew the bare form would MISS a typo rather than
+// report it -- the failure direction that matters here, since the whole point
+// of this check is that nothing else is looking.
 func unknownOpenRCNames(body string) []string {
-	assign := regexp.MustCompile(`(?m)^([A-Za-z_][A-Za-z0-9_]*)=`)
+	assign := regexp.MustCompile(`(?m)^(?:export |readonly )?([A-Za-z_][A-Za-z0-9_]*)=`)
 	var out []string
 	for _, m := range assign.FindAllStringSubmatch(body, -1) {
 		if !openRCReads[m[1]] {
@@ -428,27 +438,105 @@ func unknownOpenRCNames(body string) []string {
 // openRCReads is what openrc-run and supervise-daemon consume out of a service
 // file.
 //
-// Deliberately NOT the whole of OpenRC's vocabulary. It is the set these three
-// files use plus the near neighbours somebody would reach for next, so that
-// adding one is a moment of thought rather than a lookup that always succeeds.
-// Everything here is documented in openrc-run(8) and supervise-daemon(8) on
-// Alpine, which is the box these run on.
+// READ OUT OF OPENRC, not remembered. Every name here is dereferenced by
+// Alpine's own openrc package, in
+//
+//	/usr/libexec/rc/sh/openrc-run.sh
+//	/usr/libexec/rc/sh/start-stop-daemon.sh
+//	/usr/libexec/rc/sh/supervise-daemon.sh
+//
+// which is where a service file's variables actually get turned into flags:
+// `${directory:+--chdir} $directory`, `${command_user+--user} $command_user`.
+// To check or extend this list, grep those three files for the name. That is a
+// two-minute job and it is the difference between a list and a guess.
+//
+// It matters because a name that is on this list and NOT read by OpenRC makes
+// the check weaker than the SC2034 it stands in for: the typo it exists to
+// catch would sail through. `command_group` was on an earlier draft of this
+// list for exactly that reason -- `command_user` takes "user:group", there is
+// no separate group variable, and OpenRC's shell does not mention the name once.
+//
+// Deliberately NOT the whole of OpenRC's vocabulary -- the internals
+// (`start_time`, `child_pid`) and the rc.conf settings (`rc_ulimit`,
+// `rc_cgroup_cleanup`) are left off. It is what these three files use plus the
+// near neighbours somebody would reach for next, so adding one is a moment of
+// thought rather than a lookup that always succeeds. A missing name fails
+// loudly and is one line to fix; a wrong name fails silently forever.
 var openRCReads = map[string]bool{
-	// openrc-run(8): what the service is and how rc-service addresses it.
+	// openrc-run.sh: what the service is and how rc-service addresses it.
 	"name": true, "description": true, "extra_commands": true,
 	"extra_started_commands": true, "extra_stopped_commands": true,
 	"required_dirs": true, "required_files": true,
-	// openrc-run(8): what to run, as whom, from where.
-	"command": true, "command_args": true, "command_background": true,
-	"command_user": true, "command_group": true, "directory": true,
-	"procname": true, "pidfile": true, "umask": true,
-	// supervise-daemon(8): the restart policy, which is why this box uses a
+	// start-stop-daemon.sh: what to run, as whom, from where.
+	"command": true, "command_args": true, "command_args_background": true,
+	"command_args_foreground": true, "command_background": true,
+	"command_user": true, "directory": true, "procname": true,
+	"pidfile": true, "umask": true, "retry": true, "stopsig": true,
+	"start_stop_daemon_args": true,
+	// supervise-daemon.sh: the restart policy, which is why this box uses a
 	// supervisor at all -- a crashed agent that is not restarted looks exactly
 	// like a box that is down.
 	"supervisor": true, "respawn_delay": true, "respawn_max": true,
 	"respawn_period": true, "supervise_daemon_args": true,
 	"healthcheck_timer": true, "healthcheck_delay": true,
-	// openrc-run(8): where the daemon's own output goes.
+	// Where the daemon's own output goes, read by both.
 	"output_log": true, "error_log": true,
 	"output_logger": true, "error_logger": true,
+}
+
+// NOTHING WRITES A SCRIPT THROUGH AN UNQUOTED HEREDOC.
+//
+// shippedTemplates matches `<<'TAG'` only, so an unquoted heredoc is invisible
+// to every check built on it -- the lint, the parse, the OpenRC names. That is
+// a deliberate limit and this is what stops it being a hole.
+//
+// Unquoted is the wrong tool for shell anyway, and embed.go's own comments say
+// why in stronger terms than this could: the outer shell expands every `$` in
+// the body as it writes the file, so `$APP_DIR` inside the template resolves at
+// INSTALL time to whatever the outer script had, silently, in the most
+// security-sensitive file on the box. alpine.sh was written that way once, with
+// every `$` hand-escaped, and "one missed backslash silently moved an expansion
+// from deploy time to install time".
+//
+// So a `#!` after an unquoted heredoc is two bugs at once: a script that will
+// be mangled, and a script nothing lints. Reported as both.
+//
+// The other unquoted heredocs in this package are fine and stay fine: a Caddy
+// route, a compose.yml, and several `cat <<EOF` blocks that print a message to
+// the terminal. None of them declares itself a script, which is the same rule
+// shippedTemplates uses to decide what is shell.
+func TestNoShellIsWrittenThroughAnUnquotedHeredoc(t *testing.T) {
+	// No quotes around the tag, and not `<<-`, which strips tabs and would need
+	// the same argument made separately if anything ever used it.
+	unquoted := regexp.MustCompile(`<<([A-Z_]+)\n`)
+	checked := 0
+	for name, src := range all(t) {
+		for _, m := range unquoted.FindAllStringSubmatchIndex(src, -1) {
+			// `<<'TAG'` also ends in TAG\n, so skip anything whose match is
+			// preceded by a quote -- that is the quoted form, already covered.
+			if m[0] > 0 && src[m[0]-1] == '\'' {
+				continue
+			}
+			checked++
+			tag := src[m[2]:m[3]]
+			rest := src[m[1]:]
+			j := strings.Index(rest, "\n"+tag+"\n")
+			if j < 0 {
+				t.Errorf("%s: unquoted heredoc %s is never closed", name, tag)
+				continue
+			}
+			if strings.HasPrefix(rest[:j+1], "#!") {
+				t.Errorf("%s writes a script through an UNQUOTED heredoc (%s).\n"+
+					"  The outer shell expands every $ in it at install time -- see embed.go --\n"+
+					"  and shippedTemplates cannot see it, so nothing lints or parses it.\n"+
+					"  Quote the tag: <<'%s'", name, tag, tag)
+			}
+		}
+	}
+	// The package does use unquoted heredocs, for a Caddy route, a compose.yml
+	// and some messages. Finding none means the scan stopped matching, and a
+	// loop over nothing passes.
+	if checked == 0 {
+		t.Fatal("no unquoted heredocs found at all -- this scan has stopped matching, so it is no longer checking anything")
+	}
 }
