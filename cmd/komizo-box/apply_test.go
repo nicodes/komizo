@@ -271,6 +271,14 @@ func device(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	return pub, priv
 }
 
+// testBy stands in for the signer, for tests that call perform directly.
+//
+// Not empty, on purpose. Every test using it fails before anything is recorded,
+// so the value itself is never asserted -- but an empty one would write an
+// empty STOPPED_BY the day one of them stops failing early, and omitempty would
+// then render that as a stop nobody made.
+const testBy = "device kmz_dev_TESTTEST…TESTTEST"
+
 // appFixture makes a root with one app record in it, so resolveSubject has
 // something to find without a box.
 func appFixture(t *testing.T, name, dir string) string {
@@ -308,7 +316,7 @@ func TestPerformRefusesAnOpItCannotMap(t *testing.T) {
 	// one step later -- and then the assertion is about the fixture.
 	withRoot(t, appFixture(t, "web", "/srv/web"), func() {
 		err := perform(context.Background(), box.Command{Op: "app.detonate",
-			Args: map[string]string{"app": "web"}})
+			Args: map[string]string{"app": "web"}}, testBy)
 		if err == nil {
 			t.Error("an op with no verb was performed")
 		}
@@ -327,7 +335,7 @@ func TestPerformChecksTheAppName(t *testing.T) {
 	runs := captureCompose(t)
 	for _, bad := range []string{"", "../etc", "a/b", "-rf", "web app", "web;id"} {
 		err := perform(context.Background(), box.Command{Op: box.OpAppStop,
-			Args: map[string]string{"app": bad}})
+			Args: map[string]string{"app": bad}}, testBy)
 		if err == nil {
 			t.Errorf("app %q was performed", bad)
 		}
@@ -339,7 +347,7 @@ func TestPerformChecksTheAppName(t *testing.T) {
 	// what makes AppOf load-bearing rather than a duplicate of the next check.
 	withRoot(t, appFixture(t, "-rf", "/srv/rf"), func() {
 		if err := perform(context.Background(), box.Command{Op: box.OpAppStop,
-			Args: map[string]string{"app": "-rf"}}); err == nil {
+			Args: map[string]string{"app": "-rf"}}, testBy); err == nil {
 			t.Error("an app named like a flag was performed")
 		}
 	})

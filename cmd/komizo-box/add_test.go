@@ -170,7 +170,7 @@ func TestAFailedProvisionSaysWhyEvenWhenTheScriptDoesNot(t *testing.T) {
 	}
 	defer func() { execProvision = orig }()
 
-	err := perform(context.Background(), addCmd(good()))
+	err := perform(context.Background(), addCmd(good()), testBy)
 	if err == nil {
 		t.Fatal("a script that exited non-zero was reported as success")
 	}
@@ -206,7 +206,7 @@ func TestAddRunsTheSameScriptTheCLIRuns(t *testing.T) {
 	args["known_as"] = "myapp.example.com"
 	args["app_dir"] = "/opt/web"
 	args["harden_ssh"] = "1"
-	if err := perform(context.Background(), addCmd(args)); err != nil {
+	if err := perform(context.Background(), addCmd(args), testBy); err != nil {
 		t.Fatalf("perform = %v", err)
 	}
 

@@ -79,18 +79,29 @@ func runApp(args []string) error {
 		return err
 	}
 
-	sub, err := resolveSubject("", *name, *proxy)
+	// lookupRoot, not "". Empty in production, so this is the same path it has
+	// always been; a fixture in tests, which is what lets the SSH route be
+	// exercised end to end rather than only from `perform`. The two routes have
+	// to be tested through their OWN entry points -- a marker written by one of
+	// them says nothing about the other, and komizo#48 was a write that existed
+	// in neither.
+	sub, err := resolveSubject(lookupRoot, *name, *proxy)
 	if err != nil {
 		return err
 	}
 
 	ctx, stop := signalContext()
 	defer stop()
-	return runVerb(ctx, verb, sub, *tail, *svc)
+	return runVerb(ctx, verb, sub, *tail, *svc, box.StoppedByCLI)
 }
 
 // subject is which stack a verb acts on.
-type subject struct{ dir, project string }
+//
+// app and root carry what it takes to find the app's RECORD, not just its
+// compose file: a deliberate stop is written into AppsDir/<app>.env, and by the
+// time runVerb has a directory it has already thrown away the name that names
+// the file. app is empty for the shared proxy, which has no record.
+type subject struct{ dir, project, app, root string }
 
 // resolveSubject turns a name into a stack, and is the one place that does.
 //
@@ -110,7 +121,7 @@ func resolveSubject(root, name string, proxy bool) (subject, error) {
 	// No project name: compose derives one from the directory, which is what the
 	// deploy path does too, so naming one here would resolve to a different
 	// stack from the one that was deployed.
-	return subject{dir: dir}, nil
+	return subject{dir: dir, app: name, root: root}, nil
 }
 
 // runVerb is what BOTH triggers end in.
@@ -120,16 +131,101 @@ func resolveSubject(root, name string, proxy bool) (subject, error) {
 // Go against Go in one process and becomes Go against TypeScript across a
 // network. This function is that promise, kept in one place -- runApp parses
 // flags into it, and applyCommand parses a verified envelope into it.
-func runVerb(ctx context.Context, verb string, sub subject, tail int, svc string) error {
+func runVerb(ctx context.Context, verb string, sub subject, tail int, svc, by string) error {
 	if verb == "restart" {
 		// Restarting nothing succeeds silently, which is the failure paths.go
 		// argues against in its own words: a command that "does nothing, and has
 		// no reason to say so".
+		//
+		// It is also why restart never touches the stop marker. `compose ps -q`
+		// lists what is RUNNING, so a fully stopped app cannot be restarted at
+		// all -- it is refused right here -- and there is no path by which
+		// restart brings a deliberately stopped app back up behind the marker's
+		// back. Starting it is `start`, and that is where the marker comes off.
 		if out, err := composeOut(ctx, sub.dir, sub.project, "ps", "-q"); err == nil && strings.TrimSpace(out) == "" {
 			return fmt.Errorf("nothing is running here -- start it instead")
 		}
 	}
-	return compose(ctx, sub.dir, sub.project, composeArgs(verb, tail, svc)...)
+
+	// marks is whether this call is a decision about the whole app, and so
+	// something the box has to write down.
+	//
+	// --service is deliberately excluded, and this is the conservative half of
+	// the rule. Stopping one service out of three is not a decision to stop the
+	// app, and a marker written for it would suppress app_down for the other
+	// two when they later fail -- a page silently turned off by a command that
+	// never claimed to. An app with a single service stopped by name therefore
+	// still reports as down, which is the honest reading: nobody said stop the
+	// app, they said stop that container, and something ought to say so.
+	//
+	// The shared proxy is excluded because it has no record to write into. Its
+	// own down-ness is diagnosed separately, as proxy_stopped.
+	marks := sub.app != "" && svc == "" && (verb == "stop" || verb == "start")
+
+	if verb == "stop" && marks {
+		// WRITTEN FIRST, and this ordering is the whole point of the marker.
+		//
+		// `compose stop` sends SIGTERM and waits out a grace period, so there
+		// are seconds during which containers are exiting one by one. rootd
+		// re-reports on its own tick throughout. Write the marker afterwards
+		// and there is a window where every container has exited and nothing
+		// has yet said the stop was deliberate -- which is a real app_down
+		// problem, published, for an app somebody stopped on purpose. That is
+		// the exact page komizo#48 is about, merely narrowed from forever to a
+		// few seconds, and a false page that fires occasionally is worse to
+		// live with than one that fires always.
+		//
+		// The cost of being early is an app marked stopped while it is still
+		// shutting down, which suppresses nothing: app_down only fires when no
+		// container is running, and they still are.
+		if err := box.MarkStopped(sub.root, sub.app, by, time.Now()); err != nil {
+			// REFUSED rather than stopped anyway. A box that cannot record the
+			// stop is a box that will report this app as broken for as long as
+			// it stays down, so stopping it here would be choosing the defect
+			// deliberately. This is a local file written by root; failing to
+			// write it means something is wrong with the box's state directory
+			// and the operator needs to hear that instead of a stopped app.
+			return fmt.Errorf("could not record that %s was stopped, so it was left running: %w", sub.app, err)
+		}
+	}
+
+	if err := compose(ctx, sub.dir, sub.project, composeArgs(verb, tail, svc)...); err != nil {
+		if verb == "stop" && marks {
+			// The stop did not happen, so the record of it must not survive --
+			// otherwise a running app carries a marker that will keep it from
+			// paging the day it goes down for real. Best effort, and the
+			// compose failure is still what comes back: losing the reason
+			// behind a second error would answer a question nobody asked.
+			_ = box.ClearStopped(sub.root, sub.app)
+		}
+		return err
+	}
+
+	if verb == "start" && marks {
+		// CLEARED LAST, which is the mirror of the argument above rather than a
+		// contradiction of it. `up -d` may pull an image over a slow link and
+		// take minutes; clearing first would leave an app that is still down,
+		// no longer marked stopped, and paging for the whole of it.
+		//
+		// A start that FAILS therefore leaves the marker on, which is the right
+		// answer too: the app is still down, still down on purpose as far as
+		// anything can tell, and the person who ran the command saw it fail.
+		//
+		// The cost of that choice is worth naming rather than leaving implied.
+		// A `up -d` that fails PART WAY leaves the marker on with some services
+		// running, so those services do not page until somebody starts the app
+		// again successfully. The alternative -- clearing on failure -- pages
+		// for an app that is deliberately down and stayed down, every time a
+		// start fails, which is the noisier half of the same trade and the one
+		// that trains people to ignore the alert.
+		if err := box.ClearStopped(sub.root, sub.app); err != nil {
+			// Said out loud even though the containers are up. An app running
+			// while its record still claims a stop is an app that will not page
+			// the next time it dies, and that is not something to leave silent.
+			return fmt.Errorf("%s was started, but the box still has it recorded as stopped: %w", sub.app, err)
+		}
+	}
+	return nil
 }
 
 // composeArgs is the arguments for one verb, and it is a pure function so that

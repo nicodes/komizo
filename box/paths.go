@@ -195,12 +195,14 @@ func readValue(path, key string) string {
 // root prefixes the path, for the same reason Probe.Root does -- so this is
 // testable without a box.
 func AppDir(root, name string) (string, error) {
-	if name == "" || strings.ContainsAny(name, "/.") {
-		// Refused rather than sanitised. This is joined into a path, and a name
-		// with a separator in it is not a typo to be helpful about.
-		return "", fmt.Errorf("%q is not an app name", name)
+	// The name check and the join both live in appStatePath, so the rule that
+	// keeps an app name out of a path has one home -- stopped.go writes to the
+	// same file this reads, and a second copy of that rule is a second chance
+	// for one of them to relax.
+	path, err := appStatePath(root, name)
+	if err != nil {
+		return "", err
 	}
-	path := filepath.Join(root, AppsDir, name+".env")
 	st, err := readState(path)
 	if err != nil {
 		return "", fmt.Errorf("no app called %q on this box", name)
