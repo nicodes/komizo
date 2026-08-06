@@ -1189,13 +1189,59 @@ if [ "$stopped" = "1" ]; then
 	echo "deploy: 'komizo start --host <this box> --app $APP_NAME' brings up $version, or press s in the interface."
 else
 	docker compose up -d --remove-orphans
-	# AFTER the start, not before it. `set -e` ends the script on a failed
-	# `up -d`, so an echo above this line would be a claim that the app started
-	# printed immediately before the output showing that it did not -- and the
-	# machine-readable half of it would be the last `started=` a caller parsed.
-	# The stopped branch prints its line first because there is nothing there
-	# that can fail.
-	echo "deploy: started=yes"
+
+	# AND READ THE MARKER AGAIN, because a stop can land between the read above
+	# and the `up -d` that just ran. komizo#62.
+	#
+	# The interleaving: this deploy reads the marker and sees nothing; `komizo
+	# stop` arrives and writes STOPPED=1 FIRST (komizo#48 chose that ordering
+	# deliberately, so the marker is on the record before containers exit); its
+	# `compose stop` brings them down; and the `up -d` above brings them back.
+	# End state: running, with STOPPED=1 recorded.
+	#
+	# WHY THAT END STATE IS WORTH A SECOND READ. box/diagnose.go keys app_down
+	# on the marker, so an app in it never pages again -- for a real outage,
+	# indefinitely, with nothing anywhere saying alerting was switched off.
+	# Nothing else reconciles the marker against the containers that are
+	# actually up, and `komizo start` is the only thing that clears it, which
+	# nobody runs against an app they can see is running. A narrow window is
+	# fine; a narrow window onto "alerting silently off forever" is not.
+	#
+	# NOT A LOCK. lockRecord in box/stopped.go is best-effort with a timeout and
+	# proceeds anyway, so it is explicitly not a barrier -- and holding one
+	# across `up -d` would make every deploy wait out a stop while moving the
+	# race rather than removing it. This is the cheap direction: do the work,
+	# look again, and undo if the world changed underneath.
+	#
+	# THE STOP WINS, NOT THE DEPLOY. Somebody asked for this app to be down and
+	# said so on the record; a deploy is a decision about WHAT an app runs, not
+	# whether it should be running -- the same argument the comment above makes
+	# for leaving the marker alone. So the containers go back down and the
+	# marker stays. Restarting them instead would be CI overruling a person,
+	# which is the defect komizo#56 exists to prevent.
+	stopped_after=""
+	if [ -f "$STATE_FILE" ]; then
+		stopped_after="$(sed -n 's/^STOPPED=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)"
+	fi
+	if [ "$stopped_after" = "1" ]; then
+		docker compose stop
+		echo "deploy: started=no"
+		echo "deploy: $APP_NAME was stopped while this deploy was running, so it has been brought back down and stays recorded as stopped."
+		echo "deploy: 'komizo start --host <this box> --app $APP_NAME' brings up $version, or press s in the interface."
+	else
+		# AFTER the start AND after the re-read, not before either. `set -e` ends
+		# the script on a failed `up -d`, so an echo above it would claim the app
+		# started immediately before the output showing it did not -- and the
+		# machine-readable half would be the last `started=` a caller parsed.
+		#
+		# EXACTLY ONE `started=` LINE IS PRINTED on every path through this
+		# script, which is why the undo above prints its own rather than
+		# correcting this one afterwards. A caller parsing `started=` takes the
+		# last it sees, so yes-then-no would be right by accident and wrong the
+		# moment anybody reads the first match instead -- and the test that
+		# forbids both lines appearing is asserting exactly that invariant.
+		echo "deploy: started=yes"
+	fi
 fi
 
 # Now the deploy has happened, so there is nothing left to go back to. Dropped
