@@ -104,6 +104,46 @@ func MarkStopped(root, app, by string, at time.Time) error {
 	})
 }
 
+// IsStopped answers whether an app's own record says it is down on purpose.
+//
+// A FIFTH READER, added reluctantly and deliberately narrow. The comment at the
+// top of this file counts four -- probe.go, diagnose.go, report_cmd.go and
+// komizo-be's appsFromReport -- and adding one more is a place for them to
+// disagree. It exists because komizo#66 needs the answer BEFORE anything runs,
+// and every other reader gets it from a Probe that has already walked the box.
+//
+// SAME RULES AS EVERY OTHER READER, and they are the ones the deploy script
+// spells out at length in alpine.sh:
+//
+//	FIRST-WINS. readStateFile takes the first occurrence of a key, which is
+//	what alpine.sh's `head -n 1` does and what probe.go inherits. A reader that
+//	took the last would disagree with all of them about the same bytes.
+//
+//	"1" AND NOTHING ELSE. probe.go tests `== "1"`, so anything else -- "true",
+//	"yes", an empty value -- is not a stop. Being lenient here would mean an
+//	app this refuses to start is one probe.go still reports as running.
+//
+// A MISSING FILE IS NOT A STOP, and that matters more than it looks. An app
+// with no record does not appear in the report at all, so app_down cannot fire
+// for it and there is nothing to protect by refusing -- the same reasoning
+// alpine.sh gives for carrying on when the record is absent. The error return
+// is for a file that exists and cannot be read, which is a broken box rather
+// than a missing app.
+func IsStopped(root, app string) (bool, error) {
+	path, err := appStatePath(root, app)
+	if err != nil {
+		return false, err
+	}
+	st, err := readState(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return st[stoppedKey] == "1", nil
+}
+
 // ClearStopped takes the marker off, so the app can page again.
 //
 // Every key, not just STOPPED. Leaving STOPPED_BY and STOPPED_AT behind would

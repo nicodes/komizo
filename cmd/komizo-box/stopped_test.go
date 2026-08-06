@@ -503,3 +503,75 @@ func TestRestartStillWorksWhenSomethingIsRunning(t *testing.T) {
 		t.Errorf("restart never reached docker for a running app: %v", runs)
 	}
 }
+
+// Starting one service of a stopped app is refused, rather than leaving the app
+// running and still recorded as stopped.
+//
+// komizo#66. `marks` excludes --service, which is the conservative choice for
+// `stop` -- stopping one container is not a decision to stop the app, and a
+// marker written for it would suppress app_down for the services still up. Read
+// in the START direction the same exclusion inverts: `start --app web --service
+// api` brings a container up and never clears the marker, so an operator can
+// restore an app service by service and it stays recorded as stopped. app_down
+// keys on that marker, so it never pages again -- for a real outage,
+// indefinitely, with nothing saying alerting is off.
+//
+// Refused rather than cleared, which is #66's option 3: clearing on any
+// `start --service` is over-broad, and clearing only when every service is up
+// needs a definition of "every service" this box does not have yet. Refusing
+// makes the state impossible rather than transient.
+func TestStartingOneServiceOfAStoppedAppIsRefused(t *testing.T) {
+	runs := captureCompose(t)
+	f := stoppedFixture(t)
+
+	withRoot(t, f.root, func() {
+		if err := runApp([]string{"stop", "--app", "web"}); err != nil {
+			t.Fatalf("stop --app = %v", err)
+		}
+	})
+	// A POSITIVE CONTROL. Everything below is about an app that IS marked, and
+	// an unmarked one would take the allowed path and pass for the wrong reason.
+	if a := f.app(t); !a.Stopped {
+		t.Fatalf("the fixture is not recorded as stopped, so this proves nothing: %+v", a)
+	}
+
+	var err error
+	withRoot(t, f.root, func() { err = runApp([]string{"start", "--app", "web", "--service", "api"}) })
+	if err == nil {
+		t.Fatal("start --service on a stopped app was allowed: it would run the container and leave the app " +
+			"recorded as stopped, which is an app that can never page again")
+	}
+	// AND THE MESSAGE NAMES THE WAY OUT. A refusal that does not say what to run
+	// instead is a wall, and the operator's next move is to reach for something
+	// that does work -- which here is the per-service start they just tried.
+	if !strings.Contains(err.Error(), "komizo start --app web") {
+		t.Errorf("the refusal does not name the command that works: %v", err)
+	}
+
+	// AND NOTHING RAN. The refusal has to happen before compose, or the
+	// container is up and only the exit status says otherwise.
+	for _, c := range *runs {
+		if strings.Contains(strings.Join(c, " "), " up") {
+			t.Errorf("the refusal came after compose had already started something: %v", *runs)
+		}
+	}
+}
+
+// And the same command on an app nobody stopped is ordinary and still works.
+//
+// The refusal above is scoped to the combination. Bringing one container back
+// after it crashed is a normal thing to do, and refusing it would be a new
+// obstruction bought for nothing.
+func TestStartingOneServiceOfARunningAppIsAllowed(t *testing.T) {
+	captureCompose(t)
+	f := stoppedFixture(t)
+
+	if a := f.app(t); a.Stopped {
+		t.Fatalf("the fixture starts out stopped, so this proves nothing: %+v", a)
+	}
+	withRoot(t, f.root, func() {
+		if err := runApp([]string{"start", "--app", "web", "--service", "api"}); err != nil {
+			t.Fatalf("start --service on an app nobody stopped was refused: %v", err)
+		}
+	})
+}
