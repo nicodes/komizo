@@ -3,13 +3,28 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/nicodes/komizo/box"
 )
+
+// stoppedLine is the marker as it appears in the file, written out by hand.
+//
+// A LITERAL, not box's own constant. The constants in box/stopped.go exist so
+// that the writer and the reader cannot drift apart; a test that reused them
+// would drift with them, and rename the key on both sides in silence. This is
+// the string probe.go, the provisioning script and a person with `cat` all
+// look for, so it is spelled the way they spell it.
+//
+// Leading newline so it cannot match a longer key ending in STOPPED. The
+// managed keys are appended at the end of the record and never first, so there
+// is always a newline in front of this one.
+const stoppedLine = "\nSTOPPED=1"
 
 // A stop has to be WRITTEN, and read back by the thing that diagnoses the box.
 //
@@ -109,6 +124,114 @@ func TestAStopThatFailedIsNotRecorded(t *testing.T) {
 	if a := f.app(t); a.Stopped {
 		t.Errorf("a stop that failed was recorded anyway: %+v", a)
 	}
+}
+
+// The marker is on the record BEFORE compose is told to stop anything.
+//
+// This is the central design claim of the whole change, and until this test it
+// was the one thing with nothing behind it: moving box.MarkStopped from before
+// the compose call to after a SUCCESSFUL one left every other test in this file
+// green. TestAStopThatFailedIsNotRecorded does not catch it, because it only
+// inspects the end state, and the end state of the two orderings is identical.
+//
+// The failure the ordering prevents is a window, not a wrong answer. `compose
+// stop` sends SIGTERM and waits out a grace period, so there are seconds in
+// which containers exit one by one while the box keeps reporting on its own
+// tick. Write the marker after that returns and there is an interval where
+// every container has exited and nothing yet says the stop was deliberate --
+// which is a real app_down problem, published to the registry and paged on, for
+// an app somebody stopped on purpose. That is komizo#48 again, narrowed from
+// forever to a few seconds, and an alert that fires occasionally is worse to
+// live with than one that fires every time: it teaches people to ignore it.
+//
+// Asserted at the moment compose is invoked, because that is the only place the
+// ordering is observable at all. Both routes, because runVerb is reached from
+// each of them and app-only.md §9 does not let a guarantee exist on one.
+func TestTheStopIsOnTheRecordBeforeTheContainersAreToldToGo(t *testing.T) {
+	for _, r := range routes() {
+		t.Run(r.name, func(t *testing.T) {
+			f := stoppedFixture(t)
+			seen := recordAtCompose(t, f.root, "web")
+
+			withRoot(t, f.root, func() { r.stop(t, "web") })
+
+			// Nothing reached docker means the assertion below has no subject,
+			// and a loop over an empty slice passes. The stop is supposed to
+			// stop something.
+			if len(*seen) == 0 {
+				t.Fatal("nothing reached docker, so there was no moment to observe the record at")
+			}
+			for i, rec := range *seen {
+				if !strings.Contains(rec, stoppedLine) {
+					t.Errorf("docker call %d ran while the record still read:\n%s", i, rec)
+				}
+			}
+		})
+	}
+}
+
+// And it stays on the record until the app is actually back UP.
+//
+// The mirror of the rule above, and the reason `start` clears LAST rather than
+// first. `up -d` may pull an image over a slow link and take minutes; clear the
+// marker before that and the app is down, no longer recorded as deliberately
+// down, and paging for the whole of it -- the same false page as above, from
+// the other end and lasting longer.
+//
+// Untested, this ordering is as invisible as the stop one was: clearing first
+// and clearing last leave the same file behind.
+func TestTheMarkerStaysOnUntilTheAppIsBackUp(t *testing.T) {
+	for _, r := range routes() {
+		t.Run(r.name, func(t *testing.T) {
+			f := stoppedFixture(t)
+			captureCompose(t)
+			withRoot(t, f.root, func() { r.stop(t, "web") })
+
+			seen := recordAtCompose(t, f.root, "web")
+			withRoot(t, f.root, func() { r.start(t, "web") })
+
+			if len(*seen) == 0 {
+				t.Fatal("nothing reached docker, so the app was never asked to start")
+			}
+			for i, rec := range *seen {
+				if !strings.Contains(rec, stoppedLine) {
+					t.Errorf("docker call %d ran with the stop already taken off:\n%s", i, rec)
+				}
+			}
+			// And once it is up, it is gone -- otherwise this test would pass
+			// against a start that never cleared the marker at all.
+			if a := f.app(t); a.Stopped {
+				t.Errorf("the app came up still recorded as stopped: %+v", a)
+			}
+		})
+	}
+}
+
+// recordAtCompose captures the app's record as it stood at each docker call.
+//
+// The exec seam is the clock here. Reading the file after runVerb returns can
+// only ever see the end state, which both orderings agree on; reading it from
+// inside the stub reads it at the one instant that distinguishes them.
+//
+// Bytes rather than a parse, so what is asserted is what a reader on the box
+// would actually find in the file at that moment.
+func recordAtCompose(t *testing.T, root, app string) *[]string {
+	t.Helper()
+	var seen []string
+	orig := execCompose
+	execCompose = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		b, err := os.ReadFile(filepath.Join(root, box.AppsDir, app+".env"))
+		if err != nil {
+			// Not fatal from a goroutine-safe distance -- recorded, so the
+			// assertion sees an empty record and says so with the same message.
+			seen = append(seen, "<unreadable: "+err.Error()+">")
+		} else {
+			seen = append(seen, string(b))
+		}
+		return exec.CommandContext(ctx, "true")
+	}
+	t.Cleanup(func() { execCompose = orig })
+	return &seen
 }
 
 // Stopping ONE SERVICE is not a decision to stop the app.
@@ -214,7 +337,30 @@ func applyOK(t *testing.T, op, app string) string {
 	if !found || !res.OK {
 		t.Fatalf("the signed %s was not applied: %+v", op, res)
 	}
-	return box.StoppedByDevice(pub)
+
+	// THE IDENTITY IS SPELLED OUT HERE, not asked for.
+	//
+	// This line used to read `return box.StoppedByDevice(pub)`, which made the
+	// assertion downstream compare the function under test against itself. The
+	// consequence was not theoretical: `func StoppedByDevice(pub) string {
+	// return "" }` left the ENTIRE SUITE GREEN. An empty value is removed by
+	// setStateValues rather than written, probe.go then leaves StoppedBy empty,
+	// and both sides of the comparison read "" -- a test agreeing with a
+	// mutation instead of catching it.
+	//
+	// And the state that mutation produces is the one thing StoppedByDevice's
+	// own comment says must never exist: STOPPED=1 with no STOPPED_BY, which
+	// omitempty renders as "a stop nobody made". The single fact this route
+	// exists to establish -- that the box records WHICH VERIFIED DEVICE asked,
+	// because revoking one later means knowing that -- had no test behind it.
+	//
+	// So the expectation is built from the key by hand, in the shape a person
+	// reading the report sees: the literal "device ", then the first and last
+	// eight characters of the key as it is carried. It duplicates
+	// Fingerprint's rule on purpose. Changing how a device is rendered now has
+	// to be done twice, deliberately, and cannot be done by accident at all.
+	body := b64url(pub)
+	return "device " + body[:8] + "…" + body[len(body)-8:]
 }
 
 // stoppedFixture is a box with one app on it, deployed and not running.
