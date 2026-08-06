@@ -358,3 +358,54 @@ func TestAResultIsWrittenWhenTheGroupIsReal(t *testing.T) {
 		t.Errorf("ReadResult = (%v, %v), want it readable", ok, err)
 	}
 }
+
+// A result's Detail is bounded by the WRITER, not only by each producer.
+//
+// komizo#68. Every bound used to be at a producer -- runProvision's lastLines,
+// composeOut's copy of the same argument -- so the rule was real, written down
+// twice, and upheld by convention. `applyOne` sets `res.Detail = err.Error()`
+// for ANY error a verb returns, so the next op returning a long error wrote an
+// unbounded result file, which rootd puts under ServedDir and the agent posts.
+func TestWriteResultBoundsDetail(t *testing.T) {
+	dir := t.TempDir()
+	// ONE LINE, deliberately. A bound on LINES does not catch this, and that
+	// gap is the difference between the producers' trim and this one.
+	huge := strings.Repeat("x", DetailMax*4)
+	if err := WriteResult(dir, Result{ID: "abc123", Op: "app.stop", Detail: huge}); err != nil {
+		t.Fatalf("WriteResult = %v", err)
+	}
+	got, done, err := ReadResult(dir, "abc123")
+	if err != nil || !done {
+		t.Fatalf("ReadResult = %v, done = %v", err, done)
+	}
+	if len(got.Detail) > DetailMax+len("\u2026") {
+		t.Errorf("Detail is %d bytes, want at most %d: the writer did not bound it",
+			len(got.Detail), DetailMax+len("\u2026"))
+	}
+	// THE TAIL SURVIVES, for the reason lastLines keeps it: the end is where
+	// something says why it stopped. And it marks itself, because a truncated
+	// document that does not admit it is one somebody reads as the whole answer.
+	if !strings.HasSuffix(got.Detail, "x") || !strings.HasPrefix(got.Detail, "\u2026") {
+		t.Errorf("the truncation did not keep the tail and mark itself: %.40q", got.Detail)
+	}
+}
+
+// And a Detail that fits is not touched at all.
+//
+// The assertion that stops the bound becoming a mangler: almost every result is
+// short, and a marker prepended to those would be a claim of truncation that
+// did not happen.
+func TestWriteResultLeavesAShortDetailAlone(t *testing.T) {
+	dir := t.TempDir()
+	const want = "exit status 1\ncompose: no such service"
+	if err := WriteResult(dir, Result{ID: "def456", Op: "app.stop", Detail: want}); err != nil {
+		t.Fatalf("WriteResult = %v", err)
+	}
+	got, _, err := ReadResult(dir, "def456")
+	if err != nil {
+		t.Fatalf("ReadResult = %v", err)
+	}
+	if got.Detail != want {
+		t.Errorf("Detail = %q, want %q", got.Detail, want)
+	}
+}

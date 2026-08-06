@@ -104,8 +104,38 @@ func resultPath(dir, id string) (string, error) {
 // directory, and that is precisely how it was cleared here. The chown is a
 // no-op on a box where the bit survived, and is the difference between a result
 // and a silence on one where it did not.
+// DetailMax bounds what a result may carry, IN BYTES, at the writer.
+//
+// komizo#68. Every bound on Detail used to be at a producer -- runProvision's
+// lastLines, composeOut's copy of the same argument -- so the rule was real,
+// written down twice, and upheld by convention. `applyOne` sets
+// `res.Detail = err.Error()` for ANY error a verb returns, so the next op that
+// returns a long error wrote an unbounded result file, which rootd puts under
+// ServedDir and the agent then posts. Nothing in the type, the writer or the
+// tests said otherwise.
+//
+// BOUNDED WHERE IT IS WRITTEN, so a producer that forgets is corrected rather
+// than trusted. The producers keep their own trims: those are about choosing
+// WHICH lines are worth having, which is a judgement this cannot make, and this
+// is about how much may leave the box. Two different questions that happen to
+// share a number.
+const DetailMax = 4 << 10
+
+// trimDetail keeps the TAIL, for the reason lastLines does: the end is where a
+// script says why it stopped. The marker is a character rather than silence,
+// because a truncated document that does not admit it is one somebody will read
+// as the whole answer.
+func trimDetail(s string) string {
+	if len(s) <= DetailMax {
+		return s
+	}
+	return "…" + s[len(s)-DetailMax:]
+}
+
 func WriteResult(dir string, r Result) error {
 	r.V = ResultVersion
+	// EVERY RESULT, whatever produced it. See DetailMax.
+	r.Detail = trimDetail(r.Detail)
 	path, err := resultPath(dir, r.ID)
 	if err != nil {
 		return err

@@ -442,7 +442,12 @@ func envPairs(env map[string]string) []string {
 // Both, because a line is not a bounded quantity: a script that emits a
 // megabyte without a newline -- a progress bar, a base64 blob, a compiler --
 // produced one "line" that went whole into a result file the app then reads.
-const detailMax = 4 << 10
+//
+// THE BYTE BOUND IS box.DetailMax, not a second number here. komizo#68 moved
+// the enforcement to WriteResult so a producer that forgets is corrected rather
+// than trusted; this one still trims because choosing WHICH lines survive is a
+// judgement the writer cannot make. Two numbers for one limit is how they drift.
+const detailMax = box.DetailMax
 
 func lastLines(s string, n int) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
