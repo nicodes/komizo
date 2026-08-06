@@ -85,22 +85,61 @@ runs:
     # which parses whatever it contains. They run as root on every deploy.
     #
     # Only a Go test can reach them, because they exist only once Go has
-    # substituted them: see TestShellcheck and
-    # TestEveryGeneratedScriptIsValidShell, which share one list of scripts so a
-    # script added later cannot escape either check.
+    # substituted them: see TestShellcheck, TestEveryShippedTemplatePassesShellcheck
+    # and the rest of the ./scripts package, which share one heredoc scan so a
+    # template added later cannot escape any of them.
+    #
+    # KOMIZO_REQUIRE_SHELLCHECK turns every shellcheck test's skip into a
+    # failure. docs/checks.md #1: in CI a missing tool is the check not
+    # happening, and a skip is a green tick. The step above already refuses to
+    # continue without the pinned version, so this is the second lock on the
+    # same door -- and it is the one that keeps working if that step is ever
+    # reordered or removed.
     - name: Go tests
       shell: bash
+      env:
+        KOMIZO_REQUIRE_SHELLCHECK: "1"
       run: go test -race -count=1 -timeout 5m ./...
 
-    # A skipped test is a green tick, so assert the two shell gates actually
-    # ran. Without this, shellcheck vanishing from the image would read as
-    # "everything passes" -- exactly the failure the checks exist to prevent.
+    # A skipped test is a green tick, so assert the shell gates actually ran.
+    #
+    # THIS STEP HAD THAT EXACT DEFECT. It ran
+    # `-run 'TestShellcheck|TestEveryGeneratedScriptIsValidShell'` against
+    # ./internal/app. TestShellcheck had moved to ./scripts and
+    # TestEveryGeneratedScriptIsValidShell no longer existed under that name
+    # anywhere, so the pattern matched nothing: `go test` printed "no tests to
+    # run", exited 0, and produced no `--- SKIP` line for the grep to find. The
+    # guard against a check that is green because it never ran was itself green
+    # because it never ran. docs/checks.md #1, in the file that edits it.
+    #
+    # A NAME LIST IS THE WRONG SHAPE HERE -- it is the thing that went stale,
+    # and this PR takes the shell checks from five to eleven, which would have
+    # made it staler. The whole ./scripts package runs instead: it is the
+    # package that exists to check shell, every test in it needs `sh` or
+    # shellcheck, and one added to it is covered without anybody editing this.
+    #
+    # "no tests to run" is checked FIRST and on its own, because that is the
+    # failure that actually happened and it is invisible in every other signal:
+    # green step, short output, and nothing saying the number of assertions was
+    # zero. `--- PASS` is required from the other side, because an empty package
+    # and a passing one differ only in that line.
     - name: The shell checks were not skipped
       shell: bash
+      env:
+        KOMIZO_REQUIRE_SHELLCHECK: "1"
       run: |
-        out="$(go test -count=1 -run 'TestShellcheck|TestEveryGeneratedScriptIsValidShell' -v ./internal/app)"
+        set -euo pipefail
+        out="$(go test -count=1 -v ./scripts)"
         echo "$out"
+        if grep -q 'no tests to run\|\[no test files\]' <<<"$out"; then
+          echo "::error::the shell gate matched no tests -- it has been renamed or moved, and this guard has been passing on an empty run"
+          exit 1
+        fi
+        if ! grep -q -- '--- PASS' <<<"$out"; then
+          echo "::error::the shell gate produced no passing test, so nothing was actually checked"
+          exit 1
+        fi
         if grep -q -- '--- SKIP' <<<"$out"; then
-          echo "::error::a shell check skipped itself -- the tool it needs is missing"
+          echo "::error::a shell check skipped itself -- the tool it needs is missing from this image"
           exit 1
         fi

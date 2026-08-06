@@ -144,6 +144,18 @@ func runVerb(ctx context.Context, verb string, sub subject, tail int, svc, by st
 		// restart brings a deliberately stopped app back up behind the marker's
 		// back. Starting it is `start`, and that is where the marker comes off.
 		out, err := composeOut(ctx, sub.dir, sub.project, "ps", "-q")
+		if err != nil && ctx.Err() != nil {
+			// THE OPERATOR CANCELLED. Nothing failed and nothing was
+			// unanswerable -- signalContext caught SIGINT or SIGTERM, which on
+			// the CLI route is somebody pressing Ctrl-C.
+			//
+			// Separated from the refusal below because that one ends by telling
+			// you to run `start`, and `start` is the one verb that CLEARS the
+			// stop marker. Advising it here would answer a cancelled restart by
+			// pointing at the command that turns alerting suppression off, for
+			// a person who asked for nothing to happen and got exactly that.
+			return fmt.Errorf("cancelled -- nothing was restarted")
+		}
 		if err != nil {
 			// A QUESTION THAT COULD NOT BE ANSWERED IS NOT A YES.
 			//
@@ -422,6 +434,18 @@ func composeCapped(ctx context.Context, dir, project string, max int, args ...st
 // to the signed route, where an error becomes a result the app reads;
 // compose()'s stderr goes to this process's, which there is rootd's log and so
 // reaches nobody who is waiting for an answer.
+//
+// WHICH IS A BOUNDARY, and it is worth naming rather than leaving to be
+// discovered. On the signed route this text becomes res.Detail, which
+// WriteResult puts under ServedDir for the agent account to read and post, so
+// it leaves the box. Before this it stopped at rootd's log. What is carried is
+// docker's own diagnostics about a compose file, which is not a secret --
+// but `compose ps -q` parses compose.yml and interpolates .env, both of which
+// sit beside a 0600 secrets.env, and what compose chooses to quote back in a
+// parse error is docker's decision rather than komizo's. The trade is taken
+// deliberately: a refusal whose reason nobody can see is a refusal that gets
+// worked around, and the alternative is an operator staring at "exit status 1".
+// If that ever stops being the right call, this is the line to change.
 //
 // BOUNDED BY lastLines, the same rule runProvision already applies for the same
 // reason, rather than a second bound written here. Both are "something else's

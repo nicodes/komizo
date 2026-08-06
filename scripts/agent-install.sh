@@ -163,13 +163,24 @@ mv -f __STAGED__ /usr/local/bin/komizo-box
 # read by the file, so SC2034 fires on all twenty-two of them and every one is
 # wrong. There is no rewrite that makes them "used" without inventing a use.
 #
-# The disable is at file scope rather than one per line because the argument is
-# the same argument nine times over, and nine copies of it is not nine reasons.
-# What makes that honest is that the exemption is CHECKED FROM OUTSIDE instead:
-# TestAnOpenRCServiceOnlyAssignsNamesOpenRCReads compares every name assigned in
-# these heredocs against the set openrc-run and supervise-daemon actually
-# consume, so `comand_args="serve"` is still caught -- and caught by something
-# that knows what OpenRC reads, which SC2034 does not.
+# The disable is at FILE scope rather than one per line, because the argument is
+# the same argument nine times over and nine copies of it is not nine reasons.
+# Say what that costs plainly: a directive before the first command applies to
+# the whole file, so SC2034 is off inside depend() too, and it is off for an
+# assignment written with a leading space as much as one at column 0.
+#
+# What makes it honest is that the exemption is CHECKED FROM OUTSIDE, and the
+# check is scoped to match what the disable actually covers:
+# TestAnOpenRCServiceOnlyAssignsNamesOpenRCReads requires EVERY assignment in
+# one of these heredocs -- any indentation, inside a function or not -- to be a
+# name openrc-run or supervise-daemon reads. That is the right rule for a file
+# which is pure configuration, it catches `comand_args="serve"` wherever it is
+# written, and it is checked against OpenRC's own shell rather than against
+# whether some other line happens to mention the name, which is all SC2034 does.
+#
+# The corollary, and the reason this is not a hole: one of these files cannot
+# have a local variable. If it ever needs one, that test fails, and the disable
+# has to stop being file-scoped before it can be added.
 cat > /etc/init.d/komizo-rootd <<'KOMIZO_RC_EOF'
 #!/sbin/openrc-run
 # Sourced by openrc-run, which reads these; nothing here uses them, so SC2034

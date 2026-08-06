@@ -57,27 +57,36 @@ SHELLCHECK_VERSION := $(shell sed -n 's/^shellcheck *= *"\(.*\)"$$/\1/p' .mise.t
 # that FOUND SOMETHING fell through to the docker run and could be overruled by
 # it. A lint that reports a problem is not a lint that failed to run.
 #
-# So: one `if`, whose exit status is the step's, and a version comparison rather
-# than a `command -v`.
+# AND THERE IS NO DOCKER FALLBACK, which is the second half of the same lesson.
+# Only ONE of the two things that lint shell here is this line: `go test` runs
+# five more checks over the six scripts komizo writes onto a box, and they find
+# shellcheck on PATH. A docker fallback therefore linted scripts/*.sh at the
+# pinned version, printed "(docker)" saying so, and then handed the templates --
+# the part that actually runs as root -- to whatever was installed, or to
+# nothing at all. On a machine with only docker, `make check` skipped the whole
+# of komizo#59 and stayed green.
+#
+# A fallback that covers half a check while announcing the version it did not
+# use is worse than no fallback. `mise install` is one command and gets exactly
+# the pinned tool. The tests refuse a wrong version on their own account too --
+# see needPinnedShellcheck -- so neither this nor CI can route around it.
 check: agents
 	@test -n "$(SHELLCHECK_VERSION)" || { \
 		echo "no shellcheck pin in .mise.toml -- the lint has no version to be"; exit 1; }
-	@if shellcheck --version 2>/dev/null | grep -qx 'version: $(SHELLCHECK_VERSION)'; then \
-		echo "  lint   shellcheck $(SHELLCHECK_VERSION)"; \
-		shellcheck -s sh scripts/*.sh; \
-	elif command -v docker >/dev/null 2>&1; then \
-		echo "  lint   shellcheck $(SHELLCHECK_VERSION) (docker)"; \
-		docker run --rm -v "$(CURDIR)/scripts:/mnt:ro" -w /mnt \
-			koalaman/shellcheck:v$(SHELLCHECK_VERSION) -s sh $(notdir $(wildcard scripts/*.sh)); \
-	else \
-		echo "shellcheck $(SHELLCHECK_VERSION) is not installed and docker is not either."; \
-		echo "\`mise install\` gets it. Running the Go suite without it would SKIP"; \
-		echo "the six checks over the shell that runs as root on a box."; \
+	@if ! shellcheck --version 2>/dev/null | grep -qx 'version: $(SHELLCHECK_VERSION)'; then \
+		echo "make check needs shellcheck $(SHELLCHECK_VERSION), the version .mise.toml pins."; \
+		echo "Run \`mise install\`."; \
+		echo; \
+		echo "Not falling back: the six scripts komizo writes onto a box are linted"; \
+		echo "from the Go suite, which finds shellcheck on PATH -- so a fallback"; \
+		echo "would check the files here and quietly skip the ones that run as root."; \
 		exit 1; \
 	fi
+	@echo "  lint   shellcheck $(SHELLCHECK_VERSION)"
+	shellcheck -s sh scripts/*.sh
 	gofmt -l . | tee /dev/stderr | (! read)
 	go vet ./...
-	go test ./...
+	KOMIZO_REQUIRE_SHELLCHECK=1 go test ./...
 	GOOS=darwin go build ./...
 
 clean:

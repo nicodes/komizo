@@ -1,6 +1,8 @@
 package scripts
 
 import (
+	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -124,6 +126,86 @@ func TestEveryScriptIsValidShell(t *testing.T) {
 	}
 }
 
+// requireShellcheck turns a skip into a failure.
+//
+// docs/checks.md #1: a check that cannot run must not be indistinguishable from
+// a check that passed. `make check` and CI both set this, because in both of
+// those a missing tool is the check not happening; a contributor running
+// `go test ./...` on a machine without shellcheck still gets a skip, which is
+// the honest answer there.
+const requireShellcheck = "KOMIZO_REQUIRE_SHELLCHECK"
+
+// needPinnedShellcheck ends the test unless the shellcheck on PATH is the one
+// .mise.toml installs.
+//
+// THE VERSION, not just the presence -- komizo#59, and the hole that survived
+// the first attempt at it. The Makefile grew a version comparison for its own
+// `shellcheck scripts/*.sh` line, but these tests resolve the tool with
+// exec.LookPath, so on a machine with 0.9.0 installed `make check` printed
+// "shellcheck 0.11.0 (docker)" and then linted all six templates with 0.9.0 --
+// which fails on the very line komizo#59 cites as the reason to pin. And with
+// shellcheck absent but docker present it printed the same line and SKIPPED the
+// six entirely, so the whole of #59 was a green tick.
+//
+// The version belongs here rather than only in the Makefile because this is
+// where the tool is actually invoked. A check that reads its own requirements
+// cannot be routed around by whatever called it.
+func needPinnedShellcheck(t *testing.T) {
+	t.Helper()
+	want := shellcheckPin(t)
+
+	unusable := func(format string, a ...any) {
+		t.Helper()
+		msg := fmt.Sprintf(format, a...)
+		if os.Getenv(requireShellcheck) != "" {
+			t.Fatalf("%s.\n%s is set, so this is a failure rather than a skip -- "+
+				"the shell that runs as root on a box would otherwise go unchecked "+
+				"and the run would still be green.", msg, requireShellcheck)
+		}
+		t.Skipf("%s -- `mise install` gets it", msg)
+	}
+
+	if _, err := exec.LookPath("shellcheck"); err != nil {
+		unusable("shellcheck %s is not installed", want)
+	}
+	out, err := exec.Command("shellcheck", "--version").Output()
+	if err != nil {
+		unusable("shellcheck is on PATH but will not report its version: %v", err)
+	}
+	got := ""
+	for _, ln := range strings.Split(string(out), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(ln), "version: "); ok {
+			got = v
+			break
+		}
+	}
+	if got != want {
+		unusable("shellcheck %s is on PATH but .mise.toml pins %s, and they disagree "+
+			"about real rules (0.9.0 raises SC2015 on `A && B || continue`, 0.11.0 "+
+			"does not)", got, want)
+	}
+}
+
+// shellcheckPin is the version .mise.toml installs.
+//
+// Read out of the file rather than written here, so there is one number. A pin
+// that cannot be found is fatal in every case, including a plain `go test`:
+// unlike a missing tool, it means the repository is inconsistent with itself
+// and no version of this check is the right one to run.
+func shellcheckPin(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", ".mise.toml"))
+	if err != nil {
+		t.Fatalf("cannot read the shellcheck pin: %v", err)
+	}
+	m := regexp.MustCompile(`(?m)^shellcheck *= *"([^"]+)"`).FindSubmatch(b)
+	if m == nil {
+		t.Fatal("no shellcheck pin in .mise.toml -- the lint has no version to be, " +
+			"and whichever one happens to be installed would silently become the standard")
+	}
+	return string(m[1])
+}
+
 // TestShellcheck is the check `sh -n` cannot be.
 //
 // `sh -n` parses: it catches a heredoc left open or an unbalanced quote, and
@@ -141,9 +223,7 @@ func TestEveryScriptIsValidShell(t *testing.T) {
 // with a `../../scripts/*.sh` glob and a second list of Go constants -- two
 // homes for one question. There is one home.
 func TestShellcheck(t *testing.T) {
-	if _, err := exec.LookPath("shellcheck"); err != nil {
-		t.Skip("shellcheck is not installed")
-	}
+	needPinnedShellcheck(t)
 	files, err := filepath.Glob("*.sh")
 	if err != nil {
 		t.Fatal(err)
@@ -202,6 +282,34 @@ func TestShQuoteSurvivesTheShell(t *testing.T) {
 	}
 }
 
+// heredocBody is what a heredoc actually delivers, which is not always what the
+// source looks like.
+//
+// `<<-` IS NOT A SPELLING VARIANT OF `<<`. It strips a leading TAB from every
+// line of the body and lets the terminator be indented, so reading the source
+// verbatim gives text no box ever receives -- and, worse, looking for the
+// terminator at column 0 finds nothing, drops the template, and leaves every
+// check built on it quietly measuring one script fewer.
+//
+// That is not hypothetical: `scripts/alpine.sh` uses `<<-EOF` three times
+// today, and adding a `-` to one of the quoted tags -- a refactor with no
+// semantic effect -- used to delete a root-run script from the lint in silence.
+func heredocBody(rest, tag string, dash bool) (string, bool) {
+	var body strings.Builder
+	for _, ln := range strings.Split(rest, "\n") {
+		text := ln
+		if dash {
+			text = strings.TrimLeft(ln, "\t")
+		}
+		if text == tag {
+			return body.String(), true
+		}
+		body.WriteString(text)
+		body.WriteString("\n")
+	}
+	return "", false
+}
+
 // shippedTemplates is every script komizo writes ONTO a box from inside another
 // script: the body of each quoted heredoc, with placeholders substituted, keyed
 // by "<file>:<TAG>".
@@ -219,7 +327,7 @@ func TestShQuoteSurvivesTheShell(t *testing.T) {
 // __PLACEHOLDER__ survives to be read as a bare word where a command belongs.
 func shippedTemplates(t *testing.T) map[string]string {
 	t.Helper()
-	heredoc := regexp.MustCompile(`<<'([A-Z_]+)'\n`)
+	heredoc := regexp.MustCompile(`<<(-?)'([A-Z_]+)'\n`)
 	placeholder := regexp.MustCompile(`__[A-Z][A-Z_]*__`)
 	known := map[string]string{
 		"__APP_NAME__":        "web",
@@ -233,14 +341,12 @@ func shippedTemplates(t *testing.T) map[string]string {
 	out := map[string]string{}
 	for name, src := range all(t) {
 		for _, m := range heredoc.FindAllStringSubmatchIndex(src, -1) {
-			tag := src[m[2]:m[3]]
-			rest := src[m[1]:]
-			j := strings.Index(rest, "\n"+tag+"\n")
-			if j < 0 {
+			dash, tag := src[m[2]:m[3]] == "-", src[m[4]:m[5]]
+			body, ok := heredocBody(src[m[1]:], tag, dash)
+			if !ok {
 				t.Errorf("%s: heredoc %s is never closed", name, tag)
 				continue
 			}
-			body := rest[:j+1]
 			if !strings.HasPrefix(body, "#!") {
 				continue // not a script -- alpine-proxy.sh writes Caddy config this way
 			}
@@ -254,8 +360,22 @@ func shippedTemplates(t *testing.T) map[string]string {
 			out[name+":"+tag] = body
 		}
 	}
-	if len(out) == 0 {
-		t.Fatal("no shell templates found -- the heredoc scan has stopped matching, and every check built on it is now vacuous")
+	// A FLOOR, not a zero check. `len(out) == 0` on its own was not enough: a
+	// `<<'TAG'` changed to `<<-'TAG'` dropped ONE template -- the secret helper,
+	// which runs as root -- out of the lint, the parse and the placeholder
+	// check, and five remained, so nothing fired. docs/checks.md #1: the
+	// all-clear and the ran-on-less-than-it-thought were the same signal.
+	//
+	// Six today. Adding a seventh needs no edit here; losing one is meant to be
+	// something a person looks at, because a template leaving this map leaves
+	// every check in this file at the same time.
+	const shipped = 6
+	if len(out) < shipped {
+		t.Fatalf("the heredoc scan found %d shipped templates, and there are at least %d.\n"+
+			"  Every check built on this map just got smaller without failing. If one was\n"+
+			"  genuinely removed, lower the floor deliberately; if one was re-spelled --\n"+
+			"  `<<-` instead of `<<`, an indented terminator -- fix the scan.\n"+
+			"  Found: %v", len(out), shipped, slices.Sorted(maps.Keys(out)))
 	}
 	return out
 }
@@ -286,9 +406,7 @@ func shippedTemplates(t *testing.T) map[string]string {
 // in which script it is about. Line numbers are into the BODY, which is what a
 // person editing alpine.sh is looking at anyway.
 func TestEveryShippedTemplatePassesShellcheck(t *testing.T) {
-	if _, err := exec.LookPath("shellcheck"); err != nil {
-		t.Skip("shellcheck is not installed")
-	}
+	needPinnedShellcheck(t)
 	dir := t.TempDir()
 	var files []string
 	for name, body := range shippedTemplates(t) {
@@ -351,10 +469,22 @@ func TestEveryShippedTemplateIsValidShell(t *testing.T) {
 // with no arguments and no complaint from anything -- an agent that runs, looks
 // healthy to rc-status, and does the wrong job.
 //
-// So the exemption is not a hole, it is a swap. This check knows what OpenRC
-// reads, which SC2034 does not, and refuses a name that is not on the list. It
-// is strictly stronger than the rule it replaces: SC2034 would have accepted
-// `comand_args` the moment anything in the file mentioned it.
+// So the exemption is a swap, and it is only a fair one if the replacement
+// covers everything the disable switches off. It did not at first: the disable
+// sits before the first command, which makes it FILE-scoped -- reaching inside
+// depend() and covering an assignment written with a leading space -- while
+// this check only looked at column zero. Two live gaps, and the comment on
+// unknownOpenRCNames asserted the opposite of what the code did. Both are shut
+// by reading EVERY assignment in the file, which is also the truer rule: one of
+// these files is configuration, so an assignment in it that OpenRC does not
+// read is a mistake wherever it appears.
+//
+// Against what it replaces it is stronger in one direction and narrower in
+// another, and both are worth stating. Stronger: SC2034 would accept
+// `comand_args` the moment any line mentioned it, and this never does, because
+// it is checked against OpenRC's own shell. Narrower: SC2034 also reports a
+// genuinely unused local, which this cannot -- so a local is refused outright
+// rather than allowed through unexamined.
 //
 // Identified by SHEBANG, so a fourth service added later is covered without
 // this list being edited -- the same rule shippedTemplates uses to decide what
@@ -368,9 +498,12 @@ func TestAnOpenRCServiceOnlyAssignsNamesOpenRCReads(t *testing.T) {
 		found++
 		for _, n := range unknownOpenRCNames(body) {
 			t.Errorf("%s assigns %q, which is not a name openrc-run or supervise-daemon reads.\n"+
-				"  Nothing in the file uses it either -- SC2034 is disabled there -- so it would be\n"+
-				"  silently ignored on the box. If OpenRC really does read it, add it to\n"+
-				"  openRCReads with where that is documented.", name, n)
+				"  SC2034 is disabled for the WHOLE of that file -- see agent-install.sh -- so\n"+
+				"  nothing else would report it, at any indentation or inside any function, and\n"+
+				"  on the box it would simply be ignored.\n"+
+				"  If OpenRC does read it, add it to openRCReads with where that is documented.\n"+
+				"  If it is meant to be a local variable, it cannot be: move the disable off\n"+
+				"  file scope first, because nothing would tell you it had gone unused.", name, n)
 		}
 	}
 	// The three that exist today. A scan that stopped matching would leave this
@@ -397,14 +530,18 @@ name="komizo-agent"
 comand_args="agent"
 export respwan_delay=5
 readonly command_user="komizo_monitor"
+ indented_typo="x"
 respawn_delay=5
 
 depend() {
-	local unrelated=1
+	unused_here=1
 	need net
 }
 `)
-	want := []string{"comand_args", "respwan_delay"}
+	// Every form the file-scope SC2034 disable stops shellcheck reporting: the
+	// bare typo, the export, the one-space indent, and one inside a function.
+	// The three real names must not appear.
+	want := []string{"comand_args", "respwan_delay", "indented_typo", "unused_here"}
 	if !slices.Equal(got, want) {
 		t.Errorf("unknownOpenRCNames = %v, want %v.\n"+
 			"  A local inside a function is not a service variable; `export` and `readonly`\n"+
@@ -412,20 +549,33 @@ depend() {
 	}
 }
 
-// unknownOpenRCNames is every top-level assignment in an OpenRC service file
-// that OpenRC does not read.
+// unknownOpenRCNames is every assignment in an OpenRC service file whose name
+// OpenRC does not read.
 //
-// TOP LEVEL ONLY -- anchored to the start of the line with no leading space.
-// Assignments inside depend() and the like are ordinary shell variables in an
-// ordinary function, used by the code around them, and SC2034 is not disabled
-// on their account.
+// EVERY assignment, at any indentation, anywhere in the file -- including
+// inside depend(). An earlier version anchored at `^` with no leading
+// whitespace and claimed that assignments inside functions were still covered
+// by SC2034. They are not: the disable in these files sits before the first
+// command, which makes it FILE-scoped, so it reaches into depend() too. That
+// left two live gaps and the comment asserted the opposite of the code:
+//
+//	 comand_args="rootd"    one leading space, invisible to `^`, and OpenRC
+//	                        sources the file so the space changes nothing
+//	depend() { unused=1; }  inside a function, and SC2034 disabled for it
+//
+// The rule is therefore stated the way the file actually works: an OpenRC
+// service file is pure configuration, so EVERY assignment in one is a value
+// OpenRC reads, and anything else is a mistake. That is a stronger claim than
+// SC2034 makes and it needs no whitespace rules or brace counting to hold. If
+// one of these ever genuinely needs a local variable, the disable has to stop
+// being file-scoped first -- and this failing is what says so.
 //
 // `export` and `readonly` are consumed first because they are assignments too,
 // and a regexp that only knew the bare form would MISS a typo rather than
 // report it -- the failure direction that matters here, since the whole point
 // of this check is that nothing else is looking.
 func unknownOpenRCNames(body string) []string {
-	assign := regexp.MustCompile(`(?m)^(?:export |readonly )?([A-Za-z_][A-Za-z0-9_]*)=`)
+	assign := regexp.MustCompile(`(?m)^[ \t]*(?:export |readonly )?([A-Za-z_][A-Za-z0-9_]*)=`)
 	var out []string
 	for _, m := range assign.FindAllStringSubmatch(body, -1) {
 		if !openRCReads[m[1]] {
@@ -486,9 +636,9 @@ var openRCReads = map[string]bool{
 
 // NOTHING WRITES A SCRIPT THROUGH AN UNQUOTED HEREDOC.
 //
-// shippedTemplates matches `<<'TAG'` only, so an unquoted heredoc is invisible
-// to every check built on it -- the lint, the parse, the OpenRC names. That is
-// a deliberate limit and this is what stops it being a hole.
+// shippedTemplates matches a QUOTED heredoc only, so an unquoted one is
+// invisible to every check built on it -- the lint, the parse, the OpenRC
+// names. That is a deliberate limit and this is what stops it being a hole.
 //
 // Unquoted is the wrong tool for shell anyway, and embed.go's own comments say
 // why in stronger terms than this could: the outer shell expands every `$` in
@@ -501,41 +651,42 @@ var openRCReads = map[string]bool{
 // So a `#!` after an unquoted heredoc is two bugs at once: a script that will
 // be mangled, and a script nothing lints. Reported as both.
 //
-// The other unquoted heredocs in this package are fine and stay fine: a Caddy
-// route, a compose.yml, and several `cat <<EOF` blocks that print a message to
-// the terminal. None of them declares itself a script, which is the same rule
-// shippedTemplates uses to decide what is shell.
+// `<<-` COUNTS. It is a different operator, not a different spelling, and an
+// earlier version of this test said `<<-` was worth excluding because nothing
+// used it -- which was false when it was written: alpine.sh uses `<<-EOF` three
+// times. The three are a doas block, a config append and a terminal message,
+// none of them shell; the other unquoted heredocs in this package are a Caddy
+// route, a compose.yml and more messages. None declares itself a script, which
+// is the same rule shippedTemplates uses to decide what is shell.
 func TestNoShellIsWrittenThroughAnUnquotedHeredoc(t *testing.T) {
-	// No quotes around the tag, and not `<<-`, which strips tabs and would need
-	// the same argument made separately if anything ever used it.
-	unquoted := regexp.MustCompile(`<<([A-Z_]+)\n`)
+	// No quotes around the tag, and the quoted form cannot match: after `<<`
+	// and an optional `-` the next character must be `[A-Z_]`, and in the
+	// quoted spelling it is an apostrophe. An earlier version of this test
+	// carried a "was the match preceded by a quote?" guard for that case; it
+	// was dead code describing something the regexp already makes impossible.
+	unquoted := regexp.MustCompile(`<<(-?)([A-Z_]+)\n`)
 	checked := 0
 	for name, src := range all(t) {
 		for _, m := range unquoted.FindAllStringSubmatchIndex(src, -1) {
-			// `<<'TAG'` also ends in TAG\n, so skip anything whose match is
-			// preceded by a quote -- that is the quoted form, already covered.
-			if m[0] > 0 && src[m[0]-1] == '\'' {
-				continue
-			}
 			checked++
-			tag := src[m[2]:m[3]]
-			rest := src[m[1]:]
-			j := strings.Index(rest, "\n"+tag+"\n")
-			if j < 0 {
+			dash, tag := src[m[2]:m[3]] == "-", src[m[4]:m[5]]
+			body, ok := heredocBody(src[m[1]:], tag, dash)
+			if !ok {
 				t.Errorf("%s: unquoted heredoc %s is never closed", name, tag)
 				continue
 			}
-			if strings.HasPrefix(rest[:j+1], "#!") {
-				t.Errorf("%s writes a script through an UNQUOTED heredoc (%s).\n"+
+			if strings.HasPrefix(body, "#!") {
+				t.Errorf("%s writes a script through an UNQUOTED heredoc (<<%s%s).\n"+
 					"  The outer shell expands every $ in it at install time -- see embed.go --\n"+
 					"  and shippedTemplates cannot see it, so nothing lints or parses it.\n"+
-					"  Quote the tag: <<'%s'", name, tag, tag)
+					"  Quote the tag: <<%s%c%s%c",
+					name, src[m[2]:m[3]], tag, src[m[2]:m[3]], '\'', tag, '\'')
 			}
 		}
 	}
-	// The package does use unquoted heredocs, for a Caddy route, a compose.yml
-	// and some messages. Finding none means the scan stopped matching, and a
-	// loop over nothing passes.
+	// The package does use unquoted heredocs, for a Caddy route, a compose.yml,
+	// a doas block and some messages. Finding none means the scan stopped
+	// matching, and a loop over nothing passes. docs/checks.md #1.
 	if checked == 0 {
 		t.Fatal("no unquoted heredocs found at all -- this scan has stopped matching, so it is no longer checking anything")
 	}

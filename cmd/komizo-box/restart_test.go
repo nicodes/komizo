@@ -74,6 +74,24 @@ func TestRestartActsOnlyWhenTheBoxCanSaySomethingIsRunning(t *testing.T) {
 			"Additional property buidl is not allowed",
 		},
 	}, {
+		// A `ps -q` THAT ANSWERS AND THEN FAILS. Partway output plus a non-zero
+		// exit, which is what a compose that lists some ids and then trips over
+		// the next service looks like.
+		//
+		// Here on its own account because the case above cannot distinguish it:
+		// that fixture writes only to stderr, so `err != nil` and
+		// `strings.TrimSpace(out) == ""` are both true of it and a guard
+		// written as the AND of them passes. The AND is a fail-open -- it acts
+		// on a partial answer -- and this is the only input where the two
+		// spellings disagree.
+		name: "the box answers and then fails",
+		ps: func(ctx context.Context) *exec.Cmd {
+			return exec.CommandContext(ctx, "sh", "-c",
+				`echo c0ffeec0ffee; printf '%s\n' "service sidecar: no such image" >&2; exit 1`)
+		},
+		restarts: false,
+		wants:    []string{"could not tell what is running", "no such image"},
+	}, {
 		// The answer the guard was written for: nothing running at all.
 		name:     "nothing is running",
 		ps:       func(ctx context.Context) *exec.Cmd { return exec.CommandContext(ctx, "true") },
@@ -353,5 +371,102 @@ func TestTheRefusalQuotesComposeWithoutQuotingAllOfIt(t *testing.T) {
 	if len(msg) > 8<<10 {
 		t.Errorf("the refusal is %d bytes; compose's output decides the size of a "+
 			"result file the app downloads", len(msg))
+	}
+}
+
+// RESTARTING ONE SERVICE IS STILL A RESTART.
+//
+// `marks` excludes `restart` from the verbs that touch the stop marker
+// UNCONDITIONALLY -- there is no `svc == ""` in it for restart to fall out of.
+// So if the guard were scoped `verb == "restart" && svc == ""`, then
+// `restart --service web` on a deliberately stopped app would reach `docker
+// compose restart -- web`, start the exited container, and leave it running
+// with STOPPED=1 still on the record. That is komizo#57 reached through a flag
+// instead of a verb, and the difference is invisible from outside.
+//
+// The guard is not scoped that way and nothing held it there: narrowing it left
+// the whole table green, because every case in it runs without --service.
+//
+// SSH route only, and that is not a gap. A signed envelope carries an app and
+// no service -- perform() passes "" -- so this flag exists on exactly one of
+// the two routes and can only be driven from it.
+func TestRestartOfOneServiceIsRefusedTheSameWay(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		ps       func(ctx context.Context) *exec.Cmd
+		restarts bool
+	}{
+		{"nothing is running", func(ctx context.Context) *exec.Cmd { return exec.CommandContext(ctx, "true") }, false},
+		{"the box cannot say", func(ctx context.Context) *exec.Cmd { return exec.CommandContext(ctx, "false") }, false},
+		// And it still works when the app is up, so this is not satisfied by a
+		// --service restart that was simply removed.
+		{"something is running", func(ctx context.Context) *exec.Cmd { return exec.CommandContext(ctx, "echo", "c0ffee") }, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			root := appFixture(t, "web", "/srv/web")
+			runs := composeReplies(t, func(ctx context.Context, args []string) *exec.Cmd {
+				if isPsQuery(args) {
+					return c.ps(ctx)
+				}
+				return exec.CommandContext(ctx, "true")
+			})
+
+			var err error
+			withRoot(t, root, func() {
+				err = runApp([]string{"restart", "--app", "web", "--service", "web"})
+			})
+
+			if !sawPsQuery(*runs) {
+				t.Fatalf("restart --service never asked what is running: %v", *runs)
+			}
+			if got := reachedDocker(*runs, "restart"); got != c.restarts {
+				t.Errorf("compose restart reached docker = %v, want %v: %v", got, c.restarts, *runs)
+			}
+			if c.restarts != (err == nil) {
+				t.Errorf("err = %v, but restarts = %v", err, c.restarts)
+			}
+		})
+	}
+}
+
+// A CANCELLED RESTART IS NOT AN UNANSWERABLE ONE.
+//
+// signalContext catches SIGINT and SIGTERM, so this is the shape of somebody
+// pressing Ctrl-C while `compose ps -q` is running. Nothing failed and nothing
+// was unavailable; they asked for it to stop.
+//
+// It matters because the other refusal ends with "start it instead", and
+// `start` is the one verb that CLEARS the stop marker. Answering a cancelled
+// restart with that sentence points the person who cancelled at the command
+// which turns alerting suppression off -- on an app that may be deliberately
+// stopped, which is the state the whole guard exists to protect.
+//
+// Driven through runVerb rather than runApp because runApp builds its own
+// signal context from the process, and a test cannot press Ctrl-C.
+func TestACancelledRestartSaysItWasCancelled(t *testing.T) {
+	root := appFixture(t, "web", "/srv/web")
+	runs := composeReplies(t, func(ctx context.Context, args []string) *exec.Cmd {
+		return exec.CommandContext(ctx, "true")
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := runVerb(ctx, "restart", subject{dir: "/srv/web", app: "web", root: root},
+		0, "", box.StoppedByCLI)
+
+	if err == nil {
+		t.Fatal("a cancelled restart reported success")
+	}
+	if !strings.Contains(err.Error(), "cancelled") {
+		t.Errorf("a cancelled restart does not say so:\n%v", err)
+	}
+	// THE POINT. Not just a nicer sentence -- the wrong sentence recommends the
+	// marker-clearing verb to somebody who asked for nothing to happen.
+	if strings.Contains(err.Error(), "start it instead") {
+		t.Errorf("a cancelled restart tells the operator to run `start`, which is the "+
+			"verb that takes the stop marker off:\n%v", err)
+	}
+	if reachedDocker(*runs, "restart") {
+		t.Errorf("a cancelled restart still reached docker: %v", *runs)
 	}
 }
