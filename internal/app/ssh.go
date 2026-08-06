@@ -286,7 +286,30 @@ func (t target) runScript(script string, env map[string]string) error {
 	return t.runScriptTo(script, env, os.Stdout)
 }
 
-// runScriptSafe is runScript for output nobody on this side wrote.
+// runScriptHeard is runScript that also reports whether the far end said
+// anything at all.
+//
+// The distinction exists because two outcomes are identical in a terminal and
+// are not the same thing: a command that ran and had nothing to report, and a
+// command that never ran. komizo#47 is that bug in its finished form --
+// `komizo logs --app web` printed not one character and exited 0, so "your app
+// has logged nothing" and "komizo silently did nothing" were the same
+// transcript. The exit status cannot tell them apart either, because both are
+// zero and both are correct.
+//
+// Reported as bools rather than byte counts on purpose: the only question
+// anybody asks of it is whether there was anything at all, and a count invites
+// a caller to invent a threshold below which a box's output does not count.
+//
+// The TWO STREAMS ARE REPORTED SEPARATELY, and collapsing them here with an ||
+// would be a decision taken in the wrong place: which stream counts as the box
+// having spoken depends on the verb, and only the caller knows the verb. See
+// lifecycle.go's heardOn for what goes wrong when it is decided here.
+func (t target) runScriptHeard(script string, env map[string]string) (onOut, onErr bool, err error) {
+	return t.runScriptHeardTo(script, env, os.Stdout)
+}
+
+// runScriptSafeHeard is runScriptHeard for output nobody on this side wrote.
 //
 // Everything the box prints during a bootstrap is komizo's own script prose.
 // LOG LINES ARE NOT: anyone who can make a request to a hosted app can put text
@@ -297,19 +320,82 @@ func (t target) runScript(script string, env map[string]string) error {
 // The interface has always scrubbed what it fetched. `komizo logs` is the first
 // command-line path whose output is attacker-authored, so it is the first that
 // needs this.
-func (t target) runScriptSafe(script string, env map[string]string) error {
+//
+// The listening happens OUTSIDE the scrub, which is not an accident. scrub
+// replaces a control character rather than deleting it and cannot turn a
+// non-empty string into an empty one, so "did the box say anything" is
+// invariant under it by construction -- but a filter that learned to drop
+// something would otherwise make komizo's own filtering the reason it told
+// somebody their app had logged nothing. A log made entirely of escape
+// sequences was still a log the box had.
+func (t target) runScriptSafeHeard(script string, env map[string]string) (onOut, onErr bool, err error) {
 	w := &scrubWriter{to: os.Stdout}
-	err := t.runScriptTo(script, env, w)
+	onOut, onErr, err = t.runScriptHeardTo(script, env, w)
 	w.flush()
-	return err
+	return onOut, onErr, err
 }
 
 func (t target) runScriptTo(script string, env map[string]string, out io.Writer) error {
+	return t.sshScript(script, env, out, os.Stderr)
+}
+
+// runScriptHeardTo is runScriptTo with both streams watched, separately.
+//
+// BOTH, because which one a verb speaks on is docker's choice and not komizo's:
+// `docker compose logs` writes log lines to stdout, while `docker compose stop`
+// writes its per-container progress to stderr. Watching stdout alone would have
+// made every successful stop look silent, and komizo would have announced
+// "nothing happened" over the top of compose saying exactly what happened.
+//
+// SEPARATELY, because the mirror image is just as wrong and is quieter. A box
+// whose compose file predates the schema change gets `WARN[0000] the attribute
+// 'version' is obsolete` on stderr from every single compose invocation, so an
+// `onOut || onErr` decided here would have counted that warning as the app
+// having spoken and printed nothing about an empty log -- komizo#47 back
+// intact, on precisely the boxes with the oldest files. lifecycle.go's heardOn
+// is where a verb says which stream it meant.
+//
+// Only the lifecycle verbs come through here, and that is deliberate rather
+// than incidental. Wrapping a stream in anything at all costs the direct file
+// descriptor: os/exec hands a child an *os.File as its own fd and copies
+// through a pipe and a goroutine for everything else. The bootstraps -- init,
+// proxy, add, update, enrol, remove -- are the long-running streams where that
+// matters most and the ones with no question to answer, so they keep the plain
+// path in runScriptTo above.
+func (t target) runScriptHeardTo(script string, env map[string]string, out io.Writer) (onOut, onErr bool, err error) {
+	o, e := &heardWriter{to: out}, &heardWriter{to: os.Stderr}
+	err = t.sshScript(script, env, o, e)
+	return o.heard, e.heard, err
+}
+
+// sshScript is the one exec every streaming run goes through, so there is a
+// single place where what komizo pipes to a box as root is decided.
+func (t target) sshScript(script string, env map[string]string, out, errOut io.Writer) error {
 	c := exec.Command("ssh", t.sshArgs(envPrefix(env)+"sh -s")...)
 	c.Stdin = strings.NewReader(script)
 	c.Stdout = out
-	c.Stderr = os.Stderr
+	c.Stderr = errOut
 	return c.Run()
+}
+
+// heardWriter passes everything through and remembers that there was something
+// to pass.
+//
+// A single byte counts, including a lone newline: a blank line is something a
+// person sees on their terminal, and a wrapper that decided otherwise would be
+// second-guessing the box about whether its own output was worth having. The
+// judgement about what silence MEANS belongs to the caller that knows which
+// command it ran -- see lifecycle.go -- not to the pipe it came down.
+type heardWriter struct {
+	to    io.Writer
+	heard bool
+}
+
+func (w *heardWriter) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		w.heard = true
+	}
+	return w.to.Write(p)
 }
 
 // scrubWriter passes text through scrub, a line at a time.
