@@ -91,17 +91,27 @@ func startDecision(t *testing.T, body string) string {
 
 // closingFi is the index of the `fi` that ends the column-zero `if` at open.
 //
-// Nesting is COUNTED rather than stopping at the first `fi`, and the difference
-// is a whole test quietly going hollow. When the marker read grew an `if [ -f ]`
-// of its own, a scan that stopped at the first `fi` cut the extracted block down
-// to the read alone -- no branch, no `docker compose up`, nothing printed. Every
-// case then observed "nothing was started", which is the answer four of the
-// seven wanted, so the suite stayed green while testing a block that no longer
-// contained the decision it was named for.
-//
 // Column zero only. Everything nested inside these blocks is indented with tabs,
 // so this counts the structure the decision is made of and not the structure
 // inside it.
+//
+// On the shape of the script TODAY the nesting count is not what makes this
+// correct -- the callers both open on a column-zero `if` whose body is entirely
+// indented, so stopping at the first column-zero `fi` would find the same line,
+// and reverting the count leaves the suite green. Said plainly because the
+// earlier version of this comment credited the count with a fix that was
+// actually made by moving startDecision's call site from the marker READ to the
+// GUARD. That was the bug: extraction began at the read, the read had acquired
+// an `if [ -f ]` of its own, and the block ended at the read's own `fi` -- the
+// branch, the `docker compose up` and every printed line fell outside it, so
+// every case observed "nothing was started", which is the answer four of the
+// seven wanted. A green suite over a block that no longer contained the
+// decision it was named for.
+//
+// The count stays because it makes the helper correct for a caller that opens
+// on an `if` containing another column-zero `if` -- which is a shape this script
+// does not have and has no rule against -- and because a helper that is only
+// right for the two call sites it happens to have is a trap for the third.
 func closingFi(t *testing.T, lines []string, open int, what string) int {
 	t.Helper()
 	depth := 0
@@ -149,6 +159,47 @@ func versionCommit(t *testing.T, body string) (block string, at, end int) {
 	return block, at, at + len(block)
 }
 
+// startsContainers reports whether a line of shell would bring containers up.
+//
+// TWO LOOSE CONDITIONS ANDED, deliberately, rather than one tight pattern.
+// It was `\bdocker\s+(compose\s+)?(up|start|restart|run)\b` -- the verb required
+// to sit immediately after `docker` or `compose` -- and any flag in between made
+// a start invisible. `docker compose -f compose.yml up -d`, appended to the end
+// of the deploy script, outside the guard, unconditional on every deploy, left
+// `go test ./scripts/` green. That is komizo#54 restored in full by a line the
+// check could not see.
+//
+// And it is not a contrived spelling: it is THIS REPO'S HOUSE STYLE. The real
+// container start in alpine-proxy.sh is `docker compose -p "$PROXY_PROJECT" up
+// -d --remove-orphans`, alpine-remove.sh uses `compose -f ... --project-directory
+// ...`, and so does every compose call in cmd/komizo-box. So the tight pattern
+// watched the one spelling this file happens to use and was blind to the one
+// the rest of the tree uses -- the check was fitted to the code in front of it
+// rather than to the act it is named for.
+//
+// So: does the line invoke docker at all, and does it name a start verb as a
+// bare word. Being loose is the point. A pattern precise about argument order
+// is a pattern that only matches the arrangement somebody thought of, and the
+// whole failure being guarded against is an arrangement nobody thought of.
+//
+// The false-positive risk is real and is the right trade. Every non-comment
+// docker line in the deploy script was checked against this: `login`, `pull -q`,
+// `create --entrypoint`, `cp`, `rm -v`, `compose config -q`, `ps --format`,
+// `exec ... caddy validate`, `compose pull`, `exec ... caddy reload` and
+// `compose ps` are all correctly ignored, and the `echo` mentioning "nothing
+// restarted" is ignored too because `restarted` is not `restart` as a bare word.
+// Exactly one line matches. If a future line matches spuriously, the count fails
+// and somebody has to decide about it, which is the correct outcome for a line
+// that reads like it starts a container.
+func startsContainers(line string) bool {
+	return dockerCall.MatchString(line) && startVerb.MatchString(line)
+}
+
+var (
+	dockerCall = regexp.MustCompile(`\bdocker\b`)
+	startVerb  = regexp.MustCompile(`\b(up|start|restart|run)\b`)
+)
+
 // stateFileLine is the deploy script's OWN assignment of the record it reads.
 //
 // Lifted rather than restated, because a test that names the path itself tests
@@ -164,16 +215,31 @@ func versionCommit(t *testing.T, body string) (block string, at, end int) {
 // third placeholder, a directory this does not know about -- survives as literal
 // text, the record is not found, and the stopped cases fail. Which is the point:
 // this test only passes for a path built out of the two values it can supply.
+// EXACTLY ONE assignment, and that is an assertion rather than a convenience.
+// Taking the first match would disagree with the shell, which obeys the LAST --
+// so a second `STATE_FILE=` added anywhere below (a rename half-applied, a
+// well-meant "make sure it is set" line) would leave this reading the old path,
+// every stopped case still passing, and every real deploy reading a file that is
+// not the record. The test would be pinned to an assignment the box ignores.
+// Two spellings of this path in one script is the exact thing the comment above
+// the assignment in alpine.sh says it exists to prevent.
 func stateFileLine(t *testing.T, body, stateDir, app string) string {
 	t.Helper()
+	var found []string
 	for _, ln := range strings.Split(body, "\n") {
 		if strings.HasPrefix(ln, "STATE_FILE=") {
-			ln = strings.ReplaceAll(ln, "__STATE_DIR__", stateDir)
-			return strings.ReplaceAll(ln, "__APP_NAME__", app)
+			found = append(found, ln)
 		}
 	}
-	t.Fatal("the deploy script never says which record it reads (no STATE_FILE= at column zero)")
-	return ""
+	switch len(found) {
+	case 0:
+		t.Fatal("the deploy script never says which record it reads (no STATE_FILE= at column zero)")
+	case 1:
+	default:
+		t.Fatalf("the deploy script assigns STATE_FILE %d times (%q) -- the shell obeys the last and this test would read the first, so they would disagree about which file decides whether an app starts", len(found), found)
+	}
+	ln := strings.ReplaceAll(found[0], "__STATE_DIR__", stateDir)
+	return strings.ReplaceAll(ln, "__APP_NAME__", app)
 }
 
 // runDecision runs the block against a state file, and reports what it printed
@@ -305,10 +371,9 @@ func TestADeployDoesNotStartAnAppThatWasStopped(t *testing.T) {
 
 			started := false
 			for _, c := range ran {
-				// Any verb that would run a container, for the reason the
-				// other test gives at length: `compose start` on the old
-				// containers is a start too, and a quieter one.
-				if regexp.MustCompile(`\bdocker\s+(compose\s+)?(up|start|restart|run)\b`).MatchString(c) {
+				// Any verb that would run a container, for the reason
+				// startsContainers gives at length.
+				if startsContainers(c) {
 					started = true
 				}
 			}
@@ -408,23 +473,10 @@ func TestAStoppedAppStillGetsThePullAndTheVersion(t *testing.T) {
 	// all. Here it is a position in the file, which cannot be moved out of the
 	// guard without being seen.
 	//
-	// EVERY VERB THAT CAN RUN A CONTAINER, not just `up`. `docker compose start`
-	// is the obvious way somebody would restore the previous version from a
-	// failure branch -- it is the very thing revert()'s comment warns about --
-	// and `restart`, `run` and a bare `docker start` are the same act spelled
-	// differently. A check that named only `up` would have watched the one door
-	// this change happens to close and left the others open.
-	//
-	// `pull`, `config`, `ps`, `create`, `cp`, `rm`, `exec`, `login` and `logs`
-	// are all used above and none of them starts this app: `create` is the
-	// config image, which is FROM scratch and never runs, and `exec` is into the
-	// proxy, which is somebody else's container and already running.
-	//
 	// Comment lines are skipped, and several of them do say `docker compose up`
 	// -- this file argues about that command at length, and a check that counted
 	// the arguments as well as the code would be a check nobody could leave a
 	// note beside.
-	starts := regexp.MustCompile(`\bdocker\s+(compose\s+)?(up|start|restart|run)\b`)
 	found := 0
 	at := 0
 	for _, ln := range strings.Split(body, "\n") {
@@ -434,7 +486,7 @@ func TestAStoppedAppStillGetsThePullAndTheVersion(t *testing.T) {
 		// second copy would be judged by the position of the first.
 		here := at
 		at += len(ln) + 1
-		if strings.HasPrefix(strings.TrimSpace(ln), "#") || !starts.MatchString(ln) {
+		if strings.HasPrefix(strings.TrimSpace(ln), "#") || !startsContainers(ln) {
 			continue
 		}
 		found++

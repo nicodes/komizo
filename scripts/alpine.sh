@@ -867,7 +867,8 @@ if [ -n "$hostnames" ]; then
 			_other="${_st##*/}"; _other="${_other%.env}"
 			[ "$_other" != "$APP_NAME" ] || continue
 			_odir="$(sed -n 's/^APP_DIR=//p' "$_st" | head -n 1)"
-			[ -n "$_odir" ] && [ -f "$_odir/hostnames" ] || continue
+			[ -n "$_odir" ] || continue
+			[ -f "$_odir/hostnames" ] || continue
 			if awk '{ print $1 }' "$_odir/hostnames" 2>/dev/null | grep -qxF "$h"; then
 				set -f
 				if [ "$claimed_lock" = 1 ]; then exec 8>&-; fi

@@ -193,19 +193,27 @@ func TestShQuoteSurvivesTheShell(t *testing.T) {
 	}
 }
 
-// generatedDeploy is the per-app deploy script as it lands on a box: the
-// KOMIZO_DEPLOY_EOF heredoc out of alpine.sh, with every placeholder replaced
-// the way alpine.sh replaces them.
+// shippedTemplates is every script komizo writes ONTO a box from inside another
+// script: the body of each quoted heredoc, with placeholders substituted, keyed
+// by "<file>:<TAG>".
 //
-// Values are keyed off the placeholders FOUND IN THE BODY rather than off a
-// list kept here, so a placeholder added to the deploy script is substituted by
-// this without anybody remembering to come back. One that has no value here
-// still gets a path-shaped one, because what is under test below is whether the
-// result parses -- not whether the value is the right value, which is
-// alpine.sh's own leftover-placeholder guard's job.
-func generatedDeploy(t *testing.T) string {
+// Found by scanning for the heredocs rather than by a list kept here, because a
+// list here is the thing that goes stale -- see the CI guard this package's
+// checks are run by, which named two tests, one of which had moved and one of
+// which no longer existed, and passed for however long on "no tests to run".
+// A template added later is covered without anybody editing this file.
+//
+// A SHEBANG is what marks a heredoc as shell. alpine-proxy.sh writes a Caddy
+// config the same way, and Caddy config is not shell -- so "it declares itself a
+// script" is the rule, which is self-describing and needs no exception list.
+//
+// Placeholder values are irrelevant to whether the result parses, so unknown
+// ones get a path-shaped literal. What matters is that no `__PLACEHOLDER__`
+// survives to be read as a bare word where a command belongs.
+func shippedTemplates(t *testing.T) map[string]string {
 	t.Helper()
-	body := deployBody(t)
+	heredoc := regexp.MustCompile(`<<'([A-Z_]+)'\n`)
+	placeholder := regexp.MustCompile(`__[A-Z][A-Z_]*__`)
 	known := map[string]string{
 		"__APP_NAME__":        "web",
 		"__APP_DIR__":         "/srv/web",
@@ -215,71 +223,101 @@ func generatedDeploy(t *testing.T) string {
 		"__ROUTES_DIR__":      "/srv/komizo-proxy/routes",
 		"__STATE_DIR__":       "/var/lib/komizo/apps",
 	}
-	for _, ph := range regexp.MustCompile(`__[A-Z][A-Z_]*__`).FindAllString(body, -1) {
-		v, ok := known[ph]
-		if !ok {
-			v = "/srv/komizo-unknown"
+	out := map[string]string{}
+	for name, src := range all(t) {
+		for _, m := range heredoc.FindAllStringSubmatchIndex(src, -1) {
+			tag := src[m[2]:m[3]]
+			rest := src[m[1]:]
+			j := strings.Index(rest, "\n"+tag+"\n")
+			if j < 0 {
+				t.Errorf("%s: heredoc %s is never closed", name, tag)
+				continue
+			}
+			body := rest[:j+1]
+			if !strings.HasPrefix(body, "#!") {
+				continue // not a script -- alpine-proxy.sh writes Caddy config this way
+			}
+			for _, ph := range placeholder.FindAllString(body, -1) {
+				v, ok := known[ph]
+				if !ok {
+					v = "/srv/komizo-substituted"
+				}
+				body = strings.ReplaceAll(body, ph, v)
+			}
+			out[name+":"+tag] = body
 		}
-		body = strings.ReplaceAll(body, ph, v)
 	}
-	return body
+	if len(out) == 0 {
+		t.Fatal("no shell templates found -- the heredoc scan has stopped matching, and every check built on it is now vacuous")
+	}
+	return out
 }
 
-// THE SCRIPT THAT RUNS ON EVERY DEPLOY WAS NEVER PARSED BY ANYTHING.
+// NOTHING EVER PARSED THE SCRIPTS THAT RUN ON A BOX.
 //
 // TestEveryScriptIsValidShell and TestShellcheck both read the FILES in this
-// directory. Inside alpine.sh the deploy script is the body of a QUOTED
+// directory. Inside those files each of these templates is the body of a QUOTED
 // heredoc, which is a string literal -- so neither `sh -n` nor shellcheck ever
-// treats a line of it as shell. Seven hundred lines that run as root on every
-// deploy, and the whole of the checking this package does looked straight past
-// them.
+// treated a line of one as shell. Six programs, all run as root: the per-app
+// deploy script and the secret helper out of alpine.sh, three OpenRC init
+// scripts out of agent-install.sh, and the boot-time firewall script out of
+// alpine-init.sh.
 //
-// Demonstrated rather than assumed: an unbalanced `[` and an unclosed `if`
-// planted inside revert() left `shellcheck -s sh scripts/*.sh` clean AND
-// `go test ./...` green, on the tree this test was added to. The deploy script
-// would have installed fine and died at the first rollback -- which is the path
-// that only runs when something else has already gone wrong, so the failure
-// would have arrived on top of another failure, at the worst possible moment
-// to be reading a log.
+// Demonstrated rather than argued. Planted inside revert() in the deploy script,
+// on the tree before this test existed: an unclosed `if`, and an unbalanced
+// quote. Both left `shellcheck -s sh scripts/*.sh` clean AND `go test ./...`
+// green. Either would have installed fine and died at the first rollback --
+// the path that only runs when something else has already gone wrong, so the
+// failure arrives on top of another failure, at the worst moment to be reading
+// a log.
 //
-// deploy_stopped_test.go lifts two blocks out of this body and runs them, so
-// those two are parsed as a side effect. That is what caught the planted error
-// when it was planted in one of them, and it is exactly why the gap was easy to
-// miss: the parts under test parse, and everything else is unexamined.
-//
-// Rendered rather than raw, because a placeholder is not shell -- an unquoted
-// `__APP_DIR__` sitting where a command belongs parses as a word here and as a
-// path on a box. This checks the artefact.
-func TestTheGeneratedDeployScriptIsValidShell(t *testing.T) {
+// deploy_stopped_test.go lifts two blocks out of one of these and runs them,
+// which is exactly why the gap was easy to miss: the parts under test parse,
+// and everything else was unexamined.
+func TestEveryShippedTemplateIsValidShell(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh is not installed")
 	}
-	body := generatedDeploy(t)
-	if left := regexp.MustCompile(`__[A-Z][A-Z_]*__`).FindString(body); left != "" {
-		t.Fatalf("%s survived substitution, so this is not the script a box runs", left)
-	}
-	cmd := exec.Command("sh", "-n")
-	cmd.Stdin = strings.NewReader(body)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Errorf("the generated deploy script is not valid shell: %v\n%s", err, out)
+	placeholder := regexp.MustCompile(`__[A-Z][A-Z_]*__`)
+	for name, body := range shippedTemplates(t) {
+		if left := placeholder.FindString(body); left != "" {
+			t.Errorf("%s: %s survived substitution, so this is not what a box receives", name, left)
+			continue
+		}
+		cmd := exec.Command("sh", "-n")
+		cmd.Stdin = strings.NewReader(body)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("%s is not valid shell: %v\n%s", name, err, out)
+		}
 	}
 }
 
-// And the same body linted, which `sh -n` cannot be -- see TestShellcheck for
-// the argument.
+// And the deploy script linted, which `sh -n` cannot be -- see TestShellcheck
+// for the argument.
 //
 // TestShellcheck deliberately runs over the files, and says why: a rendered
 // script has its placeholders replaced, so a complaint about the substitution
-// would point at a line nobody can edit. That reasoning is right and it leaves
-// this body uncovered, because in the file this body is a string. So it is
-// linted here instead, rendered, and a finding is read as being about the
-// heredoc it came from.
+// would point at a line nobody can edit. That reasoning is right, and it leaves
+// these bodies uncovered, because in the file each one is a string.
+//
+// ONLY THE DEPLOY SCRIPT, for now. It is the one that runs on every deploy, and
+// it is clean. The other five are not yet: the three OpenRC init scripts raise
+// SC2034 on every variable OpenRC itself consumes (`name`, `command`,
+// `command_user`, `respawn_delay`), which needs a disable and a reason on each
+// rather than a blanket exclude -- this package's rule, stated in TestShellcheck.
+// Tracked in komizo#59; TestEveryShippedTemplateIsValidShell parses all of them in
+// the meantime, which is what catches a script that cannot run at all.
 func TestTheGeneratedDeployScriptPassesShellcheck(t *testing.T) {
 	if _, err := exec.LookPath("shellcheck"); err != nil {
 		t.Skip("shellcheck is not installed")
 	}
+	const key = "alpine:KOMIZO_DEPLOY_EOF"
+	body, ok := shippedTemplates(t)[key]
+	if !ok {
+		t.Fatalf("%s is no longer among the shipped templates -- has the deploy script moved out of its heredoc?", key)
+	}
 	f := filepath.Join(t.TempDir(), "deploy.sh")
-	if err := os.WriteFile(f, []byte(generatedDeploy(t)), 0o600); err != nil {
+	if err := os.WriteFile(f, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := exec.Command("shellcheck", "-s", "sh", f).CombinedOutput(); err != nil {
