@@ -217,6 +217,51 @@ func runVerb(ctx context.Context, verb string, sub subject, tail int, svc, by st
 	// own down-ness is diagnosed separately, as proxy_stopped.
 	marks := sub.app != "" && svc == "" && (verb == "stop" || verb == "start")
 
+	// AND THE SAME EXCLUSION READ IN THE START DIRECTION IS NOT CONSERVATIVE,
+	// which is komizo#66 and the reason this refusal exists.
+	//
+	// For `stop`, not writing the marker is the safe answer: the app keeps its
+	// ability to page. For `start` it inverts. `komizo start --app web --service
+	// api` runs `up -d -- api` and never clears the marker, so an operator can
+	// bring an app back up service by service and it stays recorded as stopped
+	// -- box/diagnose.go keys app_down on !a.Stopped, so it never pages again,
+	// for a real outage, indefinitely, with nothing saying alerting is off.
+	// That is komizo#57's state reached through a third door, after a deploy
+	// under an old script (#56) and the race in #62.
+	//
+	// The same condition produces the safe answer on one verb and the dangerous
+	// one on the other, which is why one comment could not justify both.
+	//
+	// REFUSED RATHER THAN CLEARED, and #66 lays out the three options. Clearing
+	// on any successful `start --service` is defensible and over-broad: starting
+	// one service of three does not mean the app is up. Clearing only when
+	// `compose ps` says every service is running is more faithful and has to
+	// decide what "every service" means, which is a question with no answer here
+	// yet. Refusing makes the state impossible rather than transient, costs
+	// nothing to reason about, and leaves the faithful version available later
+	// without having shipped a guess in between.
+	//
+	// SCOPED TO AN APP THAT IS ACTUALLY MARKED. `start --service` on an app
+	// nobody stopped is an ordinary thing to do -- bringing one container back
+	// after it crashed -- and refusing it would be a new obstruction in exchange
+	// for nothing. Only the combination is refused.
+	if verb == "start" && sub.app != "" && svc != "" {
+		stopped, err := box.IsStopped(sub.root, sub.app)
+		if err != nil {
+			// REFUSED rather than started anyway, for the reason the stop path
+			// gives: a box that cannot read its own record cannot tell whether
+			// this start would leave a marker stranded, and starting into that
+			// is choosing the defect deliberately.
+			return fmt.Errorf("could not tell whether %s is recorded as stopped, so nothing was started: %w", sub.app, err)
+		}
+		if stopped {
+			return fmt.Errorf(
+				"%s is recorded as stopped, so starting one service would leave it marked stopped while it runs -- "+
+					"and an app in that state never pages again. Start the whole app first: komizo start --app %s",
+				sub.app, sub.app)
+		}
+	}
+
 	if verb == "stop" && marks {
 		// WRITTEN FIRST, and this ordering is the whole point of the marker.
 		//
