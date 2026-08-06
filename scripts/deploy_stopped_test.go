@@ -83,28 +83,70 @@ func startDecision(t *testing.T, body string) string {
 	if guard < 0 {
 		t.Fatal("the deploy script reads the stop marker and then never branches on it (komizo#54)")
 	}
-	// From the GUARD, not from the read, and counting nesting rather than
-	// stopping at the first `fi` -- the read has an `if` of its own now, and
-	// both mistakes end the block early. A truncated block reports "nothing
-	// started" for every case, which is the answer four of them want: a green
-	// suite for a block the test is no longer running.
+	// From the GUARD, not from the read -- the read has an `if` of its own now,
+	// and starting the count at the read would close the block on the read's own
+	// `fi`.
+	return strings.Join(lines[start:closingFi(t, lines, guard, "the start decision")+1], "\n")
+}
+
+// closingFi is the index of the `fi` that ends the column-zero `if` at open.
+//
+// Nesting is COUNTED rather than stopping at the first `fi`, and the difference
+// is a whole test quietly going hollow. When the marker read grew an `if [ -f ]`
+// of its own, a scan that stopped at the first `fi` cut the extracted block down
+// to the read alone -- no branch, no `docker compose up`, nothing printed. Every
+// case then observed "nothing was started", which is the answer four of the
+// seven wanted, so the suite stayed green while testing a block that no longer
+// contained the decision it was named for.
+//
+// Column zero only. Everything nested inside these blocks is indented with tabs,
+// so this counts the structure the decision is made of and not the structure
+// inside it.
+func closingFi(t *testing.T, lines []string, open int, what string) int {
+	t.Helper()
 	depth := 0
-	for i := guard; i < len(lines); i++ {
+	for i := open; i < len(lines); i++ {
 		switch {
-		// Column zero only. Everything nested inside is indented with tabs, so
-		// this counts the blocks the decision is made of and not the ones inside
-		// them.
 		case strings.HasPrefix(lines[i], "if "):
 			depth++
 		case lines[i] == "fi":
 			depth--
 			if depth == 0 {
-				return strings.Join(lines[start:i+1], "\n")
+				return i
 			}
 		}
 	}
-	t.Fatal("the start decision has no closing fi at column zero")
-	return ""
+	t.Fatalf("%s has no closing fi at column zero", what)
+	return 0
+}
+
+// versionCommit is the block that records the version this deploy delivered:
+// the `if grep -q '^APP_VERSION='` that rewrites the key when .env already has
+// one and appends it when it does not.
+//
+// BOTH BRANCHES, which is the point of lifting the whole block rather than
+// naming a line. The append branch runs once in an app's life; the rewrite
+// branch runs on every deploy after the first, which is very nearly all of them
+// -- so the branch that was pinned was the rare one and the branch that carries
+// production was unchecked. Deleting the `sed`, pointing it at the wrong
+// variable, or unanchoring its pattern all left `go test ./scripts/` green.
+func versionCommit(t *testing.T, body string) (block string, at, end int) {
+	t.Helper()
+	lines := strings.Split(body, "\n")
+	open := -1
+	for i, ln := range lines {
+		if strings.HasPrefix(ln, "if grep -q '^APP_VERSION='") {
+			open = i
+			break
+		}
+	}
+	if open < 0 {
+		t.Fatal("the deploy script never records APP_VERSION, so a start after a deploy brings up the previous version")
+	}
+	close := closingFi(t, lines, open, "the APP_VERSION commit")
+	block = strings.Join(lines[open:close+1], "\n")
+	at = strings.Index(body, block)
+	return block, at, at + len(block)
 }
 
 // stateFileLine is the deploy script's OWN assignment of the record it reads.
@@ -334,17 +376,22 @@ func TestAStoppedAppStillGetsThePullAndTheVersion(t *testing.T) {
 	// cannot end up disagreeing about where the decision is.
 	decision := strings.Index(body, startDecision(t, body))
 	end := decision + len(startDecision(t, body))
-	for _, step := range []struct{ what, line string }{
-		{"the image pull", "if ! docker compose pull; then"},
-		{"the APP_VERSION commit", "printf 'APP_VERSION=%s\\n' \"$version\" >> .env"},
-	} {
-		i := strings.Index(body, step.line)
+	{
+		i := strings.Index(body, "if ! docker compose pull; then")
 		if i < 0 {
-			t.Fatalf("could not find %s (%q) -- has the deploy script been reshaped?", step.what, step.line)
+			t.Fatal("could not find the image pull -- has the deploy script been reshaped?")
 		}
 		if i > decision {
-			t.Errorf("%s happens after the start decision, so a deploy to a stopped app does not leave the new version ready to come up", step.what)
+			t.Error("the image pull happens after the start decision, so a deploy to a stopped app does not leave the new version ready to come up")
 		}
+	}
+
+	// The WHOLE version-commit block, not one of its two branches. Naming the
+	// `printf` line put the ordering assertion on the branch that runs once in
+	// an app's life and left the `sed` branch -- every deploy after the first --
+	// free to sit below the decision.
+	if _, _, end := versionCommit(t, body); end > decision {
+		t.Error("the APP_VERSION commit is not finished before the start decision, so a deploy to a stopped app does not leave the new version ready to come up")
 	}
 
 	// ONE place containers come up, AND IT IS INSIDE THE GUARD. Every failure
@@ -461,5 +508,115 @@ func TestAnUnreadableRecordIsNotSilent(t *testing.T) {
 	// And it complains, which is the whole point.
 	if !strings.Contains(out, "web.env") {
 		t.Errorf("a record that could not be read produced no complaint naming it:\n%s", out)
+	}
+}
+
+// THE VERSION THIS DEPLOY DELIVERED IS RECORDED ON EVERY DEPLOY, NOT JUST THE
+// FIRST.
+//
+// `.env` is the only place the box records what was deployed: `komizo start`
+// runs `docker compose up -d`, which resolves every image through
+// ${APP_VERSION}. So for a stopped app this file IS the deploy -- the containers
+// were never recreated, and the whole promise of pulling without starting is
+// that a later start brings up what this deploy fetched. Leave APP_VERSION at
+// the old value and the pull was wasted work: the next start quietly returns the
+// previous version, from a box whose compose.yml and images are the new one's.
+//
+// TWO BRANCHES, and the ordering test above could only see one of them. An app's
+// first deploy appends the key; every deploy after that rewrites it in place --
+// so the branch that was pinned by name runs once, and the branch that carries
+// production ran unchecked. Deleting the `sed`, pointing it at `$ref` instead of
+// `$version`, or dropping the `^` from its pattern each left the suite green.
+//
+// The block is lifted and RUN, for the same reason the start decision is: what
+// is in question here is what the shell does to a file, and a substring match
+// cannot tell a working rewrite from a broken one.
+func TestTheDeployedVersionIsRecordedOnEveryDeploy(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	block, _, _ := versionCommit(t, deployBody(t))
+
+	for _, tc := range []struct {
+		name string
+		env  string
+		want string
+	}{
+		// An app's FIRST deploy: nothing to rewrite, so the key is appended and
+		// everything already in the file is left alone.
+		{
+			"a first deploy, with no APP_VERSION yet",
+			"COMPOSE_PROJECT_NAME=web\n",
+			"COMPOSE_PROJECT_NAME=web\nAPP_VERSION=abc1234\n",
+		},
+
+		// EVERY DEPLOY AFTER THE FIRST, which is very nearly all of them. The
+		// old value must be gone, not merely followed by a newer one -- compose
+		// takes the last assignment, but a file with two is a file two readers
+		// disagree about, and `komizo report` reads it with first-wins.
+		{
+			"a redeploy, over an existing APP_VERSION",
+			"COMPOSE_PROJECT_NAME=web\nAPP_VERSION=old9999\n",
+			"COMPOSE_PROJECT_NAME=web\nAPP_VERSION=abc1234\n",
+		},
+
+		// The key in the middle of the file, with lines after it. An append-only
+		// rewrite would leave the stale one above the new one.
+		{
+			"a redeploy, with the key above other settings",
+			"APP_VERSION=old9999\nCOMPOSE_PROJECT_NAME=web\n",
+			"APP_VERSION=abc1234\nCOMPOSE_PROJECT_NAME=web\n",
+		},
+
+		// ANCHORED. A key that merely ends in APP_VERSION is somebody else's
+		// key, and an unanchored `s|APP_VERSION=.*|` rewrites it too -- silently
+		// destroying a value this script was never asked to touch, in the one
+		// file the app's whole configuration comes from.
+		{
+			"a redeploy, beside a key that ends in APP_VERSION",
+			"PREV_APP_VERSION=old9999\nAPP_VERSION=old9999\n",
+			"PREV_APP_VERSION=old9999\nAPP_VERSION=abc1234\n",
+		},
+
+		// The same, where the similarly named key is the ONLY one. `grep -q` is
+		// anchored too, so this takes the append branch -- and a `grep` that
+		// matched here would take the rewrite branch and never write the key at
+		// all.
+		{
+			"a first deploy, beside a key that ends in APP_VERSION",
+			"PREV_APP_VERSION=old9999\n",
+			"PREV_APP_VERSION=old9999\nAPP_VERSION=abc1234\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			env := filepath.Join(dir, ".env")
+			if err := os.WriteFile(env, []byte(tc.env), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// `ref` is set because it is in scope at this point in the real
+			// script and is the value a slip would most plausibly reach for --
+			// it is the thing that was just pulled. It must not end up in .env:
+			// APP_VERSION is a tag, and compose substitutes it into image
+			// references that already carry a registry and a repository.
+			prelude := "set -euf\n" +
+				"version=abc1234\n" +
+				"ref=registry.example/web-config:abc1234\n" +
+				"cd " + dir + "\n"
+
+			cmd := exec.Command("sh", "-c", prelude+block)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("the APP_VERSION commit failed to run: %v\n%s", err, out)
+			}
+
+			got, err := os.ReadFile(env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tc.want {
+				t.Errorf(".env is\n%q\nwant\n%q", got, tc.want)
+			}
+		})
 	}
 }
