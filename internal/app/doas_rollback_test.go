@@ -158,8 +158,17 @@ func TestTheDoasBackupDoesNotSurviveTheRun(t *testing.T) {
 			if _, err := b.run(t, c.invalid); (err != nil) != c.invalid {
 				t.Fatalf("unexpected exit state for the %s case", c.name)
 			}
-			if _, err := os.Stat(b.conf + ".komizo.bak"); err == nil {
-				t.Error("the backup was left beside doas.conf")
+			// Globbed, not stat'd on one name. The backup carries a per-run
+			// suffix now (komizo#58 made two runs of this section at once
+			// ordinary, and a shared name loses one of them), so asking about
+			// the bare ".komizo.bak" would be asking about a file that never
+			// exists -- a test that passes because it looks in the wrong place.
+			left, err := filepath.Glob(b.conf + ".komizo.bak*")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(left) > 0 {
+				t.Errorf("backups were left beside doas.conf: %v", left)
 			}
 		})
 	}

@@ -31,9 +31,24 @@ esac
 # behind for exactly the apps that had been set up most deliberately.
 STATE_DIR=/var/lib/komizo/apps
 STATE_FILE="$STATE_DIR/$APP_NAME.env"
+# Either name, and this is what keeps a removal safe to REPEAT.
+#
+# Step 1c below renames the record to "$STATE_FILE.removing" so that a run which
+# dies from there on leaves nothing `komizo update` will reprovision (see the
+# long note there). Reading only the live name would have paid for that with the
+# property the block above this exists for: a second `komizo remove`, after an
+# interrupted first, would find no record, fall back to komizo-<app> and
+# /srv/<app>, and quietly leave the real account and the real directory of any
+# app set up with a custom --user or --app-dir -- which is precisely the apps
+# that were set up most deliberately. So the renamed record is still read, by
+# the one thing that has any business reading it.
 state() {
-	[ -f "$STATE_FILE" ] || return 0
-	sed -n "s/^$1=//p" "$STATE_FILE" | head -n 1
+	for _f in "$STATE_FILE" "$STATE_FILE.removing"; do
+		[ -f "$_f" ] || continue
+		sed -n "s/^$1=//p" "$_f" | head -n 1
+		return 0
+	done
+	return 0
 }
 
 CI_USER="${CI_USER:-$(state CI_USER)}"
@@ -108,6 +123,58 @@ if [ -f "$ROUTE_FILE" ]; then
 	fi
 fi
 
+# --- 1c. stop calling it an app --------------------------------------------
+#
+# THE RECORD IS MADE INERT HERE, and only deleted at the end.
+#
+# Everything above reads it, which is why it used to be removed last -- but
+# "removed last" also means a removal that dies half way leaves a complete
+# record behind for an app that no longer has containers, an account, or a
+# directory. That was survivable while nothing acted on a record by itself:
+# `komizo remove` is safe to repeat, and the inventory showing a ghost row was
+# the whole of the damage.
+#
+# komizo#58 changed what a leftover record means. `komizo update` now re-runs
+# the app setup script for every record in this directory, and that script
+# CREATES what is missing: the deploy account, the directory, the two
+# privileged scripts, the doas rules and the sshd block. So a removal
+# interrupted by a dropped connection or a Ctrl-C, followed at any later date
+# by a routine upgrade, would put the removed app's whole deploy path back --
+# on its original key, with nothing on the box's report to show for it, until
+# that repo's next merge to main deployed an app somebody had decommissioned.
+#
+# HERE AND NOT AT THE TOP, which is a trade rather than an oversight. A record
+# renamed away is invisible to everything: no row on the report, no app_down,
+# no per-app command resolves it. Steps 1 and 1b only STOP things -- and they
+# are the slow, interruption-prone part, `docker compose down` over a large
+# stack plus a proxy reload -- so a record left live across them describes an
+# app that still fully exists, and a refresh over one is a no-op reprovision
+# rather than a resurrection. Nothing komizo would put back has been deleted
+# until step 2. So the app stays visible for exactly as long as it is still
+# really there, and goes inert the moment that stops being true.
+#
+# Renaming rather than deleting keeps this removal safe to repeat: state()
+# above reads either name, so a second run still finds an app's real account
+# and directory. The suffix goes AFTER .env for the reason alpine.sh's
+# STATE_TMP does -- everything that enumerates apps globs *.env, so this name
+# is invisible to all of them. A run that dies from here on leaves a stray file
+# rather than an app anything will act on.
+#
+# NOT `|| true`. Everything else in this script tolerates its target being
+# absent, because everything else is cleanup. This one is a guard: if the
+# rename does not happen and the removal carries on to delete the account and
+# the directory, the window above is silently open again. It is very hard to
+# fail as root inside a directory root owns, which is the argument for letting
+# it say so rather than for swallowing it.
+if [ -f "$STATE_FILE" ]; then
+	log "Setting $STATE_FILE aside"
+	mv -f "$STATE_FILE" "$STATE_FILE.removing" || {
+		echo "error: could not set $STATE_FILE aside, so a removal interrupted from here" >&2
+		echo "       would leave an app that 'komizo update' puts back -- refusing to go on" >&2
+		exit 1
+	}
+fi
+
 # --- 2. the privileged commands and their doas rules -----------------------
 # Rules go BEFORE the scripts: if this run dies in between, the account is left
 # unable to invoke something that no longer exists, rather than able to invoke
@@ -117,7 +184,10 @@ fi
 # beside the file. There were three conventions before this -- ".komizo.bak" for
 # sshd_config in alpine.sh, ".bak.remove" for both files here -- so a stray
 # backup left by a killed run was not obviously komizo's, and no two of them
-# could be cleaned by one rule. Each is guarded by a trap, so an interrupted run
+# could be cleaned by one rule. alpine.sh appends its own PID after that prefix,
+# because komizo#58 made two of its runs at once ordinary and a shared name
+# means the second one restores the first one's edits; the prefix is still the
+# thing to look for. Each is guarded by a trap, so an interrupted run
 # puts the file back rather than leaving a half-edit and a copy beside it.
 log "Removing doas rules for '$CI_USER'"
 if [ -f /etc/doas.conf ]; then
@@ -207,8 +277,14 @@ fi
 # --- 6. what komizo knew about it ------------------------------------------
 # Last, because everything above reads it. Removing this is what makes the app
 # gone as far as the inventory is concerned.
+#
+# BOTH NAMES. The record was renamed out of the way at step 1c so that a run
+# which dies part way through leaves nothing `komizo update` will reprovision;
+# the original name is removed too, because a run interrupted before 1c's
+# rename -- or an older komizo's removal that never renamed at all -- can still
+# have left one there.
 
-rm -f "$STATE_FILE"
+rm -f "$STATE_FILE" "$STATE_FILE.removing"
 
 log "Removed '$APP_NAME'"
 cat <<EOF

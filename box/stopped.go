@@ -278,6 +278,14 @@ const recordLockWait = 5 * time.Second
 // them is a case where locking is impossible rather than contended: no /run to
 // write, no permission, a kernel without flock on the filesystem in question.
 // The caller's work is still correct in all of them, just no longer serialised.
+// RecordLockName is the per-app lock file, and it is exported so the agreement
+// with alpine.sh can be asserted from ONE definition rather than from two
+// literals that happen to look alike. The directory was already pinned that
+// way; the name was not, and a rename on either side would have left the two
+// processes locking different files -- which excludes nothing, quietly, while
+// every test still passes.
+func RecordLockName(app string) string { return "state-" + app + ".lock" }
+
 func lockRecord(path string) func() {
 	nothing := func() {}
 	if err := os.MkdirAll(RunDir, 0o755); err != nil {
@@ -287,7 +295,7 @@ func lockRecord(path string) func() {
 	// in, so this cannot become a path of somebody else's choosing. The name
 	// matches the one alpine.sh builds from APP_NAME; two processes locking
 	// different files exclude nothing.
-	name := "state-" + strings.TrimSuffix(filepath.Base(path), ".env") + ".lock"
+	name := RecordLockName(strings.TrimSuffix(filepath.Base(path), ".env"))
 	f, err := os.OpenFile(filepath.Join(RunDir, name), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nothing
