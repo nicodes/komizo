@@ -1171,6 +1171,28 @@ func TestSharingThatPredatesTheRuleWarnsRatherThanBreakingTheBox(t *testing.T) {
 	}
 }
 
+// The same CR, on the other side of the comparison.
+//
+// Found by mutation rather than by review: dropping the strip from THIS app's
+// record survived every test above. It is the milder direction -- the app is
+// refused its own established account rather than another app's being deleted,
+// so it fails closed -- but "fails closed" here means `komizo update` stops
+// working on a box for a reason no message explains.
+func TestACarriageReturnInThisAppsOwnRecordDoesNotCostItItsAccount(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	rec := appRecord{name: "blog", user: "shared", config: "ghcr.io/you/blog-config", dir: "/srv/blog"}
+	stderr, err := runStateBlocks(t, rec,
+		"APP_NAME=blog\r\nAPP_DIR=/srv/blog\r\nCI_USER=shared\r\nCONFIG_IMAGE=ghcr.io/you/blog-config\r\n",
+		map[string]string{
+			"shop.env": "APP_NAME=shop\nAPP_DIR=/srv/shop\nCI_USER=shared\nCONFIG_IMAGE=ghcr.io/you/shop-config\n",
+		})
+	if err != nil {
+		t.Fatalf("a CR in this app's own record cost it the account it already holds: %v\n%s", err, stderr)
+	}
+}
+
 // A record komizo cannot READ is not a record that says the account is free.
 func TestARecordThatCannotBeReadIsNotTakenAsNoClash(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
