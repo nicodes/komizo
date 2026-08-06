@@ -1,0 +1,44 @@
+[
+  {
+    "name": "stopped on purpose",
+    "record": "APP_DIR=/srv/app\nCI_USER=komizo-app\nSTOPPED=1\n",
+    "stopped": true,
+    "why": "The bug, and the fix."
+  },
+  {
+    "name": "running",
+    "record": "APP_DIR=/srv/app\nCI_USER=komizo-app\n",
+    "stopped": false,
+    "why": "No marker at all is the ordinary state of an app."
+  },
+  {
+    "name": "stopped, in a record with CRLF line endings",
+    "record": "APP_DIR=/srv/app\r\nCI_USER=komizo-app\r\nSTOPPED=1\r\n",
+    "stopped": true,
+    "why": "A CR is invisible in an editor. The shell strips it with `tr -d '\\r'` and bufio.Scanner strips it for free; without either the value is \"1\\r\", which is not \"1\", and the two readers disagree about the same file."
+  },
+  {
+    "name": "stopped, with a later line contradicting it",
+    "record": "APP_DIR=/srv/app\nCI_USER=komizo-app\nSTOPPED=1\nSTOPPED=0\n",
+    "stopped": true,
+    "why": "First wins, which is what readState does and what the shell's `head -n 1` does. A reader that took the last line would disagree with every other reader of these records."
+  },
+  {
+    "name": "a record with a similarly named key",
+    "record": "APP_DIR=/srv/app\nCI_USER=komizo-app\nLAST_STOPPED=1\n",
+    "stopped": false,
+    "why": "A key that merely ends in STOPPED is a different key. The shell anchors with `^`; the Go side splits on `=` and compares a whole key."
+  },
+  {
+    "name": "a hand-written STOPPED=0",
+    "record": "APP_DIR=/srv/app\nCI_USER=komizo-app\nSTOPPED=0\n",
+    "stopped": false,
+    "why": "ClearStopped removes the key rather than writing a 0, so a 0 only ever arrives from a person -- and reading it as a stop takes their \"no\" for a yes."
+  },
+  {
+    "name": "a value that merely contains a 1",
+    "record": "APP_DIR=/srv/app\nCI_USER=komizo-app\nSTOPPED=1 \n",
+    "stopped": false,
+    "why": "Exactly \"1\", not \"contains a 1\". A hand-edited record can pick up a trailing space, and both readers must make the same nothing of it."
+  }
+]

@@ -519,6 +519,20 @@ APP_NAME="__APP_NAME__"
 APP_DIR="__APP_DIR__"
 ROUTE_FILE="__ROUTES_DIR__/__APP_NAME__.caddy"
 
+# This app's own record, which is where a DELIBERATE STOP is written down.
+#
+# The deploy reads it and refuses to start an app somebody stopped -- see the
+# start decision near the end of this script for the whole argument. Named here,
+# beside the other baked-in values, because the cross-app hostname scan below
+# already reaches into __STATE_DIR__ and two spellings of the same directory in
+# one script is one of them going stale.
+#
+# A FILE, deliberately, and not a question asked of komizo. appify.md §2 is
+# explicit that a deploy must not depend on anything off the box: a deploy that
+# has to consult a service to find out whether it may start the app is a deploy
+# that fails when the service is down.
+STATE_FILE="__STATE_DIR__/__APP_NAME__.env"
+
 version="${1:-}"
 registry="${2:-}"
 registry_user="${3:-}"
@@ -680,6 +694,16 @@ fi
 # on a box that was working, so keep backups and put them back if a check
 # fails -- including the reverse-proxy route, which is why this is a function
 # rather than three copies of the same three lines.
+#
+# It puts FILES back and starts nothing, which is why every failure path below
+# says "reverted, nothing restarted" and means it. That is now load-bearing
+# rather than incidental: the start decision at the end of this script is the
+# ONE place containers come up, and it is the one place that consults the stop
+# marker. A failure path that grew a `docker compose up` to put the previous
+# version back would become a second way to start an app somebody stopped, and
+# the worse one to find -- it runs only when something else has already gone
+# wrong, which is not when anybody is reading the log for this. If one is ever
+# added, it has to read the marker the same way.
 revert() {
 	cat compose.yml.prev > compose.yml
 	rm -f "$ROUTE_FILE"
@@ -843,7 +867,8 @@ if [ -n "$hostnames" ]; then
 			_other="${_st##*/}"; _other="${_other%.env}"
 			[ "$_other" != "$APP_NAME" ] || continue
 			_odir="$(sed -n 's/^APP_DIR=//p' "$_st" | head -n 1)"
-			[ -n "$_odir" ] && [ -f "$_odir/hostnames" ] || continue
+			[ -n "$_odir" ] || continue
+			[ -f "$_odir/hostnames" ] || continue
 			if awk '{ print $1 }' "$_odir/hostnames" 2>/dev/null | grep -qxF "$h"; then
 				set -f
 				if [ "$claimed_lock" = 1 ]; then exec 8>&-; fi
@@ -1022,6 +1047,25 @@ fi
 # deploy that fails earlier leaves the box claiming the version it is actually
 # still running. Persisted so a later manual 'docker compose up -d' keeps this
 # commit instead of drifting back to :latest.
+#
+# WRITTEN EVEN WHEN NOTHING IS GOING TO BE STARTED, which is the half of the
+# start decision below that is easy to get backwards, so the reasoning is here
+# rather than there.
+#
+# A deploy to a stopped app pulls and commits and does not start. The point of
+# doing the first two at all is that the NEXT `komizo start` brings up what was
+# deployed: start runs `docker compose up -d`, which reads ${APP_VERSION} out of
+# this file to resolve every image, so the version recorded here is the version
+# that comes up. Leave it at the old one and the box has silently deployed
+# nothing -- it pulled an image, wrote the new compose.yml from the new config
+# image, and then pinned it to the previous tag, which is a stack assembled from
+# two different commits and no message anywhere saying so.
+#
+# So a stopped app's recorded version is what was last DEPLOYED to it, not what
+# it was last running. That reads oddly in a report next to a stopped app, and
+# it is still the honest field: the alternative is a version nobody can act on,
+# because the deploy that fetched the config for it has already happened and is
+# not going to happen again.
 # .env is read by the pull/up below for ${APP_VERSION} substitution, so it has
 # to be written first -- but a pull that then fails would leave .env claiming a
 # version that never started. Back it up and put it back on failure.
@@ -1042,7 +1086,92 @@ if ! docker compose pull; then
 	exit 1
 fi
 rm -f .env.komizo.bak
-docker compose up -d --remove-orphans
+
+# A DEPLOY MUST NOT START AN APP SOMEBODY STOPPED.
+#
+# architecture.md §6 keeps STOPPED as durable state on the box for two reasons.
+# One is that a stopped app pages nobody. The other is this one -- "a deploy
+# while stopped pulls the image without starting it" -- and until now this line
+# was `docker compose up -d` with nothing in front of it, so a CI deploy brought
+# an app back up that a person had deliberately taken down. Nobody ran a
+# command; a merge to main did it.
+#
+# The failure that makes it urgent rather than untidy is what it does to PAGING.
+# `komizo stop` writes STOPPED into this record (komizo#48), and box/diagnose.go
+# keys the app_down problem on exactly that marker. An unconditional `up -d`
+# therefore leaves the app RUNNING with STOPPED=1 still set: nothing reconciles
+# the marker against the containers that are actually up, `komizo start` is a
+# different path and never runs, and the only thing that clears it is somebody
+# starting an app they can plainly see is already started. From that moment the
+# app never pages again -- for a real outage, indefinitely, with nothing
+# anywhere saying that alerting was switched off. A deliberate stop reported as
+# a fault is loud and wrong in the safe direction; this is silent and wrong in
+# the other one.
+#
+# READ AS LATE AS POSSIBLE, and this is the last thing decided before any
+# container moves. Everything above -- the pull of the config image, the
+# validation, the route claim, `docker compose pull` -- can take minutes on a
+# slow link, and a stop that arrives during it is a decision made with full
+# knowledge that a deploy is running. Reading the record at the top of the
+# script would answer with what was true before the operator acted, which is the
+# same window, merely wider.
+#
+# No lock, and this is a read rather than a rewrite. Both writers of this record
+# replace it by rename and take the per-app lock around it -- box/stopped.go on
+# the Go side, and the block in the provisioning script that installed THIS one
+# (`komizo add` rewrites the record; it is not part of the deploy script), both
+# from komizo#48. So a single read always sees one complete file and never a
+# half-written one. Taking the lock here would buy nothing and would make a
+# deploy wait out a `komizo add`.
+#
+# `[ -f ]` rather than a `2>/dev/null` over the read, and the difference is what
+# happens to a record that exists and cannot be read. Suppressing stderr treats
+# "no such app record" and "this box's state directory is broken" as the same
+# silent empty answer, and both come out as "not stopped" -- so the one case
+# where somebody needs to be told is the one that says nothing. A missing record
+# is ordinary and asks nothing; anything else now prints sed's complaint into
+# the deploy log. The direction is unchanged either way: an unreadable record
+# starts the app, because refusing to deploy on a box whose state directory has
+# gone is a much wider failure than the one it would prevent, and an app with no
+# readable record is not in the report and cannot page in the first place.
+#
+# `tr -d '\r'` because a CR is invisible and this is a comparison against a
+# literal. A record that picked up CRLF makes this read "1\r", which is not "1",
+# and the deploy would decide the app was never stopped and start it -- the
+# whole defect back, from a difference nobody can see in the file. `head -n 1`
+# because every other reader of these records is first-wins, and a reader that
+# took the last line would disagree with all of them about the same file.
+#
+# The marker is left ALONE either way. A deploy is not a decision about whether
+# an app should be running; it is a decision about what it should run when it
+# is. Clearing the marker here would be this same bug spelled differently -- CI
+# overruling a person -- and setting one would stop an app nobody asked to stop.
+stopped=""
+if [ -f "$STATE_FILE" ]; then
+	stopped="$(sed -n 's/^STOPPED=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)"
+fi
+if [ "$stopped" = "1" ]; then
+	# SAID OUT LOUD, in both a machine-readable form and a human one. Without
+	# this, a deploy that deliberately leaves an app down is indistinguishable
+	# in a CI log from a deploy that started it -- both are green, and the only
+	# difference is a `docker compose ps` further down that a person has to
+	# already suspect something to go and read. `started=` is printed on BOTH
+	# branches so a caller can tell "this deploy did not start the app" from
+	# "this deploy ran an older script that could not tell you", which one line
+	# printed only in the unusual case cannot express.
+	echo "deploy: started=no"
+	echo "deploy: $APP_NAME is recorded as stopped, so $ref was pulled and APP_VERSION=$version committed, but nothing was started."
+	echo "deploy: 'komizo start --host <this box> --app $APP_NAME' brings up $version, or press s in the interface."
+else
+	docker compose up -d --remove-orphans
+	# AFTER the start, not before it. `set -e` ends the script on a failed
+	# `up -d`, so an echo above this line would be a claim that the app started
+	# printed immediately before the output showing that it did not -- and the
+	# machine-readable half of it would be the last `started=` a caller parsed.
+	# The stopped branch prints its line first because there is nothing there
+	# that can fail.
+	echo "deploy: started=yes"
+fi
 
 # Now the deploy has happened, so there is nothing left to go back to. Dropped
 # here rather than before the pull, which is the bug described above.
@@ -1067,8 +1196,19 @@ rm -f compose.yml.prev hostnames.prev "$ROUTE_FILE.prev"
 #
 # Validated above, so a failure here is unexpected -- but Caddy keeps its
 # previous config when a reload fails, so the other apps on this box keep
-# serving either way. Reported rather than fatal: the containers for THIS app
-# are already running by now, and failing the deploy would misreport that.
+# serving either way. Reported rather than fatal: by now this app's containers
+# are up -- or deliberately are not, see the start decision above -- and failing
+# the deploy would misreport whichever it is.
+#
+# Reloaded EVEN WHEN nothing was started, because the alternative is worse. A
+# stopped app's hostnames already resolve to a gate that is not running -- that
+# is what stopping it did, and this deploy changed nothing about it. What this
+# deploy may have changed is WHICH hostnames it claims, and that is now written
+# to disk in a directory the shared proxy imports. Skipping the reload does not
+# withhold it; it defers it to whenever the next deploy of any OTHER app on the
+# box reloads Caddy, at which point somebody else's pipeline publishes this
+# app's route change. That is the same trap the .prev files above describe, and
+# the fix is the same: let the change land where the log for it is.
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$PROXY_CONTAINER"; then
 	if docker exec "$PROXY_CONTAINER" caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
 		echo "deploy: reverse proxy reloaded"
@@ -1079,6 +1219,13 @@ fi
 
 # Show the resulting topology. Without this a compose.yml that silently drops
 # or renames a service looks identical in the log to one that changed nothing.
+#
+# For an app left down this lists what was there BEFORE the deploy -- exited
+# containers on the previous version, beside an APP_VERSION that has moved on.
+# That is the true state of the box and it is worth reading as one: the config
+# is the new version's, the images are pulled, and the containers are still the
+# old ones because nothing has recreated them yet. The `started=no` lines above
+# are what say so in words.
 docker compose ps --format 'table {{.Service}}\t{{.Image}}\t{{.Status}}'
 KOMIZO_DEPLOY_EOF
 
