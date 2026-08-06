@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -132,13 +133,39 @@ func ClearStopped(root, app string) error {
 // it.
 func setStateValues(path string, set map[string]string) error {
 	for k, v := range set {
-		// A NEWLINE IN A VALUE FORGES THE NEXT KEY. readState splits on lines
-		// and takes the first occurrence of each key, so a `by` containing
-		// "\nAPP_DIR=/srv/other" would repoint the app at another directory --
-		// and APP_DIR is what resolveSubject hands to `docker compose
-		// --project-directory`. The values this file writes today come from a
-		// closed set, which is precisely the condition under which this check
-		// looks unnecessary and later stops being true.
+		// A NEWLINE IN A VALUE FORGES A KEY. A `by` containing
+		// "\nAPP_DIR=/srv/theirs" writes a second APP_DIR into a file whose
+		// whole purpose is to say where an app lives and which account deploys
+		// it.
+		//
+		// Be honest about what that forged line does TODAY, because an
+		// overstated reason is a reason somebody deletes when they find out it
+		// was overstated. It does not take effect. This function appends the
+		// managed keys at the END of the record, so a forged APP_DIR lands
+		// below the genuine one, and all three readers of this file are
+		// first-wins: readState in paths.go says so in as many words, the
+		// provisioning script reads `sed -n 's/^KEY=//p' | head -n 1`, and the
+		// generated deploy script's scan of the OTHER apps' records uses the
+		// same idiom. The genuine line is above it and keeps winning.
+		//
+		// The check stays for two reasons that do hold.
+		//
+		// First, the forged line is PERMANENT and it is armed. APP_DIR is not
+		// one of the managed keys, so ClearStopped does not remove it -- a
+		// `komizo start` takes the stop off and leaves the duplicate behind
+		// forever. It becomes live the moment the genuine APP_DIR is removed or
+		// reordered by anything: a hand edit, a future version of the
+		// provisioning script, a repair. The safety of the file then rests on
+		// the ORDER of two lines nobody knows are both there, which is not a
+		// property worth depending on.
+		//
+		// Second, first-wins is three separate parsers in two languages, one of
+		// them generated into a script that runs as root on every deploy. It is
+		// a rule that is currently true rather than a rule that is enforced, and
+		// the values written here come from a closed set today -- which is
+		// exactly the condition under which a check like this looks unnecessary
+		// and later stops being true. See komizo#48: the previous thing everyone
+		// knew about this file was that it had four readers and a writer.
 		if strings.ContainsAny(v, "\n\r") {
 			return fmt.Errorf("%s cannot contain a newline", k)
 		}
@@ -149,6 +176,32 @@ func setStateValues(path string, set map[string]string) error {
 			return fmt.Errorf("%s is longer than %d bytes", k, maxStateValue)
 		}
 	}
+
+	// READ AND WRITE UNDER A LOCK, because this is not the only writer.
+	//
+	// scripts/alpine.sh rewrites the same file whenever an operator re-runs
+	// `komizo add` on an existing app -- the documented way to change the
+	// config image or KNOWN_AS -- and its rewrite has to read the stop keys
+	// first to carry them across. So there are two read-modify-write cycles on
+	// one file from two processes in two languages, and nothing above this line
+	// made them take turns.
+	//
+	// Interleaved, they lose each other's work. The mild version is a lost
+	// update: the marker this call is writing is read back by neither, and an
+	// app that was stopped starts paging. The severe version is the shell's
+	// side of it, and it is severe because APP_DIR is the one field nothing can
+	// reconstruct -- see the lock and the atomic replacement in alpine.sh, which
+	// is the other half of this pair and takes the same lock by the same name.
+	//
+	// It is not a correctness barrier on its own, and it does not pretend to
+	// be: it is skipped whenever it cannot be taken, and it gives up after
+	// recordLockWait and proceeds anyway. Blocking here would hang rootd's
+	// applier on a lock held by something that may never let go, and a stop
+	// that hangs is worse than a stop that races. What makes the unlocked case
+	// survivable is that BOTH writers now replace the file by rename, so the
+	// worst outcome without the lock is a lost update rather than a reader
+	// seeing a file that has been emptied and not yet refilled.
+	defer lockRecord(path)()
 
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -202,6 +255,61 @@ func setStateValues(path string, set map[string]string) error {
 
 // maxStateValue bounds one value. See setStateValues.
 const maxStateValue = 128
+
+// recordLockWait is how long a rewrite waits for the other writer.
+//
+// The other writer holds the lock for one read of a small file and one rename,
+// so a wait this long means something is wrong rather than busy -- a stuck
+// `komizo add`, or a process that took the lock and stopped. Long enough that a
+// normal overlap always waits it out; short enough that a stop applied by rootd
+// answers the operator instead of hanging.
+const recordLockWait = 5 * time.Second
+
+// lockRecord takes the cross-process lock on one app's record, and returns the
+// release. See setStateValues for why, and alpine.sh for the other side.
+//
+// The lock lives under RunDir rather than beside the record. AppsDir is
+// rewritten by rename, and a lock file in a directory that is being rewritten
+// is a lock file that can be replaced underneath the two processes holding it;
+// /run is also cleared on boot, which is the correct lifetime for a lock and
+// the wrong one for a record.
+//
+// Every failure returns a no-op release rather than an error, and every one of
+// them is a case where locking is impossible rather than contended: no /run to
+// write, no permission, a kernel without flock on the filesystem in question.
+// The caller's work is still correct in all of them, just no longer serialised.
+func lockRecord(path string) func() {
+	nothing := func() {}
+	if err := os.MkdirAll(RunDir, 0o755); err != nil {
+		return nothing
+	}
+	// Named from the record, which appStatePath has already refused a separator
+	// in, so this cannot become a path of somebody else's choosing. The name
+	// matches the one alpine.sh builds from APP_NAME; two processes locking
+	// different files exclude nothing.
+	name := "state-" + strings.TrimSuffix(filepath.Base(path), ".env") + ".lock"
+	f, err := os.OpenFile(filepath.Join(RunDir, name), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nothing
+	}
+	deadline := time.Now().Add(recordLockWait)
+	for {
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+			return func() {
+				// Unlocked explicitly before the close. Closing releases it too,
+				// but only as a side effect of the last descriptor going away --
+				// and this process may hold another one on a later call.
+				_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+				_ = f.Close()
+			}
+		}
+		if time.Now().After(deadline) {
+			_ = f.Close()
+			return nothing
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
 
 // appStatePath is where one app's record lives, and the one place that decides.
 //

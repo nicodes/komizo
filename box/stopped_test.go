@@ -124,11 +124,18 @@ func TestStartingClearsEveryPartOfTheStop(t *testing.T) {
 // The record is key=value lines and readState splits on them, so a STOPPED_BY
 // carrying a newline writes whatever follows it as a key of its own. APP_DIR is
 // the one that matters: it is what resolveSubject hands to `docker compose
-// --project-directory`, so a forged one points every later lifecycle command at
-// a directory of somebody else's choosing.
+// --project-directory`.
 //
-// Nothing can reach this today -- both callers pass a value from a closed set
-// -- which is exactly the condition that makes the check look unnecessary right
+// It would not take effect immediately, and setStateValues says why at length:
+// the managed keys are appended last, and every reader of this file is
+// first-wins, so a forged APP_DIR sits below the genuine one and loses. What it
+// would be is PERMANENT -- APP_DIR is not a managed key, so ClearStopped leaves
+// it there after the stop is over -- and live the moment anything removes or
+// reorders the genuine line. This test pins the refusal, not the ordering that
+// currently makes the refusal survivable.
+//
+// Nothing can reach it today either: both callers pass a value from a closed
+// set. Which is exactly the condition that makes a check look unnecessary right
 // up until a later op carries a label somebody typed.
 func TestAStopCannotForgeAnotherKey(t *testing.T) {
 	root := recordFixture(t)

@@ -383,14 +383,74 @@ chmod 750 /var/lib/komizo
 # Read line by line, in the same shape KNOWN_AS is read, rather than copied
 # through as a block -- so what lands back in the file is three known keys and
 # never whatever else a hand-edited file happened to have on those lines.
-STOPPED_KEEP=""
-if [ -f "$STATE_FILE" ] && [ "$(sed -n 's/^STOPPED=//p' "$STATE_FILE" | head -n 1)" = "1" ]; then
-	STOPPED_KEEP="$(printf 'STOPPED=1\nSTOPPED_BY=%s\nSTOPPED_AT=%s' \
-		"$(sed -n 's/^STOPPED_BY=//p' "$STATE_FILE" | head -n 1)" \
-		"$(sed -n 's/^STOPPED_AT=//p' "$STATE_FILE" | head -n 1)")"
+#
+# ONE WRITER OF THIS FILE AT A TIME, and the lock is the first thing here.
+#
+# komizo-box rewrites the same file, from Go, whenever an app is stopped or
+# started -- it reads the record, changes three keys and writes it back. This
+# block is the other half of that pair: it reads three keys and writes the whole
+# file. Interleaved, the two lose each other's work, and one interleaving loses
+# far more than a stop marker: a rootd-applied `app.stop` that reads the file
+# while this one has it open for writing sees whatever is there at that instant,
+# and writes back a record with no APP_DIR in it. paths.go's answer to a record
+# like that is "names no APP_DIR, so komizo does not know where %q is" -- and
+# nothing puts it back. Rare, and the whole app is unreachable to every command
+# afterwards.
+#
+# Per app, matching the lock name box/stopped.go takes, so the two processes are
+# actually excluding each other rather than each locking something private.
+# Skipped wherever it cannot be taken -- a busybox without the flock applet, a
+# /run this cannot write -- exactly as the deploy lock is, and for the same
+# reason: refusing to add an app at all would trade a rare race for a certain
+# outage. The atomic replacement below means the worst that survives a skipped
+# lock is a lost update, not a truncated record.
+STATE_LOCK="/run/komizo/state-$APP_NAME.lock"
+if command -v flock >/dev/null 2>&1 &&
+	mkdir -p /run/komizo 2>/dev/null &&
+	: > "$STATE_LOCK" 2>/dev/null
+then
+	exec 7>"$STATE_LOCK"
+	if ! flock -w 30 7; then
+		echo "error: another process has been writing $STATE_FILE for over 30s" >&2
+		exit 1
+	fi
 fi
 
-cat > "$STATE_FILE" <<EOF
+# tr -d '\r' on every read, because a CR is invisible and this is a comparison
+# against a literal. A record that picked up CRLF -- copied through an editor on
+# another machine, restored from a backup taken on one -- makes "$(...)" return
+# "1\r", which is not "1", so this block would decide the app was never stopped
+# and silently drop a marker that was there. Dropping it starts app_down paging
+# for an app somebody stopped on purpose, which is komizo#48 all over again and
+# with no trace of why. Stripped from the carried values too: a CR inside
+# STOPPED_BY would be written straight back into the new file, where Go refuses
+# to put one.
+STOPPED_KEEP=""
+if [ -f "$STATE_FILE" ] && [ "$(sed -n 's/^STOPPED=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)" = "1" ]; then
+	STOPPED_KEEP="$(printf 'STOPPED=1\nSTOPPED_BY=%s\nSTOPPED_AT=%s' \
+		"$(sed -n 's/^STOPPED_BY=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)" \
+		"$(sed -n 's/^STOPPED_AT=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)")"
+fi
+
+# Built beside the file and MOVED over it, never truncated in place.
+#
+# `cat > "$STATE_FILE"` empties the record and then fills it line by line, so
+# there is a window in which the file exists and says nothing. Anything reading
+# it in that window -- rootd's applier, the probe that builds the report, the
+# generated deploy script scanning other apps' records -- reads a file with no
+# APP_DIR and believes it. A rename is a single step to every reader: they see
+# the old record or the new one and never a half.
+#
+# Same directory, because rename is only atomic within one filesystem. Owner and
+# mode are set on the temporary file BEFORE the move, so the record is never
+# briefly readable by more than root at its final name.
+#
+# The suffix goes AFTER .env, not before, so the name is inert to everything
+# that enumerates apps: the probe skips a file that does not end in .env, and
+# the deploy script's cross-app scan globs *.env. A run that dies between the
+# write and the move therefore leaves a stray file and not a phantom app.
+STATE_TMP="$STATE_FILE.tmp.$$"
+cat > "$STATE_TMP" <<EOF
 # Written by komizo. This is what komizo knows about this app; edit with
 # 'komizo add' rather than by hand.
 APP_NAME=$APP_NAME
@@ -400,10 +460,17 @@ CONFIG_IMAGE=$CONFIG_IMAGE
 KNOWN_AS=$KNOWN_AS
 EOF
 if [ -n "$STOPPED_KEEP" ]; then
-	printf '%s\n' "$STOPPED_KEEP" >> "$STATE_FILE"
+	printf '%s\n' "$STOPPED_KEEP" >> "$STATE_TMP"
 fi
-chown root:root "$STATE_FILE"
-chmod 640 "$STATE_FILE"
+chown root:root "$STATE_TMP"
+chmod 640 "$STATE_TMP"
+mv -f "$STATE_TMP" "$STATE_FILE"
+
+# Released here rather than left to the end of the script. What follows is the
+# deploy script, the doas rules and the proxy, none of which touch this file,
+# and a lock held across all of that would make a concurrent `komizo stop` wait
+# for work it has nothing to do with.
+exec 7>&-
 
 # --- 3. Deploy path --------------------------------------------------------
 # The only privileged thing the CI user may do, besides setting a secret.
