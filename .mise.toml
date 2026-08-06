@@ -11,3 +11,18 @@
 # The "Toolchain pins agree" step in ci.yml is what stops that happening again.
 # If you bump go.mod, bump this too; CI will tell you if you forget.
 go = "1.26"
+
+# ONE shellcheck, so "shellcheck clean" means one thing -- komizo#59.
+#
+# It did not. CI installed whatever apt had (0.9.0 on ubuntu-latest) and `make
+# check` preferred a local shellcheck, falling back to koalaman/shellcheck:stable
+# (0.11.0). Those are different tools with different rules, and the disagreement
+# is not hypothetical: 0.9.0 raises SC2015 on `A && B || continue` while 0.11.0
+# suppresses it, because `continue` is flow control and the note does not apply.
+# A change verified locally therefore failed CI, on a line that was correct.
+#
+# Six shell programs komizo writes onto a box are now linted rather than one, so
+# an ambiguous "clean" costs six times what it used to. This is the pin; the
+# Makefile reads it out of here for its docker fallback and CI asserts against
+# it, so there is one number and everything else derives from it.
+shellcheck = "0.11.0"

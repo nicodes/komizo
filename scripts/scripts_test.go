@@ -1,6 +1,8 @@
 package scripts
 
 import (
+	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,15 +27,12 @@ func all(t *testing.T) map[string]string {
 		"alpine-proxy":  AlpineProxyScript,
 		"alpine-remove": AlpineRemoveScript,
 		"agent-install": AgentInstall("94d5dbd1333d", "0.0.11"),
-		// These two were missing, and the comment above is what they were
-		// missing from: "a script added later cannot quietly escape one" was
-		// true of the checks and not of the map. Both run as root -- enrol from
-		// init.go and enrol.go, unenrol from enrol.go -- and neither was seen by
-		// the clampable-number check, the shell parse, the placeholder check, or
-		// the heredoc scan built on this map. Demonstrated: a `%d` that overflows
-		// 32 bits added to agent-enrol.sh was green, and the identical line in
-		// agent-install.sh was caught.
-		"agent-enrol":   AgentEnrol("https://api.example", "kmz_enr_x", "api.example", []string{"AAAA"}, false),
+		// The two OPTIONAL ones. They run as root like the rest, and until
+		// komizo#59 they were the only scripts this package can produce that no
+		// whole-script check ever saw -- shellcheck reads them as files, but
+		// nothing looked at what a builder actually renders, and nothing would
+		// have seen a heredoc added inside one.
+		"agent-enrol":   AgentEnrol("https://api.komizo.dev", "kmz_enr_abc", "komizo.example.com", []string{"kmz_dev_abcdefgh"}, false),
 		"agent-unenrol": AgentUnenrol(),
 	}
 }
@@ -127,6 +126,86 @@ func TestEveryScriptIsValidShell(t *testing.T) {
 	}
 }
 
+// requireShellcheck turns a skip into a failure.
+//
+// komizo-be docs/checks.md #1: a check that cannot run must not be indistinguishable from
+// a check that passed. `make check` and CI both set this, because in both of
+// those a missing tool is the check not happening; a contributor running
+// `go test ./...` on a machine without shellcheck still gets a skip, which is
+// the honest answer there.
+const requireShellcheck = "KOMIZO_REQUIRE_SHELLCHECK"
+
+// needPinnedShellcheck ends the test unless the shellcheck on PATH is the one
+// .mise.toml installs.
+//
+// THE VERSION, not just the presence -- komizo#59, and the hole that survived
+// the first attempt at it. The Makefile grew a version comparison for its own
+// `shellcheck scripts/*.sh` line, but these tests resolve the tool with
+// exec.LookPath, so on a machine with 0.9.0 installed `make check` printed
+// "shellcheck 0.11.0 (docker)" and then linted all six templates with 0.9.0 --
+// which fails on the very line komizo#59 cites as the reason to pin. And with
+// shellcheck absent but docker present it printed the same line and SKIPPED the
+// six entirely, so the whole of #59 was a green tick.
+//
+// The version belongs here rather than only in the Makefile because this is
+// where the tool is actually invoked. A check that reads its own requirements
+// cannot be routed around by whatever called it.
+func needPinnedShellcheck(t *testing.T) {
+	t.Helper()
+	want := shellcheckPin(t)
+
+	unusable := func(format string, a ...any) {
+		t.Helper()
+		msg := fmt.Sprintf(format, a...)
+		if os.Getenv(requireShellcheck) != "" {
+			t.Fatalf("%s.\n%s is set, so this is a failure rather than a skip -- "+
+				"the shell that runs as root on a box would otherwise go unchecked "+
+				"and the run would still be green.", msg, requireShellcheck)
+		}
+		t.Skipf("%s -- `mise install` gets it", msg)
+	}
+
+	if _, err := exec.LookPath("shellcheck"); err != nil {
+		unusable("shellcheck %s is not installed", want)
+	}
+	out, err := exec.Command("shellcheck", "--version").Output()
+	if err != nil {
+		unusable("shellcheck is on PATH but will not report its version: %v", err)
+	}
+	got := ""
+	for _, ln := range strings.Split(string(out), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(ln), "version: "); ok {
+			got = v
+			break
+		}
+	}
+	if got != want {
+		unusable("shellcheck %s is on PATH but .mise.toml pins %s, and they disagree "+
+			"about real rules (0.9.0 raises SC2015 on `A && B || continue`, 0.11.0 "+
+			"does not)", got, want)
+	}
+}
+
+// shellcheckPin is the version .mise.toml installs.
+//
+// Read out of the file rather than written here, so there is one number. A pin
+// that cannot be found is fatal in every case, including a plain `go test`:
+// unlike a missing tool, it means the repository is inconsistent with itself
+// and no version of this check is the right one to run.
+func shellcheckPin(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", ".mise.toml"))
+	if err != nil {
+		t.Fatalf("cannot read the shellcheck pin: %v", err)
+	}
+	m := regexp.MustCompile(`(?m)^shellcheck *= *"([^"]+)"`).FindSubmatch(b)
+	if m == nil {
+		t.Fatal("no shellcheck pin in .mise.toml -- the lint has no version to be, " +
+			"and whichever one happens to be installed would silently become the standard")
+	}
+	return string(m[1])
+}
+
 // TestShellcheck is the check `sh -n` cannot be.
 //
 // `sh -n` parses: it catches a heredoc left open or an unbalanced quote, and
@@ -144,9 +223,7 @@ func TestEveryScriptIsValidShell(t *testing.T) {
 // with a `../../scripts/*.sh` glob and a second list of Go constants -- two
 // homes for one question. There is one home.
 func TestShellcheck(t *testing.T) {
-	if _, err := exec.LookPath("shellcheck"); err != nil {
-		t.Skip("shellcheck is not installed")
-	}
+	needPinnedShellcheck(t)
 	files, err := filepath.Glob("*.sh")
 	if err != nil {
 		t.Fatal(err)
@@ -205,40 +282,59 @@ func TestShQuoteSurvivesTheShell(t *testing.T) {
 	}
 }
 
+// heredocBody is what a heredoc actually delivers, which is not always what the
+// source looks like.
+//
+// `<<-` IS NOT A SPELLING VARIANT OF `<<`. It strips a leading TAB from every
+// line of the body and lets the terminator be indented, so reading the source
+// verbatim gives text no box ever receives -- and, worse, looking for the
+// terminator at column 0 finds nothing, drops the template, and leaves every
+// check built on it quietly measuring one script fewer.
+//
+// That is not hypothetical: `scripts/alpine.sh` uses `<<-EOF` three times
+// today, and adding a `-` to one of the quoted tags -- a refactor with no
+// semantic effect -- used to delete a root-run script from the lint in silence.
+func heredocBody(rest, tag string, dash bool) (string, bool) {
+	var body strings.Builder
+	for _, ln := range strings.Split(rest, "\n") {
+		text := ln
+		if dash {
+			text = strings.TrimLeft(ln, "\t")
+		}
+		if text == tag {
+			return body.String(), true
+		}
+		body.WriteString(text)
+		body.WriteString("\n")
+	}
+	return "", false
+}
+
 // shippedTemplates is every script komizo writes ONTO a box from inside another
 // script: the body of each quoted heredoc, with placeholders substituted, keyed
 // by "<file>:<TAG>".
 //
-// Found by scanning for the heredocs rather than by a list kept here, because a
-// list here is the thing that goes stale -- see the CI guard this package's
-// checks are run by, which named two tests, one of which had moved and one of
-// which no longer existed, and passed for however long on "no tests to run".
-// A template added later is covered without anybody editing this file.
+// Found by scanning for the heredocs rather than from a list kept here, because
+// a list here is the thing that goes stale. A template added later is covered
+// without anybody editing this file.
+//
+// THE TAG CHARSET INCLUDES DIGITS, which `[A-Z_]+` did not. A template whose
+// tag carried one was invisible to this scan -- the floor below caught the
+// resulting count, which is the backstop working rather than the scan working,
+// and a message about a number is a worse thing to debug than a message about
+// the template. Digits are not permitted to lead, because no shell tag starts
+// with one and allowing it would start matching things that are not tags.
 //
 // A SHEBANG is what marks a heredoc as shell. alpine-proxy.sh writes a Caddy
 // config the same way, and Caddy config is not shell -- so "it declares itself a
 // script" is the rule, which is self-describing and needs no exception list.
 //
-// Placeholder values are irrelevant to whether the result parses, so unknown
-// ones get a path-shaped literal. What matters is that no `__PLACEHOLDER__`
-// survives to be read as a bare word where a command belongs.
+// Placeholder values are irrelevant to whether the result parses or lints, so
+// unknown ones get a path-shaped literal. What matters is that no
+// __PLACEHOLDER__ survives to be read as a bare word where a command belongs.
 func shippedTemplates(t *testing.T) map[string]string {
 	t.Helper()
-	// EVERY SPELLING OF A HEREDOC, not the one this repo happens to use today.
-	//
-	// This was `<<'([A-Z_]+)'\n`: single quotes only, uppercase-and-underscore
-	// tags only, and a newline required immediately after the closing quote. Five
-	// other spellings the shell accepts vanished from the scan in silence --
-	// `<<-'TAG'`, `<<"TAG"`, a redirect written after the tag, a tag with a digit
-	// in it, a lowercase tag. A new root-run template opened any of those ways
-	// was simply not there, and the comment above promises the opposite.
-	//
-	// Matched to the end of the physical line rather than to `\n` so that
-	// `cat <<'TAG' > /path` is found. The tag pattern is the shell's own rule for
-	// a name. The three quotings are spelled out rather than captured and
-	// back-referenced because RE2 has no backreferences -- so each alternative
-	// pins its own closing quote, which is the same guarantee written longhand.
-	heredoc := regexp.MustCompile(`<<-?[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))[^\n]*\n`)
+	heredoc := regexp.MustCompile(`<<(-?)'([A-Z_][A-Z0-9_]*)'\n`)
 	placeholder := regexp.MustCompile(`__[A-Z][A-Z_]*__`)
 	known := map[string]string{
 		"__APP_NAME__":        "web",
@@ -252,25 +348,12 @@ func shippedTemplates(t *testing.T) map[string]string {
 	out := map[string]string{}
 	for name, src := range all(t) {
 		for _, m := range heredoc.FindAllStringSubmatchIndex(src, -1) {
-			tag := ""
-			for _, g := range [][2]int{{m[2], m[3]}, {m[4], m[5]}, {m[6], m[7]}} {
-				if g[0] >= 0 {
-					tag = src[g[0]:g[1]]
-					break
-				}
+			dash, tag := src[m[2]:m[3]] == "-", src[m[4]:m[5]]
+			body, ok := heredocBody(src[m[1]:], tag, dash)
+			if !ok {
+				t.Errorf("%s: heredoc %s is never closed", name, tag)
+				continue
 			}
-			rest := src[m[1]:]
-			j := strings.Index(rest, "\n"+tag+"\n")
-			if j < 0 {
-				// `<<-` strips leading tabs from the terminator too.
-				if k := strings.Index(rest, "\n\t"+tag+"\n"); k >= 0 {
-					j = k
-				} else {
-					t.Errorf("%s: heredoc %s is never closed", name, tag)
-					continue
-				}
-			}
-			body := rest[:j+1]
 			if !strings.HasPrefix(body, "#!") {
 				continue // not a script -- alpine-proxy.sh writes Caddy config this way
 			}
@@ -284,92 +367,83 @@ func shippedTemplates(t *testing.T) map[string]string {
 			out[name+":"+tag] = body
 		}
 	}
-	// THE SET, not the count, and certainly not "more than nothing".
+	// A FLOOR, not a zero check. `len(out) == 0` on its own was not enough: a
+	// `<<'TAG'` changed to `<<-'TAG'` dropped ONE template -- the secret helper,
+	// which runs as root -- out of the lint, the parse and the placeholder
+	// check, and five remained, so nothing fired. komizo-be docs/checks.md #1: the
+	// all-clear and the ran-on-less-than-it-thought were the same signal.
 	//
-	// `len(out) == 0` was the only control, so the scan could fall from six
-	// templates to one and every check built on it would go on passing for the
-	// five it had stopped looking at. A scan is only as good as the proof that it
-	// still finds what it found yesterday.
-	//
-	// This is a list, which is the thing the comment above says it is avoiding,
-	// and the difference is what happens when it is wrong. A list used to SELECT
-	// goes stale silently -- the scan stops finding a template and nothing says
-	// so. A list used to CHECK a scan fails loudly in both directions: a template
-	// that leaves is a bug, and a template that joins is a one-line decision
-	// somebody makes on purpose, with the new name in front of them.
-	want := []string{
-		"agent-install:KOMIZO_AGENT_RC_EOF",
-		"agent-install:KOMIZO_API_RC_EOF",
-		"agent-install:KOMIZO_RC_EOF",
-		"alpine-init:EOF",
-		"alpine:KOMIZO_DEPLOY_EOF",
-		"alpine:KOMIZO_SECRET_EOF",
-	}
-	// A SECOND, UNRELATED SIGNAL for the same question, because the set check
-	// above cannot see the failure that matters most.
-	//
-	// A template the scan never finds is absent from `got` AND from `want`, so
-	// the two agree and the check passes -- the one shape of mistake that
-	// silently shrinks coverage is the one shape the set comparison is blind to.
-	// A list can only police templates somebody already knew about.
-	//
-	// So: every one of these templates is a script, and every script begins with
-	// a shebang at the start of a line. Counting embedded shebangs asks "how many
-	// scripts are in here" without going anywhere near heredoc syntax, so a
-	// heredoc spelling the regex does not know about makes the two disagree. Two
-	// independent implementations of the same count, and they have to match.
-	//
-	// A `#!` that is not a template -- inside a comment, or echoed -- would fail
-	// this. That is the right outcome: it is a line that reads exactly like the
-	// start of a shipped script, and somebody should decide which it is.
-	for name, src := range all(t) {
-		embedded := strings.Count(src, "\n#!")
-		n := 0
-		for k := range out {
-			if strings.SplitN(k, ":", 2)[0] == name {
-				n++
-			}
-		}
-		if embedded != n {
-			t.Errorf("%s has %d embedded shebangs but the heredoc scan found %d templates in it -- "+
-				"a script is being written onto a box that nothing here parses, lints or substitutes", name, embedded, n)
-		}
-	}
-
-	var got []string
-	for k := range out {
-		got = append(got, k)
-	}
-	sort.Strings(got)
-	if !slices.Equal(got, want) {
-		t.Errorf("the heredoc scan found\n  %v\nand the shipped templates are\n  %v\n"+
-			"A template missing here is one that nothing parses, lints or substitutes -- it ships to a box as root unchecked. "+
-			"A template added here is fine: add it to the list.", got, want)
+	// Six today. Adding a seventh needs no edit here; losing one is meant to be
+	// something a person looks at, because a template leaving this map leaves
+	// every check in this file at the same time.
+	const shipped = 6
+	if len(out) < shipped {
+		t.Fatalf("the heredoc scan found %d shipped templates, and there are at least %d.\n"+
+			"  Every check built on this map just got smaller without failing. If one was\n"+
+			"  genuinely removed, lower the floor deliberately; if one was re-spelled --\n"+
+			"  `<<-` instead of `<<`, an indented terminator -- fix the scan.\n"+
+			"  Found: %v", len(out), shipped, slices.Sorted(maps.Keys(out)))
 	}
 	return out
 }
 
-// NOTHING EVER PARSED THE SCRIPTS THAT RUN ON A BOX.
+// FIVE OF THE SIX SCRIPTS KOMIZO WRITES ONTO A BOX WERE PARSED AND NEVER LINTED.
 //
-// TestEveryScriptIsValidShell and TestShellcheck both read the FILES in this
-// directory. Inside those files each of these templates is the body of a QUOTED
-// heredoc, which is a string literal -- so neither `sh -n` nor shellcheck ever
-// treated a line of one as shell. Six programs, all run as root: the per-app
-// deploy script and the secret helper out of alpine.sh, three OpenRC init
-// scripts out of agent-install.sh, and the boot-time firewall script out of
-// alpine-init.sh.
+// komizo#59. TestShellcheck above reads the FILES in this directory, and inside
+// those files each of these templates is the body of a QUOTED heredoc -- a
+// string literal, which shellcheck never treats as shell. Six programs, all run
+// as root: the per-app deploy script and the secret helper out of alpine.sh,
+// three OpenRC service files out of agent-install.sh, and the boot-time
+// firewall script out of alpine-init.sh.
 //
-// Demonstrated rather than argued. Planted inside revert() in the deploy script,
-// on the tree before this test existed: an unclosed `if`, and an unbalanced
-// quote. Both left `shellcheck -s sh scripts/*.sh` clean AND `go test ./...`
-// green. Either would have installed fine and died at the first rollback --
-// the path that only runs when something else has already gone wrong, so the
-// failure arrives on top of another failure, at the worst moment to be reading
-// a log.
+// `sh -n` over them is not this check. It catches an unbalanced quote and an
+// unclosed block and nothing else -- not an unquoted expansion that word-splits
+// on a path with a space in it, not a `read` without -r, not a variable used
+// before it is set. That is the class that actually reaches a box, because the
+// script runs fine until the one input that breaks it.
 //
-// deploy_stopped_test.go lifts two blocks out of one of these and runs them,
-// which is exactly why the gap was easy to miss: the parts under test parse,
-// and everything else was unexamined.
+// EVERY template, from the scan, rather than a named subset. The deploy script
+// was linted alone for a while and the reason was honest -- the OpenRC files
+// raise SC2034 on every variable OpenRC itself consumes, and doing that
+// properly is work. It is done: see agent-install.sh, where the exemption is
+// argued next to the code and then pinned from outside by the test below, which
+// is a stronger check than the one being disabled rather than a way around it.
+//
+// Written to files with their template names, so a complaint says which heredoc
+// in which script it is about. Line numbers are into the BODY, which is what a
+// person editing alpine.sh is looking at anyway.
+func TestEveryShippedTemplatePassesShellcheck(t *testing.T) {
+	needPinnedShellcheck(t)
+	dir := t.TempDir()
+	var files []string
+	for name, body := range shippedTemplates(t) {
+		f := filepath.Join(dir, strings.ReplaceAll(name, ":", "--")+".sh")
+		if err := os.WriteFile(f, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, f)
+	}
+	// Sorted, so a failure reads the same way twice running. Map order is not.
+	sort.Strings(files)
+
+	// -s sh and no excludes, for the reasons TestShellcheck gives. Anything
+	// reported is either a defect or an exemption argued in the script.
+	args := append([]string{"-s", "sh"}, files...)
+	if out, err := exec.Command("shellcheck", args...).CombinedOutput(); err != nil {
+		t.Errorf("shellcheck over the scripts komizo writes onto a box: %v\n%s\n"+
+			"(each file is one heredoc body; the name is <script>--<TAG> and the line numbers are into that body)",
+			err, out)
+	}
+}
+
+// And every one of them still PARSES, which is the check that catches a script
+// that cannot run at all.
+//
+// Kept separate from the lint above rather than folded into it, because they
+// have different failure modes and different requirements: this one needs `sh`,
+// which is everywhere, and shellcheck's absence must not take it down with it.
+// A box receiving a script with an unclosed `if` finds out at the moment the
+// script runs, as root, halfway through a deploy.
 func TestEveryShippedTemplateIsValidShell(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh is not installed")
@@ -388,36 +462,261 @@ func TestEveryShippedTemplateIsValidShell(t *testing.T) {
 	}
 }
 
-// And the deploy script linted, which `sh -n` cannot be -- see TestShellcheck
-// for the argument.
+// THE PRICE OF THE SC2034 DISABLE, PAID.
 //
-// TestShellcheck deliberately runs over the files, and says why: a rendered
-// script has its placeholders replaced, so a complaint about the substitution
-// would point at a line nobody can edit. That reasoning is right, and it leaves
-// these bodies uncovered, because in the file each one is a string.
+// The three OpenRC service files carry `# shellcheck disable=SC2034`, and that
+// is a file-scope disable of a real rule in a file that runs as root. The
+// argument for it is in agent-install.sh: an OpenRC service file is
+// configuration written in shell syntax, openrc-run sources it and reads the
+// variables, and nothing in the file uses them -- so SC2034 fires on all
+// twenty-two assignments and every one of those reports is wrong.
 //
-// ONLY THE DEPLOY SCRIPT, for now. It is the one that runs on every deploy, and
-// it is clean. The other five are not yet: the three OpenRC init scripts raise
-// SC2034 on every variable OpenRC itself consumes (`name`, `command`,
-// `command_user`, `respawn_delay`), which needs a disable and a reason on each
-// rather than a blanket exclude -- this package's rule, stated in TestShellcheck.
-// Tracked in komizo#59; TestEveryShippedTemplateIsValidShell parses all of them in
-// the meantime, which is what catches a script that cannot run at all.
-func TestTheGeneratedDeployScriptPassesShellcheck(t *testing.T) {
-	if _, err := exec.LookPath("shellcheck"); err != nil {
-		t.Skip("shellcheck is not installed")
+// What that disable costs is the thing SC2034 would otherwise have caught:
+// `comand_args="serve"`. OpenRC does not read that name, so the service starts
+// with no arguments and no complaint from anything -- an agent that runs, looks
+// healthy to rc-status, and does the wrong job.
+//
+// So the exemption is a swap, and it is only a fair one if the replacement
+// covers everything the disable switches off. It did not at first: the disable
+// sits before the first command, which makes it FILE-scoped -- reaching inside
+// depend() and covering an assignment written with a leading space -- while
+// this check only looked at column zero. Two live gaps, and the comment on
+// unknownOpenRCNames asserted the opposite of what the code did. Both are shut
+// by reading EVERY assignment in the file, which is also the truer rule: one of
+// these files is configuration, so an assignment in it that OpenRC does not
+// read is a mistake wherever it appears.
+//
+// Against what it replaces it is stronger in one direction and narrower in
+// another, and both are worth stating. Stronger: SC2034 would accept
+// `comand_args` the moment any line mentioned it, and this never does, because
+// it is checked against OpenRC's own shell. Narrower: SC2034 also reports a
+// genuinely unused local, which this cannot -- so a local is refused outright
+// rather than allowed through unexamined.
+//
+// Identified by SHEBANG, so a fourth service added later is covered without
+// this list being edited -- the same rule shippedTemplates uses to decide what
+// is shell at all.
+func TestAnOpenRCServiceOnlyAssignsNamesOpenRCReads(t *testing.T) {
+	found := 0
+	for name, body := range shippedTemplates(t) {
+		if !strings.HasPrefix(body, "#!/sbin/openrc-run") {
+			continue
+		}
+		found++
+		for _, n := range unknownOpenRCNames(body) {
+			t.Errorf("%s assigns %q, which is not a name openrc-run or supervise-daemon reads.\n"+
+				"  SC2034 is disabled for the WHOLE of that file -- see agent-install.sh -- so\n"+
+				"  nothing else would report it, at any indentation or inside any function, and\n"+
+				"  on the box it would simply be ignored.\n"+
+				"  If OpenRC does read it, add it to openRCReads with where that is documented.\n"+
+				"  If it is meant to be a local variable, it cannot be: move the disable off\n"+
+				"  file scope first, because nothing would tell you it had gone unused.", name, n)
+		}
 	}
-	const key = "alpine:KOMIZO_DEPLOY_EOF"
-	body, ok := shippedTemplates(t)[key]
-	if !ok {
-		t.Fatalf("%s is no longer among the shipped templates -- has the deploy script moved out of its heredoc?", key)
+	// The three that exist today. A scan that stopped matching would leave this
+	// test iterating nothing and passing, which is the shape komizo-be#101 is
+	// about: the all-clear and the never-ran are the same signal.
+	if found < 3 {
+		t.Fatalf("found %d OpenRC service templates, expected at least the three in agent-install.sh -- the scan has stopped finding them", found)
 	}
-	f := filepath.Join(t.TempDir(), "deploy.sh")
-	if err := os.WriteFile(f, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
+}
+
+// THE ONE NAME THAT WAS WRONG, pinned so it cannot come back.
+//
+// An allowlist cannot be checked against itself: put a name OpenRC does not
+// read back on it and every test here goes green, because the list IS the
+// oracle. That is not a fixable property, so the two things that can be done
+// instead are both done -- openRCReads says which three files to grep, and this
+// nails down the specific mistake that was made and caught in review.
+//
+// `command_group` is not a variable OpenRC reads. It appears nowhere in
+// openrc-run.sh, start-stop-daemon.sh or supervise-daemon.sh in the openrc
+// package; `command_user` takes "user:group" and there is no separate group
+// variable. It is plausible enough that it was written here once, and while it
+// was on the list a service file could assign it and be told nothing.
+func TestTheAllowlistDoesNotReadmitTheNameThatWasWrong(t *testing.T) {
+	if openRCReads["command_group"] {
+		t.Error("command_group is back on openRCReads. OpenRC does not read it -- " +
+			"command_user takes \"user:group\" -- so a service file assigning it would " +
+			"be silently ignored on the box, which is the exact failure this list exists " +
+			"to catch. Grep the three files named on openRCReads before adding a name.")
 	}
-	if out, err := exec.Command("shellcheck", "-s", "sh", f).CombinedOutput(); err != nil {
-		t.Errorf("shellcheck on the generated deploy script: %v\n%s\n"+
-			"(the source is alpine.sh's KOMIZO_DEPLOY_EOF heredoc; line numbers are into that body)", err, out)
+}
+
+// And the check above can actually fail.
+//
+// A positive control, because everything TestAnOpenRCServiceOnlyAssignsNamesOpenRCReads
+// looks at is clean by construction: if unknownOpenRCNames stopped finding
+// assignments at all -- a regexp that no longer matches, a body read from the
+// wrong place -- it would report nothing, which is exactly what "all names are
+// known" looks like. This is the one input where the two answers differ.
+//
+// The typo is the real one: `comand_args` is a plausible slip and the failure it
+// causes on a box is invisible.
+func TestUnknownOpenRCNamesFindsATypo(t *testing.T) {
+	got := unknownOpenRCNames(`#!/sbin/openrc-run
+name="komizo-agent"
+comand_args="agent"
+export respwan_delay=5
+readonly command_user="komizo_monitor"
+ indented_typo="x"
+respawn_delay=5
+
+depend() {
+	unused_here=1
+	need net
+}
+`)
+	// Every form the file-scope SC2034 disable stops shellcheck reporting: the
+	// bare typo, the export, the one-space indent, and one inside a function.
+	// The three real names must not appear.
+	want := []string{"comand_args", "respwan_delay", "indented_typo", "unused_here"}
+	if !slices.Equal(got, want) {
+		t.Errorf("unknownOpenRCNames = %v, want %v.\n"+
+			"  A local inside a function is not a service variable; `export` and `readonly`\n"+
+			"  are assignments and must not hide one; and the real names must not be reported.", got, want)
+	}
+}
+
+// unknownOpenRCNames is every assignment in an OpenRC service file whose name
+// OpenRC does not read.
+//
+// EVERY assignment, at any indentation, anywhere in the file -- including
+// inside depend(). An earlier version anchored at `^` with no leading
+// whitespace and claimed that assignments inside functions were still covered
+// by SC2034. They are not: the disable in these files sits before the first
+// command, which makes it FILE-scoped, so it reaches into depend() too. That
+// left two live gaps and the comment asserted the opposite of the code:
+//
+//	 comand_args="rootd"    one leading space, invisible to `^`, and OpenRC
+//	                        sources the file so the space changes nothing
+//	depend() { unused=1; }  inside a function, and SC2034 disabled for it
+//
+// The rule is therefore stated the way the file actually works: an OpenRC
+// service file is pure configuration, so EVERY assignment in one is a value
+// OpenRC reads, and anything else is a mistake. That is a stronger claim than
+// SC2034 makes and it needs no whitespace rules or brace counting to hold. If
+// one of these ever genuinely needs a local variable, the disable has to stop
+// being file-scoped first -- and this failing is what says so.
+//
+// `export` and `readonly` are consumed first because they are assignments too,
+// and a regexp that only knew the bare form would MISS a typo rather than
+// report it -- the failure direction that matters here, since the whole point
+// of this check is that nothing else is looking.
+func unknownOpenRCNames(body string) []string {
+	assign := regexp.MustCompile(`(?m)^[ \t]*(?:export |readonly )?([A-Za-z_][A-Za-z0-9_]*)=`)
+	var out []string
+	for _, m := range assign.FindAllStringSubmatch(body, -1) {
+		if !openRCReads[m[1]] {
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
+
+// openRCReads is what openrc-run and supervise-daemon consume out of a service
+// file.
+//
+// READ OUT OF OPENRC, not remembered. Every name here is dereferenced by
+// Alpine's own openrc package, in
+//
+//	/usr/libexec/rc/sh/openrc-run.sh
+//	/usr/libexec/rc/sh/start-stop-daemon.sh
+//	/usr/libexec/rc/sh/supervise-daemon.sh
+//
+// which is where a service file's variables actually get turned into flags:
+// `${directory:+--chdir} $directory`, `${command_user+--user} $command_user`.
+// To check or extend this list, grep those three files for the name. That is a
+// two-minute job and it is the difference between a list and a guess.
+//
+// It matters because a name that is on this list and NOT read by OpenRC makes
+// the check weaker than the SC2034 it stands in for: the typo it exists to
+// catch would sail through. `command_group` was on an earlier draft of this
+// list for exactly that reason -- `command_user` takes "user:group", there is
+// no separate group variable, and OpenRC's shell does not mention the name once.
+//
+// Deliberately NOT the whole of OpenRC's vocabulary -- the internals
+// (`start_time`, `child_pid`) and the rc.conf settings (`rc_ulimit`,
+// `rc_cgroup_cleanup`) are left off. It is what these three files use plus the
+// near neighbours somebody would reach for next, so adding one is a moment of
+// thought rather than a lookup that always succeeds. A missing name fails
+// loudly and is one line to fix; a wrong name fails silently forever.
+var openRCReads = map[string]bool{
+	// openrc-run.sh: what the service is and how rc-service addresses it.
+	"name": true, "description": true, "extra_commands": true,
+	"extra_started_commands": true, "extra_stopped_commands": true,
+	"required_dirs": true, "required_files": true,
+	// start-stop-daemon.sh: what to run, as whom, from where.
+	"command": true, "command_args": true, "command_args_background": true,
+	"command_args_foreground": true, "command_background": true,
+	"command_user": true, "directory": true, "procname": true,
+	"pidfile": true, "umask": true, "retry": true, "stopsig": true,
+	"start_stop_daemon_args": true,
+	// supervise-daemon.sh: the restart policy, which is why this box uses a
+	// supervisor at all -- a crashed agent that is not restarted looks exactly
+	// like a box that is down.
+	"supervisor": true, "respawn_delay": true, "respawn_max": true,
+	"respawn_period": true, "supervise_daemon_args": true,
+	"healthcheck_timer": true, "healthcheck_delay": true,
+	// Where the daemon's own output goes, read by both.
+	"output_log": true, "error_log": true,
+	"output_logger": true, "error_logger": true,
+}
+
+// NOTHING WRITES A SCRIPT THROUGH AN UNQUOTED HEREDOC.
+//
+// shippedTemplates matches a QUOTED heredoc only, so an unquoted one is
+// invisible to every check built on it -- the lint, the parse, the OpenRC
+// names. That is a deliberate limit and this is what stops it being a hole.
+//
+// Unquoted is the wrong tool for shell anyway, and embed.go's own comments say
+// why in stronger terms than this could: the outer shell expands every `$` in
+// the body as it writes the file, so `$APP_DIR` inside the template resolves at
+// INSTALL time to whatever the outer script had, silently, in the most
+// security-sensitive file on the box. alpine.sh was written that way once, with
+// every `$` hand-escaped, and "one missed backslash silently moved an expansion
+// from deploy time to install time".
+//
+// So a `#!` after an unquoted heredoc is two bugs at once: a script that will
+// be mangled, and a script nothing lints. Reported as both.
+//
+// `<<-` COUNTS. It is a different operator, not a different spelling, and an
+// earlier version of this test said `<<-` was worth excluding because nothing
+// used it -- which was false when it was written: alpine.sh uses `<<-EOF` three
+// times. The three are a doas block, a config append and a terminal message,
+// none of them shell; the other unquoted heredocs in this package are a Caddy
+// route, a compose.yml and more messages. None declares itself a script, which
+// is the same rule shippedTemplates uses to decide what is shell.
+func TestNoShellIsWrittenThroughAnUnquotedHeredoc(t *testing.T) {
+	// No quotes around the tag, and the quoted form cannot match: after `<<`
+	// and an optional `-` the next character must be `[A-Z_]`, and in the
+	// quoted spelling it is an apostrophe. An earlier version of this test
+	// carried a "was the match preceded by a quote?" guard for that case; it
+	// was dead code describing something the regexp already makes impossible.
+	unquoted := regexp.MustCompile(`<<(-?)([A-Z_][A-Z0-9_]*)\n`)
+	checked := 0
+	for name, src := range all(t) {
+		for _, m := range unquoted.FindAllStringSubmatchIndex(src, -1) {
+			checked++
+			dash, tag := src[m[2]:m[3]] == "-", src[m[4]:m[5]]
+			body, ok := heredocBody(src[m[1]:], tag, dash)
+			if !ok {
+				t.Errorf("%s: unquoted heredoc %s is never closed", name, tag)
+				continue
+			}
+			if strings.HasPrefix(body, "#!") {
+				t.Errorf("%s writes a script through an UNQUOTED heredoc (<<%s%s).\n"+
+					"  The outer shell expands every $ in it at install time -- see embed.go --\n"+
+					"  and shippedTemplates cannot see it, so nothing lints or parses it.\n"+
+					"  Quote the tag: <<%s%c%s%c",
+					name, src[m[2]:m[3]], tag, src[m[2]:m[3]], '\'', tag, '\'')
+			}
+		}
+	}
+	// The package does use unquoted heredocs, for a Caddy route, a compose.yml,
+	// a doas block and some messages. Finding none means the scan stopped
+	// matching, and a loop over nothing passes. komizo-be docs/checks.md #1.
+	if checked == 0 {
+		t.Fatal("no unquoted heredocs found at all -- this scan has stopped matching, so it is no longer checking anything")
 	}
 }
