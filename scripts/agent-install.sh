@@ -163,8 +163,9 @@ mv -f __STAGED__ /usr/local/bin/komizo-box
 # read by the file, so SC2034 fires on all twenty-two of them and every one is
 # wrong. There is no rewrite that makes them "used" without inventing a use.
 #
-# The disable is at FILE scope rather than one per line, because the argument is
-# the same argument nine times over and nine copies of it is not nine reasons.
+# The disable is at FILE scope rather than one per line, because it is the same
+# argument on every line of the block -- seven of them here, eight in each of
+# the other two -- and twenty-two copies of a reason is not twenty-two reasons.
 # Say what that costs plainly: a directive before the first command applies to
 # the whole file, so SC2034 is off inside depend() too, and it is off for an
 # assignment written with a leading space as much as one at column 0.
