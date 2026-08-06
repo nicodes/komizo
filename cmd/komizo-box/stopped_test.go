@@ -333,7 +333,14 @@ func applyOK(t *testing.T, op, app string) string {
 	// refusals, so a command rejected before it reached the machine would
 	// otherwise leave every assertion downstream measuring an app that nothing
 	// ever touched -- which passes, silently, for the wrong reason.
-	res, found := box.ReadResult(results, id)
+	res, found, err := box.ReadResult(results, id)
+	// The third answer matters here as much as at the route. A result this box
+	// wrote and cannot read back is not "not applied yet" -- komizo#53 -- and a
+	// test that folded it into `!found` would report the interesting failure as
+	// the boring one.
+	if err != nil {
+		t.Fatalf("the result of the signed %s could not be read: %v", op, err)
+	}
 	if !found || !res.OK {
 		t.Fatalf("the signed %s was not applied: %+v", op, res)
 	}
