@@ -318,6 +318,13 @@ func heredocBody(rest, tag string, dash bool) (string, bool) {
 // a list here is the thing that goes stale. A template added later is covered
 // without anybody editing this file.
 //
+// THE TAG CHARSET INCLUDES DIGITS, which `[A-Z_]+` did not. A template whose
+// tag carried one was invisible to this scan -- the floor below caught the
+// resulting count, which is the backstop working rather than the scan working,
+// and a message about a number is a worse thing to debug than a message about
+// the template. Digits are not permitted to lead, because no shell tag starts
+// with one and allowing it would start matching things that are not tags.
+//
 // A SHEBANG is what marks a heredoc as shell. alpine-proxy.sh writes a Caddy
 // config the same way, and Caddy config is not shell -- so "it declares itself a
 // script" is the rule, which is self-describing and needs no exception list.
@@ -327,7 +334,7 @@ func heredocBody(rest, tag string, dash bool) (string, bool) {
 // __PLACEHOLDER__ survives to be read as a bare word where a command belongs.
 func shippedTemplates(t *testing.T) map[string]string {
 	t.Helper()
-	heredoc := regexp.MustCompile(`<<(-?)'([A-Z_]+)'\n`)
+	heredoc := regexp.MustCompile(`<<(-?)'([A-Z_][A-Z0-9_]*)'\n`)
 	placeholder := regexp.MustCompile(`__[A-Z][A-Z_]*__`)
 	known := map[string]string{
 		"__APP_NAME__":        "web",
@@ -514,6 +521,28 @@ func TestAnOpenRCServiceOnlyAssignsNamesOpenRCReads(t *testing.T) {
 	}
 }
 
+// THE ONE NAME THAT WAS WRONG, pinned so it cannot come back.
+//
+// An allowlist cannot be checked against itself: put a name OpenRC does not
+// read back on it and every test here goes green, because the list IS the
+// oracle. That is not a fixable property, so the two things that can be done
+// instead are both done -- openRCReads says which three files to grep, and this
+// nails down the specific mistake that was made and caught in review.
+//
+// `command_group` is not a variable OpenRC reads. It appears nowhere in
+// openrc-run.sh, start-stop-daemon.sh or supervise-daemon.sh in the openrc
+// package; `command_user` takes "user:group" and there is no separate group
+// variable. It is plausible enough that it was written here once, and while it
+// was on the list a service file could assign it and be told nothing.
+func TestTheAllowlistDoesNotReadmitTheNameThatWasWrong(t *testing.T) {
+	if openRCReads["command_group"] {
+		t.Error("command_group is back on openRCReads. OpenRC does not read it -- " +
+			"command_user takes \"user:group\" -- so a service file assigning it would " +
+			"be silently ignored on the box, which is the exact failure this list exists " +
+			"to catch. Grep the three files named on openRCReads before adding a name.")
+	}
+}
+
 // And the check above can actually fail.
 //
 // A positive control, because everything TestAnOpenRCServiceOnlyAssignsNamesOpenRCReads
@@ -664,7 +693,7 @@ func TestNoShellIsWrittenThroughAnUnquotedHeredoc(t *testing.T) {
 	// quoted spelling it is an apostrophe. An earlier version of this test
 	// carried a "was the match preceded by a quote?" guard for that case; it
 	// was dead code describing something the regexp already makes impossible.
-	unquoted := regexp.MustCompile(`<<(-?)([A-Z_]+)\n`)
+	unquoted := regexp.MustCompile(`<<(-?)([A-Z_][A-Z0-9_]*)\n`)
 	checked := 0
 	for name, src := range all(t) {
 		for _, m := range unquoted.FindAllStringSubmatchIndex(src, -1) {
