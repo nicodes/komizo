@@ -544,8 +544,23 @@ cd "$APP_DIR"
 # either would leave a copy of this app's environment sitting in its directory
 # until something happened to overwrite it.
 staging=""
-trap 'rm -rf "$staging" "${DOCKER_CONFIG:-}" 2>/dev/null || true
-	rm -f "$APP_DIR/.env.komizo.bak" 2>/dev/null || true' EXIT INT TERM
+#
+# AND IT STOPS, rather than only tidying. A handler for a non-EXIT signal in
+# POSIX sh RESUMES at the interruption point when it returns, so `EXIT INT TERM`
+# cleaned up and then carried on deploying a box whose operator had just
+# cancelled -- the same defect Review 2 found in the doas and sshd windows
+# below, in a third place nobody had looked. HUP and PIPE were absent entirely,
+# which are precisely how a dropped SSH connection arrives: the tidy-up did not
+# run at all on the two signals most likely to fire, leaving the registry
+# credential in /tmp and a copy of the app's environment beside it.
+#
+# `exit` from a handler runs the EXIT trap too, so the cleanup is written once.
+cleanup_staging() {
+	rm -rf "$staging" "${DOCKER_CONFIG:-}" 2>/dev/null || true
+	rm -f "$APP_DIR/.env.komizo.bak" 2>/dev/null || true
+}
+trap cleanup_staging EXIT
+trap 'cleanup_staging; exit 129' INT TERM HUP PIPE
 
 # Tags and SHAs only: letters, digits, dot, underscore, hyphen. Required --
 # every deploy names a version, because the config for that version has to be

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -1269,17 +1270,53 @@ func TestTheGuardsOnEtcRestoreAndStopOnEverySignal(t *testing.T) {
 // end, and what does is this script's next log line written to a stdout with
 // nothing on the other end.
 func TestTheGuardsCatchEverySignalAnInterruptedUpdateSends(t *testing.T) {
-	for _, want := range []string{
-		`trap 'mv -f "$doas_bak" /etc/doas.conf 2>/dev/null || true' EXIT`,
-		`trap 'mv -f "$doas_bak" /etc/doas.conf 2>/dev/null || true; exit 129' INT TERM HUP PIPE`,
-		`trap 'mv -f "$conf_bak" "$conf" 2>/dev/null || true' EXIT`,
-		`trap 'mv -f "$conf_bak" "$conf" 2>/dev/null || true; exit 129' INT TERM HUP PIPE`,
-	} {
-		if !strings.Contains(scripts.AlpineScript, want) {
-			t.Errorf("alpine.sh no longer installs this guard exactly:\n  %s\n"+
-				"a missing signal leaves /etc mid-edit on the box, and the host shell here "+
-				"hides that by running the EXIT trap anyway", want)
+	// STRUCTURAL, NOT A LIST OF LINES. This asserted four exact strings, which
+	// review showed is two separate weaknesses: reverting all four to `EXIT`
+	// alone is green if the strings are edited to match, and a FIFTH trap
+	// elsewhere in the file is invisible to it. There was one -- the staging
+	// cleanup, `EXIT INT TERM`, catching but not stopping and missing HUP and
+	// PIPE entirely, which are how a dropped ssh connection actually arrives.
+	//
+	// So every trap in the script is found and judged, and a new one cannot be
+	// added without meeting the rule.
+	nonEXIT := regexp.MustCompile(`(?m)^\s*trap\s+(?:'[^']*'|"[^"]*"|[A-Za-z_][A-Za-z0-9_]*)\s+((?:INT|TERM|HUP|PIPE|QUIT)(?:\s+(?:INT|TERM|HUP|PIPE|QUIT))*)\s*$`)
+	all := regexp.MustCompile(`(?m)^\s*trap\s+(?:'([^']*)'|"([^"]*)"|([A-Za-z_][A-Za-z0-9_]*))\s+([A-Z ]+)$`)
+
+	found := all.FindAllStringSubmatch(scripts.AlpineScript, -1)
+	if len(found) < 6 {
+		t.Fatalf("found %d trap installations in alpine.sh, expected at least 6 "+
+			"-- if a guard was removed say so deliberately; if this regexp stopped "+
+			"matching, it is no longer checking anything", len(found))
+	}
+
+	for _, m := range found {
+		body, signals := m[1]+m[2]+m[3], strings.Fields(m[4])
+		if len(signals) == 1 && signals[0] == "EXIT" {
+			continue // the paired EXIT half, which must NOT exit
 		}
+		// A handler for a signal must STOP. POSIX sh resumes at the
+		// interruption point when a handler returns, so a trap that only tidies
+		// carries on doing the work the operator just cancelled -- measured
+		// under busybox ash: TERM gave "CLEANED" then "RESUMED-AND-FINISHED".
+		if !strings.Contains(body, "exit ") {
+			t.Errorf("this trap catches %v and does not exit:\n  %s\n"+
+				"POSIX sh resumes where it was interrupted, so the script carries on "+
+				"provisioning a box whose operator cancelled it", signals, body)
+		}
+		// And it must cover the signals that actually arrive. A dropped ssh
+		// connection is HUP, or PIPE on the next write to a dead stdout --
+		// under busybox ash neither ran the handler at all when absent.
+		for _, need := range []string{"INT", "TERM", "HUP", "PIPE"} {
+			if !slices.Contains(signals, need) {
+				t.Errorf("this trap does not catch %s:\n  %s\n  has %v", need, body, signals)
+			}
+		}
+	}
+
+	// And the paired form is real: every signal trap has an EXIT sibling, so
+	// the ordinary path cleans up too.
+	if got := len(nonEXIT.FindAllString(scripts.AlpineScript, -1)); got < 3 {
+		t.Errorf("found %d signal traps, want at least 3 (staging, doas, sshd)", got)
 	}
 }
 
