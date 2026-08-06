@@ -40,6 +40,7 @@ var AlpineRemoveScript string
 // Separate from alpine.sh because it runs ONCE per update rather than once per
 // app -- komizo#65. alpine.sh validates its own edit and defers; this is what
 // makes the deferral safe to have.
+//
 //go:embed alpine-reload-sshd.sh
 var AlpineReloadSSHDScript string
 
