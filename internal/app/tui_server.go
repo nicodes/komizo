@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -214,7 +215,13 @@ func (m model) anyWildcard() bool { return len(m.wildcardApps()) > 0 }
 // A fresh install rather than an agent reinstall, because "update" has one job --
 // leave the box at the version of komizo in your hand -- and only re-running
 // everything komizo installs can promise that. So: Docker and the network, then
-// the agent (which stamps this version), then the proxy.
+// the agent (which stamps this version), then every app's own scripts, then the
+// proxy.
+//
+// The per-app step is the one that was missing, and its absence is what made
+// the sentence above false: an app's deploy-<app> is generated shell komizo
+// writes and versions with everything else, and until komizo#58 nothing but
+// `komizo add` ever rewrote it. See refresh.go.
 //
 // The proxy step is conditional. A box that was set up without one, or chose to
 // stop it, should not have one reinstalled by a routine update -- so it runs
@@ -243,6 +250,17 @@ func (m model) startKomizoUpdate() tea.Cmd {
 			ch <- runDoneMsg{err: err}
 			return
 		}
+
+		// Carried to the end rather than returned here, for the reason
+		// RunUpdate carries it: a broken record for one app is not a reason to
+		// leave the box's reverse proxy on an old image. The two have nothing to
+		// do with each other.
+		ch <- runOutputMsg("")
+		ch <- runOutputMsg("refreshing each app's scripts...")
+		appErr := refreshBoxApps(t, chanProgress{ch}, func(script string, env map[string]string) error {
+			return stream(ch, exec.Command("ssh", t.sshArgs(envPrefix(env)+"sh -s")...), script)
+		})
+
 		if proxyInstalled {
 			ch <- runOutputMsg("")
 			ch <- runOutputMsg("updating the shared reverse proxy...")
@@ -250,11 +268,12 @@ func (m model) startKomizoUpdate() tea.Cmd {
 				network: net, image: img, tlsAsk: tlsAsk,
 			}))+"sh -s")...)
 			if err := stream(ch, pc, scripts.AlpineProxyScript); err != nil {
-				ch <- runDoneMsg{err: fmt.Errorf("the server updated, but the proxy step failed -- press p to retry it")}
+				ch <- runDoneMsg{err: errors.Join(appErr,
+					fmt.Errorf("the server updated, but the proxy step failed -- press p to retry it"))}
 				return
 			}
 		}
-		ch <- runDoneMsg{}
+		ch <- runDoneMsg{err: appErr}
 	}()
 	return m.run.wait()
 }

@@ -42,7 +42,7 @@ Three commands, each safe to re-run:
 
 ```sh
 komizo init   --host root@box      # Docker, the shared network, the agent
-komizo update --host root@box      # re-run all of it, to upgrade or to repair
+komizo update --host root@box      # re-run all of it, every app included
 komizo proxy  --host root@box      # one Caddy, terminating TLS for every app
 komizo add    --host root@box ...  # a deploy account and its two privileged commands
 ```
@@ -65,7 +65,10 @@ so a newer `komizo` read new things off an untouched box. An agent has to be
 updated to learn anything new, and `komizo report` says when one is behind.
 
 Four things live on a server: `komizo-box` and its OpenRC service, the two
-per-app scripts, and the shared proxy.
+per-app scripts, and the shared proxy. `komizo update` renews all of them --
+including the per-app scripts, which are regenerated from the record komizo
+already holds for each app, so no deploy key is rotated, no setting is changed
+and an app somebody deliberately stopped stays stopped.
 
 ## Layout
 

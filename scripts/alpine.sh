@@ -162,7 +162,17 @@ esac
 if [ "$CLEAR_KNOWN_AS" = "1" ]; then
 	[ -z "$KNOWN_AS" ] || { echo "error: CLEAR_KNOWN_AS=1 with names in KNOWN_AS says two different things" >&2; exit 1; }
 elif [ -z "$KNOWN_AS" ] && [ -f "$STATE_FILE" ]; then
-	KNOWN_AS="$(sed -n 's/^KNOWN_AS=//p' "$STATE_FILE" | head -n 1)"
+	# tr -d '\r' for the reason the STOPPED read below strips it, and this one
+	# fails harder. A record that picked up CRLF -- copied through an editor on
+	# another machine, restored from a backup taken on one -- reads back as
+	# "blog.example.com\r", and the charset check immediately below rejects the
+	# CR and dies complaining about a value nobody passed. So the app could
+	# not be re-provisioned AT ALL: not to change its config image, and not by
+	# `komizo update`, which re-runs this script for every app on the box. That
+	# app would keep the deploy script it already had through every upgrade,
+	# which is komizo#58 surviving its own fix, and the message names a value
+	# nobody passed.
+	KNOWN_AS="$(sed -n 's/^KNOWN_AS=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)"
 fi
 # Substituted into the generated deploy script, so constrain it here rather
 # than trusting the caller. Hostnames and the commas between them.
