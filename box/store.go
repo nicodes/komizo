@@ -217,6 +217,22 @@ func trimLines(path string, n int) error {
 //
 // Same directory because rename is only atomic within one filesystem, and /tmp
 // is frequently its own.
+//
+// IT CARRIES NO OWNERSHIP, and a caller whose file needs a non-root reader has
+// to establish that itself. The temp is created by whatever account is running
+// and chmodded to mode; group and owner are whatever the writer's are, not
+// whatever the file being replaced had. Every caller today is root writing a
+// root-owned file that only root reads, which is why this has never shown.
+//
+// It is worth stating because this codebase has already paid for the same
+// assumption once. komizo#53: results were written root:root 0640 into a
+// directory the serving account could list but not read, so every signed
+// command succeeded on the machine and was reported to the operator as a
+// failure -- after an eleven minute wait, whose obvious next move is to press
+// the button again. Nothing logged it, because absent and unreadable were the
+// same answer. The moment a file written through here acquires a reader that is
+// not root, this function will take that reader's access away on the first
+// rewrite and say nothing.
 func writeFileAtomic(path string, b []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {

@@ -210,6 +210,14 @@ func runVerb(ctx context.Context, verb string, sub subject, tail int, svc, by st
 		// A start that FAILS therefore leaves the marker on, which is the right
 		// answer too: the app is still down, still down on purpose as far as
 		// anything can tell, and the person who ran the command saw it fail.
+		//
+		// The cost of that choice is worth naming rather than leaving implied.
+		// A `up -d` that fails PART WAY leaves the marker on with some services
+		// running, so those services do not page until somebody starts the app
+		// again successfully. The alternative -- clearing on failure -- pages
+		// for an app that is deliberately down and stayed down, every time a
+		// start fails, which is the noisier half of the same trade and the one
+		// that trains people to ignore the alert.
 		if err := box.ClearStopped(sub.root, sub.app); err != nil {
 			// Said out loud even though the containers are up. An app running
 			// while its record still claims a stop is an app that will not page
