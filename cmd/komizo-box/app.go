@@ -163,8 +163,12 @@ func runVerb(ctx context.Context, verb string, sub subject, tail int, svc, by st
 			// contradiction. A deploy that refuses on a box whose record cannot
 			// be read is a wider failure than the one it prevents, and the
 			// script says so out loud. Here there is a narrower answer available
-			// that costs nothing: `start` does the same thing, clears the marker
-			// on the way, and is one word away.
+			// and it is one word away: `start` brings the app up whatever state
+			// it is in, and takes the marker off on the way. It is not the same
+			// operation -- `up -d` recreates on the committed image where
+			// `restart` restarts the containers that are there -- which is the
+			// point. The verb that can bring an app up is the one that also
+			// records that it is meant to be up.
 			//
 			// The error is carried rather than summarised. Whatever compose said
 			// about the compose file or the daemon is the thing the operator
