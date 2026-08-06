@@ -304,4 +304,12 @@ const (
 	ProblemOrphanDir    = "orphan_dir"
 	ProblemNoTLSGate    = "no_tls_gate"
 	ProblemAppDown      = "app_down"
+	// An app running under a record that says it was stopped. komizo#57.
+	//
+	// The one problem here that is about the REPORT rather than about the box:
+	// every other kind names something wrong with the machine, and this names a
+	// disagreement between the machine and what komizo believes about it. It is
+	// worth a kind of its own precisely because of what the disagreement costs --
+	// app_down keys on the marker, so an app in this state cannot page.
+	ProblemStoppedButRunning = "stopped_but_running"
 )

@@ -154,3 +154,54 @@ func TestAHealthyBoxHasNoProblems(t *testing.T) {
 		t.Errorf("healthy box reported %v", ps)
 	}
 }
+
+// An app running under a record that says STOPPED is reported.
+//
+// komizo#57. Nothing on the box compared the marker against the containers that
+// are actually up, so a record disagreeing with reality stayed that way
+// silently -- and it is the direction that switches paging off: app_down keys
+// on the marker, so an app in this state cannot page for as long as it lasts.
+func TestAnAppRunningUnderAStopMarkerIsReported(t *testing.T) {
+	// Stopped on the record, and up in fact.
+	a := App{Name: "blog", Stopped: true, Containers: []Container{
+		{Service: "web", State: "running"},
+		{Service: "sidecar", State: "exited"},
+	}}
+	ps := Diagnose(Report{Apps: []App{a}})
+	if !has(ps, ProblemStoppedButRunning) {
+		t.Errorf("an app running under a stop marker was not reported: %v", kinds(ps))
+	}
+
+	// AND NOT AS app_down, which it is not: containers are running. Reporting
+	// both would be two alerts for one disagreement, and the wrong one of the
+	// two is the one that says the app is unavailable.
+	if has(ps, ProblemAppDown) {
+		t.Errorf("a running app was also reported as down: %v", kinds(ps))
+	}
+
+	// THE DETAIL SAYS WHAT TO DO. A problem that names a disagreement without
+	// naming either way out leaves the reader with the marker and the
+	// containers and no idea which one is meant to move.
+	for _, p := range ps {
+		if p.Kind == ProblemStoppedButRunning && !strings.Contains(p.Detail, "start it") {
+			t.Errorf("the detail does not say how to resolve it: %q", p.Detail)
+		}
+	}
+}
+
+// And the two states either side of it are unchanged.
+//
+// This is the assertion that stops the new problem becoming noise: an app that
+// is stopped AND down is the ordinary deliberate stop, which must stay silent,
+// and an app running without a marker is simply healthy.
+func TestAStopMarkerOnADownAppIsStillSilent(t *testing.T) {
+	stoppedAndDown := App{Name: "blog", Stopped: true, Containers: []Container{{Service: "web", State: "exited"}}}
+	if ps := Diagnose(Report{Apps: []App{stoppedAndDown}}); has(ps, ProblemStoppedButRunning) {
+		t.Errorf("an app that is stopped and down was reported as a disagreement: %v", kinds(ps))
+	}
+
+	runningAndUnmarked := App{Name: "blog", Containers: []Container{{Service: "web", State: "running"}}}
+	if ps := Diagnose(Report{Apps: []App{runningAndUnmarked}}); has(ps, ProblemStoppedButRunning) {
+		t.Errorf("a healthy running app was reported: %v", kinds(ps))
+	}
+}

@@ -81,6 +81,39 @@ func Diagnose(r Report) []Problem {
 			}
 		}
 
+		// RUNNING, UNDER A RECORD THAT SAYS STOPPED. komizo#57.
+		//
+		// Nothing on this box compares the marker against the containers that
+		// are actually up, so a record disagreeing with reality stays that way
+		// silently -- and it is the direction that switches paging OFF. app_down
+		// below keys on `!a.Stopped`, so an app in this state never pages, for
+		// as long as the disagreement lasts, with nothing on the report saying
+		// alerting is off for it. The only thing that clears the marker is
+		// somebody running `komizo start` on an app they can plainly see is
+		// already up, which is not a thing anybody does.
+		//
+		// REPORTED, NOT RECONCILED, and that is the harder half deliberately
+		// left alone. Clearing the marker here would mean a container that
+		// restarts on its own -- a `restart: always` policy, a box rebooting --
+		// silently overrules a person who asked for the app to be down. Saying
+		// so makes the class of bug visible; deciding who wins is a separate
+		// question with a worse failure mode if it is got wrong.
+		//
+		// WHAT STILL CREATES THIS. komizo#54 removed the CI deploy that started
+		// a stopped app, #62 removed the stop that lands mid-deploy, and #66
+		// removed the per-service start. What remains is a box that ran an older
+		// script before upgrading, and anybody typing `docker compose up` by
+		// hand -- which is not a thing to design out.
+		if a.Stopped && a.Running() > 0 {
+			out = append(out, Problem{
+				Kind: ProblemStoppedButRunning,
+				App:  a.Name,
+				Detail: fmt.Sprintf("%s is recorded as stopped but %d of its %d container(s) are running, "+
+					"so it cannot report as down: start it to clear the record, or stop it again",
+					a.Name, a.Running(), len(a.Containers)),
+			})
+		}
+
 		// Down, and not on purpose.
 		//
 		// Stopped is a decision and must never page anyone -- which is the whole
