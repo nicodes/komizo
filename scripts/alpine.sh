@@ -1185,9 +1185,27 @@ touch /etc/doas.conf
 # hand over the connection komizo just used. This is the one file the script
 # was mutating without a way back: sshd_config below has both a backup and a
 # trap, and alpine-remove.sh backs up this very file on the way out.
-doas_bak="/etc/doas.conf.komizo.bak"
+# PER RUN, not a fixed name. Two runs of this script at once -- an update while
+# somebody adds an app, two operators, CI adding an app mid-upgrade -- shared
+# one backup file: the first to finish deleted it, and the second's restore
+# then had nothing to move, aborting under set -e with doas.conf left in its
+# edited state. STATE_TMP above already solves this with $$; so does this.
+doas_bak="/etc/doas.conf.komizo.bak.$$"
 cp /etc/doas.conf "$doas_bak"
-trap 'mv -f "$doas_bak" /etc/doas.conf 2>/dev/null || true' EXIT
+# EXIT INT TERM HUP, not EXIT alone.
+#
+# Between the sed below (which removes this account's rule block) and the
+# append after it, this app cannot deploy -- doas has no rule for it. An EXIT
+# trap does not run on HUP, TERM or PIPE, and those are exactly how this script
+# dies in practice: `komizo update` is long, interrupting it kills the local
+# ssh, and the far end then takes SIGHUP from sshd or SIGPIPE on its next write
+# to a closed stdout. Left that way, the app's deploys fail until something
+# re-runs the setup, and nothing on the box says why.
+#
+# It was survivable when this block ran once, because somebody chose to run
+# `komizo add`. komizo#58 made it run once per app on every upgrade. The
+# generated deploy script already traps the same set for a smaller stake.
+trap 'mv -f "$doas_bak" /etc/doas.conf 2>/dev/null || true' EXIT INT TERM HUP
 
 # Delimited block, so the rule set can grow without the removal logic having to
 # know how many lines it spans.
@@ -1207,12 +1225,14 @@ chown root:root /etc/doas.conf
 chmod 600 /etc/doas.conf
 if ! doas -C /etc/doas.conf; then
 	mv -f "$doas_bak" /etc/doas.conf
-	trap - EXIT
+	trap - EXIT INT TERM HUP
 	die "the generated doas.conf is invalid, reverted -- no rules were changed"
 fi
 # Success: stop guarding it and drop the backup, so a later run's "backup" is
-# not one that already carries komizo's edits.
-trap - EXIT
+# not one that already carries komizo's edits. The whole set is cleared, not
+# only EXIT: a handler left on HUP would fire during a LATER step and move a
+# backup that no longer exists.
+trap - EXIT INT TERM HUP
 rm -f "$doas_bak"
 
 # --- 4. sshd ---------------------------------------------------------------
@@ -1233,7 +1253,10 @@ rm -f "$doas_bak"
 #            HARDEN_SSH=1 asks for it.
 
 conf=/etc/ssh/sshd_config
-conf_bak="$conf.komizo.bak"
+# Per run, for the reason doas_bak above is: two concurrent runs sharing one
+# backup name lose each other's, and the loser restores a file that already
+# carries the winner's edits -- or nothing at all.
+conf_bak="$conf.komizo.bak.$$"
 cp "$conf" "$conf_bak"
 
 # Restore on ANY failure between here and a successful reload. A half-edited
@@ -1241,7 +1264,14 @@ cp "$conf" "$conf_bak"
 # ~/.ssh/authorized_keys -- which it can write -- reintroducing the very thing
 # the root-owned key list exists to prevent. The explicit reverts below stay for
 # their specific messages; this catches every other way out. Cleared on success.
-trap 'mv -f "$conf_bak" "$conf" 2>/dev/null || true' EXIT
+#
+# EXIT INT TERM HUP, for the reason the doas trap above takes the same set, and
+# this window is the worse of the two. Between the sed below and the append
+# further down, this account has NO Match block: it loses the root-owned
+# AuthorizedKeysFile and every restriction in it (AllowTcpForwarding no and the
+# rest). sshd has not been reloaded yet, so it does not bite now -- it bites at
+# the next reboot, a long way from anything anyone would connect it to.
+trap 'mv -f "$conf_bak" "$conf" 2>/dev/null || true' EXIT INT TERM HUP
 
 # Retire the previous account's Match block too, if this app was renamed onto a
 # new account (OLD_CI_USER is set only when it is safe to do so).
@@ -1318,11 +1348,11 @@ if sshd -t; then
 	rc-service sshd reload || rc-service sshd restart
 	# Success: stop guarding the file and drop the backup, so a re-run's "backup"
 	# is the pre-komizo config rather than one that already carries komizo's edits.
-	trap - EXIT
+	trap - EXIT INT TERM HUP
 	rm -f "$conf_bak"
 else
 	mv "$conf_bak" "$conf"
-	trap - EXIT
+	trap - EXIT INT TERM HUP
 	die "sshd config test failed, reverted -- nothing was restarted"
 fi
 

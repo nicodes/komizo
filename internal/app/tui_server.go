@@ -257,7 +257,7 @@ func (m model) startKomizoUpdate() tea.Cmd {
 		// do with each other.
 		ch <- runOutputMsg("")
 		ch <- runOutputMsg("refreshing each app's scripts...")
-		appErr := refreshBoxApps(t, chanProgress{ch}, func(script string, env map[string]string) error {
+		appErr := refreshBoxApps(t.appRecords, chanProgress{ch}, func(script string, env map[string]string) error {
 			return stream(ch, exec.Command("ssh", t.sshArgs(envPrefix(env)+"sh -s")...), script)
 		})
 

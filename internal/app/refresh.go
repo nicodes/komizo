@@ -1,7 +1,9 @@
 package app
 
 import (
+	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"github.com/nicodes/komizo/box"
@@ -78,9 +80,15 @@ type appRecord struct {
 // is refused and the update fails naming a value that looks perfectly correct
 // in the file and in the error.
 //
-// box.AppsDir is spliced in unquoted because the glob has to expand and the
-// constant contains nothing a shell would treat specially.
-var appRecordsCmd = `for f in ` + box.AppsDir + `/*.env; do
+// The directory is a PARAMETER only so a test can run this loop for real
+// against a directory it owns. appRecordsCmd is the one every box gets, built
+// from box.AppsDir; TestTheEnumerationFindsEveryAppAndNothingElse asserts the
+// two are the same command, so pointing the shipped one somewhere else fails
+// there rather than leaving a test that proves things about a directory nothing
+// reads. The value is spliced in unquoted because the glob has to expand, and
+// box.AppsDir contains nothing a shell would treat specially.
+func appRecordsCmdFor(dir string) string {
+	return `for f in ` + dir + `/*.env; do
 	[ -f "$f" ] || continue
 	n="${f##*/}"; n="${n%.env}"
 	printf '%s\t%s\t%s\t%s\n' "$n" \
@@ -88,18 +96,41 @@ var appRecordsCmd = `for f in ` + box.AppsDir + `/*.env; do
 		"$(sed -n 's/^CONFIG_IMAGE=//p' "$f" | tr -d '\r' | head -n 1)" \
 		"$(sed -n 's/^APP_DIR=//p' "$f" | tr -d '\r' | head -n 1)"
 done`
+}
 
-// readAppRecords asks the box which apps are on it.
+var appRecordsCmd = appRecordsCmdFor(box.AppsDir)
+
+// appRecords asks the box which apps are on it.
 //
 // A box with no apps prints nothing and exits 0 -- the `[ -f "$f" ]` guard is
 // what makes an unexpanded glob (no AppsDir at all, which is a box that has
 // never had an app) indistinguishable from an empty one.
-func readAppRecords(t target) ([]appRecord, error) {
+//
+// THE FAILURE CARRIES THE BOX'S OWN WORDS. quiet() suppresses stderr, which is
+// right for a probe whose failure is an expected answer -- and this is the
+// opposite of one. If this step fails, no app on the box is refreshed, and
+// "exit status 1" on its own leaves an operator with a command that silently
+// did nothing and no way to find out why. exec.Cmd.Output fills ExitError.Stderr
+// for exactly this, so the reason is put back in.
+func (t target) appRecords() ([]appRecord, error) {
 	out, err := t.quiet(appRecordsCmd)
 	if err != nil {
-		return nil, fmt.Errorf("could not read the list of apps on this box: %w", err)
+		return nil, appListError(err)
 	}
 	return parseAppRecords(out), nil
+}
+
+// appListError puts the box's own words back on a failure quiet() swallowed.
+// Its own function so it can be tested: the branch only runs on a box that has
+// gone wrong, which is the branch nobody exercises and the one whose whole job
+// is to be readable.
+func appListError(err error) error {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && len(ee.Stderr) > 0 {
+		return fmt.Errorf("could not read the list of apps on this box: %w\n    %s",
+			err, strings.TrimSpace(string(ee.Stderr)))
+	}
+	return fmt.Errorf("could not read the list of apps on this box: %w", err)
 }
 
 func parseAppRecords(out string) []appRecord {
@@ -148,32 +179,44 @@ func parseAppRecords(out string) []appRecord {
 // counts a skip as a failure for exactly that reason: an app silently not
 // refreshed is the bug this whole file exists to remove.
 //
-// A MISSING VALUE GETS ITS OWN SENTENCE rather than falling through to the
-// validator below it. The validators are written for flags -- "--user must be
-// letters, digits, underscore or hyphen" -- and nobody running `komizo update`
-// passed --user. Told that, an operator goes looking for a flag they did not
-// type instead of at the record that is actually incomplete.
+// NO MESSAGE HERE NAMES A FLAG. Every validator below is written for `komizo
+// add`, where there is a --user or a --config to be wrong about, and `komizo
+// update` passes neither -- so the wrapped text is deliberately dropped rather
+// than carried through with %w. Told "--app-dir contains characters that are
+// not allowed", an operator goes looking for a flag they did not type while the
+// record that is actually wrong goes unmentioned; the file and the key are what
+// they can act on, so those are what these say. Review 1 caught this leaking
+// through the malformed cases after the missing ones had been fixed.
 func (r appRecord) check() error {
-	if err := validateApp(r.name); err != nil {
-		return fmt.Errorf("its record is not named after a valid app: %w", err)
+	// The name comes from the file name, so a name that is not an app name means
+	// the FILE is not one of komizo's. Said that way round, because "blog.old.env"
+	// left beside a record is somebody's backup and not a broken app -- and the
+	// rest of komizo reads it as an app too (box/paths.go enumerates every *.env),
+	// so it is worth hearing about rather than skipping in silence.
+	if validateApp(r.name) != nil {
+		return fmt.Errorf("%q is not a name komizo gives an app, so %s is not a record "+
+			"komizo wrote -- move it out of that directory if it is a backup",
+			r.name, box.AppsDir+"/"+r.name+".env")
 	}
 	if r.user == "" {
 		return fmt.Errorf("its record names no CI_USER, so komizo does not know which account deploys it")
 	}
-	if err := validateUser(r.user); err != nil {
-		return fmt.Errorf("its record's CI_USER is not a valid account name: %w", err)
+	if validateUser(r.user) != nil {
+		return fmt.Errorf("its record's CI_USER is %q, which is not a name an account can have "+
+			"(letters, digits, underscore and hyphen only)", r.user)
 	}
 	if r.config == "" {
 		return fmt.Errorf("its record names no CONFIG_IMAGE, so komizo does not know what it deploys from")
 	}
-	if err := validateConfigImage(r.config); err != nil {
-		return fmt.Errorf("its record's CONFIG_IMAGE is not usable: %w", err)
+	if validateConfigImage(r.config) != nil {
+		return fmt.Errorf("its record's CONFIG_IMAGE is %q, which is not a registry path with no tag "+
+			"-- the tag is chosen per deploy, so one recorded here would pin every deploy to it", r.config)
 	}
 	if r.dir == "" {
 		return fmt.Errorf("its record names no APP_DIR, so komizo does not know where it lives")
 	}
-	if err := validateAppDir(r.dir); err != nil {
-		return fmt.Errorf("its record's APP_DIR is not usable: %w", err)
+	if validateAppDir(r.dir) != nil {
+		return fmt.Errorf("its record's APP_DIR is %q, which is not an absolute path komizo will act on", r.dir)
 	}
 	return nil
 }
@@ -235,8 +278,16 @@ func appRefreshEnv(r appRecord) map[string]string {
 // other. `komizo update` and the interface's `u` are the same operation, and
 // the previous version of that promise -- update.go's comment about re-running
 // the whole setup -- was true of the comment and not of either caller.
-func refreshBoxApps(t target, out progress, runner func(script string, env map[string]string) error) error {
-	recs, err := readAppRecords(t)
+//
+// BOTH HALVES ARE PARAMETERS, and that is a testing decision taken on purpose.
+// This function is the seam: everything above it is a surface and everything
+// below it is logic, so a version of it that quietly did nothing would restore
+// the exact behaviour this change removes while every test that enters below it
+// stayed green. That mutant was live until Review 1 found it. Now the listing
+// and the running are both injectable, so the seam itself has a test.
+func refreshBoxApps(list func() ([]appRecord, error), out progress,
+	runner func(script string, env map[string]string) error) error {
+	recs, err := list()
 	if err != nil {
 		return err
 	}
@@ -271,7 +322,14 @@ func refreshApps(recs []appRecord, out progress, runner func(script string, env 
 			continue
 		}
 		if err := runner(scripts.AlpineScript, appRefreshEnv(r)); err != nil {
-			out.note("could not refresh %s -- see the output above", r.name)
+			// The script's own messages are written for the hand-run case it
+			// documents -- "pass as $1 or CI_PUBKEY" and the like -- and nobody
+			// running an update passed either. Said here rather than left to be
+			// puzzled over, because the likeliest cause by far is a key file
+			// that is missing, and the reflex it invites (rotate the key) is the
+			// one thing an update deliberately never does.
+			out.note("could not refresh %s -- see the output above. komizo update passes no", r.name)
+			out.note("flags of its own, so a message naming one is describing that app's record.")
 			failed = append(failed, r.name)
 			continue
 		}
@@ -279,7 +337,13 @@ func refreshApps(recs []appRecord, out progress, runner func(script string, env 
 	if len(failed) > 0 {
 		return fmt.Errorf("the rest of the box is updated, but these apps still carry the\n"+
 			"    deploy script they had before, so fixes to it have not reached them: %s.\n"+
-			"    Run 'komizo add' for each once the reason above is dealt with.",
+			"\n"+
+			"    That is the pairing komizo#58 is about, and it applies to those apps now:\n"+
+			"    the agent on this box writes a durable stop marker, their deploy scripts\n"+
+			"    do not read one, so `komizo stop` on any of them will look like it worked\n"+
+			"    and the next deploy will start it again with the marker still set -- at\n"+
+			"    which point it stops paging. Run 'komizo add' for each once the reason\n"+
+			"    above is dealt with, or leave them running until you have.",
 			strings.Join(failed, ", "))
 	}
 	return nil

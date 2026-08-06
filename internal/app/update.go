@@ -126,7 +126,7 @@ func RunUpdate(args []string) error {
 	// with whatever the proxy has to say, so the command still fails and says
 	// everything it found rather than the first thing.
 	step("Refreshing each app's scripts")
-	appErr := refreshBoxApps(tgt, cliProgress{}, tgt.runScript)
+	appErr := refreshBoxApps(tgt.appRecords, cliProgress{}, tgt.runScript)
 
 	if o.noProxy || !hasProxy {
 		return appErr
