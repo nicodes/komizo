@@ -103,6 +103,21 @@ func AppendSample(path string, s Sample, max int64, keep int) error {
 	if err != nil {
 		return err
 	}
+	// AND HANDED OVER, on the append that CREATES it.
+	//
+	// This one cannot be repaired later, which is what makes it different from
+	// a result. A result is written to a fresh temp file every time, so putting
+	// the directory's setgid bit back fixes every result written afterwards.
+	// The history is opened O_APPEND on the same file for the life of the box:
+	// its group is decided once, by whoever created it, and no amount of fixing
+	// the directory afterwards changes it. A history created while the setgid
+	// bit was off is unreadable by the read API for ever.
+	//
+	// Cheap, because it is a no-op when the group is already right.
+	if err := chownToAgentGroup(path); err != nil {
+		f.Close()
+		return err
+	}
 	if _, err := f.Write(append(b, '\n')); err != nil {
 		f.Close()
 		return err
@@ -259,6 +274,51 @@ func writeFileAtomic(path string, b []byte, mode os.FileMode) error {
 		return err
 	}
 	if err := os.Chmod(tmp, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// writeFileAtomicOwned is writeFileAtomic, with the file handed to the serving
+// group BEFORE it lands.
+//
+// THE ORDER IS THE WHOLE POINT, and getting it round the other way is a worse
+// bug than the one it was fixing. WriteResult used to rename and then chgrp, so
+// a chgrp that failed returned an error with the file already in place -- and
+// `Applied` is a stat, so that id read as done for ever. rootd would refuse to
+// apply the command (correctly, the claim failed) and equally refuse to apply
+// it ever again, including after somebody fixed the permission. A box in that
+// state cannot be repaired without deleting files by hand.
+//
+// Done on the temp file, which is removed by the deferred cleanup on any
+// failure, so a box that cannot hand a file over is a box that wrote nothing.
+func writeFileAtomicOwned(path string, b []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if _, err := f.Write(b); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, mode); err != nil {
+		return err
+	}
+	// Before the rename, so nothing lands that the serving account cannot open.
+	if err := chownToAgentGroup(tmp); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)

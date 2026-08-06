@@ -117,7 +117,20 @@ func postCommand(cfg APIConfig, w http.ResponseWriter, r *http.Request) {
 
 	// Already done. Answered from the record rather than queued again, so a
 	// retry after a dropped response is idempotent instead of a second stop.
-	if res, ok := ReadResult(cfg.ResultsDir, c.ID); ok {
+	res, done, err := ReadResult(cfg.ResultsDir, c.ID)
+	switch {
+	case err != nil:
+		// TAKING IT WOULD BE THE WORSE ANSWER. This box has just failed to read
+		// its own record of what it has done, so it cannot say whether this
+		// command is a retry -- and accepting it means a 202 for work whose
+		// outcome the caller will then poll for and never get. That is the exact
+		// shape of the failure this route exists to prevent: for app.add, a
+		// second provision that rewrites authorized_keys and breaks a working
+		// deploy key. Said out loud, and recorded where the operator is.
+		resultFault(c.ID, err)
+		http.Error(w, "this box cannot read what it has already done", http.StatusInternalServerError)
+		return
+	case done:
 		writeJSON(w, resultResponse{V: ResultVersion, Result: res})
 		return
 	}
@@ -155,8 +168,20 @@ func getResult(cfg APIConfig, w http.ResponseWriter, r *http.Request) {
 		refuse(w)
 		return
 	}
-	res, ok := ReadResult(cfg.ResultsDir, id)
-	if !ok {
+	res, done, err := ReadResult(cfg.ResultsDir, id)
+	if err != nil {
+		// UNREADABLE IS NOT "NOT YET", which is what this answered for every
+		// command on every box until the results directory kept its setgid bit.
+		// 500 rather than 404: the command is done and this box cannot say what
+		// happened, so the app stops polling and somebody is told to look at the
+		// machine instead of pressing the button a second time.
+		//
+		// The same distinction serveLog already makes, one file along.
+		resultFault(id, err)
+		http.Error(w, "this box could not read the result of that command", http.StatusInternalServerError)
+		return
+	}
+	if !done {
 		// Not an error. A command that has arrived and not been applied yet is
 		// the normal state for the moment between the two, and it is exactly
 		// what the caller is polling to see change.
@@ -164,6 +189,20 @@ func getResult(cfg APIConfig, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, resultResponse{V: ResultVersion, Result: res})
+}
+
+// resultFault records a result this box has but cannot read.
+//
+// ON THE BOX, because there is nowhere else for it to go: the caller is told
+// that something is wrong and deliberately not what -- and a fault of this kind
+// is a permission on a directory, which is an operator's to fix and nobody
+// else's to learn about. Without a line here the only evidence of the whole
+// failure was a 404 that looked exactly like a command still in flight.
+//
+// The id, not the contents. It is a random string this caller chose and already
+// knows; a result names an app on this machine.
+func resultFault(id string, err error) {
+	fmt.Fprintf(os.Stderr, "komizo-box: could not read the result of %s: %v\n", id, err)
 }
 
 // TempPrefix marks a command that is still being written.
