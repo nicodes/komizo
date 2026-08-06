@@ -227,8 +227,14 @@ func TestTheSeamActuallyListsAndActs(t *testing.T) {
 	if err := refreshBoxApps(func() ([]appRecord, error) { return recs, nil }, &silentProgress{}, r.run); err != nil {
 		t.Fatalf("refreshBoxApps: %v", err)
 	}
-	if len(r.envs) != 1 || r.envs[0]["APP_NAME"] != "blog" {
-		t.Fatalf("the seam listed the apps and did nothing with them: ran %d time(s)", len(r.envs))
+	if got := r.appRuns(); len(got) != 1 || got[0]["APP_NAME"] != "blog" {
+		t.Fatalf("the seam listed the apps and did nothing with them: ran %d time(s)", len(got))
+	}
+	// AND SSHD WAS RELOADED ONCE, not once per app -- komizo#65. Each per-app
+	// reload is a window in which a CI deploy dialling this box can fail, and
+	// the count used to grow with the fleet.
+	if n := r.reloads(); n != 1 {
+		t.Errorf("sshd was reloaded %d times for 1 app, want exactly 1", n)
 	}
 
 	// A box that cannot say what is on it must fail rather than report that
@@ -387,6 +393,34 @@ func (r *recordingRunner) run(script string, env map[string]string) error {
 	return r.fail[env["APP_NAME"]]
 }
 
+// appRuns is the per-app script only.
+//
+// SEPARATED FROM THE RELOAD, because komizo#65 made an update run two different
+// scripts: alpine.sh once per app, and alpine-reload-sshd.sh once at the end.
+// Counting every invocation together made "ran once per app" and "ran once per
+// app plus a reload" indistinguishable -- so a reload that fired per app, which
+// is the bug #65 is about, would look the same as one that fired once.
+func (r *recordingRunner) appRuns() []map[string]string {
+	var out []map[string]string
+	for i, sc := range r.scripts {
+		if sc != scripts.AlpineReloadSSHDScript {
+			out = append(out, r.envs[i])
+		}
+	}
+	return out
+}
+
+// reloads is how many times the daemon was actually told to pick the config up.
+func (r *recordingRunner) reloads() int {
+	n := 0
+	for _, sc := range r.scripts {
+		if sc == scripts.AlpineReloadSSHDScript {
+			n++
+		}
+	}
+	return n
+}
+
 type silentProgress struct{ lines []string }
 
 func (p *silentProgress) step(format string, a ...any) {
@@ -411,12 +445,34 @@ func TestAnUpdateReprovisionsEveryAppWithItsOwnSettings(t *testing.T) {
 	if err := refreshApps(recs, &silentProgress{}, r.run); err != nil {
 		t.Fatalf("refreshApps: %v", err)
 	}
-	if len(r.envs) != 2 {
+	runs := r.appRuns()
+	if len(runs) != 2 {
 		t.Fatalf("ran %d times for 2 apps -- an app that is not re-run is an app "+
-			"still carrying the old deploy script", len(r.envs))
+			"still carrying the old deploy script", len(runs))
+	}
+	// ONE reload for the pair, not one each -- komizo#65.
+	//
+	// BOTH HALVES, and the second is the one that matters. Counting the reload
+	// script alone says nothing about whether alpine.sh still reloads per app:
+	// setting DEFER_SSHD_RELOAD to "0" restores #65 in full -- N per-app reloads
+	// plus the new one -- and the count above stays at 1. Verified by doing it.
+	//
+	// So every app run must carry the deferral, and the script must honour it.
+	if n := r.reloads(); n != 1 {
+		t.Errorf("sshd was reloaded %d times for 2 apps, want exactly 1", n)
+	}
+	for _, env := range runs {
+		if env["DEFER_SSHD_RELOAD"] != "1" {
+			t.Errorf("%s was refreshed without DEFER_SSHD_RELOAD=1, so alpine.sh reloads sshd "+
+				"for it -- that is one window per app, which is komizo#65", env["APP_NAME"])
+		}
+	}
+	// And the script actually branches on it. A flag nothing reads is a flag.
+	if !strings.Contains(scripts.AlpineScript, `"${DEFER_SSHD_RELOAD:-0}" = "1"`) {
+		t.Error("alpine.sh no longer honours DEFER_SSHD_RELOAD, so passing it changes nothing")
 	}
 	for i, want := range recs {
-		if r.scripts[i] != scripts.AlpineScript {
+		if i < len(r.scripts) && r.scripts[i] != scripts.AlpineScript {
 			t.Errorf("%s was not re-run with the app setup script", want.name)
 		}
 		got := r.envs[i]
@@ -519,9 +575,9 @@ func TestAnAppWhoseRecordIsIncompleteIsSkippedAndReported(t *testing.T) {
 				if !strings.Contains(err.Error(), tc.rec.name) {
 					t.Errorf("the error does not name %s: %v", tc.rec.name, err)
 				}
-				if len(r.envs) != 1 || r.envs[0]["APP_NAME"] != good.name {
+				if got := r.appRuns(); len(got) != 1 || got[0]["APP_NAME"] != good.name {
 					t.Errorf("ran for %d app(s); the good one must still be refreshed and the "+
-						"bad one must not be touched", len(r.envs))
+						"bad one must not be touched", len(got))
 				}
 				// NO reason may be reported as a bad FLAG. The validators are
 				// written for `komizo add`, where there is a --user or a
@@ -567,9 +623,16 @@ func TestOneAppFailingDoesNotStopTheRest(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "shop") {
 		t.Fatalf("want a failure naming shop, got %v", err)
 	}
-	if len(r.envs) != 3 {
+	if got := r.appRuns(); len(got) != 3 {
 		t.Errorf("ran %d times; a failure on one app must not leave the ones after it "+
-			"on the old deploy script", len(r.envs))
+			"on the old deploy script", len(got))
+	}
+	// AND THE PARTIAL RUN STILL RELOADS. The apps that succeeded have written
+	// and validated their sshd blocks but deferred the reload, so skipping it
+	// would leave their deploy accounts unable to connect at all -- a worse
+	// outcome than the one failed app.
+	if n := r.reloads(); n != 1 {
+		t.Errorf("sshd was reloaded %d times after a partial refresh, want 1", n)
 	}
 }
 
