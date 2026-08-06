@@ -1117,10 +1117,22 @@ rm -f .env.komizo.bak
 #
 # No lock, and this is a read rather than a rewrite. Both writers of this record
 # replace it by rename and take the per-app lock around it -- box/stopped.go on
-# the Go side and the state-file write above on this one, both from komizo#48 --
-# so a single read always sees one complete file and never a half-written one.
-# Taking the lock here would buy nothing and would make a deploy wait out a
-# `komizo add`.
+# the Go side, and the block in the provisioning script that installed THIS one
+# (`komizo add` rewrites the record; it is not part of the deploy script), both
+# from komizo#48. So a single read always sees one complete file and never a
+# half-written one. Taking the lock here would buy nothing and would make a
+# deploy wait out a `komizo add`.
+#
+# `[ -f ]` rather than a `2>/dev/null` over the read, and the difference is what
+# happens to a record that exists and cannot be read. Suppressing stderr treats
+# "no such app record" and "this box's state directory is broken" as the same
+# silent empty answer, and both come out as "not stopped" -- so the one case
+# where somebody needs to be told is the one that says nothing. A missing record
+# is ordinary and asks nothing; anything else now prints sed's complaint into
+# the deploy log. The direction is unchanged either way: an unreadable record
+# starts the app, because refusing to deploy on a box whose state directory has
+# gone is a much wider failure than the one it would prevent, and an app with no
+# readable record is not in the report and cannot page in the first place.
 #
 # `tr -d '\r'` because a CR is invisible and this is a comparison against a
 # literal. A record that picked up CRLF makes this read "1\r", which is not "1",
@@ -1133,7 +1145,10 @@ rm -f .env.komizo.bak
 # an app should be running; it is a decision about what it should run when it
 # is. Clearing the marker here would be this same bug spelled differently -- CI
 # overruling a person -- and setting one would stop an app nobody asked to stop.
-stopped="$(sed -n 's/^STOPPED=//p' "$STATE_FILE" 2>/dev/null | tr -d '\r' | head -n 1)"
+stopped=""
+if [ -f "$STATE_FILE" ]; then
+	stopped="$(sed -n 's/^STOPPED=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)"
+fi
 if [ "$stopped" = "1" ]; then
 	# SAID OUT LOUD, in both a machine-readable form and a human one. Without
 	# this, a deploy that deliberately leaves an app down is indistinguishable
@@ -1147,8 +1162,14 @@ if [ "$stopped" = "1" ]; then
 	echo "deploy: $APP_NAME is recorded as stopped, so $ref was pulled and APP_VERSION=$version committed, but nothing was started."
 	echo "deploy: 'komizo start --host <this box> --app $APP_NAME' brings up $version, or press s in the interface."
 else
-	echo "deploy: started=yes"
 	docker compose up -d --remove-orphans
+	# AFTER the start, not before it. `set -e` ends the script on a failed
+	# `up -d`, so an echo above this line would be a claim that the app started
+	# printed immediately before the output showing that it did not -- and the
+	# machine-readable half of it would be the last `started=` a caller parsed.
+	# The stopped branch prints its line first because there is nothing there
+	# that can fail.
+	echo "deploy: started=yes"
 fi
 
 # Now the deploy has happened, so there is nothing left to go back to. Dropped
@@ -1197,6 +1218,13 @@ fi
 
 # Show the resulting topology. Without this a compose.yml that silently drops
 # or renames a service looks identical in the log to one that changed nothing.
+#
+# For an app left down this lists what was there BEFORE the deploy -- exited
+# containers on the previous version, beside an APP_VERSION that has moved on.
+# That is the true state of the box and it is worth reading as one: the config
+# is the new version's, the images are pulled, and the containers are still the
+# old ones because nothing has recreated them yet. The `started=no` lines above
+# are what say so in words.
 docker compose ps --format 'table {{.Service}}\t{{.Image}}\t{{.Status}}'
 KOMIZO_DEPLOY_EOF
 

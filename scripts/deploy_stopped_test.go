@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -55,6 +56,10 @@ func deployBody(t *testing.T) string {
 // is not there -- which is what this test does on the code as it was before
 // komizo#54, and the message says so rather than leaving a maintainer to work
 // out why an extraction failed.
+// Nesting is counted rather than stopping at the first `fi`, because the read
+// itself is guarded by one. Stopping early truncated the block to the read alone
+// and every case then reported "nothing started", which is the answer four of
+// them wanted -- a green suite for a block the test was no longer running.
 func startDecision(t *testing.T, body string) string {
 	t.Helper()
 	lines := strings.Split(body, "\n")
@@ -68,12 +73,64 @@ func startDecision(t *testing.T, body string) string {
 	if start < 0 {
 		t.Fatal("the deploy script never reads the stop marker, so a CI deploy starts an app somebody stopped on purpose (komizo#54)")
 	}
+	guard := -1
 	for i := start; i < len(lines); i++ {
-		if lines[i] == "fi" {
-			return strings.Join(lines[start:i+1], "\n")
+		if strings.HasPrefix(lines[i], `if [ "$stopped"`) {
+			guard = i
+			break
+		}
+	}
+	if guard < 0 {
+		t.Fatal("the deploy script reads the stop marker and then never branches on it (komizo#54)")
+	}
+	// From the GUARD, not from the read, and counting nesting rather than
+	// stopping at the first `fi` -- the read has an `if` of its own now, and
+	// both mistakes end the block early. A truncated block reports "nothing
+	// started" for every case, which is the answer four of them want: a green
+	// suite for a block the test is no longer running.
+	depth := 0
+	for i := guard; i < len(lines); i++ {
+		switch {
+		// Column zero only. Everything nested inside is indented with tabs, so
+		// this counts the blocks the decision is made of and not the ones inside
+		// them.
+		case strings.HasPrefix(lines[i], "if "):
+			depth++
+		case lines[i] == "fi":
+			depth--
+			if depth == 0 {
+				return strings.Join(lines[start:i+1], "\n")
+			}
 		}
 	}
 	t.Fatal("the start decision has no closing fi at column zero")
+	return ""
+}
+
+// stateFileLine is the deploy script's OWN assignment of the record it reads.
+//
+// Lifted rather than restated, because a test that names the path itself tests
+// nothing about the path. Point the shipped `STATE_FILE=` at a file that never
+// exists on a box -- a plausible typo, or a rename that misses this line -- and
+// a test with its own definition stays green while every deploy reads no marker
+// and starts every stopped app. That is komizo#54 restored in full, past both
+// tests here and past alpine.sh's leftover-placeholder guard, which is happy as
+// long as SOME placeholder was substituted.
+//
+// The placeholders are substituted the way alpine.sh substitutes them, with the
+// state directory pointed at the test's own. Anything else in the line -- a
+// third placeholder, a directory this does not know about -- survives as literal
+// text, the record is not found, and the stopped cases fail. Which is the point:
+// this test only passes for a path built out of the two values it can supply.
+func stateFileLine(t *testing.T, body, stateDir, app string) string {
+	t.Helper()
+	for _, ln := range strings.Split(body, "\n") {
+		if strings.HasPrefix(ln, "STATE_FILE=") {
+			ln = strings.ReplaceAll(ln, "__STATE_DIR__", stateDir)
+			return strings.ReplaceAll(ln, "__APP_NAME__", app)
+		}
+	}
+	t.Fatal("the deploy script never says which record it reads (no STATE_FILE= at column zero)")
 	return ""
 }
 
@@ -84,13 +141,34 @@ func startDecision(t *testing.T, body string) string {
 // exactly as written -- a stub binary would also test that PATH lookup works,
 // which is not in question, and would need a temp dir on PATH for a test about
 // a marker file.
-func runDecision(t *testing.T, block, record string) (out string, dockerRan []string) {
+// how is one run: the record to lay down, and the two ways a box can be
+// unhelpful about it. A struct rather than a parameter list because every one
+// of these is a rare case and a call site reading `false, false` says nothing
+// about which.
+type how struct {
+	record string
+	// dockerFails: the start is attempted and does not work.
+	dockerFails bool
+	// unreadable: the record exists and this process cannot open it, which is
+	// what a damaged mode or ownership looks like from here.
+	unreadable bool
+}
+
+func runDecision(t *testing.T, body, block string, h how) (out string, dockerRan []string, err error) {
 	t.Helper()
 	dir := t.TempDir()
+	// AppsDir holds one file per app, named for the app -- see box/paths.go and
+	// the record alpine.sh writes. The test lays the fixture out that way and
+	// lets the script's own STATE_FILE line decide where to look for it.
 	state := filepath.Join(dir, "web.env")
-	if record != "" {
-		if err := os.WriteFile(state, []byte(record), 0o600); err != nil {
+	if h.record != "" {
+		if err := os.WriteFile(state, []byte(h.record), 0o600); err != nil {
 			t.Fatal(err)
+		}
+		if h.unreadable {
+			if err := os.Chmod(state, 0); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	log := filepath.Join(dir, "docker.log")
@@ -98,32 +176,39 @@ func runDecision(t *testing.T, block, record string) (out string, dockerRan []st
 	// The values the block reads that are set further up the real script. Only
 	// these: anything else it touched would be a dependency this test would
 	// rather find out about now than on a box.
-	prelude := "set -eu\n" +
+	//
+	// `set -f` is here because the real script sets it at the top and never
+	// turns it back on after the one place it is off. A block that only works
+	// with pathname expansion enabled would pass here without it and behave
+	// differently on a box.
+	fail := ""
+	if h.dockerFails {
+		fail = " return 1;"
+	}
+	prelude := "set -euf\n" +
 		"APP_NAME=web\n" +
 		"version=abc1234\n" +
 		"ref=registry.example/web-config:abc1234\n" +
-		"STATE_FILE=" + state + "\n" +
-		"docker() { printf '%s\\n' \"docker $*\" >> " + log + "; }\n"
+		stateFileLine(t, body, dir, "web") + "\n" +
+		"docker() { printf '%s\\n' \"docker $*\" >> " + log + ";" + fail + " }\n"
 
 	cmd := exec.Command("sh", "-c", prelude+block)
 	b, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("the start decision failed to run: %v\n%s", err, b)
-	}
 	ran, _ := os.ReadFile(log)
 	for _, ln := range strings.Split(strings.TrimSpace(string(ran)), "\n") {
 		if ln != "" {
 			dockerRan = append(dockerRan, ln)
 		}
 	}
-	return string(b), dockerRan
+	return string(b), dockerRan, err
 }
 
 func TestADeployDoesNotStartAnAppThatWasStopped(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh is not installed")
 	}
-	block := startDecision(t, deployBody(t))
+	body := deployBody(t)
+	block := startDecision(t, body)
 
 	// A record with everything else in it, so what decides is the marker and
 	// not the shape of the file.
@@ -171,11 +256,17 @@ func TestADeployDoesNotStartAnAppThatWasStopped(t *testing.T) {
 		{"no record", "", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			out, ran := runDecision(t, block, tc.record)
+			out, ran, err := runDecision(t, body, block, how{record: tc.record})
+			if err != nil {
+				t.Fatalf("the start decision failed to run: %v\n%s", err, out)
+			}
 
 			started := false
 			for _, c := range ran {
-				if strings.HasPrefix(c, "docker compose up") {
+				// Any verb that would run a container, for the reason the
+				// other test gives at length: `compose start` on the old
+				// containers is a start too, and a quieter one.
+				if regexp.MustCompile(`\bdocker\s+(compose\s+)?(up|start|restart|run)\b`).MatchString(c) {
 					started = true
 				}
 			}
@@ -187,12 +278,21 @@ func TestADeployDoesNotStartAnAppThatWasStopped(t *testing.T) {
 			// app down and a deploy that failed are both green in a CI log
 			// otherwise, and the difference only shows up in a `compose ps`
 			// somebody has to already suspect something to go and read.
-			want := "started=no"
+			//
+			// And it must not say BOTH, which is why the other one is checked
+			// for as well. A branch that printed the pair would satisfy a
+			// contains-check on either line while telling a caller that parses
+			// `started=` two contradictory things -- and the last one wins,
+			// which is whichever the script happens to print second.
+			want, wrong := "started=no", "started=yes"
 			if tc.start {
-				want = "started=yes"
+				want, wrong = wrong, want
 			}
 			if !strings.Contains(out, "deploy: "+want) {
 				t.Errorf("output does not say %q:\n%s", want, out)
+			}
+			if strings.Contains(out, "deploy: "+wrong) {
+				t.Errorf("output also says %q, so a caller parsing started= is told both:\n%s", wrong, out)
 			}
 
 			// The start is `up -d --remove-orphans`, not `compose start`. A
@@ -230,10 +330,10 @@ func TestADeployDoesNotStartAnAppThatWasStopped(t *testing.T) {
 func TestAStoppedAppStillGetsThePullAndTheVersion(t *testing.T) {
 	body := deployBody(t)
 
-	decision := strings.Index(body, "\nstopped=")
-	if decision < 0 {
-		t.Fatal("the deploy script never reads the stop marker (komizo#54)")
-	}
+	// The same block the test above runs, located in the file, so the two
+	// cannot end up disagreeing about where the decision is.
+	decision := strings.Index(body, startDecision(t, body))
+	end := decision + len(startDecision(t, body))
 	for _, step := range []struct{ what, line string }{
 		{"the image pull", "if ! docker compose pull; then"},
 		{"the APP_VERSION commit", "printf 'APP_VERSION=%s\\n' \"$version\" >> .env"},
@@ -261,27 +361,105 @@ func TestAStoppedAppStillGetsThePullAndTheVersion(t *testing.T) {
 	// all. Here it is a position in the file, which cannot be moved out of the
 	// guard without being seen.
 	//
+	// EVERY VERB THAT CAN RUN A CONTAINER, not just `up`. `docker compose start`
+	// is the obvious way somebody would restore the previous version from a
+	// failure branch -- it is the very thing revert()'s comment warns about --
+	// and `restart`, `run` and a bare `docker start` are the same act spelled
+	// differently. A check that named only `up` would have watched the one door
+	// this change happens to close and left the others open.
+	//
+	// `pull`, `config`, `ps`, `create`, `cp`, `rm`, `exec`, `login` and `logs`
+	// are all used above and none of them starts this app: `create` is the
+	// config image, which is FROM scratch and never runs, and `exec` is into the
+	// proxy, which is somebody else's container and already running.
+	//
 	// Comment lines are skipped, and several of them do say `docker compose up`
-	// -- this file argues about that command at length, and a check that
-	// counted the arguments as well as the code would be a check nobody could
-	// leave a note beside.
-	end := strings.Index(body[decision:], "\nfi\n")
-	if end < 0 {
-		t.Fatal("the start decision has no closing fi at column zero")
-	}
-	end += decision
-	ups := 0
+	// -- this file argues about that command at length, and a check that counted
+	// the arguments as well as the code would be a check nobody could leave a
+	// note beside.
+	starts := regexp.MustCompile(`\bdocker\s+(compose\s+)?(up|start|restart|run)\b`)
+	found := 0
+	at := 0
 	for _, ln := range strings.Split(body, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(ln), "#") || !strings.Contains(ln, "docker compose up") {
+		// The line's own offset, kept as we go. strings.Index would answer with
+		// the FIRST place that text appears, which for a line that occurs twice
+		// is the wrong one -- and the wrong one is inside the guard, so the
+		// second copy would be judged by the position of the first.
+		here := at
+		at += len(ln) + 1
+		if strings.HasPrefix(strings.TrimSpace(ln), "#") || !starts.MatchString(ln) {
 			continue
 		}
-		ups++
-		at := strings.Index(body, ln)
-		if at < decision || at > end {
+		found++
+		if here < decision || here > end {
 			t.Errorf("`%s` starts containers from outside the stop check, so a deploy would start an app somebody stopped", strings.TrimSpace(ln))
 		}
 	}
-	if ups != 1 {
-		t.Errorf("the deploy script has %d ways to start containers; exactly one may exist, and it is the one that reads the stop marker", ups)
+	if found != 1 {
+		t.Errorf("the deploy script has %d ways to start containers; exactly one may exist, and it is the one that reads the stop marker", found)
+	}
+}
+
+// A START THAT FAILED MUST NOT REPORT THAT IT STARTED.
+//
+// `deploy: started=yes` is the line a caller parses, and the deploy script runs
+// under `set -e` -- so a `docker compose up -d` that fails ends the script right
+// there. Printed before the start, the last thing a CI log would carry is a
+// machine-readable claim that the app came up, immediately above compose's
+// output saying it did not. The stopped branch prints its line first because
+// nothing in it can fail.
+func TestAFailedStartDoesNotClaimTheAppStarted(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	body := deployBody(t)
+	out, ran, err := runDecision(t, body, startDecision(t, body), how{record: "APP_DIR=/srv/web\n", dockerFails: true})
+	if err == nil {
+		t.Errorf("a failing `docker compose up` left the script succeeding:\n%s", out)
+	}
+	if len(ran) == 0 {
+		t.Fatalf("nothing was even attempted:\n%s", out)
+	}
+	if strings.Contains(out, "started=yes") {
+		t.Errorf("the start failed and the script said started=yes anyway:\n%s", out)
+	}
+}
+
+// A RECORD THAT CANNOT BE READ SAYS SO.
+//
+// The read used to be `sed ... 2>/dev/null`, which turned two different states
+// into one silent empty answer: "this app has no record", which is ordinary,
+// and "this box's state directory is broken", which is not. Both came out as
+// "not stopped" and started the app, and only one of them should pass without
+// comment. The `[ -f ]` guard means a missing record asks nothing, and anything
+// else leaves sed's complaint in the deploy log where somebody will meet it.
+//
+// The direction is unchanged, deliberately: an unreadable record still starts
+// the app, because refusing to deploy on a box whose state directory has gone
+// is a far wider failure than the one it would prevent, and an app with no
+// readable record is not in the report and cannot page anyway. What is tested
+// here is that it is not silent about it.
+func TestAnUnreadableRecordIsNotSilent(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	if os.Geteuid() == 0 {
+		// root opens a mode-0 file, so there is no unreadable record to make.
+		t.Skip("running as root")
+	}
+	body := deployBody(t)
+	out, ran, err := runDecision(t, body, startDecision(t, body),
+		how{record: "APP_DIR=/srv/web\nSTOPPED=1\n", unreadable: true})
+	if err != nil {
+		t.Fatalf("the start decision failed to run: %v\n%s", err, out)
+	}
+	// It starts -- the record said STOPPED, and the script could not read it to
+	// find that out. Asserted so the trade is written down rather than assumed.
+	if len(ran) == 0 {
+		t.Errorf("an unreadable record stopped the deploy instead of starting the app:\n%s", out)
+	}
+	// And it complains, which is the whole point.
+	if !strings.Contains(out, "web.env") {
+		t.Errorf("a record that could not be read produced no complaint naming it:\n%s", out)
 	}
 }
