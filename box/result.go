@@ -117,15 +117,19 @@ func WriteResult(dir string, r Result) error {
 	if err != nil {
 		return err
 	}
-	if err := writeFileAtomic(path, append(b, '\n'), 0o640); err != nil {
-		return err
-	}
+	// HANDED OVER BEFORE IT LANDS, which is the difference between a box that
+	// refuses to work and a box that can never work again. Renaming first and
+	// chgrping after left the file in place when the chgrp failed -- and
+	// `Applied` is a stat, so that id read as done for ever: rootd refused to
+	// apply the command, correctly, and would refuse to apply it again after
+	// somebody fixed the permission.
+	//
 	// FAILING THE WRITE, not logging and carrying on. rootd claims a command by
 	// writing a result before it acts, and treats a failed claim as "do not
 	// apply" -- so a box that cannot produce a readable result does nothing,
 	// loudly, rather than doing the work and reporting nothing. A result nobody
 	// can read is the failure this whole function exists to prevent.
-	return chownToAgentGroup(path)
+	return writeFileAtomicOwned(path, append(b, '\n'), 0o640)
 }
 
 // ReadResult returns what happened, whether there is anything to return, and

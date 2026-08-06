@@ -150,8 +150,33 @@ func WriteAgentConf(path string, c AgentConf) error {
 
 // chownToAgentGroup gives the file to the agent's group, leaving the owner as
 // whoever wrote it -- root.
+// lookupAgentGroup is user.LookupGroup, as a seam.
+//
+// NOT DEPENDENCY INJECTION FOR ITS OWN SAKE. The serving group does not exist
+// on a machine running the tests, so chownToAgentGroup returns early there and
+// every behavioural assertion about it is unreachable -- which is how the
+// mechanism that fixes komizo#53 came to be deletable with the whole suite
+// green. A test that cannot reach the code it is about is a test of nothing,
+// and grepping the source for a call is a poor substitute: the call can stay
+// while the behaviour moves out from under it.
+//
+// One variable, swapped by a test, so the real function can be exercised.
+var lookupAgentGroup = user.LookupGroup
+
+// chownFile is os.Chown, as a seam, for the same reason and one more.
+//
+// Whether a chown fails depends on WHO IS RUNNING -- root can give a file to
+// any group, including one that does not exist, so a test that engineers a
+// failure by picking a hostile gid proves something under one account and
+// nothing under another. CI running as root would quietly stop checking.
+//
+// The property under test is "when the hand-over fails, nothing lands", not
+// "chown fails under these conditions". So the failure is injected and the
+// property is checked directly.
+var chownFile = os.Chown
+
 func chownToAgentGroup(path string) error {
-	g, err := user.LookupGroup(AgentUser)
+	g, err := lookupAgentGroup(AgentUser)
 	if err != nil {
 		// No such group: not a box komizo has set up. Left alone rather than
 		// failed, so this works in a test and on a machine mid-provisioning.
@@ -161,7 +186,7 @@ func chownToAgentGroup(path string) error {
 	if err != nil {
 		return nil
 	}
-	if err := os.Chown(path, os.Getuid(), gid); err != nil {
+	if err := chownFile(path, os.Getuid(), gid); err != nil {
 		return fmt.Errorf("wrote %s but could not give it to %s, so the agent cannot read it: %w",
 			path, AgentUser, err)
 	}

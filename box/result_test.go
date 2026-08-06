@@ -1,9 +1,10 @@
 package box
 
 import (
+	"errors"
 	"os"
+	"os/user"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -293,57 +294,67 @@ func statGID(t *testing.T, path string) int {
 	return int(st.Gid)
 }
 
-// The chgrp is CALLED, which no other test here can establish.
+// THE HAND-OVER IS EXERCISED, not grepped for.
 //
-// Every guarantee above is checked by writing a result and looking at what
-// landed -- which is the right way round, and which cannot see this one.
-// `chownToAgentGroup` returns nil early when the serving group does not exist,
-// and it never exists in a test, so the call is a no-op here and deleting it
-// leaves every other test in this file green. Verified: removing it from
-// WriteResult passes the whole suite.
+// The first version of this test read result.go and looked for the call, on the
+// grounds that the serving group does not exist on a test machine so the call
+// is a no-op. Review showed why that is not enough: moving the swallowed error
+// one level down, into chownToAgentGroup itself, keeps the grepped string,
+// breaks the behaviour, and leaves the whole suite green. A test that asserts a
+// call exists is not a test of what the call does.
 //
-// That matters because the chgrp is the mechanism that fixes the bug this file
-// was written for. The setgid bit is the primary one and it is checked
-// properly -- but on the box where results were unreadable the bit had been
-// CLEARED, so setgid is exactly the mechanism that was already failing. A
-// belt-and-braces second mechanism that no test can reach is one somebody
-// deletes as dead code.
-//
-// So this reads the source, which is the same thing parity_setup_test.go does
-// for the same reason: a call that cannot be observed in a test is still a
-// call somebody can remove.
-func TestWriteResultActuallyHandsTheFileOver(t *testing.T) {
-	src, err := os.ReadFile("result.go")
-	if err != nil {
-		t.Fatalf("could not read result.go: %v", err)
+// So lookupAgentGroup is a seam, and this drives the real path through it.
+func TestAResultIsNotWrittenIfItCannotBeHandedOver(t *testing.T) {
+	dir := t.TempDir()
+
+	// The hand-over fails. INJECTED rather than engineered from a hostile gid,
+	// because root can chown to any group and a test that picks an impossible
+	// one silently stops checking anything the moment CI runs as root.
+	restoreLookup := lookupAgentGroup
+	lookupAgentGroup = func(string) (*user.Group, error) {
+		return &user.Group{Gid: "1001", Name: AgentUser}, nil
 	}
-	body := funcBody(t, string(src), "WriteResult")
-	if !strings.Contains(body, "chownToAgentGroup") {
-		t.Error("WriteResult no longer gives the file to the serving group.\n" +
-			"    On a box whose ServedDir has lost its setgid bit -- which is the box this\n" +
-			"    was found on -- every result is born root:root and GET /v1/commands/{id}\n" +
-			"    answers \"no result yet\" forever, for every command. See komizo#53.")
+	defer func() { lookupAgentGroup = restoreLookup }()
+	restoreChown := chownFile
+	chownFile = func(string, int, int) error { return errors.New("operation not permitted") }
+	defer func() { chownFile = restoreChown }()
+
+	err := WriteResult(dir, Result{ID: "handover", Op: "app.start", OK: true})
+	if err == nil {
+		t.Fatal("a result that could not be handed to the serving group was written anyway.\n" +
+			"    On the box this was found on, every result was born root:root and\n" +
+			"    GET /v1/commands/{id} answered \"no result yet\" for ever. See komizo#53.")
 	}
-	// And its failure is not swallowed. rootd claims a command by writing a
-	// result before it acts, so a result nobody can read must stop the work
-	// rather than let it happen unreported.
-	if strings.Contains(body, "_ = chownToAgentGroup") {
-		t.Error("the chgrp's error is discarded, so a box that cannot hand the file over does the work anyway")
+
+	// AND NOTHING LANDED. This is the half that matters more than the error:
+	// `Applied` is a stat, so a file left behind by a failed hand-over reads as
+	// done for ever -- rootd would refuse to apply the command, correctly, and
+	// refuse to apply it again after somebody fixed the permission. A box in
+	// that state cannot be repaired without deleting files by hand.
+	if _, err := os.Stat(filepath.Join(dir, "handover.json")); !os.IsNotExist(err) {
+		t.Errorf("a failed hand-over left the claim on disk (stat = %v), so this command can never be applied", err)
+	}
+	// And no temp file either.
+	ents, _ := os.ReadDir(dir)
+	for _, e := range ents {
+		t.Errorf("left behind: %s", e.Name())
 	}
 }
 
-// funcBody is the same idiom internal/app/parity_setup_test.go owns, for the
-// same purpose: asserting on a call that a test cannot otherwise observe.
-func funcBody(t *testing.T, src, name string) string {
-	t.Helper()
-	re := regexp.MustCompile(`(?m)^func (\([^)]*\) )?` + regexp.QuoteMeta(name) + `\(`)
-	loc := re.FindStringIndex(src)
-	if loc == nil {
-		t.Fatalf("could not find func %s", name)
+// And the ordinary path still works with the seam in place, so the test above
+// is proving a refusal rather than a broken writer.
+func TestAResultIsWrittenWhenTheGroupIsReal(t *testing.T) {
+	dir := t.TempDir()
+	restore := lookupAgentGroup
+	lookupAgentGroup = func(string) (*user.Group, error) {
+		return nil, errors.New("no such group")
 	}
-	rest := src[loc[0]:]
-	if end := strings.Index(rest, "\n}\n"); end > 0 {
-		return rest[:end]
+	defer func() { lookupAgentGroup = restore }()
+
+	if err := WriteResult(dir, Result{ID: "ok", Op: "app.start", OK: true}); err != nil {
+		t.Fatalf("WriteResult on a machine with no serving group = %v, want it to work", err)
 	}
-	return rest
+	if _, ok, err := ReadResult(dir, "ok"); !ok || err != nil {
+		t.Errorf("ReadResult = (%v, %v), want it readable", ok, err)
+	}
 }
