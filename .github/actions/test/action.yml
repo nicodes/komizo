@@ -62,22 +62,50 @@ runs:
     # which parses whatever it contains. They run as root on every deploy.
     #
     # Only a Go test can reach them, because they exist only once Go has
-    # substituted them: see TestShellcheck and
-    # TestEveryGeneratedScriptIsValidShell, which share one list of scripts so a
-    # script added later cannot escape either check.
+    # substituted them: see TestShellcheck, TestEveryScriptIsValidShell and
+    # TestTheGeneratedDeployScript* in the scripts package.
     - name: Go tests
       shell: bash
       run: go test -race -count=1 -timeout 5m ./...
 
-    # A skipped test is a green tick, so assert the two shell gates actually
-    # ran. Without this, shellcheck vanishing from the image would read as
+    # A skipped test is a green tick, so assert the shell gates actually ran.
+    # Without this, shellcheck vanishing from the image would read as
     # "everything passes" -- exactly the failure the checks exist to prevent.
+    #
+    # THIS STEP HAD THAT EXACT DEFECT, which is why it now asserts three things
+    # instead of one. It ran `-run 'TestShellcheck|TestEveryGeneratedScriptIsValidShell'`
+    # against ./internal/app. TestShellcheck had since moved to ./scripts and
+    # TestEveryGeneratedScriptIsValidShell no longer existed under that name
+    # anywhere, so the pattern matched nothing: `go test` printed "no tests to
+    # run", exited 0, and produced no `--- SKIP` line for the grep to find. The
+    # guard against a check that is green because it never ran was itself green
+    # because it never ran, for however long the move went unnoticed.
+    #
+    # So a name list is exactly the wrong shape here -- it is the thing that
+    # went stale. The whole scripts package is run instead: it is the package
+    # that exists to check shell, every test in it needs `sh` or `shellcheck`,
+    # and a test added to it is covered without anybody editing this file.
+    #
+    # `no tests to run` is checked FIRST and by itself, because that is the
+    # failure that actually happened and it is invisible in every other signal:
+    # the step is green, the output is short, and nothing says the number of
+    # assertions was zero. `--- PASS` must appear for the same reason from the
+    # other side -- an empty package and a passing one differ only in that line.
     - name: The shell checks were not skipped
       shell: bash
       run: |
-        out="$(go test -count=1 -run 'TestShellcheck|TestEveryGeneratedScriptIsValidShell' -v ./internal/app)"
+        set -euo pipefail
+        out="$(go test -count=1 -v ./scripts)"
         echo "$out"
+        if grep -q 'no tests to run\|\[no test files\]' <<<"$out"; then
+          echo "::error::the shell gate matched no tests -- it has been renamed or moved, and this guard has been passing on an empty run"
+          exit 1
+        fi
+        if ! grep -q -- '--- PASS' <<<"$out"; then
+          echo "::error::the shell gate produced no passing test, so nothing was actually checked"
+          exit 1
+        fi
         if grep -q -- '--- SKIP' <<<"$out"; then
-          echo "::error::a shell check skipped itself -- the tool it needs is missing"
+          echo "::error::a shell check skipped itself -- the tool it needs is missing from this image"
           exit 1
         fi

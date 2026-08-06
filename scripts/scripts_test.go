@@ -1,6 +1,7 @@
 package scripts
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -189,5 +190,100 @@ func TestShQuoteSurvivesTheShell(t *testing.T) {
 		if string(out) != in {
 			t.Errorf("ShQuote(%q) came back as %q", in, out)
 		}
+	}
+}
+
+// generatedDeploy is the per-app deploy script as it lands on a box: the
+// KOMIZO_DEPLOY_EOF heredoc out of alpine.sh, with every placeholder replaced
+// the way alpine.sh replaces them.
+//
+// Values are keyed off the placeholders FOUND IN THE BODY rather than off a
+// list kept here, so a placeholder added to the deploy script is substituted by
+// this without anybody remembering to come back. One that has no value here
+// still gets a path-shaped one, because what is under test below is whether the
+// result parses -- not whether the value is the right value, which is
+// alpine.sh's own leftover-placeholder guard's job.
+func generatedDeploy(t *testing.T) string {
+	t.Helper()
+	body := deployBody(t)
+	known := map[string]string{
+		"__APP_NAME__":        "web",
+		"__APP_DIR__":         "/srv/web",
+		"__CONFIG_IMAGE__":    "registry.example/web-config",
+		"__PROXY_CONTAINER__": "komizo-proxy",
+		"__PROXY_DIR__":       "/srv/komizo-proxy",
+		"__ROUTES_DIR__":      "/srv/komizo-proxy/routes",
+		"__STATE_DIR__":       "/var/lib/komizo/apps",
+	}
+	for _, ph := range regexp.MustCompile(`__[A-Z][A-Z_]*__`).FindAllString(body, -1) {
+		v, ok := known[ph]
+		if !ok {
+			v = "/srv/komizo-unknown"
+		}
+		body = strings.ReplaceAll(body, ph, v)
+	}
+	return body
+}
+
+// THE SCRIPT THAT RUNS ON EVERY DEPLOY WAS NEVER PARSED BY ANYTHING.
+//
+// TestEveryScriptIsValidShell and TestShellcheck both read the FILES in this
+// directory. Inside alpine.sh the deploy script is the body of a QUOTED
+// heredoc, which is a string literal -- so neither `sh -n` nor shellcheck ever
+// treats a line of it as shell. Seven hundred lines that run as root on every
+// deploy, and the whole of the checking this package does looked straight past
+// them.
+//
+// Demonstrated rather than assumed: an unbalanced `[` and an unclosed `if`
+// planted inside revert() left `shellcheck -s sh scripts/*.sh` clean AND
+// `go test ./...` green, on the tree this test was added to. The deploy script
+// would have installed fine and died at the first rollback -- which is the path
+// that only runs when something else has already gone wrong, so the failure
+// would have arrived on top of another failure, at the worst possible moment
+// to be reading a log.
+//
+// deploy_stopped_test.go lifts two blocks out of this body and runs them, so
+// those two are parsed as a side effect. That is what caught the planted error
+// when it was planted in one of them, and it is exactly why the gap was easy to
+// miss: the parts under test parse, and everything else is unexamined.
+//
+// Rendered rather than raw, because a placeholder is not shell -- an unquoted
+// `__APP_DIR__` sitting where a command belongs parses as a word here and as a
+// path on a box. This checks the artefact.
+func TestTheGeneratedDeployScriptIsValidShell(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	body := generatedDeploy(t)
+	if left := regexp.MustCompile(`__[A-Z][A-Z_]*__`).FindString(body); left != "" {
+		t.Fatalf("%s survived substitution, so this is not the script a box runs", left)
+	}
+	cmd := exec.Command("sh", "-n")
+	cmd.Stdin = strings.NewReader(body)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Errorf("the generated deploy script is not valid shell: %v\n%s", err, out)
+	}
+}
+
+// And the same body linted, which `sh -n` cannot be -- see TestShellcheck for
+// the argument.
+//
+// TestShellcheck deliberately runs over the files, and says why: a rendered
+// script has its placeholders replaced, so a complaint about the substitution
+// would point at a line nobody can edit. That reasoning is right and it leaves
+// this body uncovered, because in the file this body is a string. So it is
+// linted here instead, rendered, and a finding is read as being about the
+// heredoc it came from.
+func TestTheGeneratedDeployScriptPassesShellcheck(t *testing.T) {
+	if _, err := exec.LookPath("shellcheck"); err != nil {
+		t.Skip("shellcheck is not installed")
+	}
+	f := filepath.Join(t.TempDir(), "deploy.sh")
+	if err := os.WriteFile(f, []byte(generatedDeploy(t)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("shellcheck", "-s", "sh", f).CombinedOutput(); err != nil {
+		t.Errorf("shellcheck on the generated deploy script: %v\n%s\n"+
+			"(the source is alpine.sh's KOMIZO_DEPLOY_EOF heredoc; line numbers are into that body)", err, out)
 	}
 }
