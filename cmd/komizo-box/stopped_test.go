@@ -425,3 +425,81 @@ func (f fixture) app(t *testing.T) box.App {
 	}
 	return r.Apps[0]
 }
+
+// RESTART IS NOT A SECOND WAY TO START A STOPPED APP.
+//
+// komizo#54 is about the deploy script starting an app somebody stopped. The
+// deploy is not the only thing on a box that can bring containers up, and
+// `restart` is the closest neighbour: `docker compose restart` on exited
+// containers starts them, and `marks` in runVerb deliberately excludes restart
+// from the verbs that touch the marker. So a restart that reached compose on a
+// fully stopped app would start it with STOPPED=1 still on the record -- the
+// exact state komizo#57 describes, where the app runs, never pages, and nothing
+// says alerting is off.
+//
+// runVerb already refuses it, by asking `compose ps -q` what is running and
+// stopping there when the answer is nothing. NOTHING PINNED THAT. Deleting the
+// refusal left the whole suite green, so the one guard standing between
+// `restart` and a silently un-paged app was held up by a comment.
+//
+// Both directions are asserted. Refusing every restart would also pass a test
+// that only checked the refusal, and would break the verb for everybody.
+func TestRestartWillNotStartAnAppThatIsFullyStopped(t *testing.T) {
+	f := stoppedFixture(t)
+
+	// `true` produces no output, which is what `compose ps -q` looks like when
+	// nothing is running.
+	runs := captureCompose(t)
+	var err error
+	withRoot(t, f.root, func() { err = runApp([]string{"restart", "--app", "web"}) })
+
+	if err == nil {
+		t.Error("restart succeeded against an app with nothing running, so a stopped app can be brought up by a verb that never touches the marker")
+	}
+	for _, r := range *runs {
+		for _, a := range r {
+			if a == "restart" || a == "start" || a == "up" {
+				t.Errorf("restart reached docker with %q despite nothing running: %v", a, r)
+			}
+		}
+	}
+}
+
+// The other direction: an app that IS running restarts normally.
+//
+// Without this, the test above is satisfied by a `restart` that refuses
+// everything -- which would pass, read as careful, and quietly remove the verb.
+func TestRestartStillWorksWhenSomethingIsRunning(t *testing.T) {
+	f := stoppedFixture(t)
+
+	var runs [][]string
+	orig := execCompose
+	execCompose = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		runs = append(runs, append([]string{name}, args...))
+		// `ps -q` answers with a container id, so the app is running.
+		for i, a := range args {
+			if a == "ps" && i+1 < len(args) && args[i+1] == "-q" {
+				return exec.CommandContext(ctx, "echo", "c0ffee")
+			}
+		}
+		return exec.CommandContext(ctx, "true")
+	}
+	t.Cleanup(func() { execCompose = orig })
+
+	var err error
+	withRoot(t, f.root, func() { err = runApp([]string{"restart", "--app", "web"}) })
+	if err != nil {
+		t.Fatalf("restart against a running app = %v", err)
+	}
+	restarted := false
+	for _, r := range runs {
+		for _, a := range r {
+			if a == "restart" {
+				restarted = true
+			}
+		}
+	}
+	if !restarted {
+		t.Errorf("restart never reached docker for a running app: %v", runs)
+	}
+}
