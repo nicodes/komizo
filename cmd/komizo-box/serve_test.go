@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
@@ -23,18 +24,31 @@ import (
 // that only exist once something is actually listening -- the socket's mode,
 // the stale-socket case, and a box that has nothing to verify against.
 
-func serveFixture(t *testing.T) (dir string, priv ed25519.PrivateKey) {
+// serveFixture is an enrolled box WITH A TRUSTED DEVICE.
+//
+// The device came with komizo-be#72. Before it, a read was a token and a GET,
+// so a fixture with no device could still be read; now every route wants a
+// signed envelope, and a box that trusts nobody answers nothing at all -- which
+// is a state worth having a test for, but not the one to build every test on.
+func serveFixture(t *testing.T) (dir string, priv, dev ed25519.PrivateKey) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
+	devPub, dev, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir = t.TempDir()
 	conf := box.AgentConf{
-		API:         "https://api.example.com",
-		ServerID:    "srv_abc123",
-		Token:       "kmz_agt_whatever",
-		RegistryKey: base64Key(pub),
+		API:          "https://api.example.com",
+		ServerID:     "srv_abc123",
+		Token:        "kmz_agt_whatever",
+		RegistryKey:  base64Key(pub),
+		// Prefixed, because that is how enrolment writes one and the config
+		// refuses a bare key as "some other kind of credential".
+		OperatorKeys: []string{box.DeviceKeyPrefix + base64Key(devPub)},
 	}
 	if err := box.WriteAgentConf(filepath.Join(dir, "agent.json"), conf); err != nil {
 		t.Fatal(err)
@@ -44,7 +58,7 @@ func serveFixture(t *testing.T) (dir string, priv ed25519.PrivateKey) {
 	if err := box.WriteReport(filepath.Join(dir, "report.json"), rep); err != nil {
 		t.Fatal(err)
 	}
-	return dir, priv
+	return dir, priv, dev
 }
 
 // base64Key is the key as enrolment stores it: raw URL-safe base64, one line.
@@ -97,14 +111,24 @@ func socketClient(sock string) *http.Client {
 }
 
 func TestItServesOverTheSocket(t *testing.T) {
-	dir, priv := serveFixture(t)
+	dir, priv, dev := serveFixture(t)
 	sock := startServe(t, dir)
 
 	tok, err := box.SignReadToken(priv, "srv_abc123", time.Now().Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
-	req, _ := http.NewRequest(http.MethodGet, "http://box/v1/report", nil)
+	// A SIGNED READ, which since komizo-be#72 is the only kind there is.
+	env, err := box.SignCommand(dev, box.Command{Srv: "srv_abc123",
+		Exp: time.Now().Add(time.Minute).Unix(), Op: box.OpReportRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, "http://box/v1/report", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+tok)
 
 	res, err := socketClient(sock).Do(req)
@@ -124,10 +148,38 @@ func TestItServesOverTheSocket(t *testing.T) {
 	}
 }
 
+// AND THE UNSIGNED READ IS GONE OVER THE SOCKET TOO.
+//
+// The removal is in box/api.go and so applies everywhere the handler is served,
+// but this is the transport an operator's app actually reaches through the
+// proxy -- and "the route is gone from the mux" and "the box does not answer it
+// on the wire" are not the same claim.
+func TestTheUnsignedReadIsRefusedOverTheSocket(t *testing.T) {
+	dir, priv, _ := serveFixture(t)
+	sock := startServe(t, dir)
+
+	tok, err := box.SignReadToken(priv, "srv_abc123", time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/v1/report", "/v1/history"} {
+		req, _ := http.NewRequest(http.MethodGet, "http://box"+path, nil)
+		req.Header.Set("Authorization", "Bearer "+tok)
+		res, err := socketClient(sock).Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != http.StatusUnauthorized {
+			t.Errorf("GET %s over the socket = %d, want 401", path, res.StatusCode)
+		}
+	}
+}
+
 // Owner and group only. Anything else on the box has no business opening it --
 // the proxy connects as root, which is not subject to the mode.
 func TestTheSocketIsNotWorldWritable(t *testing.T) {
-	dir, _ := serveFixture(t)
+	dir, _, _ := serveFixture(t)
 	sock := startServe(t, dir)
 
 	fi, err := os.Stat(sock)
@@ -144,7 +196,7 @@ func TestTheSocketIsNotWorldWritable(t *testing.T) {
 // fails -- and for a path rather than a port, that is a service that will not
 // start until somebody deletes a file by hand.
 func TestAStaleSocketDoesNotBlockStartup(t *testing.T) {
-	dir, _ := serveFixture(t)
+	dir, _, _ := serveFixture(t)
 	sock := filepath.Join(dir, "api.sock")
 	if err := os.WriteFile(sock, nil, 0o660); err != nil {
 		t.Fatal(err)

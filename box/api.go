@@ -52,8 +52,10 @@ type APIConfig struct {
 	// it nothing: verifying with a public key is not signing.
 	//
 	// Empty on a box nobody has given a device to, which is every box until an
-	// operator plants one. Such a box serves reads and refuses commands, and
-	// says which.
+	// operator plants one. Since komizo-be#72 took away the token-only reads,
+	// such a box answers NOTHING -- every route below wants an envelope signed
+	// by a key in here, and there are none. It says so at startup rather than
+	// leaving the app to show an empty screen.
 	OperatorKeys []ed25519.PublicKey
 
 	// ReportPath and HistoryPath are the files rootd writes.
@@ -108,69 +110,32 @@ func Handler(cfg APIConfig) http.Handler {
 		cfg.Now = Now
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/report", func(w http.ResponseWriter, r *http.Request) {
-		if !authorized(cfg, r) {
-			refuse(w)
-			return
-		}
-		rep, err := ReadReport(cfg.ReportPath)
-		if err != nil {
-			// The agent has not written one yet, or the file is mid-rewrite.
-			// Not an error about the CALLER, and not a 200 with an empty
-			// document either -- an empty report reads as a broken box.
-			http.Error(w, "no report yet", http.StatusServiceUnavailable)
-			return
-		}
-		writeJSON(w, ReportResponse{V: APIVersion, Report: rep})
-	})
-
-	mux.HandleFunc("GET /v1/history", func(w http.ResponseWriter, r *http.Request) {
-		if !authorized(cfg, r) {
-			refuse(w)
-			return
-		}
-		from, to, ok := window(r, cfg.Now())
-		if !ok {
-			http.Error(w, "from and to must be unix seconds, and from must not be after to", http.StatusBadRequest)
-			return
-		}
-		samples, err := ReadSamples(cfg.HistoryPath, from, to)
-		if err != nil {
-			// A box that has never been polled has no history file. An empty
-			// window is the honest answer -- there is nothing wrong with the
-			// machine, there is simply nothing recorded yet.
-			samples = nil
-		}
-		writeJSON(w, HistoryResponse{V: APIVersion, From: from, To: to, Samples: samples})
-	})
-
-	// THE SAME TWO READS, ASKED FOR BY A DEVICE.
+	// THE TWO READS, ASKED FOR BY A DEVICE. There is no other way to ask.
 	//
-	// komizo-be#58. The GET routes above are authorised by the registry's token
-	// alone, which means whoever holds the service's signing key reads every
-	// enrolled box -- so these exist to take a signed envelope as well, the way
-	// logs and commands already do.
+	// komizo-be#58 added these beside a `GET /v1/report` and `GET /v1/history`
+	// that took the registry's token and nothing else. komizo-be#72 is their
+	// removal, and it is the half of #58 that actually closes the hole: while
+	// the GETs were served, whoever held the service's signing key could read
+	// every enrolled box, and the signed routes beside them changed nothing
+	// about that. A second door is not narrowed by adding a better one.
 	//
-	// BOTH FORMS ARE SERVED, and that is a migration rather than indecision.
-	// Boxes are updated by hand, one at a time, so an app that spoke only the
-	// signed form would go blind against every box that has not been updated
-	// yet. Removing the unsigned pair is the step that breaks old callers and
-	// is its own change -- see komizo-be#58.
+	// THIS BREAKS OLD CALLERS, DELIBERATELY. An app that still asks the unsigned
+	// way now gets `refuse` from the catch-all below. That is why it waited for
+	// its own release: boxes are updated by hand, one at a time, so the client
+	// had to be able to speak the signed form to every box before the unsigned
+	// form could go.
 	//
-	// AN OLD BOX ANSWERS 401 HERE, NOT 404, and the difference matters more
-	// than it looks. This comment used to say the app falls back on a 404;
-	// there is no 404 to fall back on, because the catch-all below matches an
-	// unknown path deliberately -- a 404 distinguishable from a 401 tells an
-	// unauthenticated caller which routes exist -- and answers `refuse`.
+	// A BOX THAT PREDATES THESE ROUTES ANSWERS 401, NOT 404, and the difference
+	// matters more than it looks. The catch-all matches an unknown path
+	// deliberately -- a 404 distinguishable from a 401 tells an unauthenticated
+	// caller which routes exist -- so an old box refuses a perfectly good token.
 	//
-	// So a box that predates this route refuses a perfectly good token, and
-	// §6 records that a 401 is the one status the app turns into "enrol this
-	// box again", which is a ROOT action. Getting this wrong would have had
-	// komizo's own client ask every operator in the fleet to do the exact
-	// thing §6 names as the lever a breached service wants to pull.
-	//
-	// The app therefore must not surface a signed-route 401 as anything: it
-	// falls back to the GET, and only a 401 from THAT is a real refusal.
+	// app-only.md §6 records that a 401 is the one status the app turns into
+	// "enrol this box again", which is a ROOT action on the operator's own
+	// machine. Getting that wrong would have komizo's own client ask every
+	// operator in the fleet to do the exact thing §6 names as the lever a
+	// breached service wants to pull. The app's answer is that 403 and 409 have
+	// their own sentences (komizo-be#120) rather than becoming that prompt.
 	mux.HandleFunc("POST /v1/report", func(w http.ResponseWriter, r *http.Request) {
 		if !authorized(cfg, r) {
 			refuse(w)
