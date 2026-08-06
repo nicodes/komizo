@@ -1282,11 +1282,38 @@ func TestTheGuardsCatchEverySignalAnInterruptedUpdateSends(t *testing.T) {
 	nonEXIT := regexp.MustCompile(`(?m)^\s*trap\s+(?:'[^']*'|"[^"]*"|[A-Za-z_][A-Za-z0-9_]*)\s+((?:INT|TERM|HUP|PIPE|QUIT)(?:\s+(?:INT|TERM|HUP|PIPE|QUIT))*)\s*$`)
 	all := regexp.MustCompile(`(?m)^\s*trap\s+(?:'([^']*)'|"([^"]*)"|([A-Za-z_][A-Za-z0-9_]*))\s+([A-Z ]+)$`)
 
-	found := all.FindAllStringSubmatch(scripts.AlpineScript, -1)
-	if len(found) < 6 {
-		t.Fatalf("found %d trap installations in alpine.sh, expected at least 6 "+
+	// EVERY SCRIPT KOMIZO WRITES ONTO A BOX, not one of them.
+	//
+	// This read alpine.sh alone, and komizo#64 was the cost: alpine-remove.sh
+	// guarded /etc/doas.conf and /etc/ssh/sshd_config with `EXIT` only -- the
+	// same defect, in a file nothing was looking at, found by reading rather
+	// than by any check. A rule applied to one of two scripts is not a rule.
+	for _, script := range []struct {
+		name string
+		src  string
+		min  int
+	}{
+		{"alpine.sh", scripts.AlpineScript, 6},
+		{"alpine-remove.sh", scripts.AlpineRemoveScript, 4},
+	} {
+		checkTraps(t, script.name, script.src, script.min, all, nonEXIT)
+	}
+}
+
+// checkTraps judges every trap in one script.
+//
+// The rule, in both halves: a handler for a SIGNAL must exit, because POSIX sh
+// resumes at the interruption point when one returns -- so a trap that only
+// tidies carries on doing the work the operator just cancelled. And it must
+// cover the signals that actually arrive: a dropped ssh connection is HUP, or
+// PIPE at the next write to a dead stdout, and EXIT alone is raised by neither.
+func checkTraps(t *testing.T, name, src string, min int, all, nonEXIT *regexp.Regexp) {
+	t.Helper()
+	found := all.FindAllStringSubmatch(src, -1)
+	if len(found) < min {
+		t.Fatalf("found %d trap installations in %s, expected at least %d "+
 			"-- if a guard was removed say so deliberately; if this regexp stopped "+
-			"matching, it is no longer checking anything", len(found))
+			"matching, it is no longer checking anything", len(found), name, min)
 	}
 
 	for _, m := range found {
@@ -1299,24 +1326,25 @@ func TestTheGuardsCatchEverySignalAnInterruptedUpdateSends(t *testing.T) {
 		// carries on doing the work the operator just cancelled -- measured
 		// under busybox ash: TERM gave "CLEANED" then "RESUMED-AND-FINISHED".
 		if !strings.Contains(body, "exit ") {
-			t.Errorf("this trap catches %v and does not exit:\n  %s\n"+
+			t.Errorf("in %s, this trap catches %v and does not exit:\n  %s\n"+
 				"POSIX sh resumes where it was interrupted, so the script carries on "+
-				"provisioning a box whose operator cancelled it", signals, body)
+				"doing what the operator cancelled", name, signals, body)
 		}
 		// And it must cover the signals that actually arrive. A dropped ssh
 		// connection is HUP, or PIPE on the next write to a dead stdout --
 		// under busybox ash neither ran the handler at all when absent.
 		for _, need := range []string{"INT", "TERM", "HUP", "PIPE"} {
 			if !slices.Contains(signals, need) {
-				t.Errorf("this trap does not catch %s:\n  %s\n  has %v", need, body, signals)
+				t.Errorf("in %s, this trap does not catch %s:\n  %s\n  has %v", name, need, body, signals)
 			}
 		}
 	}
 
 	// And the paired form is real: every signal trap has an EXIT sibling, so
 	// the ordinary path cleans up too.
-	if got := len(nonEXIT.FindAllString(scripts.AlpineScript, -1)); got < 3 {
-		t.Errorf("found %d signal traps, want at least 3 (staging, doas, sshd)", got)
+	if got := len(nonEXIT.FindAllString(src, -1)); got < min/2 {
+		t.Errorf("%s has %d signal traps, want at least %d -- every EXIT guard needs a signal sibling",
+			name, got, min/2)
 	}
 }
 
