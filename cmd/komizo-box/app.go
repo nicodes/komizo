@@ -144,16 +144,25 @@ func runVerb(ctx context.Context, verb string, sub subject, tail int, svc, by st
 		// restart brings a deliberately stopped app back up behind the marker's
 		// back. Starting it is `start`, and that is where the marker comes off.
 		out, err := composeOut(ctx, sub.dir, sub.project, "ps", "-q")
-		if err != nil && ctx.Err() != nil {
+		if err != nil && errors.Is(ctx.Err(), context.Canceled) {
 			// THE OPERATOR CANCELLED. Nothing failed and nothing was
 			// unanswerable -- signalContext caught SIGINT or SIGTERM, which on
-			// the CLI route is somebody pressing Ctrl-C.
+			// the CLI route is somebody pressing Ctrl-C and under rootd is
+			// OpenRC stopping the service.
 			//
 			// Separated from the refusal below because that one ends by telling
 			// you to run `start`, and `start` is the one verb that CLEARS the
 			// stop marker. Advising it here would answer a cancelled restart by
 			// pointing at the command that turns alerting suppression off, for
 			// a person who asked for nothing to happen and got exactly that.
+			//
+			// Canceled SPECIFICALLY, not `ctx.Err() != nil`. Every context that
+			// reaches runVerb today comes from signalContext and carries no
+			// deadline, so the two are the same thing -- but a caller that
+			// later bounds this would make DeadlineExceeded arrive here, and a
+			// deadline is not somebody changing their mind. It is the box
+			// taking too long to say what is running, which is exactly the
+			// answer below.
 			return fmt.Errorf("cancelled -- nothing was restarted")
 		}
 		if err != nil {

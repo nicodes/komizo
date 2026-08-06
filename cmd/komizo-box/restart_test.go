@@ -470,3 +470,38 @@ func TestACancelledRestartSaysItWasCancelled(t *testing.T) {
 		t.Errorf("a cancelled restart still reached docker: %v", *runs)
 	}
 }
+
+// A DEADLINE IS NOT SOMEBODY CHANGING THEIR MIND.
+//
+// The arm above matches context.Canceled specifically rather than any done
+// context. Nothing bounds runVerb today -- every context reaching it comes from
+// signalContext and carries no deadline -- so the distinction costs nothing
+// now and is the whole difference the day a caller adds one: a deadline means
+// the box took too long to say what is running, which is the "could not tell"
+// refusal, and calling that "cancelled" would tell the operator they did
+// something they did not do.
+//
+// Asserted rather than left to the comment, because `ctx.Err() != nil` and
+// `errors.Is(ctx.Err(), context.Canceled)` are indistinguishable on every input
+// the rest of this file produces.
+func TestARestartThatRanOutOfTimeIsNotReportedAsCancelled(t *testing.T) {
+	root := appFixture(t, "web", "/srv/web")
+	composeReplies(t, func(ctx context.Context, args []string) *exec.Cmd {
+		return exec.CommandContext(ctx, "true")
+	})
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	err := runVerb(ctx, "restart", subject{dir: "/srv/web", app: "web", root: root},
+		0, "", box.StoppedByCLI)
+
+	if err == nil {
+		t.Fatal("a restart whose deadline had passed reported success")
+	}
+	if strings.Contains(err.Error(), "cancelled") {
+		t.Errorf("a deadline was reported as the operator cancelling:\n%v", err)
+	}
+	if !strings.Contains(err.Error(), "could not tell what is running") {
+		t.Errorf("a deadline should be the same refusal as any other unanswerable ps:\n%v", err)
+	}
+}
