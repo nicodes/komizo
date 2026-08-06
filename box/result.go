@@ -2,6 +2,9 @@ package box
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -83,9 +86,24 @@ func resultPath(dir, id string) (string, error) {
 // would get a JSON error, and the honest reading of a JSON error from a box is
 // "this is broken", which would be a lie told every time.
 //
-// 0640: root writes, the serving account reads. ServedDir is setgid to that
-// account, so the file is born in a group that can open it. Same boundary as
-// the history, and the mode is load-bearing rather than decorative.
+// 0640 AND THE GROUP, both, because the mode alone is not the boundary.
+//
+// Root writes these and the serving account reads them. A file root creates is
+// born root:root, so 0640 on its own is a result only root can open -- which is
+// the third time this shape has bitten and the second time it shipped. On a
+// real box every result was -rw-r----- root:root, the serving account is
+// komizo_monitor and in no other group, and GET /v1/commands/{id} therefore
+// answered "no result yet" for every command, forever: the operator watched
+// eleven minutes of compose work and sixteen of app.add succeed on the machine
+// and be reported as a box that never said what happened.
+//
+// TWO MECHANISMS, DELIBERATELY. The directory is setgid to the serving account
+// -- see PrepareResultsDir -- so the file is born in the right group; and it is
+// chgrped afterwards anyway, the same as the credential in WriteAgentConf. The
+// setgid bit is one chmod away from being cleared by anything that touches the
+// directory, and that is precisely how it was cleared here. The chown is a
+// no-op on a box where the bit survived, and is the difference between a result
+// and a silence on one where it did not.
 func WriteResult(dir string, r Result) error {
 	r.V = ResultVersion
 	path, err := resultPath(dir, r.ID)
@@ -99,28 +117,55 @@ func WriteResult(dir string, r Result) error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(path, append(b, '\n'), 0o640)
+	if err := writeFileAtomic(path, append(b, '\n'), 0o640); err != nil {
+		return err
+	}
+	// FAILING THE WRITE, not logging and carrying on. rootd claims a command by
+	// writing a result before it acts, and treats a failed claim as "do not
+	// apply" -- so a box that cannot produce a readable result does nothing,
+	// loudly, rather than doing the work and reporting nothing. A result nobody
+	// can read is the failure this whole function exists to prevent.
+	return chownToAgentGroup(path)
 }
 
-// ReadResult returns what happened, or false if nothing has.
+// ReadResult returns what happened, whether there is anything to return, and
+// whether this box could not tell.
 //
-// The absence of a result is not an error: a command that has arrived and not
-// been applied yet is the normal state for the moment between the two, and it
-// is what the app is polling to see change.
-func ReadResult(dir, id string) (Result, bool) {
+// THREE ANSWERS, NOT TWO, and the third one is the whole of this function's
+// history. The absence of a result is not an error: a command that has arrived
+// and not been applied yet is the normal state for the moment between the two,
+// and it is what the app is polling to see change. A result that EXISTS and
+// cannot be opened is nothing like that -- it is a fault on this box, and every
+// command on it is already done.
+//
+// Collapsing the two is what made both of the failures in this shape silent.
+// paths.go records the first: ReadSamples treated an unreadable history as an
+// empty one, so /v1/history answered "no readings" on every box forever. This
+// is the second, one directory along -- results were written root:root, the
+// serving account could not open one, and the route turned that into 404 "no
+// result yet" for every command anyone sent. Neither said "permission"
+// anywhere, because neither had anywhere to say it.
+//
+// A result that is present and unparseable is a fault too. It is a record of
+// work that HAS happened, damaged; answering "not yet" about it would leave the
+// caller polling for a change that cannot come.
+func ReadResult(dir, id string) (Result, bool, error) {
 	path, err := resultPath(dir, id)
 	if err != nil {
-		return Result{}, false
+		return Result{}, false, err
 	}
 	b, err := os.ReadFile(path)
-	if err != nil {
-		return Result{}, false
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return Result{}, false, nil
+	case err != nil:
+		return Result{}, false, err
 	}
 	var r Result
 	if err := json.Unmarshal(b, &r); err != nil {
-		return Result{}, false
+		return Result{}, false, fmt.Errorf("%s is not readable as a result: %w", path, err)
 	}
-	return r, true
+	return r, true, nil
 }
 
 // Applied reports whether this command has already been done.
@@ -144,15 +189,23 @@ func Applied(dir, id string) bool {
 
 // PrepareResultsDir makes the directory rootd writes outcomes into.
 //
-// Explicit, because MkdirAll leaves an existing directory alone and umask would
-// otherwise decide the answer -- which is the argument main.go already makes
-// about the report's directory. It worked without this only because ServedDir
-// is setgid and rootd's umask happened to be 022.
+// PrepareServedDir, because this IS a served directory: root writes it and the
+// account that serves the box reads it, which is the only property either end
+// of that relationship needs. The logs directory is prepared the same way, and
+// for the same reason.
+//
+// It was its own two lines -- MkdirAll and a chmod to 0750 -- and that chmod is
+// the whole bug. The installer creates this directory 2750 root:komizo_monitor,
+// correctly; rootd then ran this on every start and cleared the setgid bit,
+// leaving a directory the serving account could list and files born in root's
+// group that it could not open. So every result was root:root 0640 and every
+// GET /v1/commands/{id} answered "no result yet" until the file was swept.
+//
+// A separate implementation of "root writes here, the agent reads here" is a
+// second opinion about a boundary that has now been got wrong five times. There
+// is one.
 func PrepareResultsDir(path string) error {
-	if err := os.MkdirAll(path, 0o750); err != nil {
-		return err
-	}
-	return os.Chmod(path, 0o750)
+	return PrepareServedDir(path)
 }
 
 // PruneResults removes what is older than ResultKept.
