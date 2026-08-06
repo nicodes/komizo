@@ -1573,7 +1573,29 @@ cat >> "$conf" <<-EOF
 EOF
 
 if sshd -t; then
-	rc-service sshd reload || rc-service sshd restart
+	# ONE RELOAD PER UPDATE, NOT ONE PER APP.
+	#
+	# komizo#65. This script runs once per app, and komizo#58 made `komizo
+	# update` run it for every app on the box -- so an upgrade of N apps
+	# reloaded sshd N times. Each reload is a window in which a CI deploy
+	# dialling this box can fail, and the count grew with the fleet rather than
+	# staying at one.
+	#
+	# The reload is DEFERRED, not skipped: `sshd -t` above still validates every
+	# app's edit as it is made, so a broken config is still caught by the app
+	# that caused it and reverted by the guard. What is postponed is only the
+	# moment the running daemon picks the file up, which the caller does once
+	# after the last app.
+	#
+	# An update that dies midway therefore leaves a valid config the daemon has
+	# not read yet -- the previous rules stay in force until the next reload,
+	# which is the safe direction: an app whose block did not take effect cannot
+	# deploy, where a half-applied reload could have let one through.
+	if [ "${DEFER_SSHD_RELOAD:-0}" = "1" ]; then
+		echo "komizo: sshd config validated; reload deferred to the end of this update"
+	else
+		rc-service sshd reload || rc-service sshd restart
+	fi
 	# Success: stop guarding the file and drop the backup, so a re-run's "backup"
 	# is the pre-komizo config rather than one that already carries komizo's edits.
 	trap - EXIT INT TERM HUP PIPE

@@ -267,6 +267,13 @@ func appRefreshEnv(r appRecord) map[string]string {
 		"KNOWN_AS":       "",
 		"CLEAR_KNOWN_AS": "0",
 		"HARDEN_SSH":     "0",
+		// ONE RELOAD FOR THE WHOLE UPDATE -- komizo#65. Every app's edit is
+		// still validated by `sshd -t` as it is made; only the moment the
+		// daemon picks the file up is postponed, and the caller does that once
+		// after the last app. Without this an upgrade of N apps reloaded sshd N
+		// times, and each reload is a window in which a CI deploy dialling this
+		// box can fail.
+		"DEFER_SSHD_RELOAD": "1",
 	}
 }
 
@@ -334,6 +341,24 @@ func refreshApps(recs []appRecord, out progress, runner func(script string, env 
 			continue
 		}
 	}
+	// THE DEFERRED RELOAD, ONCE, AFTER THE LAST APP.
+	//
+	// Attempted whenever any app was refreshed, including a partial run: those
+	// apps' sshd blocks are written and validated but not yet in force, and
+	// leaving them that way means their deploy accounts cannot connect at all.
+	//
+	// Its failure is reported and does not fail the update. The config on disk
+	// is valid -- every app's edit passed `sshd -t` before this point -- so what
+	// a failed reload costs is that the new rules wait for the next reload or
+	// reboot, which is recoverable. Failing the whole update over it would
+	// suggest the apps were not refreshed, and they were.
+	if len(failed) < len(recs) {
+		if err := runner(scripts.AlpineReloadSSHDScript, nil); err != nil {
+			out.note("the apps are updated, but sshd did not reload: %v", err)
+			out.note("their new rules take effect at the next reload or reboot; `rc-service sshd reload` applies them now.")
+		}
+	}
+
 	if len(failed) > 0 {
 		return fmt.Errorf("the rest of the box is updated, but these apps still carry the\n"+
 			"    deploy script they had before, so fixes to it have not reached them: %s.\n"+
