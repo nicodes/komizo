@@ -194,7 +194,11 @@ func applyOne(ctx context.Context, keys []ed25519.PublicKey, serverID, path, res
 		return
 	}
 
-	c, _, err := box.VerifyCommand(keys, raw, serverID, time.Now())
+	// The signer is kept, not discarded. It is the only identity on this path
+	// the box established rather than accepted, and a deliberate stop records
+	// which device made it -- see box.StoppedByDevice. VerifyCommand returns it
+	// for exactly this: "a result should be able to say who asked".
+	c, signer, err := box.VerifyCommand(keys, raw, serverID, time.Now())
 	if err != nil {
 		// Logged locally, where the operator is. A REFUSAL is never answered:
 		// whoever sent it is not a device this box trusts, and the route that
@@ -233,7 +237,7 @@ func applyOne(ctx context.Context, keys []ed25519.PublicKey, serverID, path, res
 		return
 	}
 
-	err = perform(ctx, c)
+	err = perform(ctx, c, box.StoppedByDevice(signer))
 	res := box.Result{ID: c.ID, Op: c.Op, At: time.Now().UTC(), OK: err == nil}
 	if err != nil {
 		res.Detail = err.Error()
@@ -257,7 +261,12 @@ const applyingDetail = "applying"
 // closed set, never carried in the envelope. app-only.md §4: a signed command
 // containing a command line is remote code execution by design, with the
 // signature as the thing that authorised it.
-func perform(ctx context.Context, c box.Command) error {
+// by is who this is on behalf of, already rendered by the caller. Passed in
+// rather than derived here because this function is handed a COMMAND, and the
+// command is the half a caller signs -- the identity is the half the box
+// established by verifying it, and the two must not be read out of the same
+// place.
+func perform(ctx context.Context, c box.Command, by string) error {
 	// app.add is not a compose verb. It runs the same provisioning script
 	// `komizo add` runs -- app-only.md §8's condition that both triggers end in
 	// one implementation -- and it is the only op that creates an account.
@@ -279,7 +288,7 @@ func perform(ctx context.Context, c box.Command) error {
 	if err != nil {
 		return err
 	}
-	return runVerb(ctx, verb, sub, 0, "")
+	return runVerb(ctx, verb, sub, 0, "", by)
 }
 
 // lookupRoot prefixes the app lookup. Empty in production; a fixture in tests,
