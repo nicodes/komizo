@@ -128,7 +128,7 @@ func TestEveryScriptIsValidShell(t *testing.T) {
 
 // requireShellcheck turns a skip into a failure.
 //
-// docs/checks.md #1: a check that cannot run must not be indistinguishable from
+// komizo-be docs/checks.md #1: a check that cannot run must not be indistinguishable from
 // a check that passed. `make check` and CI both set this, because in both of
 // those a missing tool is the check not happening; a contributor running
 // `go test ./...` on a machine without shellcheck still gets a skip, which is
@@ -363,7 +363,7 @@ func shippedTemplates(t *testing.T) map[string]string {
 	// A FLOOR, not a zero check. `len(out) == 0` on its own was not enough: a
 	// `<<'TAG'` changed to `<<-'TAG'` dropped ONE template -- the secret helper,
 	// which runs as root -- out of the lint, the parse and the placeholder
-	// check, and five remained, so nothing fired. docs/checks.md #1: the
+	// check, and five remained, so nothing fired. komizo-be docs/checks.md #1: the
 	// all-clear and the ran-on-less-than-it-thought were the same signal.
 	//
 	// Six today. Adding a seventh needs no edit here; losing one is meant to be
@@ -686,7 +686,7 @@ func TestNoShellIsWrittenThroughAnUnquotedHeredoc(t *testing.T) {
 	}
 	// The package does use unquoted heredocs, for a Caddy route, a compose.yml,
 	// a doas block and some messages. Finding none means the scan stopped
-	// matching, and a loop over nothing passes. docs/checks.md #1.
+	// matching, and a loop over nothing passes. komizo-be docs/checks.md #1.
 	if checked == 0 {
 		t.Fatal("no unquoted heredocs found at all -- this scan has stopped matching, so it is no longer checking anything")
 	}

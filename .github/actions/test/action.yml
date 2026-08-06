@@ -90,7 +90,7 @@ runs:
     # template added later cannot escape any of them.
     #
     # KOMIZO_REQUIRE_SHELLCHECK turns every shellcheck test's skip into a
-    # failure. docs/checks.md #1: in CI a missing tool is the check not
+    # failure. komizo-be docs/checks.md #1: in CI a missing tool is the check not
     # happening, and a skip is a green tick. The step above already refuses to
     # continue without the pinned version, so this is the second lock on the
     # same door -- and it is the one that keeps working if that step is ever
@@ -110,7 +110,7 @@ runs:
     # anywhere, so the pattern matched nothing: `go test` printed "no tests to
     # run", exited 0, and produced no `--- SKIP` line for the grep to find. The
     # guard against a check that is green because it never ran was itself green
-    # because it never ran. docs/checks.md #1, in the file that edits it.
+    # because it never ran. komizo-be docs/checks.md #1, in the file that edits it.
     #
     # A NAME LIST IS THE WRONG SHAPE HERE -- it is the thing that went stale,
     # and this PR takes the shell checks from five to eleven, which would have
