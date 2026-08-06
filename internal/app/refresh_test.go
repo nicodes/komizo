@@ -901,6 +901,115 @@ func TestAnAccountSharedWithAnotherAppIsNeverRetired(t *testing.T) {
 	}
 }
 
+// stateBlocksHead is the shipped setup script's account blocks -- the CI_USER
+// validation, the settings, and the refusal of an account another app already
+// holds -- with STATE_DIR repointed at a directory this test owns.
+//
+// Taken from the real script by its own line text, never retyped, and both
+// extractions are checked: an anchor that stops matching is a fatal error here
+// rather than a shorter script that quietly asserts less.
+func stateBlocksHead(t *testing.T, stateDir string) string {
+	t.Helper()
+	src := scripts.AlpineScript
+	settings := fromTo(t, src, `APP_DIR="${APP_DIR:-/srv/$APP_NAME}"`, `# If this app was previously set up`)
+	const shipped = "STATE_DIR=/var/lib/komizo/apps"
+	if strings.Count(settings, shipped) != 1 {
+		t.Fatalf("could not repoint %q -- the assignment this test rewrites has moved or changed shape", shipped)
+	}
+	settings = strings.Replace(settings, shipped, "STATE_DIR="+stateDir, 1)
+
+	head := strings.Join([]string{
+		"set -eu",
+		fromTo(t, src, `CI_USER="${CI_USER:-komizo-$APP_NAME}"`, `DEPLOY_BIN=`),
+		settings,
+	}, "\n")
+
+	// The refusal must be in what was extracted. Without this, moving it a few
+	// lines down would leave every test below running a script that cannot
+	// refuse anything, and passing.
+	if !strings.Contains(head, "already belongs to app") {
+		t.Fatalf("the one-account-per-app refusal is not in the extracted blocks -- " +
+			"it has moved outside them, and the tests that rely on it are asserting nothing")
+	}
+	return head
+}
+
+// runStateBlocks runs those blocks against records this test writes, and
+// returns what the script said and whether it refused. Unlike its Full sibling
+// a nonzero exit is a RESULT here, not a fatal error: refusing is the behaviour
+// under test.
+func runStateBlocks(t *testing.T, rec appRecord, existing string, others map[string]string) (string, error) {
+	t.Helper()
+
+	stateDir := t.TempDir()
+	if existing != "" {
+		if err := os.WriteFile(filepath.Join(stateDir, rec.name+".env"), []byte(existing), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, body := range others {
+		if err := os.WriteFile(filepath.Join(stateDir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cmd := exec.Command("sh", "-s")
+	cmd.Stdin = strings.NewReader(stateBlocksHead(t, stateDir))
+	env := []string{"PATH=" + os.Getenv("PATH")}
+	for k, v := range appRefreshEnv(rec) {
+		env = append(env, k+"="+v)
+	}
+	cmd.Env = env
+	var errBuf strings.Builder
+	cmd.Stderr = &errBuf
+	err := cmd.Run()
+	return errBuf.String(), err
+}
+
+// A DEPLOY ACCOUNT BELONGS TO ONE APP, AND SAYS SO RATHER THAN SHARING BADLY.
+//
+// komizo#63. Everything alpine.sh writes for a deploy account is keyed by the
+// account NAME and replaced whole on each run -- the doas block naming one
+// app's two privileged scripts, the sshd Match block, and the key file. So a
+// second app naming an account that already exists does not join it, it takes
+// it: the first app's CI is left holding a key that opens nothing, and the
+// second app's key now reaches an app it was never issued for.
+func TestAnAppMayNotClaimAnotherAppsDeployAccount(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	rec := appRecord{name: "blog", user: "shared", config: "ghcr.io/you/blog-config", dir: "/srv/blog"}
+	stderr, err := runStateBlocks(t, rec, "", map[string]string{
+		"shop.env": "APP_NAME=shop\nAPP_DIR=/srv/shop\nCI_USER=shared\nCONFIG_IMAGE=ghcr.io/you/shop-config\n",
+	})
+	if err == nil {
+		t.Fatal("an app claimed a deploy account another app already holds, and the setup continued")
+	}
+	// Naming the other app is the whole value of the message: without it the
+	// operator is told a name is taken and not where to look.
+	if !strings.Contains(stderr, "already belongs to app 'shop'") {
+		t.Errorf("the refusal does not name the app that holds the account:\n%s", stderr)
+	}
+}
+
+// The positive control for the refusal, on the line that makes it usable: an
+// app re-run under the account IT already owns is an ordinary update, and
+// refusing it would make `komizo update` fail on every app on the box.
+func TestAnAppMayKeepItsOwnDeployAccountOnEveryRerun(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	rec := appRecord{name: "blog", user: "komizo-blog", config: "ghcr.io/you/blog-config", dir: "/srv/blog"}
+	stderr, err := runStateBlocks(t, rec,
+		"APP_NAME=blog\nAPP_DIR=/srv/blog\nCI_USER=komizo-blog\nCONFIG_IMAGE=ghcr.io/you/blog-config\n",
+		map[string]string{
+			"shop.env": "APP_NAME=shop\nAPP_DIR=/srv/shop\nCI_USER=komizo-shop\nCONFIG_IMAGE=ghcr.io/you/shop-config\n",
+		})
+	if err != nil {
+		t.Fatalf("an app was refused its own deploy account on a re-run: %v\n%s", err, stderr)
+	}
+}
+
 func runUpdateStateBlocksFull(t *testing.T, rec appRecord, existing string, others map[string]string) (map[string]string, string) {
 	t.Helper()
 
@@ -921,17 +1030,8 @@ func runUpdateStateBlocksFull(t *testing.T, rec appRecord, existing string, othe
 	}
 
 	src := scripts.AlpineScript
-	settings := fromTo(t, src, `APP_DIR="${APP_DIR:-/srv/$APP_NAME}"`, `# If this app was previously set up`)
-	const shipped = "STATE_DIR=/var/lib/komizo/apps"
-	if strings.Count(settings, shipped) != 1 {
-		t.Fatalf("could not repoint %q -- the assignment this test rewrites has moved or changed shape", shipped)
-	}
-	settings = strings.Replace(settings, shipped, "STATE_DIR="+stateDir, 1)
-
 	script := strings.Join([]string{
-		"set -eu",
-		fromTo(t, src, `CI_USER="${CI_USER:-komizo-$APP_NAME}"`, `DEPLOY_BIN=`),
-		settings,
+		stateBlocksHead(t, stateDir),
 		// The block that decides whether this app has been renamed onto a new
 		// deploy account, and therefore whether the previous one is deleted.
 		fromTo(t, src, `OLD_CI_USER=""`, `# The deploy account's key list`),
