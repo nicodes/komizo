@@ -901,6 +901,140 @@ func TestAnAccountSharedWithAnotherAppIsNeverRetired(t *testing.T) {
 	}
 }
 
+// stubBin writes fake executables into a directory and returns it, along with
+// the file each one appends its arguments to when called.
+func stubBin(t *testing.T, names ...string) (dir, log string) {
+	t.Helper()
+	dir = t.TempDir()
+	log = filepath.Join(dir, "calls.log")
+	for _, n := range names {
+		body := "#!/bin/sh\nprintf '%s %s\\n' " + shQuote(n) + ` "$*" >> ` + shQuote(log) + "\nexit 0\n"
+		write(t, filepath.Join(dir, n), 0o755, body)
+	}
+	return dir, log
+}
+
+func stubCalls(t *testing.T, log string) string {
+	t.Helper()
+	b, err := os.ReadFile(log)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ""
+		}
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// THE DEFERRAL IS RUN, NOT READ.
+//
+// Review 1 on komizo#73: the only thing holding komizo#65 shut was a
+// strings.Contains for the `if` line's text. Swapping the two branch bodies --
+// reloading when the flag is set and printing when it is not -- restores the
+// bug in full, 11 reloads for a 10-app update, and every assertion stays green
+// because the line it matches is still there.
+//
+// So run the branch, with `rc-service` stubbed, and look at whether the daemon
+// was actually told to reload.
+func TestTheDeferredReloadIsTheBranchThatRunsNotTheLineThatMatches(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	block := fromTo(t, scripts.AlpineScript,
+		`if [ "${DEFER_SSHD_RELOAD:-0}" = "1" ]; then`,
+		"# Success: stop guarding the file")
+
+	for _, tc := range []struct {
+		name, defer_ string
+		wantReload   bool
+	}{
+		{"deferred, as an update sets it", "1", false},
+		{"not deferred, as a single add leaves it", "0", true},
+		{"unset, which is a single add too", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			binDir, log := stubBin(t, "rc-service")
+			cmd := exec.Command("sh", "-s")
+			cmd.Stdin = strings.NewReader("set -eu\n" + block)
+			cmd.Env = []string{"PATH=" + binDir + ":" + os.Getenv("PATH")}
+			if tc.defer_ != "" {
+				cmd.Env = append(cmd.Env, "DEFER_SSHD_RELOAD="+tc.defer_)
+			}
+			var errBuf strings.Builder
+			cmd.Stderr = &errBuf
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("the reload branch failed: %v\n%s", err, errBuf.String())
+			}
+			got := strings.Contains(stubCalls(t, log), "rc-service sshd reload")
+			if got != tc.wantReload {
+				if tc.wantReload {
+					t.Errorf("sshd was not reloaded with DEFER_SSHD_RELOAD=%q -- an app added on "+
+						"its own would never pick up the rules it just wrote", tc.defer_)
+				} else {
+					t.Errorf("sshd was reloaded with DEFER_SSHD_RELOAD=%q -- komizo#65 is back, and "+
+						"an update of N apps reloads N times", tc.defer_)
+				}
+			}
+		})
+	}
+}
+
+// And the script that does the one deferred reload, run rather than read: no
+// test executed a line of it, so replacing its body with `true` was green.
+func TestTheDeferredReloadScriptValidatesBeforeItReloads(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	for _, tc := range []struct {
+		name       string
+		sshdTestOK bool
+		wantReload bool
+	}{
+		{"a config that validates is applied", true, true},
+		{"a config that does not is left unapplied", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			binDir, log := stubBin(t, "rc-service")
+			// `sshd` is the stub whose exit status this test varies; it is the
+			// only thing between a file on disk and the running daemon.
+			rc := "0"
+			if !tc.sshdTestOK {
+				rc = "1"
+			}
+			write(t, filepath.Join(binDir, "sshd"), 0o755,
+				"#!/bin/sh\nprintf 'sshd %s\\n' \"$*\" >> "+shQuote(log)+"\nexit "+rc+"\n")
+
+			cmd := exec.Command("sh", "-s")
+			cmd.Stdin = strings.NewReader(scripts.AlpineReloadSSHDScript)
+			cmd.Env = []string{"PATH=" + binDir + ":" + os.Getenv("PATH")}
+			var errBuf strings.Builder
+			cmd.Stderr = &errBuf
+			err := cmd.Run()
+			calls := stubCalls(t, log)
+
+			if !strings.Contains(calls, "sshd -t") {
+				t.Errorf("the config was never validated before the reload decision:\n%s", calls)
+			}
+			if got := strings.Contains(calls, "rc-service sshd reload"); got != tc.wantReload {
+				t.Errorf("reloaded=%v, want %v -- calls:\n%s", got, tc.wantReload, calls)
+			}
+			if tc.wantReload && err != nil {
+				t.Errorf("a valid config was reported as a failure: %v\n%s", err, errBuf.String())
+			}
+			if !tc.wantReload {
+				if err == nil {
+					t.Error("an invalid sshd config exited 0, so an update would report success")
+				}
+				// The operator has to know which rules are in force, not just
+				// that something failed.
+				if !strings.Contains(errBuf.String(), "before this update") {
+					t.Errorf("the failure does not say which rules are still in force:\n%s", errBuf.String())
+				}
+			}
+		})
+	}
+}
+
 // stateBlocksHead is the shipped setup script's account blocks -- the CI_USER
 // validation, the settings, and the refusal of an account another app already
 // holds -- with STATE_DIR repointed at a directory this test owns.
@@ -938,7 +1072,7 @@ func stateBlocksHead(t *testing.T, stateDir string) string {
 // returns what the script said and whether it refused. Unlike its Full sibling
 // a nonzero exit is a RESULT here, not a fatal error: refusing is the behaviour
 // under test.
-func runStateBlocks(t *testing.T, rec appRecord, existing string, others map[string]string) (string, error) {
+func runStateBlocks(t *testing.T, rec appRecord, existing string, others map[string]string, after ...func(dir string)) (string, error) {
 	t.Helper()
 
 	stateDir := t.TempDir()
@@ -951,6 +1085,10 @@ func runStateBlocks(t *testing.T, rec appRecord, existing string, others map[str
 		if err := os.WriteFile(filepath.Join(stateDir, name), []byte(body), 0o600); err != nil {
 			t.Fatal(err)
 		}
+	}
+
+	for _, fn := range after {
+		fn(stateDir)
 	}
 
 	cmd := exec.Command("sh", "-s")
@@ -1007,6 +1145,78 @@ func TestAnAppMayKeepItsOwnDeployAccountOnEveryRerun(t *testing.T) {
 		})
 	if err != nil {
 		t.Fatalf("an app was refused its own deploy account on a re-run: %v\n%s", err, stderr)
+	}
+}
+
+// A BOX THAT ALREADY SHARES AN ACCOUNT KEEPS WORKING, AND IS TOLD.
+//
+// Refusing here would break `komizo update` on every app of a box set up before
+// this rule existed -- a working box broken by a rule about new ones. The
+// sharing is still a real weakness, so it is said out loud on every run.
+func TestSharingThatPredatesTheRuleWarnsRatherThanBreakingTheBox(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	rec := appRecord{name: "blog", user: "shared", config: "ghcr.io/you/blog-config", dir: "/srv/blog"}
+	stderr, err := runStateBlocks(t, rec,
+		"APP_NAME=blog\nAPP_DIR=/srv/blog\nCI_USER=shared\nCONFIG_IMAGE=ghcr.io/you/blog-config\n",
+		map[string]string{
+			"shop.env": "APP_NAME=shop\nAPP_DIR=/srv/shop\nCI_USER=shared\nCONFIG_IMAGE=ghcr.io/you/shop-config\n",
+		})
+	if err != nil {
+		t.Fatalf("an update was refused on a box that already shared an account: %v\n%s", err, stderr)
+	}
+	if !strings.Contains(stderr, "share the deploy account 'shared'") {
+		t.Errorf("the run said nothing about the sharing it just accepted:\n%s", stderr)
+	}
+}
+
+// A record komizo cannot READ is not a record that says the account is free.
+func TestARecordThatCannotBeReadIsNotTakenAsNoClash(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every file, so an unreadable record cannot be staged here")
+	}
+	rec := appRecord{name: "blog", user: "komizo-blog", config: "ghcr.io/you/blog-config", dir: "/srv/blog"}
+	stderr, err := runStateBlocks(t, rec, "", map[string]string{
+		"shop.env": "APP_NAME=shop\nAPP_DIR=/srv/shop\nCI_USER=komizo-shop\nCONFIG_IMAGE=ghcr.io/you/shop-config\n",
+	}, func(dir string) {
+		if cerr := os.Chmod(filepath.Join(dir, "shop.env"), 0o000); cerr != nil {
+			t.Fatal(cerr)
+		}
+	})
+	if err == nil {
+		t.Fatal("a record komizo could not read was treated as proof the account is free")
+	}
+	if !strings.Contains(stderr, "cannot read") {
+		t.Errorf("the refusal does not say the record was unreadable:\n%s", stderr)
+	}
+}
+
+// THE TWO READS OF A RECORD'S CI_USER MUST AGREE, BYTE FOR BYTE.
+//
+// Review 1 on komizo#73. The refusal stripped CR and this path did not, and the
+// two decide opposite things from the same bytes: the refusal declines a clash,
+// this one DELETES an account when it finds none. So one stray CR in another
+// app's record -- edited on Windows, written by hand -- made this path conclude
+// the old account was unused and `deluser` an account another app deploys under
+// right now, taking its doas block and its sshd Match with it.
+func TestACarriageReturnInAnotherAppsRecordCannotRetireItsLiveAccount(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	rec := appRecord{name: "blog", user: "newacct", config: "ghcr.io/you/blog-config", dir: "/srv/blog"}
+	_, old := runUpdateStateBlocksFull(t, rec,
+		"APP_NAME=blog\nAPP_DIR=/srv/blog\nCI_USER=oldacct\nCONFIG_IMAGE=ghcr.io/you/blog-config\n",
+		map[string]string{
+			// The only difference from the plain shared case: a CR.
+			"shop.env": "APP_NAME=shop\r\nAPP_DIR=/srv/shop\r\nCI_USER=oldacct\r\nCONFIG_IMAGE=ghcr.io/you/shop-config\r\n",
+		})
+	if old != "" {
+		t.Errorf("OLD_CI_USER=%q -- a CR in another app's record made this run retire an account "+
+			"that app is deploying under", old)
 	}
 }
 
@@ -1302,25 +1512,53 @@ func TestTheGuardsOnEtcRestoreAndStopOnEverySignal(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh is not installed")
 	}
-	src := scripts.AlpineScript
 	const original = "# untouched\n"
 
+	// BOTH SCRIPTS THAT EDIT /etc, not just the one this test was written for.
+	//
+	// Review 1 on komizo#73: this ran alpine.sh's two guards only, so gutting
+	// alpine-remove.sh's restore_doas() to `{ :; }` left the entire suite green.
+	// The regex test below did cover the removal script -- and that is the trap
+	// worth naming: it covers a DIFFERENT AXIS. It reads which signals a trap
+	// line is installed for; it cannot see whether the handler restores anything
+	// or stops. Extending it felt like closing this gap and was not.
 	for _, guard := range []struct {
-		name, target, lift, until string
+		name, src, target, pre, lift, until string
 	}{
 		{
-			name:   "doas.conf",
+			name:   "alpine.sh/doas.conf",
+			src:    scripts.AlpineScript,
 			target: "doas.conf",
 			lift:   `doas_bak="/etc/doas.conf.komizo.bak.$$"`,
 			until:  "# Delimited block,",
 		},
 		{
-			name:   "sshd_config",
+			name:   "alpine.sh/sshd_config",
+			src:    scripts.AlpineScript,
 			target: "sshd_config",
 			lift:   "conf=/etc/ssh/sshd_config",
 			until:  "# Retire the previous account's Match block",
 		},
+		{
+			name:   "alpine-remove.sh/doas.conf",
+			src:    scripts.AlpineRemoveScript,
+			target: "doas.conf",
+			lift:   "doas_bak=/etc/doas.conf.komizo.bak",
+			until:  `sed -i -E "/^# $PROJECT_MARKER: $CI_USER BEGIN`,
+		},
+		{
+			name:   "alpine-remove.sh/sshd_config",
+			src:    scripts.AlpineRemoveScript,
+			target: "sshd_config",
+			// This guard opens inside `if [ -f "$conf" ]`, so the lift starts at
+			// the backup -- as the others do -- and $conf is supplied here. The
+			// line is the script's own, and goes through the same rewrite.
+			pre:   "conf=/etc/ssh/sshd_config",
+			lift:  `conf_bak="$conf.komizo.bak"`,
+			until: "sed -i -E \\\n",
+		},
 	} {
+		src := guard.src
 		for _, sig := range []syscall.Signal{syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT, syscall.SIGPIPE} {
 			t.Run(guard.name+"/"+sig.String(), func(t *testing.T) {
 				dir := t.TempDir()
@@ -1331,7 +1569,7 @@ func TestTheGuardsOnEtcRestoreAndStopOnEverySignal(t *testing.T) {
 				// file this test owns. Everything after it stands in for the
 				// edit the guard exists to protect: the file is left in a state
 				// it must not be found in, and then the signal arrives.
-				block := fromTo(t, src, guard.lift, guard.until)
+				block := guard.pre + "\n" + fromTo(t, src, guard.lift, guard.until)
 				block = strings.NewReplacer(
 					"/etc/doas.conf", target,
 					"/etc/ssh/sshd_config", target,

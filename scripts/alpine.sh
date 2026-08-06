@@ -98,16 +98,41 @@ STATE_FILE="$STATE_DIR/$APP_NAME.env"
 #
 # Refuse, and name the app that already holds it. The way out is a different
 # account for THIS app, which the rename path below handles.
+# What this app's record already says, read the same way every other reader
+# reads it. An account this app ALREADY holds is established state, not a new
+# claim: refusing it would make `komizo update` fail on every app of a box set
+# up before this rule, which is a working box broken by a rule about new ones.
+_mine="$(sed -n 's/^CI_USER=//p' "$STATE_FILE" 2>/dev/null | tr -d '\r' | head -n 1)"
+
 for _st in "$STATE_DIR"/*.env; do
-	[ -f "$_st" ] || continue
+	[ -f "$_st" ] || continue                  # no records yet: the glob is literal
 	_a="${_st##*/}"; _a="${_a%.env}"
-	[ "$_a" = "$APP_NAME" ] && continue        # this app's own record: a re-run
-	if [ "$(sed -n 's/^CI_USER=//p' "$_st" | tr -d '\r' | head -n 1)" = "$CI_USER" ]; then
-		echo "error: deploy account '$CI_USER' already belongs to app '$_a'" >&2
-		echo "  each app needs its own, so a key that leaks reaches only one app." >&2
-		echo "  give this app an account of its own: komizo add --user komizo-$APP_NAME ..." >&2
+	[ "$_a" = "$APP_NAME" ] && continue         # this app's own record
+	# A record that cannot be READ is not a record that says no clash. Refuse
+	# rather than provision: the whole value of this check is knowing which
+	# accounts are taken, and an unreadable file is the one case where komizo
+	# does not know.
+	if [ ! -r "$_st" ]; then
+		echo "error: cannot read $_st, so komizo cannot tell whether '$CI_USER' is another app's account" >&2
 		exit 1
 	fi
+	[ "$(sed -n 's/^CI_USER=//p' "$_st" | tr -d '\r' | head -n 1)" = "$CI_USER" ] || continue
+
+	# Already shared, from before this refusal existed. Say so on every run --
+	# loudly, because it is a real weakness and a silent one -- but do not break
+	# a box that is working today.
+	if [ "$_mine" = "$CI_USER" ]; then
+		echo "warning: apps '$APP_NAME' and '$_a' share the deploy account '$CI_USER'." >&2
+		echo "  a key that leaks reaches both. komizo no longer sets this up." >&2
+		echo "  to separate them, re-add one of the apps with an account of its own:" >&2
+		echo "    komizo add --app $APP_NAME --user komizo-$APP_NAME ..." >&2
+		continue
+	fi
+
+	echo "error: deploy account '$CI_USER' already belongs to app '$_a'" >&2
+	echo "  each app needs its own, so a key that leaks reaches only one app." >&2
+	echo "  give this app an account of its own: komizo add --user komizo-$APP_NAME ..." >&2
+	exit 1
 done
 
 # If this app was previously set up under a DIFFERENT deploy account, that old
@@ -119,8 +144,14 @@ done
 # box set up before that refusal existed can still be in this state -- and this
 # is the path that migrates it: give one of the apps its own account, and the
 # one left behind keeps working.
+# Every read of a record's CI_USER strips CR, here and above, because these two
+# comparisons DECIDE OPPOSITE THINGS from the same bytes: the one above refuses
+# a clash, and the one below deletes an account when it finds none. Strip in one
+# and not the other and a single stray CR -- a record edited on Windows, a
+# hand-written file -- makes this path conclude the old account is unused and
+# `deluser` an account another app is deploying under right now.
 OLD_CI_USER=""
-_old="$(sed -n 's/^CI_USER=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
+_old="$_mine"
 case "$_old" in
 	''|"$CI_USER") ;;                     # nothing recorded, or unchanged
 	*[!A-Za-z0-9_-]*) ;;                  # legacy/unreadable value -- leave it be
@@ -130,7 +161,7 @@ case "$_old" in
 			[ -f "$_st" ] || continue
 			_a="${_st##*/}"; _a="${_a%.env}"
 			[ "$_a" = "$APP_NAME" ] && continue
-			if [ "$(sed -n 's/^CI_USER=//p' "$_st" | head -n 1)" = "$OLD_CI_USER" ]; then
+			if [ "$(sed -n 's/^CI_USER=//p' "$_st" | tr -d '\r' | head -n 1)" = "$OLD_CI_USER" ]; then
 				OLD_CI_USER=""   # still in use by another app; do not touch it
 				break
 			fi
