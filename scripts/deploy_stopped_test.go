@@ -337,7 +337,7 @@ type how struct {
 	unreadable bool
 }
 
-func runDecision(t *testing.T, body, block string, h how) (out string, dockerRan []string, err error) {
+func runDecision(t *testing.T, body, block string, h how) (out string, dockerRan []string, record string, err error) {
 	t.Helper()
 	dir := t.TempDir()
 	// AppsDir holds one file per app, named for the app -- see box/paths.go and
@@ -383,7 +383,12 @@ func runDecision(t *testing.T, body, block string, h how) (out string, dockerRan
 			dockerRan = append(dockerRan, ln)
 		}
 	}
-	return string(b), dockerRan, err
+	// The record AS THE BLOCK LEFT IT. A deploy must not touch this file, and
+	// nothing checked that -- see the assertion in the caller.
+	if after, rerr := os.ReadFile(state); rerr == nil {
+		record = string(after)
+	}
+	return string(b), dockerRan, record, err
 }
 
 func TestADeployDoesNotStartAnAppThatWasStopped(t *testing.T) {
@@ -424,7 +429,7 @@ func TestADeployDoesNotStartAnAppThatWasStopped(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out, ran, err := runDecision(t, body, block, how{record: tc.record})
+			out, ran, after, err := runDecision(t, body, block, how{record: tc.record})
 			if err != nil {
 				t.Fatalf("the start decision failed to run: %v\n%s", err, out)
 			}
@@ -460,6 +465,60 @@ func TestADeployDoesNotStartAnAppThatWasStopped(t *testing.T) {
 			}
 			if strings.Contains(out, "deploy: "+wrong) {
 				t.Errorf("output also says %q, so a caller parsing started= is told both:\n%s", wrong, out)
+			}
+
+			// AND IT TELLS A PERSON WHAT TO DO ABOUT IT.
+			//
+			// `started=no` is for whatever parses the log; this line is for
+			// whoever reads it. Without it a deploy that deliberately left an
+			// app down looks, to a human, exactly like one that failed to bring
+			// it up -- and the way out is a command they have to already know.
+			// It names the version so the log says what WOULD come up, and the
+			// app so a multi-app box's log is not ambiguous.
+			//
+			// Deleting it passed everything else here: the machine-readable
+			// half was still printed, nothing was started, and the record was
+			// untouched.
+			if !tc.start {
+				// ON THE ADVICE LINE ITSELF, not anywhere in the output. The
+				// line above it already names the version, so a check over the
+				// whole output passes even after the advice stops saying which
+				// version it would bring up -- which is the half a person
+				// actually acts on.
+				advice := ""
+				for _, ln := range strings.Split(out, "\n") {
+					if strings.Contains(ln, "komizo start") {
+						advice = ln
+					}
+				}
+				if advice == "" {
+					t.Errorf("the app was left down and nothing told a person how to bring it up:\n%s", out)
+				}
+				for _, want := range []string{"--app web", "abc1234"} {
+					if advice != "" && !strings.Contains(advice, want) {
+						t.Errorf("the advice line %q does not name %q, so it does not say what would come up or for which app", advice, want)
+					}
+				}
+			}
+
+			// THE RECORD IS LEFT EXACTLY AS IT WAS, on both branches.
+			//
+			// The script argues this at length -- a deploy is not a decision
+			// about whether an app should be running, only about what it runs
+			// when it is; clearing the marker here would be this same bug
+			// spelled differently, CI overruling a person, and setting one
+			// would stop an app nobody asked to stop. Nothing checked it.
+			//
+			// A `sed -i "/^STOPPED=/d"` added to the stopped branch passed the
+			// whole suite: this deploy still starts nothing, so every other
+			// assertion here is satisfied -- and the app is no longer recorded
+			// as stopped, so the NEXT deploy starts it and the report stops
+			// saying it was ever stopped. The damage is entirely in the run
+			// after the one under test, which is exactly why comparing bytes
+			// here is the only place it shows up.
+			if tc.record != "" && after != tc.record {
+				t.Errorf("the deploy changed the record.\n before: %q\n after:  %q\n"+
+					"A deploy must not decide whether an app should be running; clearing the marker is this bug spelled differently.", tc.record, after)
 			}
 
 			// The start is `up -d --remove-orphans`, not `compose start`. A
@@ -565,7 +624,7 @@ func TestAFailedStartDoesNotClaimTheAppStarted(t *testing.T) {
 		t.Skip("sh is not installed")
 	}
 	body := deployBody(t)
-	out, ran, err := runDecision(t, body, startDecision(t, body), how{record: "APP_DIR=/srv/web\n", dockerFails: true})
+	out, ran, _, err := runDecision(t, body, startDecision(t, body), how{record: "APP_DIR=/srv/web\n", dockerFails: true})
 	if err == nil {
 		t.Errorf("a failing `docker compose up` left the script succeeding:\n%s", out)
 	}
@@ -600,7 +659,7 @@ func TestAnUnreadableRecordIsNotSilent(t *testing.T) {
 		t.Skip("running as root")
 	}
 	body := deployBody(t)
-	out, ran, err := runDecision(t, body, startDecision(t, body),
+	out, ran, _, err := runDecision(t, body, startDecision(t, body),
 		how{record: "APP_DIR=/srv/web\nSTOPPED=1\n", unreadable: true})
 	if err != nil {
 		t.Fatalf("the start decision failed to run: %v\n%s", err, out)
