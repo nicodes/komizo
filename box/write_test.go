@@ -261,6 +261,61 @@ func TestReadingAResult(t *testing.T) {
 	}
 }
 
+// A RESULT THIS BOX CANNOT READ IS NOT "NO RESULT YET".
+//
+// It answered 404 for both, which is what made the whole failure invisible: on
+// a real box every result was written root:root and the account serving this
+// route is komizo_monitor, so every command the app sent polled a 404 until it
+// gave up -- eleven minutes for a compose operation, sixteen for app.add --
+// and then the operator pressed the button again. The second press of app.add
+// is a second provision, which rewrites authorized_keys and breaks a working
+// deploy key.
+//
+// A DIRECTORY where the result should be, rather than a file with mode 0,
+// because root ignores the mode: a test built on one passes without the fix
+// wherever the suite runs privileged.
+func TestAResultThatCannotBeReadIsNotReportedAsNoResultYet(t *testing.T) {
+	cfg, _, tok, _ := writeFixture(t)
+	if err := os.Mkdir(filepath.Join(cfg.ResultsDir, "blocked.json"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "/v1/commands/blocked", nil)
+	r.Header.Set("Authorization", "Bearer "+tok)
+	w := httptest.NewRecorder()
+	Handler(cfg).ServeHTTP(w, r)
+	if w.Code == http.StatusNotFound {
+		t.Fatal("a result this box cannot read answered 404, which the app reads as " +
+			"'still running' and polls until it times out")
+	}
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("an unreadable result = %d, want 500", w.Code)
+	}
+}
+
+// And posting the same command again does not queue it a second time.
+//
+// The replay check reads the result, so a result that cannot be read is a box
+// that cannot tell a retry from a first arrival. Taking it would mean a 202 for
+// work whose outcome this box has just proven it cannot report -- and for
+// app.add, a second provision.
+func TestACommandIsNotTakenAgainWhenItsResultCannotBeRead(t *testing.T) {
+	cfg, dev, tok, inbox := writeFixture(t)
+	c := stopCmd()
+	c.ID = "blocked"
+	if err := os.Mkdir(filepath.Join(cfg.ResultsDir, c.ID+".json"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	w := post(t, cfg, tok, signedCommand(t, dev, c))
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("a command whose result cannot be read = %d, want 500", w.Code)
+	}
+	if n := inboxCount(t, inbox); n != 0 {
+		t.Error("it was queued anyway, so a command whose outcome this box cannot report was accepted")
+	}
+}
+
 // AN ID IS NEVER JOINED TO A PATH UNCHECKED, on the way in or the way out.
 func TestTheResultRouteRefusesAnIDThatIsAPath(t *testing.T) {
 	cfg, _, tok, _ := writeFixture(t)

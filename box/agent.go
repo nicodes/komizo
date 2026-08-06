@@ -150,8 +150,33 @@ func WriteAgentConf(path string, c AgentConf) error {
 
 // chownToAgentGroup gives the file to the agent's group, leaving the owner as
 // whoever wrote it -- root.
+// lookupAgentGroup is user.LookupGroup, as a seam.
+//
+// NOT DEPENDENCY INJECTION FOR ITS OWN SAKE. The serving group does not exist
+// on a machine running the tests, so chownToAgentGroup returns early there and
+// every behavioural assertion about it is unreachable -- which is how the
+// mechanism that fixes komizo#53 came to be deletable with the whole suite
+// green. A test that cannot reach the code it is about is a test of nothing,
+// and grepping the source for a call is a poor substitute: the call can stay
+// while the behaviour moves out from under it.
+//
+// One variable, swapped by a test, so the real function can be exercised.
+var lookupAgentGroup = user.LookupGroup
+
+// chownFile is os.Chown, as a seam, for the same reason and one more.
+//
+// Whether a chown fails depends on WHO IS RUNNING -- root can give a file to
+// any group, including one that does not exist, so a test that engineers a
+// failure by picking a hostile gid proves something under one account and
+// nothing under another. CI running as root would quietly stop checking.
+//
+// The property under test is "when the hand-over fails, nothing lands", not
+// "chown fails under these conditions". So the failure is injected and the
+// property is checked directly.
+var chownFile = os.Chown
+
 func chownToAgentGroup(path string) error {
-	g, err := user.LookupGroup(AgentUser)
+	g, err := lookupAgentGroup(AgentUser)
 	if err != nil {
 		// No such group: not a box komizo has set up. Left alone rather than
 		// failed, so this works in a test and on a machine mid-provisioning.
@@ -161,7 +186,7 @@ func chownToAgentGroup(path string) error {
 	if err != nil {
 		return nil
 	}
-	if err := os.Chown(path, os.Getuid(), gid); err != nil {
+	if err := chownFile(path, os.Getuid(), gid); err != nil {
 		return fmt.Errorf("wrote %s but could not give it to %s, so the agent cannot read it: %w",
 			path, AgentUser, err)
 	}
@@ -275,25 +300,30 @@ const ServedDirMode = os.ModeSetgid | 0o750
 // survives a reboot but an operator, an upgrade or a restored backup can leave
 // this directory owned by root with no group at all, and the failure that
 // produces is an empty chart rather than an error.
+//
+// EVERY directory on this side of the boundary goes through here -- the served
+// directory itself, the logs, and the results. Each of them is "root writes,
+// the agent reads", and the one that had its own two lines instead is the one
+// that shipped with the setgid bit cleared; see PrepareResultsDir.
 func PrepareServedDir(path string) error {
 	if err := os.MkdirAll(path, 0o750); err != nil {
 		return err
 	}
-	u, err := user.Lookup(AgentUser)
-	if err != nil {
-		// No such account: not a box komizo has set up. Left alone rather than
-		// failed, so this works in a test and mid-provisioning.
-		return nil
-	}
-	gid, err := strconv.Atoi(u.Gid)
-	if err != nil {
-		return nil
-	}
-	// Owner 0, explicitly. Root writes here and the account that reads must not
-	// be able to replace what it is given -- which is the same split the
-	// credential in EtcDir is on.
-	if err := os.Chown(path, 0, gid); err != nil {
-		return fmt.Errorf("could not group %s to %s: %w", path, AgentUser, err)
+	// The GROUP is skipped when there is no account to give it to -- not a box
+	// komizo has set up, so this works in a test and mid-provisioning -- but the
+	// MODE is set either way. It is the directory's own property, it costs
+	// nothing on a machine with no agent, and leaving it to the umask on a box
+	// that is mid-provisioning means the setgid bit depends on which of the
+	// installer and rootd ran first.
+	if u, err := user.Lookup(AgentUser); err == nil {
+		if gid, err := strconv.Atoi(u.Gid); err == nil {
+			// Owner 0, explicitly. Root writes here and the account that reads
+			// must not be able to replace what it is given -- which is the same
+			// split the credential in EtcDir is on.
+			if err := os.Chown(path, 0, gid); err != nil {
+				return fmt.Errorf("could not group %s to %s: %w", path, AgentUser, err)
+			}
+		}
 	}
 	// After the chown, because chown clears the setgid bit. There is a test for
 	// this ordering in the installer for the same reason there is one here:

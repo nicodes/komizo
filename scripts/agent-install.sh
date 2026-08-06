@@ -315,4 +315,33 @@ if ! su komizo_monitor -s /bin/sh -c "ls __RESULTS_DIR__ >/dev/null" 2>/dev/null
 	exit 1
 fi
 
+# AND A RESULT IN IT, which is a different question from the directory.
+#
+# Listing a directory needs r-x on the directory; opening a file in it needs the
+# FILE's group and mode. The check above passed on a box where every result was
+# root:root 0640 -- the account could see the file was there and got permission
+# denied reading it, so GET /v1/commands/{id} answered "no result yet" forever
+# for every command anyone sent. That was rootd clearing this directory's setgid
+# bit on every start; it is fixed, and this is the check that would have caught
+# it, so it runs here and not in review.
+#
+# AFTER `rootd --once` above, deliberately: it is what rootd leaves behind that
+# a box lives with, not what this script set a hundred lines ago.
+#
+# Created by root the way a result is -- born in this directory, not moved in --
+# because setgid decides the group of files CREATED here and a rename does not
+# take it.
+probe=__RESULTS_DIR__/.probe.json
+: >"$probe"
+chmod 640 "$probe"
+if ! su komizo_monitor -s /bin/sh -c "cat $probe >/dev/null" 2>/dev/null; then
+	rm -f "$probe"
+	printf 'error: komizo_monitor can list __RESULTS_DIR__ and cannot read a file in it.\n' >&2
+	printf '       Every command the app sends would be applied and then reported\n' >&2
+	printf '       as never answered. Check that the directory is setgid and\n' >&2
+	printf '       grouped to komizo_monitor: ls -ld __RESULTS_DIR__\n' >&2
+	exit 1
+fi
+rm -f "$probe"
+
 log "Reporting to __REPORT_PATH__ every __INTERVAL__"
