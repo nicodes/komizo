@@ -49,10 +49,19 @@ func readFixture(t *testing.T) (APIConfig, string, ed25519.PrivateKey) {
 func signedRead(t *testing.T, cfg APIConfig, tok string, dev ed25519.PrivateKey,
 	path, op string, args map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
+	// AGAINST THE BOX'S CLOCK, not the wall clock. A fixture that pins cfg.Now
+	// to a fixed date -- which is most of api_test.go -- otherwise signs an
+	// envelope expiring days after the box thinks it is, and the box refuses it
+	// with the same 403 it gives an untrusted device. That failure reads as "the
+	// key is wrong" and is not.
+	now := time.Now()
+	if cfg.Now != nil {
+		now = cfg.Now()
+	}
 	body := []byte("{}")
 	if dev != nil {
 		env, err := SignCommand(dev, Command{Srv: cfg.ServerID,
-			Exp: time.Now().Add(time.Minute).Unix(), Op: op, Args: args})
+			Exp: now.Add(time.Minute).Unix(), Op: op, Args: args})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -147,20 +156,46 @@ func TestASignedReadOnABoxWithNoDevicesIsToldWhy(t *testing.T) {
 	}
 }
 
-// THE UNSIGNED ROUTES STILL ANSWER, because boxes are updated by hand.
+// THE READ TOKEN ALONE READS NOTHING.
 //
-// An app that spoke only the signed form would go blind against every box that
-// has not been updated yet. Removing these is the breaking step and is its own
-// change -- komizo-be#58.
-func TestTheUnsignedReadsStillAnswerDuringTheMigration(t *testing.T) {
+// komizo-be#72, and the half of #58 that actually closes the hole. While `GET
+// /v1/report` and `GET /v1/history` were served, whoever held the service's
+// signing key could mint a read token for any enrolled box and read it -- and
+// adding the signed routes beside them changed nothing about that.
+//
+// The token is still REQUIRED; it is no longer SUFFICIENT. So this asks with a
+// token that is completely valid, and the box must still refuse.
+func TestAValidReadTokenAloneReadsNothing(t *testing.T) {
 	cfg, tok, _ := readFixture(t)
 	for _, path := range []string{"/v1/report", "/v1/history"} {
 		r := httptest.NewRequest(http.MethodGet, path, nil)
 		r.Header.Set("Authorization", "Bearer "+tok)
 		w := httptest.NewRecorder()
 		Handler(cfg).ServeHTTP(w, r)
-		if w.Code != http.StatusOK {
-			t.Errorf("GET %s = %d, want 200 while both forms are served", path, w.Code)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("GET %s with a valid read token = %d, want 401 -- the unsigned reads are gone", path, w.Code)
+		}
+		// And it must not answer with the thing it used to answer with. A 401
+		// carrying a report would be the same leak with a different status.
+		if strings.Contains(w.Body.String(), "\"report\"") || strings.Contains(w.Body.String(), "\"samples\"") {
+			t.Errorf("GET %s refused and still returned a body that looks like the read: %q", path, w.Body.String())
+		}
+	}
+}
+
+// THE POSITIVE CONTROL for the test above: the same fixture, asked the signed
+// way, does answer. Without this, deleting the routes entirely -- or breaking
+// the fixture so nothing works -- would look identical to the hole being shut.
+func TestTheSignedReadStillAnswersForTheSameBox(t *testing.T) {
+	cfg, tok, dev := readFixture(t)
+	for _, r := range []struct {
+		path, op string
+	}{
+		{"/v1/report", OpReportRead},
+		{"/v1/history", OpHistoryRead},
+	} {
+		if w := signedRead(t, cfg, tok, dev, r.path, r.op, nil); w.Code != http.StatusOK {
+			t.Errorf("signed %s = %d, want 200", r.path, w.Code)
 		}
 	}
 }
@@ -217,35 +252,28 @@ func TestASignedHistoryWindowComesFromTheEnvelope(t *testing.T) {
 	}
 }
 
-// THE DEFAULT WINDOW IS THE SAME ON BOTH ROUTES.
+// ASKING FOR NOTHING MEANS THE LAST HOUR.
 //
-// Two copies of "the last hour" is two answers to what asking for nothing
-// means, and nothing failed when they drifted -- review moved one default to
-// -24h and the whole suite stayed green.
-func TestBothHistoryRoutesDefaultToTheSameWindow(t *testing.T) {
+// This compared the defaults of the signed and unsigned routes, because there
+// were two of them and nothing failed when they drifted -- review moved one to
+// -24h and the whole suite stayed green. komizo-be#72 removed the unsigned
+// route, so there is one default now and the drift it guarded against is not
+// possible; what remains worth pinning is the value itself.
+func TestAHistoryReadWithNoWindowIsTheLastHour(t *testing.T) {
 	cfg, tok, dev := readFixture(t)
 	now := time.Now()
 	cfg.Now = func() time.Time { return now }
 
-	signed := signedRead(t, cfg, tok, dev, "/v1/history", OpHistoryRead, nil)
-	r := httptest.NewRequest(http.MethodGet, "/v1/history", nil)
-	r.Header.Set("Authorization", "Bearer "+tok)
-	w := httptest.NewRecorder()
-	Handler(cfg).ServeHTTP(w, r)
-
-	var a, b HistoryResponse
-	if err := json.Unmarshal(signed.Body.Bytes(), &a); err != nil {
+	w := signedRead(t, cfg, tok, dev, "/v1/history", OpHistoryRead, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("history = %d, want 200", w.Code)
+	}
+	var got HistoryResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &b); err != nil {
-		t.Fatal(err)
-	}
-	if a.From != b.From || a.To != b.To {
-		t.Errorf("signed = %d..%d, unsigned = %d..%d -- one default, not two", a.From, a.To, b.From, b.To)
-	}
-	// And it is the last hour, so neither can drift while agreeing.
-	if a.To != now.Unix() || a.From != now.Add(-time.Hour).Unix() {
-		t.Errorf("default = %d..%d, want the last hour ending now", a.From, a.To)
+	if got.To != now.Unix() || got.From != now.Add(-time.Hour).Unix() {
+		t.Errorf("default = %d..%d, want the last hour ending now", got.From, got.To)
 	}
 }
 
