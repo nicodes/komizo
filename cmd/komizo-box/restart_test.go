@@ -310,3 +310,48 @@ func recordOf(t *testing.T, root, app string) string {
 	}
 	return string(b)
 }
+
+// A refusal carries compose's complaint, and carries a BOUNDED amount of it.
+//
+// The reason the refusal quotes docker at all is that "exit status 1" is not
+// something an operator can act on. The reason it quotes only the tail is that
+// on the signed route this text becomes res.Detail, which rootd writes to a
+// results file and the agent posts -- so how big it is would otherwise be
+// decided by whatever docker felt like printing. runProvision already made
+// exactly this argument about a script's output; composeOut uses the same
+// lastLines rule rather than a second bound of its own, and this is what says
+// the rule is actually applied.
+//
+// A megabyte on ONE LINE, because that is the case a line count alone does not
+// bound -- a progress bar, a base64 blob -- and it is the case detailMax exists
+// for.
+func TestTheRefusalQuotesComposeWithoutQuotingAllOfIt(t *testing.T) {
+	root := appFixture(t, "web", "/srv/web")
+	composeReplies(t, func(ctx context.Context, args []string) *exec.Cmd {
+		if isPsQuery(args) {
+			return exec.CommandContext(ctx, "sh", "-c",
+				`printf 'x%.0s' $(seq 1 200000) >&2; printf '\nCANNOT-REACH-DAEMON\n' >&2; exit 1`)
+		}
+		return exec.CommandContext(ctx, "true")
+	})
+
+	var err error
+	withRoot(t, root, func() { err = runApp([]string{"restart", "--app", "web"}) })
+	if err == nil {
+		t.Fatal("the restart was not refused, so there is no message to measure")
+	}
+	msg := err.Error()
+	// The END survived, which is where a program says why it stopped. Without
+	// this the test passes against a bound that keeps the first 4KB of padding
+	// and throws the reason away.
+	if !strings.Contains(msg, "CANNOT-REACH-DAEMON") {
+		t.Errorf("the reason was cut out of the refusal:\n%s", msg)
+	}
+	// And it is not the whole 200KB. Generous headroom over detailMax so this
+	// is a test of "bounded at all", not of the exact constant -- the constant
+	// belongs to lastLines and moving it should not break this.
+	if len(msg) > 8<<10 {
+		t.Errorf("the refusal is %d bytes; compose's output decides the size of a "+
+			"result file the app downloads", len(msg))
+	}
+}

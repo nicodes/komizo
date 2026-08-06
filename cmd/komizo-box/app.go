@@ -404,12 +404,6 @@ func composeCapped(ctx context.Context, dir, project string, max int, args ...st
 	return string(b), waitErr
 }
 
-// composeErrMax bounds how much of docker's complaint is carried back.
-//
-// Bounded because the caller is on the other side of an SSH connection or an
-// HTTPS route, and how long docker's stderr is belongs to docker.
-const composeErrMax = 400
-
 // composeOut runs one and captures it, for the questions this asks itself.
 //
 // THE COMPLAINT COMES BACK TOO, not just the exit status. Output() puts stderr
@@ -420,24 +414,24 @@ const composeErrMax = 400
 // it could not read, or that it cannot reach the daemon.
 //
 // Unlike compose(), this cannot simply hand stderr to os.Stderr -- Output()
-// requires it -- so it is folded into the error instead, which is also where
-// the signed route can see it. compose()'s stderr goes to the process's, which
-// on the signed route is rootd's log rather than the result.
+// requires it -- so it is folded into the error instead. That also carries it
+// to the signed route, where an error becomes a result the app reads;
+// compose()'s stderr goes to this process's, which there is rootd's log and so
+// reaches nobody who is waiting for an answer.
+//
+// BOUNDED BY lastLines, the same rule runProvision already applies for the same
+// reason, rather than a second bound written here. Both are "something else's
+// output, on its way into a result file somebody downloads", and how long
+// docker's stderr is belongs to docker. The tail is what survives, because that
+// is where a program says why it stopped.
 func composeOut(ctx context.Context, dir, project string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 
 	out, err := execCompose(ctx, "docker", append(composeBase(dir, project), args...)...).Output()
 	var ee *exec.ExitError
-	if errors.As(err, &ee) && len(ee.Stderr) > 0 {
-		msg := strings.TrimSpace(string(ee.Stderr))
-		if len(msg) > composeErrMax {
-			// Cut on bytes and then drop whatever partial rune that left, so a
-			// complaint containing a multi-byte character cannot come back as
-			// replacement characters.
-			msg = strings.ToValidUTF8(msg[:composeErrMax], "") + "…"
-		}
-		err = fmt.Errorf("%w: %s", err, msg)
+	if errors.As(err, &ee) && strings.TrimSpace(string(ee.Stderr)) != "" {
+		err = fmt.Errorf("%w: %s", err, lastLines(string(ee.Stderr), 12))
 	}
 	return string(out), err
 }
