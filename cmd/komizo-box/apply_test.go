@@ -106,7 +106,7 @@ func TestNothingUnverifiedIsEverApplied(t *testing.T) {
 			t.Errorf("%s: the command was left in the inbox", name)
 		}
 		// A refusal writes no result: there is nobody entitled to one.
-		if _, found := box.ReadResult(results, ok.ID); found {
+		if _, found, _ := box.ReadResult(results, ok.ID); found {
 			t.Errorf("%s: a refusal wrote a result", name)
 		}
 	}
@@ -181,7 +181,7 @@ func TestACommandIsNotAppliedTwice(t *testing.T) {
 		if len(*runs) != 1 {
 			t.Fatalf("the first arrival ran %d commands, want 1: %v", len(*runs), *runs)
 		}
-		if r, found := box.ReadResult(results, c.ID); !found || !r.OK {
+		if r, found, _ := box.ReadResult(results, c.ID); !found || !r.OK {
 			t.Fatalf("no successful result was recorded: %+v", r)
 		}
 
@@ -207,7 +207,7 @@ func TestAResultRecordsBothOutcomes(t *testing.T) {
 		Args: map[string]string{"app": "nosuchapp"}})
 	applyPending(context.Background(), conf, inbox, results)
 
-	r, found := box.ReadResult(results, "no-such-app")
+	r, found, _ := box.ReadResult(results, "no-such-app")
 	if !found {
 		t.Fatal("a command that failed left no result, so the app would wait forever")
 	}
@@ -539,7 +539,7 @@ func TestATrustedCallerIsToldWhatThisBoxCannotDo(t *testing.T) {
 	}
 	applyPending(context.Background(), conf, inbox, results)
 
-	r, found := box.ReadResult(results, "unknownop")
+	r, found, _ := box.ReadResult(results, "unknownop")
 	if !found {
 		t.Fatal("an op this box cannot do left no result, so the app waits forever")
 	}
@@ -561,7 +561,7 @@ func TestATrustedCallerIsToldWhatThisBoxCannotDo(t *testing.T) {
 	}
 	applyPending(context.Background(), conf, inbox, results)
 
-	r, found = box.ReadResult(results, "newversion")
+	r, found, _ = box.ReadResult(results, "newversion")
 	if !found {
 		t.Fatal("a version this box does not speak left no result")
 	}
@@ -591,7 +591,7 @@ func TestABoxWithNoServerIDAppliesNothing(t *testing.T) {
 	if len(*runs) != 0 {
 		t.Errorf("a box no registry has heard of obeyed a command: %v", *runs)
 	}
-	if _, found := box.ReadResult(results, "nosrv"); found {
+	if _, found, _ := box.ReadResult(results, "nosrv"); found {
 		t.Error("it answered one, too")
 	}
 
@@ -662,7 +662,7 @@ func TestRootdIgnoresTheRoutesTemporaries(t *testing.T) {
 		t.Error("the temporary was removed, so the rename would fail and the caller " +
 			"would be told 503 for a command that was discarded")
 	}
-	if _, found := box.ReadResult(results, c.ID); found {
+	if _, found, _ := box.ReadResult(results, c.ID); found {
 		t.Error("a result was written for a command that had not arrived")
 	}
 
@@ -703,7 +703,7 @@ func TestACommandDroppedForCapacityGetsAResult(t *testing.T) {
 
 	dropped := 0
 	for _, id := range ids {
-		if r, found := box.ReadResult(results, id); found && !r.OK &&
+		if r, found, _ := box.ReadResult(results, id); found && !r.OK &&
 			strings.Contains(r.Detail, "too many") {
 			dropped++
 		}
@@ -752,7 +752,7 @@ func TestASweptCommandIsToldItWasSwept(t *testing.T) {
 	if _, err := os.Stat(filed); !os.IsNotExist(err) {
 		t.Error("the expired command was left in the inbox")
 	}
-	r, found := box.ReadResult(results, id)
+	r, found, _ := box.ReadResult(results, id)
 	if !found {
 		t.Fatal("a swept command wrote no result, so the app waits out its whole deadline for nothing")
 	}

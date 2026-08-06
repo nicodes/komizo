@@ -340,6 +340,59 @@ func TestTheInstallerCreatesAndProvesTheInbox(t *testing.T) {
 	}
 }
 
+// The results directory is made the same way, and PROVEN the same way.
+//
+// It was made correctly and then unmade: the installer sets 2750
+// root:komizo_monitor here, and rootd's own PrepareResultsDir chmod'ed it to
+// 0750 on every start, which is the same permissions and not the same bit. So
+// every result was born root:root, the serving account could list the directory
+// and not open anything in it, and every command the app sent answered "no
+// result yet" for as long as anyone polled.
+//
+// The `ls` check that was already here passed throughout, because listing a
+// directory and reading a file in it are different permissions. This asserts
+// the one that would have caught it: a file, created here by root, read as the
+// account that serves this box.
+func TestTheInstallerCreatesAndProvesTheResultsDirectory(t *testing.T) {
+	sh := scripts.AgentInstall("stamp", "v0.0.0")
+	if !strings.Contains(sh, box.ResultsDir) {
+		t.Fatalf("the installer never mentions %s", box.ResultsDir)
+	}
+	adduser := strings.Index(sh, "adduser")
+	chown := strings.Index(sh, "chown root:komizo_monitor "+box.ResultsDir)
+	if adduser < 0 || chown < 0 {
+		t.Fatalf("adduser=%d chown=%d", adduser, chown)
+	}
+	if chown < adduser {
+		t.Error("the results directory is given away before the account exists")
+	}
+	// Setgid, so a result root writes is born in the serving account's group
+	// rather than root's. Without it the directory is reachable and every file
+	// in it is 0640 root:root -- which is exactly what shipped.
+	if !strings.Contains(sh, "chmod 2750 "+box.ResultsDir) {
+		t.Error("the results directory is not setgid, so every result stays in root's group")
+	}
+	if strings.Index(sh, "chmod 2750 "+box.ResultsDir) < chown {
+		t.Error("the mode is set before the chown, which clears the setgid bit")
+	}
+
+	// A FILE, not the directory. Asserted on the `cat`, because that is the
+	// difference between the check that passed on the broken box and the one
+	// that would not have.
+	probe := strings.Index(sh, `su komizo_monitor -s /bin/sh -c "cat $probe >/dev/null"`)
+	if probe < 0 {
+		t.Fatal("the installer never reads a result as the account that will serve it, " +
+			"so a box where it cannot finishes install and reports every command as unanswered")
+	}
+	// After rootd has run. What rootd leaves behind is what the box lives with,
+	// and rootd is what took the bit away.
+	rootd := strings.Index(sh, "komizo-box rootd --once")
+	if rootd < 0 || probe < rootd {
+		t.Errorf("rootd=%d probe=%d -- the result is proven readable before rootd has "+
+			"prepared the directory, so what rootd leaves behind is never checked", rootd, probe)
+	}
+}
+
 // The installer hands the state directory's group away, and does it after the
 // account exists.
 //
