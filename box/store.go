@@ -232,6 +232,28 @@ func trimLines(path string, n int) error {
 //
 // Same directory because rename is only atomic within one filesystem, and /tmp
 // is frequently its own.
+//
+// IT CARRIES NO OWNERSHIP OF ITS OWN, and that is the thing to know before
+// putting a new caller on it. The temp is created by whatever account is
+// running and chmodded to mode; owner and group are the writer's, not whatever
+// the file being replaced had. A rewrite of somebody else's file hands it to
+// the rewriter, silently, and mode is the only thing this restates.
+//
+// Where a group is needed, it comes from the DIRECTORY being setgid rather than
+// from here -- ServedDir and ResultsDir are 2750 for exactly that -- which is a
+// guarantee living one level up and one chmod from being cleared. A caller that
+// cannot depend on the directory has writeFileAtomicOwned instead, which hands
+// the file over explicitly before it lands.
+//
+// Worth stating rather than assuming, because this codebase has already paid
+// for the assumption twice: komizo#53, results written root:root under a
+// directory the serving account could list but not read, so every signed
+// command succeeded on the machine and was reported to the operator as a
+// failure; and before it the state directory the reading account could not
+// traverse. Neither said "permission" anywhere. The record this file writes for
+// stopped apps is root-only on purpose and needs none of it -- but "every
+// caller is root reading its own file" is a fact about today, not a property of
+// this function.
 func writeFileAtomic(path string, b []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
