@@ -239,7 +239,18 @@ func stateFileLine(t *testing.T, body, stateDir, app string) string {
 		t.Fatalf("the deploy script assigns STATE_FILE %d times (%q) -- the shell obeys the last and this test would read the first, so they would disagree about which file decides whether an app starts", len(found), found)
 	}
 	ln := strings.ReplaceAll(found[0], "__STATE_DIR__", stateDir)
-	return strings.ReplaceAll(ln, "__APP_NAME__", app)
+	ln = strings.ReplaceAll(ln, "__APP_NAME__", app)
+
+	// The substitution ACTUALLY HAPPENED and landed on the fixture. Without
+	// this, a placeholder renamed in alpine.sh leaves the line untouched, the
+	// record is simply never found, and the failure arrives as four stopped
+	// cases reporting that the app started -- which reads like the guard broke
+	// rather than like the test lost track of the file. Same failure, said in
+	// the words of what is actually wrong.
+	if want := filepath.Join(stateDir, app+".env"); !strings.Contains(ln, want) {
+		t.Fatalf("STATE_FILE is %q, which does not resolve to %q -- the placeholders in it are not the ones alpine.sh substitutes (__STATE_DIR__ and __APP_NAME__), so this test can no longer find the record the deploy reads", ln, want)
+	}
+	return ln
 }
 
 // runDecision runs the block against a state file, and reports what it printed
@@ -355,6 +366,14 @@ func TestADeployDoesNotStartAnAppThatWasStopped(t *testing.T) {
 		// removes the key rather than writing a 0, so this only arrives from a
 		// person -- and refusing to start on it would read their "no" as a yes.
 		{"a hand-written STOPPED=0", base + "STOPPED=0\n", true},
+
+		// EXACTLY "1". A hand-edited record can pick up a trailing space, and
+		// this side and box/probe.go must make the same nothing of it -- see
+		// TestTheReportAndTheDeployReadTheMarkerTheSameWay, which runs these
+		// same cases against the Go reader. A comparison either side loosened
+		// to "contains a 1" would have the report and the deploy disagreeing
+		// about the same file.
+		{"a value that merely contains a 1", base + "STOPPED=1 \n", true},
 
 		// No record at all. Deploys carry on, deliberately: an app with no
 		// record does not appear in the report either, so app_down cannot fire
