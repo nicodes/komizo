@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -142,7 +143,36 @@ func runVerb(ctx context.Context, verb string, sub subject, tail int, svc, by st
 		// all -- it is refused right here -- and there is no path by which
 		// restart brings a deliberately stopped app back up behind the marker's
 		// back. Starting it is `start`, and that is where the marker comes off.
-		if out, err := composeOut(ctx, sub.dir, sub.project, "ps", "-q"); err == nil && strings.TrimSpace(out) == "" {
+		out, err := composeOut(ctx, sub.dir, sub.project, "ps", "-q")
+		if err != nil {
+			// A QUESTION THAT COULD NOT BE ANSWERED IS NOT A YES.
+			//
+			// This used to read `if err == nil && strings.TrimSpace(out) == ""`,
+			// which skipped the guard entirely whenever the box could not say
+			// what was running -- a malformed compose.yml, a daemon that is up
+			// but unhealthy, a timeout on the one-minute context -- and fell
+			// straight through to the restart. The case where the answer is
+			// unavailable is exactly the case where assuming "something is
+			// running" is least justified, and the cost of being wrong is
+			// komizo#57: an app brought up by a verb that never touches the stop
+			// marker, so it runs with STOPPED=1 still set, never pages, and
+			// nothing on it says alerting is off.
+			//
+			// The deploy script makes the OPPOSITE trade with its marker read --
+			// an unreadable record starts the app -- and that is not a
+			// contradiction. A deploy that refuses on a box whose record cannot
+			// be read is a wider failure than the one it prevents, and the
+			// script says so out loud. Here there is a narrower answer available
+			// that costs nothing: `start` does the same thing, clears the marker
+			// on the way, and is one word away.
+			//
+			// The error is carried rather than summarised. Whatever compose said
+			// about the compose file or the daemon is the thing the operator
+			// needs; komizo#56 made the deploy script print sed's complaint for
+			// the same reason.
+			return fmt.Errorf("could not tell what is running here, so nothing was restarted -- start it instead if it is down: %w", err)
+		}
+		if strings.TrimSpace(out) == "" {
 			return fmt.Errorf("nothing is running here -- start it instead")
 		}
 	}
@@ -374,11 +404,40 @@ func composeCapped(ctx context.Context, dir, project string, max int, args ...st
 	return string(b), waitErr
 }
 
+// composeErrMax bounds how much of docker's complaint is carried back.
+//
+// Bounded because the caller is on the other side of an SSH connection or an
+// HTTPS route, and how long docker's stderr is belongs to docker.
+const composeErrMax = 400
+
 // composeOut runs one and captures it, for the questions this asks itself.
+//
+// THE COMPLAINT COMES BACK TOO, not just the exit status. Output() puts stderr
+// on the ExitError and never prints it -- `%w` on one renders "exit status 1"
+// and nothing else. runVerb turns a failure here into a refusal to restart, and
+// a refusal whose only stated reason is a number is a refusal nobody can act
+// on: the thing the operator needs is compose saying which line of compose.yml
+// it could not read, or that it cannot reach the daemon.
+//
+// Unlike compose(), this cannot simply hand stderr to os.Stderr -- Output()
+// requires it -- so it is folded into the error instead, which is also where
+// the signed route can see it. compose()'s stderr goes to the process's, which
+// on the signed route is rootd's log rather than the result.
 func composeOut(ctx context.Context, dir, project string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 
 	out, err := execCompose(ctx, "docker", append(composeBase(dir, project), args...)...).Output()
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && len(ee.Stderr) > 0 {
+		msg := strings.TrimSpace(string(ee.Stderr))
+		if len(msg) > composeErrMax {
+			// Cut on bytes and then drop whatever partial rune that left, so a
+			// complaint containing a multi-byte character cannot come back as
+			// replacement characters.
+			msg = strings.ToValidUTF8(msg[:composeErrMax], "") + "…"
+		}
+		err = fmt.Errorf("%w: %s", err, msg)
+	}
 	return string(out), err
 }
