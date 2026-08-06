@@ -305,6 +305,37 @@ func shippedTemplates(t *testing.T) map[string]string {
 		"alpine:KOMIZO_DEPLOY_EOF",
 		"alpine:KOMIZO_SECRET_EOF",
 	}
+	// A SECOND, UNRELATED SIGNAL for the same question, because the set check
+	// above cannot see the failure that matters most.
+	//
+	// A template the scan never finds is absent from `got` AND from `want`, so
+	// the two agree and the check passes -- the one shape of mistake that
+	// silently shrinks coverage is the one shape the set comparison is blind to.
+	// A list can only police templates somebody already knew about.
+	//
+	// So: every one of these templates is a script, and every script begins with
+	// a shebang at the start of a line. Counting embedded shebangs asks "how many
+	// scripts are in here" without going anywhere near heredoc syntax, so a
+	// heredoc spelling the regex does not know about makes the two disagree. Two
+	// independent implementations of the same count, and they have to match.
+	//
+	// A `#!` that is not a template -- inside a comment, or echoed -- would fail
+	// this. That is the right outcome: it is a line that reads exactly like the
+	// start of a shipped script, and somebody should decide which it is.
+	for name, src := range all(t) {
+		embedded := strings.Count(src, "\n#!")
+		n := 0
+		for k := range out {
+			if strings.SplitN(k, ":", 2)[0] == name {
+				n++
+			}
+		}
+		if embedded != n {
+			t.Errorf("%s has %d embedded shebangs but the heredoc scan found %d templates in it -- "+
+				"a script is being written onto a box that nothing here parses, lints or substitutes", name, embedded, n)
+		}
+	}
+
 	var got []string
 	for k := range out {
 		got = append(got, k)
