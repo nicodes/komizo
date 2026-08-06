@@ -95,8 +95,18 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        out="$(go test -count=1 -v ./scripts)"
+        # `|| true` and an explicit status, because `out="$(...)"` under `set -e`
+        # kills the step before the echo -- so a genuinely failing shell test
+        # would print nothing at all and this step would be the one place the
+        # log went blank. The Go tests step above fails first today, which is
+        # exactly the kind of "harmless because something else covers it" that
+        # stops being true quietly.
+        out="$(go test -count=1 -v ./scripts)" && status=0 || status=$?
         echo "$out"
+        if [ "$status" -ne 0 ]; then
+          echo "::error::the shell gate failed"
+          exit 1
+        fi
         if grep -q 'no tests to run\|\[no test files\]' <<<"$out"; then
           echo "::error::the shell gate matched no tests -- it has been renamed or moved, and this guard has been passing on an empty run"
           exit 1

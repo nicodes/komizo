@@ -305,49 +305,18 @@ func TestStoppedIsHeldOnTheBox(t *testing.T) {
 // Each case below is the same case the shell test makes, in the same order, so
 // the pair can be read side by side.
 func TestTheReportAndTheDeployReadTheMarkerTheSameWay(t *testing.T) {
-	const base = "APP_DIR=/srv/blog\nCI_USER=komizo-blog\n"
-	for _, tc := range []struct {
-		name    string
-		record  string
-		stopped bool
-	}{
-		{"stopped on purpose", base + "STOPPED=1\n", true},
-		{"running", base, false},
-
-		// A CR is invisible in an editor. bufio.Scanner strips the trailing
-		// one, which is what makes this agree with the shell's `tr -d '\r'`;
-		// without either, the value is "1\r", which is not "1", and the app is
-		// reported running while the deploy refuses to start it.
-		{"stopped, in a record with CRLF line endings", strings.ReplaceAll(base+"STOPPED=1\n", "\n", "\r\n"), true},
-
-		// First-wins, matching readState's own comment and the deploy's
-		// `head -n 1`.
-		{"stopped, with a later line contradicting it", base + "STOPPED=1\nSTOPPED=0\n", true},
-
-		// A key that merely ends in STOPPED is a different key. The shell
-		// anchors with `^`; this side splits on `=` and so has a whole key to
-		// compare, which is the same rule arrived at differently.
-		{"a record with a similarly named key", base + "LAST_STOPPED=1\n", false},
-
-		// ClearStopped removes the key rather than writing a 0, so a 0 only
-		// arrives from a person -- and reading it as a stop would take their
-		// "no" for a yes. This is the case that dies if `== "1"` is widened.
-		{"a hand-written STOPPED=0", base + "STOPPED=0\n", false},
-
-		// EXACTLY "1", not "contains a 1". A hand-edited record can pick up a
-		// trailing space, and both readers must make the same nothing of it --
-		// a `strings.Contains` here would call it stopped while the shell's
-		// `= "1"` would not, and the report would then claim a stop the deploy
-		// is about to override. Reading it as not-stopped is also the safe
-		// direction on its own: the app keeps paging, and a deploy starts it.
-		{"a value that merely contains a 1", base + "STOPPED=1 \n", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+	// ONE TABLE, in ../testdata, read by this test and by the shell's. It used
+	// to be two, kept in step by a comment saying they were the same cases in
+	// the same order -- and deleting a case from either left the whole suite
+	// green. Including in the direction that matters: the shell growing a case
+	// the Go reader was never asked about.
+	for _, tc := range markerCases(t) {
+		t.Run(tc.Name, func(t *testing.T) {
 			f := readyBox(t)
-			f.write("/var/lib/komizo/apps/blog.env", tc.record)
+			f.write("/var/lib/komizo/apps/blog.env", tc.Record)
 			a := f.probe().Report(context.Background()).Apps[0]
-			if a.Stopped != tc.stopped {
-				t.Errorf("Stopped = %v, want %v, for record %q", a.Stopped, tc.stopped, tc.record)
+			if a.Stopped != tc.Stopped {
+				t.Errorf("Stopped = %v, want %v, for record %q\n%s", a.Stopped, tc.Stopped, tc.Record, tc.Why)
 			}
 		})
 	}

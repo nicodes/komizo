@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -23,6 +25,16 @@ func all(t *testing.T) map[string]string {
 		"alpine-proxy":  AlpineProxyScript,
 		"alpine-remove": AlpineRemoveScript,
 		"agent-install": AgentInstall("94d5dbd1333d", "0.0.11"),
+		// These two were missing, and the comment above is what they were
+		// missing from: "a script added later cannot quietly escape one" was
+		// true of the checks and not of the map. Both run as root -- enrol from
+		// init.go and enrol.go, unenrol from enrol.go -- and neither was seen by
+		// the clampable-number check, the shell parse, the placeholder check, or
+		// the heredoc scan built on this map. Demonstrated: a `%d` that overflows
+		// 32 bits added to agent-enrol.sh was green, and the identical line in
+		// agent-install.sh was caught.
+		"agent-enrol":   AgentEnrol("https://api.example", "kmz_enr_x", "api.example", []string{"AAAA"}, false),
+		"agent-unenrol": AgentUnenrol(),
 	}
 }
 
@@ -212,7 +224,21 @@ func TestShQuoteSurvivesTheShell(t *testing.T) {
 // survives to be read as a bare word where a command belongs.
 func shippedTemplates(t *testing.T) map[string]string {
 	t.Helper()
-	heredoc := regexp.MustCompile(`<<'([A-Z_]+)'\n`)
+	// EVERY SPELLING OF A HEREDOC, not the one this repo happens to use today.
+	//
+	// This was `<<'([A-Z_]+)'\n`: single quotes only, uppercase-and-underscore
+	// tags only, and a newline required immediately after the closing quote. Five
+	// other spellings the shell accepts vanished from the scan in silence --
+	// `<<-'TAG'`, `<<"TAG"`, a redirect written after the tag, a tag with a digit
+	// in it, a lowercase tag. A new root-run template opened any of those ways
+	// was simply not there, and the comment above promises the opposite.
+	//
+	// Matched to the end of the physical line rather than to `\n` so that
+	// `cat <<'TAG' > /path` is found. The tag pattern is the shell's own rule for
+	// a name. The three quotings are spelled out rather than captured and
+	// back-referenced because RE2 has no backreferences -- so each alternative
+	// pins its own closing quote, which is the same guarantee written longhand.
+	heredoc := regexp.MustCompile(`<<-?[ \t]*(?:'([A-Za-z_][A-Za-z0-9_]*)'|"([A-Za-z_][A-Za-z0-9_]*)"|([A-Za-z_][A-Za-z0-9_]*))[^\n]*\n`)
 	placeholder := regexp.MustCompile(`__[A-Z][A-Z_]*__`)
 	known := map[string]string{
 		"__APP_NAME__":        "web",
@@ -226,12 +252,23 @@ func shippedTemplates(t *testing.T) map[string]string {
 	out := map[string]string{}
 	for name, src := range all(t) {
 		for _, m := range heredoc.FindAllStringSubmatchIndex(src, -1) {
-			tag := src[m[2]:m[3]]
+			tag := ""
+			for _, g := range [][2]int{{m[2], m[3]}, {m[4], m[5]}, {m[6], m[7]}} {
+				if g[0] >= 0 {
+					tag = src[g[0]:g[1]]
+					break
+				}
+			}
 			rest := src[m[1]:]
 			j := strings.Index(rest, "\n"+tag+"\n")
 			if j < 0 {
-				t.Errorf("%s: heredoc %s is never closed", name, tag)
-				continue
+				// `<<-` strips leading tabs from the terminator too.
+				if k := strings.Index(rest, "\n\t"+tag+"\n"); k >= 0 {
+					j = k
+				} else {
+					t.Errorf("%s: heredoc %s is never closed", name, tag)
+					continue
+				}
 			}
 			body := rest[:j+1]
 			if !strings.HasPrefix(body, "#!") {
@@ -247,8 +284,36 @@ func shippedTemplates(t *testing.T) map[string]string {
 			out[name+":"+tag] = body
 		}
 	}
-	if len(out) == 0 {
-		t.Fatal("no shell templates found -- the heredoc scan has stopped matching, and every check built on it is now vacuous")
+	// THE SET, not the count, and certainly not "more than nothing".
+	//
+	// `len(out) == 0` was the only control, so the scan could fall from six
+	// templates to one and every check built on it would go on passing for the
+	// five it had stopped looking at. A scan is only as good as the proof that it
+	// still finds what it found yesterday.
+	//
+	// This is a list, which is the thing the comment above says it is avoiding,
+	// and the difference is what happens when it is wrong. A list used to SELECT
+	// goes stale silently -- the scan stops finding a template and nothing says
+	// so. A list used to CHECK a scan fails loudly in both directions: a template
+	// that leaves is a bug, and a template that joins is a one-line decision
+	// somebody makes on purpose, with the new name in front of them.
+	want := []string{
+		"agent-install:KOMIZO_AGENT_RC_EOF",
+		"agent-install:KOMIZO_API_RC_EOF",
+		"agent-install:KOMIZO_RC_EOF",
+		"alpine-init:EOF",
+		"alpine:KOMIZO_DEPLOY_EOF",
+		"alpine:KOMIZO_SECRET_EOF",
+	}
+	var got []string
+	for k := range out {
+		got = append(got, k)
+	}
+	sort.Strings(got)
+	if !slices.Equal(got, want) {
+		t.Errorf("the heredoc scan found\n  %v\nand the shipped templates are\n  %v\n"+
+			"A template missing here is one that nothing parses, lints or substitutes -- it ships to a box as root unchecked. "+
+			"A template added here is fine: add it to the list.", got, want)
 	}
 	return out
 }

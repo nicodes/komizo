@@ -159,6 +159,55 @@ func versionCommit(t *testing.T, body string) (block string, at, end int) {
 	return block, at, at + len(block)
 }
 
+// A logical line is the command the SHELL sees, with `\` continuations folded
+// in, and the byte offset of the physical line it began on.
+//
+// startsContainers needs `docker` and a start verb on the same string. A command
+// split over two lines has `docker` on the first and its verb on the second, so
+// neither half can satisfy both and the command matches nothing:
+//
+//	docker compose \
+//		-f compose.yml up -d
+//
+// Appended to the end of the deploy script, outside the guard, that starts an
+// app on every deploy and left the whole suite green -- komizo#54 in full,
+// through the check written to catch exactly that line, defeated by a backslash.
+// And it is this file's own house style: alpine.sh continues commands that way
+// in half a dozen places, so a long `docker compose ... up -d --remove-orphans`
+// is precisely the line somebody would wrap.
+//
+// The offset kept is the FIRST physical line's, so the position message points
+// at where the command starts rather than where it happens to end.
+//
+// A comment is never folded. In shell a comment runs to the end of its physical
+// line and a trailing `\` in one continues nothing, so joining it to the next
+// line would invent a command that does not exist -- and this file is full of
+// comments that talk about `docker compose up`.
+type logicalLine struct {
+	text string
+	at   int
+}
+
+func logicalLines(body string) []logicalLine {
+	var out []logicalLine
+	lines := strings.Split(body, "\n")
+	at := 0
+	for i := 0; i < len(lines); i++ {
+		start := at
+		text := lines[i]
+		at += len(lines[i]) + 1
+		if !strings.HasPrefix(strings.TrimSpace(text), "#") {
+			for strings.HasSuffix(strings.TrimRight(text, " \t"), `\`) && i+1 < len(lines) {
+				text = strings.TrimSuffix(strings.TrimRight(text, " \t"), `\`) + " " + strings.TrimSpace(lines[i+1])
+				i++
+				at += len(lines[i]) + 1
+			}
+		}
+		out = append(out, logicalLine{text: text, at: start})
+	}
+	return out
+}
+
 // startsContainers reports whether a line of shell would bring containers up.
 //
 // TWO LOOSE CONDITIONS ANDED, deliberately, rather than one tight pattern.
@@ -215,6 +264,20 @@ var (
 // third placeholder, a directory this does not know about -- survives as literal
 // text, the record is not found, and the stopped cases fail. Which is the point:
 // this test only passes for a path built out of the two values it can supply.
+// ANYWHERE ON THE LINE, not only at column zero with nothing in front of it.
+//
+// This check used to be `strings.HasPrefix(ln, "STATE_FILE=")` while its own
+// comment claimed a second assignment "anywhere below" would be caught. Four
+// spellings the shell obeys walked straight past it -- `export STATE_FILE=`,
+// one leading space, an indented reassignment inside a column-zero `if`, and a
+// `;`-joined one -- and none is equivalent: run the shipped decision against a
+// record that says `STOPPED=1` with any of them repointing the path and it
+// prints `started=yes` and runs `docker compose up -d --remove-orphans`. That
+// is Review 1's blocking finding back in full, reached through the helper
+// written to prevent it. The indented form is the most plausible real edit: a
+// `KNOWN_AS` alias fallback is two lines and lands inside an `if`.
+var stateFileAssign = regexp.MustCompile(`(^|[\s;&|(])(export[ \t]+)?STATE_FILE=`)
+
 // EXACTLY ONE assignment, and that is an assertion rather than a convenience.
 // Taking the first match would disagree with the shell, which obeys the LAST --
 // so a second `STATE_FILE=` added anywhere below (a rename half-applied, a
@@ -226,10 +289,11 @@ var (
 func stateFileLine(t *testing.T, body, stateDir, app string) string {
 	t.Helper()
 	var found []string
-	for _, ln := range strings.Split(body, "\n") {
-		if strings.HasPrefix(ln, "STATE_FILE=") {
-			found = append(found, ln)
+	for _, ln := range logicalLines(body) {
+		if strings.HasPrefix(strings.TrimSpace(ln.text), "#") || !stateFileAssign.MatchString(ln.text) {
+			continue
 		}
+		found = append(found, strings.TrimPrefix(strings.TrimSpace(ln.text), "export "))
 	}
 	switch len(found) {
 	case 0:
@@ -329,59 +393,36 @@ func TestADeployDoesNotStartAnAppThatWasStopped(t *testing.T) {
 	body := deployBody(t)
 	block := startDecision(t, body)
 
-	// A record with everything else in it, so what decides is the marker and
-	// not the shape of the file.
-	const base = "# Written by komizo.\nAPP_NAME=web\nAPP_DIR=/srv/web\nCI_USER=komizo-web\nCONFIG_IMAGE=registry.example/web-config\nKNOWN_AS=web\n"
-
-	for _, tc := range []struct {
+	// ONE TABLE, in ../testdata, read by this test and by box/probe_test.go's.
+	// It used to be two, kept in step by a comment saying they were the same
+	// cases in the same order -- and deleting a case from either left the whole
+	// suite green. Including in the direction that matters: this side growing a
+	// case the Go reader was never asked about. See the README beside the
+	// fixture for why the two must agree at all.
+	type runCase struct {
 		name   string
 		record string
 		start  bool
-	}{
-		// The bug, and the fix.
-		{"stopped on purpose", base + "STOPPED=1\nSTOPPED_BY=cli\nSTOPPED_AT=2026-01-01T00:00:00Z\n", false},
-		{"running", base, true},
+		why    string
+	}
+	var cases []runCase
+	for _, mc := range markerCases(t) {
+		cases = append(cases, runCase{mc.Name, mc.Record, !mc.Stopped, mc.Why})
+	}
 
-		// A CR is invisible in an editor and this is a comparison against a
-		// literal. A record that picked up CRLF -- edited on another machine,
-		// restored from a backup taken on one -- reads back as "1\r", which is
-		// not "1", and the app gets started with the marker still set. Same
-		// argument the `komizo add` block makes about carrying the marker
-		// across a re-run.
-		{"stopped, in a record with CRLF line endings", strings.ReplaceAll(base+"STOPPED=1\n", "\n", "\r\n"), false},
+	// SHELL-ONLY, because "no record" means different things on the two sides:
+	// to the deploy it means proceed, and to the report it means the app does
+	// not exist at all, so there is nothing for the Go reader to conclude.
+	//
+	// Deploys carry on deliberately. An app with no record does not appear in
+	// the report either, so app_down cannot fire for it and there is no page to
+	// protect. Refusing here would instead break every deploy on a box whose
+	// state directory went missing -- a failure with a much wider blast radius
+	// than the one it prevents.
+	cases = append(cases, runCase{"no record at all", "", true,
+		"an app with no record cannot page, so there is nothing to protect by refusing"})
 
-		// First-wins, which is what every other reader of these records does:
-		// readState in paths.go, the cross-app scan in this same script, and
-		// box/stopped.go's rewrite. A reader here that took the LAST line would
-		// disagree with all of them about the same file, and the disagreement
-		// would show up as an app that starts itself.
-		{"stopped, with a later line contradicting it", base + "STOPPED=1\nSTOPPED=0\n", false},
-
-		// Anchored at the start of the line. A key that merely ends in STOPPED
-		// is a different key, and matching it would leave an app that cannot be
-		// deployed to for a reason nobody could find.
-		{"a record with a similarly named key", base + "LAST_STOPPED=1\n", true},
-
-		// Hand-written, and it says the app is not stopped. ClearStopped
-		// removes the key rather than writing a 0, so this only arrives from a
-		// person -- and refusing to start on it would read their "no" as a yes.
-		{"a hand-written STOPPED=0", base + "STOPPED=0\n", true},
-
-		// EXACTLY "1". A hand-edited record can pick up a trailing space, and
-		// this side and box/probe.go must make the same nothing of it -- see
-		// TestTheReportAndTheDeployReadTheMarkerTheSameWay, which runs these
-		// same cases against the Go reader. A comparison either side loosened
-		// to "contains a 1" would have the report and the deploy disagreeing
-		// about the same file.
-		{"a value that merely contains a 1", base + "STOPPED=1 \n", true},
-
-		// No record at all. Deploys carry on, deliberately: an app with no
-		// record does not appear in the report either, so app_down cannot fire
-		// for it and there is no page to protect. Refusing here would instead
-		// break every deploy on a box whose state directory went missing, which
-		// is a failure with a much wider blast radius than the one it prevents.
-		{"no record", "", true},
-	} {
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			out, ran, err := runDecision(t, body, block, how{record: tc.record})
 			if err != nil {
@@ -497,20 +538,13 @@ func TestAStoppedAppStillGetsThePullAndTheVersion(t *testing.T) {
 	// the arguments as well as the code would be a check nobody could leave a
 	// note beside.
 	found := 0
-	at := 0
-	for _, ln := range strings.Split(body, "\n") {
-		// The line's own offset, kept as we go. strings.Index would answer with
-		// the FIRST place that text appears, which for a line that occurs twice
-		// is the wrong one -- and the wrong one is inside the guard, so the
-		// second copy would be judged by the position of the first.
-		here := at
-		at += len(ln) + 1
-		if strings.HasPrefix(strings.TrimSpace(ln), "#") || !startsContainers(ln) {
+	for _, ln := range logicalLines(body) {
+		if strings.HasPrefix(strings.TrimSpace(ln.text), "#") || !startsContainers(ln.text) {
 			continue
 		}
 		found++
-		if here < decision || here > end {
-			t.Errorf("`%s` starts containers from outside the stop check, so a deploy would start an app somebody stopped", strings.TrimSpace(ln))
+		if ln.at < decision || ln.at > end {
+			t.Errorf("`%s` starts containers from outside the stop check, so a deploy would start an app somebody stopped", strings.TrimSpace(ln.text))
 		}
 	}
 	if found != 1 {
