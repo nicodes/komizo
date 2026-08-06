@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 
@@ -21,9 +22,17 @@ import (
 // exactly not the case for whoever is reading it out of a log.
 //
 // ONE operation, re-running the whole setup rather than only replacing the
-// agent binary. Docker, the shared network and the agent are what komizo puts
-// on a box, and they are versioned together -- so there is no separate thing to
-// update and no order to get wrong. Every script it runs is safe to re-run.
+// agent binary. Docker, the shared network, the agent and EVERY APP'S OWN
+// SCRIPTS are what komizo puts on a box, and they are versioned together -- so
+// there is no separate thing to update and no order to get wrong. Every script
+// it runs is safe to re-run.
+//
+// The per-app half of that sentence was a promise this command did not keep
+// until komizo#58. It ran the init script, the agent and the proxy, and never
+// scripts/alpine.sh -- which is the thing that writes each app's deploy-<app>.
+// So a fix to the generated deploy script reached no app that already existed,
+// and the box reported itself up to date regardless. See refresh.go for what
+// that combined with the agent shipping the other half of the same pair.
 
 type updateOpts struct {
 	host    string
@@ -103,26 +112,47 @@ func RunUpdate(args []string) error {
 			"    interface will not work against this box until it is fixed.", err)
 	}
 
+	// Every app's own scripts, regenerated from that app's own record.
+	//
+	// After the agent and before the proxy, which is the order the box's own
+	// dependencies run in: an app's scripts need Docker (step one) and nothing
+	// else, and the proxy is the one part of this that a box is allowed not to
+	// have.
+	//
+	// NOT FATAL TO THE PROXY STEP. A broken record for one app must not be the
+	// reason the box's reverse proxy is left on an old image -- those two have
+	// nothing to do with each other, and stopping here would turn a per-app
+	// problem into a box-wide one. The error is carried to the end and joined
+	// with whatever the proxy has to say, so the command still fails and says
+	// everything it found rather than the first thing.
+	step("Refreshing each app's scripts")
+	appErr := refreshBoxApps(tgt.appRecords, cliProgress{}, tgt.runScript)
+
 	if o.noProxy || !hasProxy {
-		return nil
+		return appErr
 	}
 	step("Updating the shared reverse proxy")
 	if err := tgt.runScript(scripts.AlpineProxyScript, proxyEnv(proxyOpts{
 		network: o.network,
 		image:   o.image,
 	})); err != nil {
-		return fmt.Errorf("the server updated, but the proxy failed -- see the output above.\n" +
-			"    Re-run 'komizo proxy' once you have fixed it; the server itself is ready.")
+		return errors.Join(appErr, fmt.Errorf("the server updated, but the proxy failed -- see the output above.\n"+
+			"    Re-run 'komizo proxy' once you have fixed it; the server itself is ready."))
 	}
-	return nil
+	return appErr
 }
 
 func usageUpdate(fs *flag.FlagSet) {
 	fmt.Fprint(fs.Output(), `komizo update -- bring a server up to this komizo
 
-Re-runs everything komizo puts on a box: Docker, the shared network and the
-agent, plus the proxy if the box already has one. Safe to re-run, and the way to
-repair a box whose agent is missing or out of date.
+Re-runs everything komizo puts on a box: Docker, the shared network, the agent,
+every app's own deploy and secret scripts, plus the proxy if the box already has
+one. Safe to re-run, and the way to repair a box whose agent is missing or out
+of date.
+
+Each app is re-provisioned from the record komizo already holds for it, so its
+deploy account, config image, directory and hostnames are unchanged -- and so is
+a deliberate stop. No deploy key is rotated and nothing is restarted.
 
 This is what "u" does on the komizo row in the interface.
 
