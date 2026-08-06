@@ -1192,7 +1192,7 @@ touch /etc/doas.conf
 # edited state. STATE_TMP above already solves this with $$; so does this.
 doas_bak="/etc/doas.conf.komizo.bak.$$"
 cp /etc/doas.conf "$doas_bak"
-# EXIT INT TERM HUP, not EXIT alone.
+# TWO TRAPS, AND THE SIGNAL ONE EXITS.
 #
 # Between the sed below (which removes this account's rule block) and the
 # append after it, this app cannot deploy -- doas has no rule for it. An EXIT
@@ -1202,10 +1202,27 @@ cp /etc/doas.conf "$doas_bak"
 # to a closed stdout. Left that way, the app's deploys fail until something
 # re-runs the setup, and nothing on the box says why.
 #
+# The `exit` is not decoration. A handler for a signal RETURNS to where it was
+# interrupted -- it does not stop the script -- so listing the signals without
+# it puts the file back and then carries on: the block is re-appended, the run
+# continues on a box whose operator has already cancelled the command, and it
+# reaches the sshd section below, where the same interruption leaves the WORSE
+# of the two windows open (see the trap there). Absorbing the signal moves the
+# exposure rather than closing it.
+#
+# PIPE is in the list because it is the likeliest of the four. Killing the
+# local ssh does not always deliver a signal here at all; what does is the next
+# `log` line this script writes to a stdout with nothing on the other end.
+#
+# The two compose safely: `exit` from a signal handler runs the EXIT trap as
+# well, and this handler is idempotent -- `mv -f` over a source that is already
+# gone, with the failure swallowed.
+#
 # It was survivable when this block ran once, because somebody chose to run
 # `komizo add`. komizo#58 made it run once per app on every upgrade. The
-# generated deploy script already traps the same set for a smaller stake.
-trap 'mv -f "$doas_bak" /etc/doas.conf 2>/dev/null || true' EXIT INT TERM HUP
+# generated deploy script already traps a set like this for a smaller stake.
+trap 'mv -f "$doas_bak" /etc/doas.conf 2>/dev/null || true' EXIT
+trap 'mv -f "$doas_bak" /etc/doas.conf 2>/dev/null || true; exit 129' INT TERM HUP PIPE
 
 # Delimited block, so the rule set can grow without the removal logic having to
 # know how many lines it spans.
@@ -1225,14 +1242,15 @@ chown root:root /etc/doas.conf
 chmod 600 /etc/doas.conf
 if ! doas -C /etc/doas.conf; then
 	mv -f "$doas_bak" /etc/doas.conf
-	trap - EXIT INT TERM HUP
+	trap - EXIT INT TERM HUP PIPE
 	die "the generated doas.conf is invalid, reverted -- no rules were changed"
 fi
 # Success: stop guarding it and drop the backup, so a later run's "backup" is
-# not one that already carries komizo's edits. The whole set is cleared, not
-# only EXIT: a handler left on HUP would fire during a LATER step and move a
-# backup that no longer exists.
-trap - EXIT INT TERM HUP
+# not one that already carries komizo's edits. BOTH traps are cleared, not just
+# the EXIT one: the signal handler exits, so one left installed would abandon a
+# later step -- and it would do it while restoring a backup that no longer
+# exists, i.e. doing nothing except stopping the run.
+trap - EXIT INT TERM HUP PIPE
 rm -f "$doas_bak"
 
 # --- 4. sshd ---------------------------------------------------------------
@@ -1265,13 +1283,15 @@ cp "$conf" "$conf_bak"
 # the root-owned key list exists to prevent. The explicit reverts below stay for
 # their specific messages; this catches every other way out. Cleared on success.
 #
-# EXIT INT TERM HUP, for the reason the doas trap above takes the same set, and
-# this window is the worse of the two. Between the sed below and the append
-# further down, this account has NO Match block: it loses the root-owned
-# AuthorizedKeysFile and every restriction in it (AllowTcpForwarding no and the
-# rest). sshd has not been reloaded yet, so it does not bite now -- it bites at
-# the next reboot, a long way from anything anyone would connect it to.
-trap 'mv -f "$conf_bak" "$conf" 2>/dev/null || true' EXIT INT TERM HUP
+# The same two traps as the doas block above, and for the same reasons -- but
+# this window is the worse of the two, which is why the signal handler exits
+# rather than resuming. Between the sed below and the append further down, this
+# account has NO Match block: it loses the root-owned AuthorizedKeysFile and
+# every restriction in it (AllowTcpForwarding no and the rest). sshd has not
+# been reloaded yet, so it does not bite now -- it bites at the next reboot, a
+# long way from anything anyone would connect it to.
+trap 'mv -f "$conf_bak" "$conf" 2>/dev/null || true' EXIT
+trap 'mv -f "$conf_bak" "$conf" 2>/dev/null || true; exit 129' INT TERM HUP PIPE
 
 # Retire the previous account's Match block too, if this app was renamed onto a
 # new account (OLD_CI_USER is set only when it is safe to do so).
@@ -1348,11 +1368,11 @@ if sshd -t; then
 	rc-service sshd reload || rc-service sshd restart
 	# Success: stop guarding the file and drop the backup, so a re-run's "backup"
 	# is the pre-komizo config rather than one that already carries komizo's edits.
-	trap - EXIT INT TERM HUP
+	trap - EXIT INT TERM HUP PIPE
 	rm -f "$conf_bak"
 else
 	mv "$conf_bak" "$conf"
-	trap - EXIT INT TERM HUP
+	trap - EXIT INT TERM HUP PIPE
 	die "sshd config test failed, reverted -- nothing was restarted"
 fi
 

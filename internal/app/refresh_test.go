@@ -3,13 +3,19 @@ package app
 import (
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/printer"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/nicodes/komizo/box"
 	"github.com/nicodes/komizo/scripts"
@@ -76,23 +82,137 @@ func TestEveryUpdatePathRefreshesEveryAppsScripts(t *testing.T) {
 			t.Errorf("%s in %s keeps refreshBoxApps' error in %s and never reports it -- "+
 				"an app that was not refreshed ends the command green", tc.fn, tc.file, v)
 		}
-		// AND EVERY exit path after it. Once that value exists, a success is no
-		// longer something this function can claim on its own: the proxy step
-		// below it has its own early returns, and one of them returning nil
-		// drops the whole report on a path nobody would think to look at. A
-		// single `return X` is enough to satisfy the check above and not enough
-		// to be correct, which is the mutant Review 1's fix had to grow into.
-		rest := body[strings.Index(body, "refreshBoxApps("):]
-		for _, silent := range []string{"return nil", "runDoneMsg{}"} {
-			if strings.Contains(rest, silent) {
-				t.Errorf("%s in %s has a %q after the refresh, so that path ends green with "+
-					"apps still on the old deploy script", tc.fn, tc.file, silent)
-			}
-		}
+		// AND EVERY exit path after it, not just one.
+		//
+		// "at least one path reports it" and "no path says return nil" are both
+		// satisfied while a SECOND path quietly drops it, which is what Review 2
+		// found: the interface's done message could carry `err: nil` while the
+		// proxy-failure branch above it still mentioned the value, and the CLI
+		// could drop it from its errors.Join while the final return kept it. So
+		// the exit paths are enumerated rather than searched, which needs the
+		// parser rather than a regexp.
+		assertEveryExitReports(t, tc.file, tc.fn, v)
 	}
 }
 
-// The seam itself, which is where the whole feature can be switched off.
+// assertEveryExitReports walks a function and requires every value-returning
+// exit after the refresh -- a `return x`, or a message put on the run channel --
+// to mention the name the refresh's error was kept in.
+//
+// A bare `return` is exempt: the interface reports by sending on a channel and
+// then returning, so the report is on the line before. What is NOT exempt is
+// the message itself, which is why runDoneMsg literals are checked as well as
+// returns.
+func assertEveryExitReports(t *testing.T, file, fn, name string) {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, filepath.Join(".", file), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decl *ast.FuncDecl
+	ast.Inspect(f, func(n ast.Node) bool {
+		if d, ok := n.(*ast.FuncDecl); ok && d.Name.Name == fn {
+			decl = d
+		}
+		return decl == nil
+	})
+	if decl == nil {
+		t.Fatalf("could not find func %s in %s", fn, file)
+	}
+
+	// The call, and the span it occupies. Anything inside it -- the runner
+	// closure, most obviously -- belongs to the refresh rather than to the
+	// function's own exits.
+	var call *ast.CallExpr
+	ast.Inspect(decl, func(n ast.Node) bool {
+		c, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if id, ok := c.Fun.(*ast.Ident); ok && id.Name == "refreshBoxApps" {
+			call = c
+			return false
+		}
+		return true
+	})
+	if call == nil {
+		t.Fatalf("could not find the refreshBoxApps call in %s", fn)
+	}
+
+	// The exits that matter are the ones of the function the call SITS IN. In
+	// the interface that is the goroutine, not the surrounding tea.Cmd: the
+	// latter's `return m.run.wait()` hands back a command to run, not a result,
+	// and has nothing to do with whether an app was refreshed.
+	var scope ast.Node = decl
+	ast.Inspect(decl, func(n ast.Node) bool {
+		lit, ok := n.(*ast.FuncLit)
+		if !ok {
+			return true
+		}
+		if lit.Pos() < call.Pos() && lit.End() > call.End() {
+			scope = lit // innermost wins, because Inspect descends
+		}
+		return true
+	})
+
+	mentions := func(n ast.Node) bool {
+		found := false
+		ast.Inspect(n, func(m ast.Node) bool {
+			if id, ok := m.(*ast.Ident); ok && id.Name == name {
+				found = true
+			}
+			return !found
+		})
+		return found
+	}
+
+	checked := 0
+	ast.Inspect(scope, func(n ast.Node) bool {
+		if n == nil || n.Pos() < call.End() || (n.Pos() >= call.Pos() && n.End() <= call.End()) {
+			return true
+		}
+		switch x := n.(type) {
+		case *ast.ReturnStmt:
+			if len(x.Results) == 0 {
+				return true // reports by sending, on the line above
+			}
+			checked++
+			if !mentions(x) {
+				t.Errorf("%s in %s has a return after the refresh that does not carry %s, "+
+					"so that path ends green with apps still on the old deploy script:\n    %s",
+					fn, file, name, exprText(fset, x))
+			}
+		case *ast.CompositeLit:
+			id, ok := x.Type.(*ast.Ident)
+			if !ok || id.Name != "runDoneMsg" {
+				return true
+			}
+			checked++
+			if !mentions(x) {
+				t.Errorf("%s in %s ends the run with a message that does not carry %s -- the "+
+					"interface would show a clean update over apps that were never refreshed, "+
+					"while `komizo update` on the same box fails:\n    %s",
+					fn, file, name, exprText(fset, x))
+			}
+		}
+		return true
+	})
+	if checked == 0 {
+		t.Errorf("%s in %s has no exit path after the refresh at all -- this check found "+
+			"nothing to assert, which means it is not asserting anything", fn, file)
+	}
+}
+
+func exprText(fset *token.FileSet, n ast.Node) string {
+	var b strings.Builder
+	if err := printer.Fprint(&b, fset, n); err != nil {
+		return "?"
+	}
+	return b.String()
+}
+
+// The seam itself, which is where the whole feature can be switched off.// The seam itself, which is where the whole feature can be switched off.
 //
 // Everything above refreshBoxApps is a surface and everything below it is
 // logic, so a version of it that quietly returned nil would restore exactly the
@@ -121,6 +241,16 @@ func TestTheSeamActuallyListsAndActs(t *testing.T) {
 	}
 	if len(r2.envs) != 0 {
 		t.Errorf("it ran the setup script for %d app(s) it could not list", len(r2.envs))
+	}
+
+	// And a listing that WORKS while an app fails must still fail the update.
+	// Review 2 found this: the two cases above cover "the listing worked" and
+	// "the listing failed", and a seam that dropped refreshApps' own result
+	// passed both -- which is Review 1's blocker one layer further down, and the
+	// same green silence over an app still carrying the old deploy script.
+	r3 := &recordingRunner{fail: map[string]error{"blog": fmt.Errorf("boom")}}
+	if err := refreshBoxApps(func() ([]appRecord, error) { return recs, nil }, &silentProgress{}, r3.run); err == nil {
+		t.Error("an app that failed its re-run did not fail the update")
 	}
 }
 
@@ -167,6 +297,22 @@ func TestTheEnumerationFindsEveryAppAndNothingElse(t *testing.T) {
 		write(t, filepath.Join(dir, "wiki.env"), 0o640,
 			"APP_NAME=wiki\r\nAPP_DIR=/srv/wiki\r\nCI_USER=komizo-wiki\r\nCONFIG_IMAGE=ghcr.io/you/wiki-config\r\n")
 		write(t, filepath.Join(dir, "old.env"), 0o640, "APP_NAME=old\n")
+		// A record with a key twice. FIRST WINS, which every other reader of
+		// these files also does -- box/paths.go states it as an invariant, and
+		// box/stopped.go's argument that a forged duplicate key is inert rests
+		// on it holding for EVERY reader, of which this is now the fourth.
+		//
+		// The failure if it stopped holding is not a wrong value, it is a
+		// disappearance: the command substitution would span two lines, so this
+		// app's row splits into fragments with too few fields each,
+		// parseAppRecords drops both, and `komizo update` refreshes every app on
+		// the box except that one while saying nothing about it.
+		write(t, filepath.Join(dir, "twice.env"), 0o640,
+			"APP_NAME=twice\nAPP_DIR=/srv/twice\nCI_USER=komizo-twice\n"+
+				"CONFIG_IMAGE=ghcr.io/you/twice-config\n"+
+				// Every column duplicated, because the line count only catches a
+				// spill in the column that spilled.
+				"CI_USER=impostor\nCONFIG_IMAGE=ghcr.io/impostor\nAPP_DIR=/tmp/impostor\n")
 		// A record whose APP_NAME disagrees with its file name. The FILE NAME
 		// wins, because that is what alpine.sh, box/paths.go and the deploy
 		// script's cross-app scan all key on -- taking the line instead would
@@ -187,10 +333,21 @@ func TestTheEnumerationFindsEveryAppAndNothingElse(t *testing.T) {
 			{name: "old"},
 			{name: "renamed", user: "komizo-renamed", config: "ghcr.io/you/renamed-config", dir: "/srv/renamed"},
 			{name: "shop", user: "deployer", config: "registry.internal:5000/shop-config", dir: "/opt/shop"},
+			{name: "twice", user: "komizo-twice", config: "ghcr.io/you/twice-config", dir: "/srv/twice"},
 			// The CR is stripped ON THE BOX. Left on, every value fails
 			// check()'s charset test and the app is refused for a reason
 			// invisible in the file and in the message.
 			{name: "wiki", user: "komizo-wiki", config: "ghcr.io/you/wiki-config", dir: "/srv/wiki"},
+		}
+		// ONE LINE PER APP. A read that lost its `head -n 1` spills a second
+		// line into the output, and depending on which column it is the row
+		// either splits into fragments the parser drops -- an app that silently
+		// vanishes from the update -- or quietly parses right while leaving a
+		// stray behind. Counting the lines catches both; comparing the records
+		// only catches the first.
+		if n := len(strings.Split(strings.TrimRight(enumerate(t, dir), "\n"), "\n")); n != len(want) {
+			t.Errorf("the enumeration printed %d lines for %d apps -- a value that spans two "+
+				"lines splits that app's row into fragments the parser drops", n, len(want))
 		}
 		got := run(t, dir)
 		if !reflect.DeepEqual(got, want) {
@@ -325,6 +482,9 @@ func TestAnAppWhoseRecordIsIncompleteIsSkippedAndReported(t *testing.T) {
 			rec: appRecord{name: "shop", user: "komizo-shop", dir: "/srv/shop"}},
 		{name: "no APP_DIR", missing: true,
 			rec: appRecord{name: "shop", user: "komizo-shop", config: good.config}},
+		{name: "a malformed CI_USER",
+			rec: appRecord{name: "shop", user: "komizo shop",
+				config: good.config, dir: "/srv/shop"}},
 		{name: "a config image with a tag",
 			rec: appRecord{name: "shop", user: "komizo-shop",
 				config: "ghcr.io/you/shop-config:v1", dir: "/srv/shop"}},
@@ -470,7 +630,12 @@ func TestTheScriptsStateDirIsTheOneKomizoEnumerates(t *testing.T) {
 // above, and for the same reason -- this is the kind of agreement that drifts
 // silently and takes the suite's word for it with it.
 func TestTheStateLockIsTheSameFileInBothLanguages(t *testing.T) {
-	want := `STATE_LOCK="` + box.RunDir + `/state-$APP_NAME.lock"`
+	// Built from box.RecordLockName, so this is ONE definition compared against
+	// the shell rather than two literals that happen to look alike. Review 2
+	// pointed out that pinning the directory alone left the NAME free to drift
+	// on either side -- the same "two processes locking different files exclude
+	// nothing", reached by the half that was not being watched.
+	want := `STATE_LOCK="` + box.RunDir + "/" + box.RecordLockName("$APP_NAME") + `"`
 	if !strings.Contains(scripts.AlpineScript, want) {
 		t.Errorf("alpine.sh does not contain %q -- the shell and box/stopped.go would be "+
 			"locking different files, which excludes nothing", want)
@@ -829,7 +994,11 @@ func TestAnInterruptedRemovalLeavesNothingAnUpdateWillReprovision(t *testing.T) 
 
 	// The end of the run drops both names, so nothing is left in the directory.
 	src := scripts.AlpineRemoveScript
-	tail := fromTo(t, src, `rm -f "$STATE_FILE" "$STATE_FILE.removing"`, "\n\nlog ")
+	// Started at the comment above the line rather than at the line itself:
+	// using the statement under test as its own marker turns a mutation of it
+	// into "the block markers moved" rather than the sentence this test is
+	// about. Killed either way; the message just pointed somewhere else.
+	tail := fromTo(t, src, "# BOTH NAMES.", "\n\nlog ")
 	runShell(t, strings.Join([]string{
 		"set -eu",
 		`STATE_FILE="` + filepath.Join(dir, "blog.env") + `"`,
@@ -839,6 +1008,55 @@ func TestAnInterruptedRemovalLeavesNothingAnUpdateWillReprovision(t *testing.T) 
 		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
 			t.Errorf("%s survived the removal", name)
 		}
+	}
+}
+
+// A RENAME THAT CANNOT HAPPEN STOPS THE REMOVAL.
+//
+// Everything else in alpine-remove.sh is `|| true`, because everything else is
+// cleanup and absence is fine. This one is not cleanup: if the record is left
+// live and the removal carries on to delete the account and the directory, the
+// window this whole step exists to close is silently open again -- and the way
+// anyone would find out is a decommissioned app coming back on a later update.
+// So it says so and refuses, which is the one place in this script where
+// failing is the safe answer.
+func TestARemovalThatCannotSetTheRecordAsideRefusesToGoOn(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory mode this test relies on")
+	}
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "blog.env"), 0o600,
+		"APP_NAME=blog\nAPP_DIR=/opt/blog\nCI_USER=deployer\nCONFIG_IMAGE=ghcr.io/you/blog-config\n")
+	// Read but not writable, so the record can be read and not renamed.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	src := scripts.AlpineRemoveScript
+	head := fromTo(t, src, "STATE_DIR=/var/lib/komizo/apps", "# The one irreversible flag")
+	head = strings.Replace(head, "STATE_DIR=/var/lib/komizo/apps", "STATE_DIR="+dir, 1)
+	inert := fromTo(t, src, "# --- 1c. stop calling it an app", "# --- 2. the privileged commands")
+
+	cmd := exec.Command("sh", "-s")
+	cmd.Stdin = strings.NewReader(strings.Join([]string{
+		"set -eu", "log() { :; }", "APP_NAME=blog", head, inert,
+		`printf 'WENT-ON\n'`,
+	}, "\n"))
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatal("the removal carried on after it could not set the record aside -- it would " +
+			"delete the account and the directory and leave a record `komizo update` puts back")
+	}
+	if strings.Contains(string(out), "WENT-ON") {
+		t.Error("the removal reached the steps after the guard")
+	}
+	if !strings.Contains(string(out), "aside") {
+		t.Errorf("the refusal does not say what failed: %q", string(out))
 	}
 }
 
@@ -854,10 +1072,14 @@ func runRemovalPrelude(t *testing.T, stateDir, app string) (user, appDir string)
 		t.Fatalf("could not repoint %q in the removal script", shipped)
 	}
 	head = strings.Replace(head, shipped, "STATE_DIR="+stateDir, 1)
-	inert := fromTo(t, src, "# --- 0. stop calling it an app", "# --- 1. the running stack")
+	inert := fromTo(t, src, "# --- 1c. stop calling it an app", "# --- 2. the privileged commands")
 
 	out := runShell(t, strings.Join([]string{
 		"set -eu",
+		// log() is defined further down the script than the block lifted here,
+		// and it is prose rather than behaviour. Same stub doas_rollback_test.go
+		// uses for the same reason.
+		"log() { :; }",
 		"APP_NAME=" + app,
 		head,
 		inert,
@@ -886,39 +1108,198 @@ func runShell(t *testing.T, script string, env []string) string {
 	return string(out)
 }
 
-// THE GUARDS ON /etc SURVIVE THE SIGNAL THAT ACTUALLY ARRIVES.
+// THE GUARDS ON /etc SURVIVE THE SIGNAL THAT ACTUALLY ARRIVES, AND STOP.
 //
 // alpine.sh backs up /etc/doas.conf and /etc/ssh/sshd_config and restores them
 // from a trap. An EXIT trap does not run on HUP, TERM or PIPE, and those are
 // exactly how this script dies in practice: `komizo update` is long, and
 // interrupting it kills the local ssh, after which the far end takes SIGHUP
-// from sshd or SIGPIPE on its next write to a closed stdout. Verified under
-// busybox ash, which is the shell the box uses.
+// from sshd or SIGPIPE on its next write to a closed stdout.
 //
 // What is left behind in each window is specific. In the doas one, this app's
 // rule block has been removed and not yet re-appended, so its deploys get a
 // refusal. In the sshd one, its Match block is gone -- which takes the
 // root-owned AuthorizedKeysFile and every restriction in it -- and sshd has not
-// been reloaded, so it bites at the next reboot instead, a long way from
-// anything anyone would connect it to.
+// been reloaded, so it bites at the next reboot instead.
 //
-// Pinned as source rather than run, because what is being asserted is which
-// signals a handler is installed for, and delivering them to a script mid-edit
-// is a race a test would have to win reliably. This PR is why it is pinned at
-// all: both windows used to open when somebody chose to run `komizo add`, and
-// now they open once per app on every upgrade.
-func TestTheGuardsOnEtcAreNotOnlyEXIT(t *testing.T) {
-	for _, want := range []string{
-		`trap 'mv -f "$doas_bak" /etc/doas.conf 2>/dev/null || true' EXIT INT TERM HUP`,
-		`trap 'mv -f "$conf_bak" "$conf" 2>/dev/null || true' EXIT INT TERM HUP`,
+// RUN, WITH A REAL SIGNAL, because listing the signals is not the property.
+// Review 1 asked for the signals and Review 2 found that adding them was not
+// enough: a handler for a non-EXIT signal RETURNS to where it was interrupted,
+// so the first version restored the file and then carried on -- re-appending
+// the block, finishing the run on a box whose operator had cancelled it, and
+// walking into the sshd window to die there instead, where nothing was catching
+// SIGPIPE at all. A string match on the trap line cannot tell those two apart.
+// This sends the signal and asserts both halves: the file goes back, and the
+// script stops.
+//
+// There is no race to lose. The lifted section is followed by a marker file and
+// a sleep, so the signal is delivered at a point the test chose.
+func TestTheGuardsOnEtcRestoreAndStopOnEverySignal(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	src := scripts.AlpineScript
+	const original = "# untouched\n"
+
+	for _, guard := range []struct {
+		name, target, lift, until string
+	}{
+		{
+			name:   "doas.conf",
+			target: "doas.conf",
+			lift:   `doas_bak="/etc/doas.conf.komizo.bak.$$"`,
+			until:  "# Delimited block,",
+		},
+		{
+			name:   "sshd_config",
+			target: "sshd_config",
+			lift:   "conf=/etc/ssh/sshd_config",
+			until:  "# Retire the previous account's Match block",
+		},
 	} {
-		if !strings.Contains(scripts.AlpineScript, want) {
-			t.Errorf("alpine.sh no longer installs this guard for every way it can die:\n  %s", want)
+		for _, sig := range []syscall.Signal{syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT, syscall.SIGPIPE} {
+			t.Run(guard.name+"/"+sig.String(), func(t *testing.T) {
+				dir := t.TempDir()
+				target := filepath.Join(dir, guard.target)
+				write(t, target, 0o600, original)
+
+				// The backup-and-guard block exactly as it ships, pointed at a
+				// file this test owns. Everything after it stands in for the
+				// edit the guard exists to protect: the file is left in a state
+				// it must not be found in, and then the signal arrives.
+				block := fromTo(t, src, guard.lift, guard.until)
+				block = strings.NewReplacer(
+					"/etc/doas.conf", target,
+					"/etc/ssh/sshd_config", target,
+				).Replace(block)
+
+				script := strings.Join([]string{
+					"set -eu",
+					block,
+					`printf 'mid-edit\n' > ` + shQuote(target),
+					`printf 'ready\n' > ` + shQuote(filepath.Join(dir, "ready")),
+					// A LOOP OF SHORT SUCCESSFUL COMMANDS, which is what the
+					// real script is doing when the signal lands -- a sed, a
+					// cat, a chmod, each returning 0.
+					//
+					// Not `sleep & wait`: `wait` returns 128+signal, so `set -e`
+					// would end the run by itself and a handler that resumed
+					// would be indistinguishable from one that exits. That is
+					// the version of this test that let Review 2's blocker
+					// survive. A foreground command defers the handler until it
+					// finishes and then returns 0, so `set -e` has nothing to
+					// act on and the script carries on -- exactly as it would
+					// after the `sed -i` that opens the window.
+					"i=0",
+					`while [ "$i" -lt 200 ]; do sleep 0.05; i=$((i+1)); done`,
+					// Reached only if the handler resumed instead of exiting.
+					`printf 'RAN-ON\n' >> ` + shQuote(target),
+				}, "\n")
+
+				cmd := exec.Command("sh", "-s")
+				cmd.Stdin = strings.NewReader(script)
+				cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				deadline := time.Now().Add(10 * time.Second)
+				for {
+					if _, err := os.Stat(filepath.Join(dir, "ready")); err == nil {
+						break
+					}
+					if time.Now().After(deadline) {
+						_ = cmd.Process.Kill()
+						t.Fatal("the lifted guard never reached the point the signal is sent at")
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
+				if err := cmd.Process.Signal(sig); err != nil {
+					t.Fatal(err)
+				}
+				done := make(chan error, 1)
+				go func() { done <- cmd.Wait() }()
+				select {
+				case <-done:
+				case <-time.After(10 * time.Second):
+					_ = cmd.Process.Kill()
+					t.Fatalf("%s did not stop the run -- a handler that returns to where it was "+
+						"interrupted carries on provisioning a box whose operator has cancelled "+
+						"the command, and dies in the next window instead", sig)
+				}
+
+				got, err := os.ReadFile(target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(got) != original {
+					t.Errorf("%s was left as %q after %s, want it restored to %q",
+						guard.target, string(got), sig, original)
+				}
+				if strings.Contains(string(got), "RAN-ON") {
+					t.Errorf("the run continued past %s", sig)
+				}
+				// And no backup left in /etc for a later, unrelated failure to
+				// restore from.
+				strays, err := filepath.Glob(target + ".komizo.bak*")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(strays) > 0 {
+					t.Errorf("backups left behind after %s: %v", sig, strays)
+				}
+			})
 		}
 	}
-	// And the backups are per-run. Two runs of this script at once is ordinary
-	// now -- an update while somebody adds an app, an update while CI adds one
-	// -- and a shared backup name means the first to finish deletes it, so the
+}
+
+// WHICH SIGNALS the guards are installed for, pinned as text.
+//
+// The test above runs a real signal and is the one that matters -- it is what
+// caught a handler that restored the file and then carried on. What it cannot
+// catch is a signal MISSING from the list, and the reason is worth writing down
+// rather than discovering again: the /bin/sh on a developer machine is usually
+// bash, and bash runs its EXIT trap when it dies of a fatal signal. So a
+// dropped HUP still ends with the file restored here, and the subtest passes
+// against a script that would leave /etc mid-edit on the box. Alpine's busybox
+// ash does not do that, which is exactly why the difference has to be asserted
+// somewhere the host shell cannot paper over.
+//
+// PIPE is in the list because it is the likeliest of the four, not the most
+// exotic: killing the local ssh does not always deliver a signal to the far
+// end, and what does is this script's next log line written to a stdout with
+// nothing on the other end.
+func TestTheGuardsCatchEverySignalAnInterruptedUpdateSends(t *testing.T) {
+	for _, want := range []string{
+		`trap 'mv -f "$doas_bak" /etc/doas.conf 2>/dev/null || true' EXIT`,
+		`trap 'mv -f "$doas_bak" /etc/doas.conf 2>/dev/null || true; exit 129' INT TERM HUP PIPE`,
+		`trap 'mv -f "$conf_bak" "$conf" 2>/dev/null || true' EXIT`,
+		`trap 'mv -f "$conf_bak" "$conf" 2>/dev/null || true; exit 129' INT TERM HUP PIPE`,
+	} {
+		if !strings.Contains(scripts.AlpineScript, want) {
+			t.Errorf("alpine.sh no longer installs this guard exactly:\n  %s\n"+
+				"a missing signal leaves /etc mid-edit on the box, and the host shell here "+
+				"hides that by running the EXIT trap anyway", want)
+		}
+	}
+}
+
+// And the clears are as wide as the traps.
+//
+// A signal handler left installed does not merely fail to clean up: it EXITS,
+// so it would abandon a later step of the script while restoring a backup that
+// no longer exists. Asserted as source because it is about which handlers are
+// removed, and the steps after them are the ones this file cannot run.
+func TestTheGuardsAreClearedAsWidelyAsTheyAreSet(t *testing.T) {
+	if n := strings.Count(scripts.AlpineScript, "trap - EXIT INT TERM HUP PIPE"); n != 4 {
+		t.Errorf("alpine.sh clears the /etc guards %d times with the full signal set, want 4 "+
+			"-- a narrower clear leaves a handler that would exit a later step", n)
+	}
+	if strings.Contains(scripts.AlpineScript, "trap - EXIT\n") {
+		t.Error("alpine.sh clears a guard with `trap - EXIT` alone, leaving the signal handler installed")
+	}
+	// Both backups are per-run. Two runs of this script at once is ordinary now
+	// -- an update while somebody adds an app, an update while CI adds one --
+	// and a shared backup name means the first to finish deletes it, so the
 	// second's restore has nothing to move and aborts under set -e with the
 	// file left in its edited state.
 	for _, want := range []string{
