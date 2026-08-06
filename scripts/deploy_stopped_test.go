@@ -335,6 +335,12 @@ type how struct {
 	// unreadable: the record exists and this process cannot open it, which is
 	// what a damaged mode or ownership looks like from here.
 	unreadable bool
+	// stopMidDeploy: `komizo stop` lands between the marker read and the start.
+	// The docker stub writes STOPPED=1 when it is asked to bring containers up,
+	// which is the interleaving komizo#62 describes -- runVerb writes the marker
+	// FIRST (komizo#48), so by the time `up -d` returns the record already says
+	// stopped and the containers are back regardless.
+	stopMidDeploy bool
 }
 
 func runDecision(t *testing.T, body, block string, h how) (out string, dockerRan []string, record string, err error) {
@@ -368,12 +374,20 @@ func runDecision(t *testing.T, body, block string, h how) (out string, dockerRan
 	if h.dockerFails {
 		fail = " return 1;"
 	}
+	// STAGED INSIDE THE STUB, not before the run, because the whole point is
+	// that the record changes BETWEEN the read and the start. Writing it up
+	// front would be the ordinary "already stopped" case, which is covered
+	// above and is not this bug.
+	race := ""
+	if h.stopMidDeploy {
+		race = ` case "$*" in *" up "*|*" up") printf 'STOPPED=1\n' > ` + state + `;; esac;`
+	}
 	prelude := "set -euf\n" +
 		"APP_NAME=web\n" +
 		"version=abc1234\n" +
 		"ref=registry.example/web-config:abc1234\n" +
 		stateFileLine(t, body, dir, "web") + "\n" +
-		"docker() { printf '%s\\n' \"docker $*\" >> " + log + ";" + fail + " }\n"
+		"docker() { printf '%s\\n' \"docker $*\" >> " + log + ";" + race + fail + " }\n"
 
 	cmd := exec.Command("sh", "-c", prelude+block)
 	b, err := cmd.CombinedOutput()
@@ -782,5 +796,72 @@ func TestTheDeployedVersionIsRecordedOnEveryDeploy(t *testing.T) {
 				t.Errorf(".env is\n%q\nwant\n%q", got, tc.want)
 			}
 		})
+	}
+}
+
+// A stop that lands mid-deploy leaves the app running with STOPPED set.
+//
+// komizo#62. The deploy reads the marker and sees nothing, `komizo stop` arrives
+// and writes STOPPED=1 before bringing containers down (komizo#48's ordering),
+// and the deploy's `up -d` brings them back. End state: running, with the marker
+// set -- and box/diagnose.go keys app_down on the marker, so the app never pages
+// again for a real outage, with nothing saying alerting was switched off.
+//
+// THE WINDOW IS NARROW AND THE CONSEQUENCE IS NOT, which is the whole argument
+// for spending a second read on it. Everything else about this state is silent:
+// nothing reconciles the marker against running containers, and `komizo start`
+// is the only thing that clears it -- which nobody runs against an app they can
+// see is up.
+func TestAStopDuringTheDeployIsNotOverruled(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	body := deployBody(t)
+	block := startDecision(t, body)
+
+	// No marker when the decision is read -- so the deploy takes the start
+	// branch, which is the only branch this bug exists in.
+	out, ran, after, err := runDecision(t, body, block, how{record: "APP_VERSION=old\n", stopMidDeploy: true})
+	if err != nil {
+		t.Fatalf("the start decision failed to run: %v\n%s", err, out)
+	}
+
+	// A POSITIVE CONTROL FIRST. If the stub never staged the stop, everything
+	// below would be asserting about the ordinary not-stopped path and would
+	// pass for the wrong reason.
+	if !strings.Contains(after, "STOPPED=1") {
+		t.Fatalf("the race was never staged: the record does not say STOPPED=1 afterwards:\n%s", after)
+	}
+
+	startedIt, stoppedIt := false, false
+	for _, c := range ran {
+		if startsContainers(c) {
+			startedIt = true
+		}
+		if strings.Contains(c, "compose stop") {
+			stoppedIt = true
+		}
+	}
+	if !startedIt {
+		t.Fatalf("the deploy never started anything, so this is not the interleaving under test\ndocker: %v", ran)
+	}
+	if !stoppedIt {
+		t.Errorf("a stop landed mid-deploy and the containers were left running: the deploy never ran `compose stop`.\n"+
+			"box/diagnose.go keys app_down on the marker, so this app is up and can no longer page.\ndocker: %v\noutput:\n%s", ran, out)
+	}
+
+	// AND IT SAYS SO, in the field a caller parses. `started=yes` here would
+	// tell CI the app is up when the deploy has just put it back down.
+	if !strings.Contains(out, "deploy: started=no") {
+		t.Errorf("output does not say started=no after undoing the start:\n%s", out)
+	}
+	if strings.Contains(out, "deploy: started=yes") {
+		t.Errorf("output also says started=yes, so a caller parsing started= is told both:\n%s", out)
+	}
+
+	// AND THE MARKER IS LEFT ALONE. The stop wins; a deploy that cleared it
+	// would be CI overruling a person, which is komizo#56's defect.
+	if !strings.Contains(after, "STOPPED=1") {
+		t.Errorf("the deploy cleared the stop marker somebody had just set:\n%s", after)
 	}
 }
