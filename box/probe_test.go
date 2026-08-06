@@ -290,6 +290,38 @@ func TestStoppedIsHeldOnTheBox(t *testing.T) {
 	}
 }
 
+// THE TWO READERS OF THIS RECORD MUST AGREE, and only one of them was tested.
+//
+// The marker is read twice by different code in different languages: here, to
+// decide whether the report says an app is stopped and therefore whether
+// diagnose.go raises app_down; and by the generated deploy script, to decide
+// whether a deploy starts the app. scripts/deploy_stopped_test.go pins the
+// shell side over exactly these cases. Nothing pinned this side, so widening
+// `== "1"` to `!= ""` passed the whole suite -- and the two would then disagree
+// about the same file, which is the one thing this design cannot afford. An app
+// the report calls stopped while the deploy starts it is komizo#57's state, and
+// it never pages again.
+//
+// Each case below is the same case the shell test makes, in the same order, so
+// the pair can be read side by side.
+func TestTheReportAndTheDeployReadTheMarkerTheSameWay(t *testing.T) {
+	// ONE TABLE, in ../testdata, read by this test and by the shell's. It used
+	// to be two, kept in step by a comment saying they were the same cases in
+	// the same order -- and deleting a case from either left the whole suite
+	// green. Including in the direction that matters: the shell growing a case
+	// the Go reader was never asked about.
+	for _, tc := range markerCases(t) {
+		t.Run(tc.Name, func(t *testing.T) {
+			f := readyBox(t)
+			f.write("/var/lib/komizo/apps/blog.env", tc.Record)
+			a := f.probe().Report(context.Background()).Apps[0]
+			if a.Stopped != tc.Stopped {
+				t.Errorf("Stopped = %v, want %v, for record %q\n%s", a.Stopped, tc.Stopped, tc.Record, tc.Why)
+			}
+		})
+	}
+}
+
 func TestListeningPortsComeFromTheNetworkNamespace(t *testing.T) {
 	f := newFakeBox(t)
 	// State 0A is LISTEN. 0x1F90 is 8080; 0x9C40 is 40000, an ephemeral port
