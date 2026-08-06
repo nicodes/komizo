@@ -42,10 +42,10 @@ func serveFixture(t *testing.T) (dir string, priv, dev ed25519.PrivateKey) {
 	}
 	dir = t.TempDir()
 	conf := box.AgentConf{
-		API:          "https://api.example.com",
-		ServerID:     "srv_abc123",
-		Token:        "kmz_agt_whatever",
-		RegistryKey:  base64Key(pub),
+		API:         "https://api.example.com",
+		ServerID:    "srv_abc123",
+		Token:       "kmz_agt_whatever",
+		RegistryKey: base64Key(pub),
 		// Prefixed, because that is how enrolment writes one and the config
 		// refuses a bare key as "some other kind of credential".
 		OperatorKeys: []string{box.DeviceKeyPrefix + base64Key(devPub)},
