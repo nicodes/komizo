@@ -33,19 +33,42 @@ runs:
       shell: bash
       run: go vet ./...
 
-    # Installed BEFORE the tests, because one of them is the shellcheck gate and
-    # it skips itself when the tool is absent. A skip is what a contributor
-    # without shellcheck should get; a skip in CI is the check quietly not
-    # happening, which is the same as not having it.
+    # Checked BEFORE the tests, because one of them is the shellcheck gate and it
+    # skips itself when the tool is absent. A skip is what a contributor without
+    # shellcheck should get; a skip in CI is the check quietly not happening,
+    # which is the same as not having it.
     #
-    # shellcheck ships on the ubuntu-latest image, but install it explicitly so
-    # a base-image change cannot silently turn that test into a no-op.
-    - name: Install shellcheck
+    # THE VERSION, not just the presence -- komizo#59. This step used to fall
+    # back to `apt-get install shellcheck`, which on ubuntu-latest is 0.9.0,
+    # while `make check` fell back to koalaman/shellcheck:stable, which is
+    # 0.11.0. Different tools with different rules, so "shellcheck clean" meant
+    # two different things and a change verified locally could fail here on a
+    # line that was correct: 0.9.0 raises SC2015 on `A && B || continue` and
+    # 0.11.0 does not, because `continue` is flow control.
+    #
+    # The pin lives in .mise.toml, mise-action installs it in the caller's job,
+    # and this asserts it arrived. No apt fallback: a fallback is how the wrong
+    # version got here in the first place, and a lint run by an unknown tool is
+    # not the lint anybody reviewed.
+    - name: The pinned shellcheck is what is installed
       shell: bash
       run: |
-        command -v shellcheck >/dev/null 2>&1 \
-          || { sudo apt-get update && sudo apt-get install -y shellcheck; }
-        shellcheck --version
+        set -euo pipefail
+        want="$(sed -n 's/^shellcheck *= *"\(.*\)"$/\1/p' .mise.toml)"
+        if [ -z "$want" ]; then
+          echo "::error::.mise.toml pins no shellcheck version, so there is nothing for this to be"
+          exit 1
+        fi
+        if ! command -v shellcheck >/dev/null 2>&1; then
+          echo "::error::shellcheck is not on PATH -- mise did not install the pin, and every shell check below would SKIP itself green"
+          exit 1
+        fi
+        got="$(shellcheck --version | sed -n 's/^version: //p')"
+        if [ "$got" != "$want" ]; then
+          echo "::error::.mise.toml pins shellcheck $want but $got is on PATH. Those disagree about real rules, so this run would not be the check the pin describes."
+          exit 1
+        fi
+        echo "shellcheck $got, as pinned"
 
     # -race because the TUI runs commands as goroutines writing to a channel the
     # model reads, which is exactly the shape that fails only under load.
@@ -62,51 +85,52 @@ runs:
     # which parses whatever it contains. They run as root on every deploy.
     #
     # Only a Go test can reach them, because they exist only once Go has
-    # substituted them: see TestShellcheck, TestEveryScriptIsValidShell and
-    # TestTheGeneratedDeployScript* in the scripts package.
+    # substituted them: see TestShellcheck, TestEveryShippedTemplatePassesShellcheck
+    # and the rest of the ./scripts package, which share one heredoc scan so a
+    # template added later cannot escape any of them.
+    #
+    # KOMIZO_REQUIRE_SHELLCHECK turns every shellcheck test's skip into a
+    # failure. komizo-be docs/checks.md #1: in CI a missing tool is the check not
+    # happening, and a skip is a green tick. The step above already refuses to
+    # continue without the pinned version, so this is the second lock on the
+    # same door -- and it is the one that keeps working if that step is ever
+    # reordered or removed.
     - name: Go tests
       shell: bash
+      env:
+        KOMIZO_REQUIRE_SHELLCHECK: "1"
       run: go test -race -count=1 -timeout 5m ./...
 
     # A skipped test is a green tick, so assert the shell gates actually ran.
-    # Without this, shellcheck vanishing from the image would read as
-    # "everything passes" -- exactly the failure the checks exist to prevent.
     #
-    # THIS STEP HAD THAT EXACT DEFECT, which is why it now asserts three things
-    # instead of one. It ran `-run 'TestShellcheck|TestEveryGeneratedScriptIsValidShell'`
-    # against ./internal/app. TestShellcheck had since moved to ./scripts and
+    # THIS STEP HAD THAT EXACT DEFECT. It ran
+    # `-run 'TestShellcheck|TestEveryGeneratedScriptIsValidShell'` against
+    # ./internal/app. TestShellcheck had moved to ./scripts and
     # TestEveryGeneratedScriptIsValidShell no longer existed under that name
     # anywhere, so the pattern matched nothing: `go test` printed "no tests to
     # run", exited 0, and produced no `--- SKIP` line for the grep to find. The
     # guard against a check that is green because it never ran was itself green
-    # because it never ran, for however long the move went unnoticed.
+    # because it never ran. komizo-be docs/checks.md #1, in the file that edits it.
     #
-    # So a name list is exactly the wrong shape here -- it is the thing that
-    # went stale. The whole scripts package is run instead: it is the package
-    # that exists to check shell, every test in it needs `sh` or `shellcheck`,
-    # and a test added to it is covered without anybody editing this file.
+    # A NAME LIST IS THE WRONG SHAPE HERE -- it is the thing that went stale,
+    # and this PR takes the shell checks from five to eleven, which would have
+    # made it staler. The whole ./scripts package runs instead: it is the
+    # package that exists to check shell, every test in it needs `sh` or
+    # shellcheck, and one added to it is covered without anybody editing this.
     #
-    # `no tests to run` is checked FIRST and by itself, because that is the
+    # "no tests to run" is checked FIRST and on its own, because that is the
     # failure that actually happened and it is invisible in every other signal:
-    # the step is green, the output is short, and nothing says the number of
-    # assertions was zero. `--- PASS` must appear for the same reason from the
-    # other side -- an empty package and a passing one differ only in that line.
+    # green step, short output, and nothing saying the number of assertions was
+    # zero. `--- PASS` is required from the other side, because an empty package
+    # and a passing one differ only in that line.
     - name: The shell checks were not skipped
       shell: bash
+      env:
+        KOMIZO_REQUIRE_SHELLCHECK: "1"
       run: |
         set -euo pipefail
-        # `|| true` and an explicit status, because `out="$(...)"` under `set -e`
-        # kills the step before the echo -- so a genuinely failing shell test
-        # would print nothing at all and this step would be the one place the
-        # log went blank. The Go tests step above fails first today, which is
-        # exactly the kind of "harmless because something else covers it" that
-        # stops being true quietly.
-        out="$(go test -count=1 -v ./scripts)" && status=0 || status=$?
+        out="$(go test -count=1 -v ./scripts)"
         echo "$out"
-        if [ "$status" -ne 0 ]; then
-          echo "::error::the shell gate failed"
-          exit 1
-        fi
         if grep -q 'no tests to run\|\[no test files\]' <<<"$out"; then
           echo "::error::the shell gate matched no tests -- it has been renamed or moved, and this guard has been passing on an empty run"
           exit 1

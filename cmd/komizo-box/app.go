@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -142,7 +143,61 @@ func runVerb(ctx context.Context, verb string, sub subject, tail int, svc, by st
 		// all -- it is refused right here -- and there is no path by which
 		// restart brings a deliberately stopped app back up behind the marker's
 		// back. Starting it is `start`, and that is where the marker comes off.
-		if out, err := composeOut(ctx, sub.dir, sub.project, "ps", "-q"); err == nil && strings.TrimSpace(out) == "" {
+		out, err := composeOut(ctx, sub.dir, sub.project, "ps", "-q")
+		if err != nil && errors.Is(ctx.Err(), context.Canceled) {
+			// THE OPERATOR CANCELLED. Nothing failed and nothing was
+			// unanswerable -- signalContext caught SIGINT or SIGTERM, which on
+			// the CLI route is somebody pressing Ctrl-C and under rootd is
+			// OpenRC stopping the service.
+			//
+			// Separated from the refusal below because that one ends by telling
+			// you to run `start`, and `start` is the one verb that CLEARS the
+			// stop marker. Advising it here would answer a cancelled restart by
+			// pointing at the command that turns alerting suppression off, for
+			// a person who asked for nothing to happen and got exactly that.
+			//
+			// Canceled SPECIFICALLY, not `ctx.Err() != nil`. Every context that
+			// reaches runVerb today comes from signalContext and carries no
+			// deadline, so the two are the same thing -- but a caller that
+			// later bounds this would make DeadlineExceeded arrive here, and a
+			// deadline is not somebody changing their mind. It is the box
+			// taking too long to say what is running, which is exactly the
+			// answer below.
+			return fmt.Errorf("cancelled -- nothing was restarted")
+		}
+		if err != nil {
+			// A QUESTION THAT COULD NOT BE ANSWERED IS NOT A YES.
+			//
+			// This used to read `if err == nil && strings.TrimSpace(out) == ""`,
+			// which skipped the guard entirely whenever the box could not say
+			// what was running -- a malformed compose.yml, a daemon that is up
+			// but unhealthy, a timeout on the one-minute context -- and fell
+			// straight through to the restart. The case where the answer is
+			// unavailable is exactly the case where assuming "something is
+			// running" is least justified, and the cost of being wrong is
+			// komizo#57: an app brought up by a verb that never touches the stop
+			// marker, so it runs with STOPPED=1 still set, never pages, and
+			// nothing on it says alerting is off.
+			//
+			// The deploy script makes the OPPOSITE trade with its marker read --
+			// an unreadable record starts the app -- and that is not a
+			// contradiction. A deploy that refuses on a box whose record cannot
+			// be read is a wider failure than the one it prevents, and the
+			// script says so out loud. Here there is a narrower answer available
+			// and it is one word away: `start` brings the app up whatever state
+			// it is in, and takes the marker off on the way. It is not the same
+			// operation -- `up -d` recreates on the committed image where
+			// `restart` restarts the containers that are there -- which is the
+			// point. The verb that can bring an app up is the one that also
+			// records that it is meant to be up.
+			//
+			// The error is carried rather than summarised. Whatever compose said
+			// about the compose file or the daemon is the thing the operator
+			// needs; komizo#56 made the deploy script print sed's complaint for
+			// the same reason.
+			return fmt.Errorf("could not tell what is running here, so nothing was restarted -- start it instead if it is down: %w", err)
+		}
+		if strings.TrimSpace(out) == "" {
 			return fmt.Errorf("nothing is running here -- start it instead")
 		}
 	}
@@ -375,10 +430,45 @@ func composeCapped(ctx context.Context, dir, project string, max int, args ...st
 }
 
 // composeOut runs one and captures it, for the questions this asks itself.
+//
+// THE COMPLAINT COMES BACK TOO, not just the exit status. Output() puts stderr
+// on the ExitError and never prints it -- `%w` on one renders "exit status 1"
+// and nothing else. runVerb turns a failure here into a refusal to restart, and
+// a refusal whose only stated reason is a number is a refusal nobody can act
+// on: the thing the operator needs is compose saying which line of compose.yml
+// it could not read, or that it cannot reach the daemon.
+//
+// Unlike compose(), this cannot simply hand stderr to os.Stderr -- Output()
+// requires it -- so it is folded into the error instead. That also carries it
+// to the signed route, where an error becomes a result the app reads;
+// compose()'s stderr goes to this process's, which there is rootd's log and so
+// reaches nobody who is waiting for an answer.
+//
+// WHICH IS A BOUNDARY, and it is worth naming rather than leaving to be
+// discovered. On the signed route this text becomes res.Detail, which
+// WriteResult puts under ServedDir for the agent account to read and post, so
+// it leaves the box. Before this it stopped at rootd's log. What is carried is
+// docker's own diagnostics about a compose file, which is not a secret --
+// but `compose ps -q` parses compose.yml and interpolates .env, both of which
+// sit beside a 0600 secrets.env, and what compose chooses to quote back in a
+// parse error is docker's decision rather than komizo's. The trade is taken
+// deliberately: a refusal whose reason nobody can see is a refusal that gets
+// worked around, and the alternative is an operator staring at "exit status 1".
+// If that ever stops being the right call, this is the line to change.
+//
+// BOUNDED BY lastLines, the same rule runProvision already applies for the same
+// reason, rather than a second bound written here. Both are "something else's
+// output, on its way into a result file somebody downloads", and how long
+// docker's stderr is belongs to docker. The tail is what survives, because that
+// is where a program says why it stopped.
 func composeOut(ctx context.Context, dir, project string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
 
 	out, err := execCompose(ctx, "docker", append(composeBase(dir, project), args...)...).Output()
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && strings.TrimSpace(string(ee.Stderr)) != "" {
+		err = fmt.Errorf("%w: %s", err, lastLines(string(ee.Stderr), 12))
+	}
 	return string(out), err
 }

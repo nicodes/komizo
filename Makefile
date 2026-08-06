@@ -34,20 +34,59 @@ build: agents
 test:
 	go test ./...
 
+# SHELLCHECK_VERSION is read out of .mise.toml rather than written here.
+#
+# One number, in the file that installs the tool. Two copies would drift, and
+# the drift is silent -- which is the whole of komizo#59's second half.
+SHELLCHECK_VERSION := $(shell sed -n 's/^shellcheck *= *"\(.*\)"$$/\1/p' .mise.toml)
+
 # What CI runs, and what to run before pushing.
 #
-# shellcheck FIRST, and through docker when it is not installed. The Go test
-# that runs it skips itself when the tool is absent, and a skip is a green tick
-# -- which is exactly how `A && B || C` reached CI: `make check` passed locally
-# and the gate had not run at all.
+# shellcheck FIRST, and through docker when the pinned one is not installed. The
+# Go tests that run it skip themselves when the tool is absent, and a skip is a
+# green tick -- which is exactly how `A && B || C` reached CI: `make check`
+# passed locally and the gate had not run at all.
+#
+# THE VERSION IS CHECKED, not just the presence. This used to be
+#
+#	command -v shellcheck && shellcheck ... || docker run ...
+#
+# which is two failures in one line. A local shellcheck of ANY version was
+# accepted, so 0.9.0 and 0.11.0 both counted as "the check"; and because `||`
+# reads a non-zero exit as "the first branch was unavailable", a local shellcheck
+# that FOUND SOMETHING fell through to the docker run and could be overruled by
+# it. A lint that reports a problem is not a lint that failed to run.
+#
+# AND THERE IS NO DOCKER FALLBACK, which is the second half of the same lesson.
+# Only ONE of the two things that lint shell here is this line: `go test` runs
+# five more checks over the six scripts komizo writes onto a box, and they find
+# shellcheck on PATH. A docker fallback therefore linted scripts/*.sh at the
+# pinned version, printed "(docker)" saying so, and then handed the templates --
+# the part that actually runs as root -- to whatever was installed, or to
+# nothing at all. On a machine with only docker, `make check` skipped the whole
+# of komizo#59 and stayed green.
+#
+# A fallback that covers half a check while announcing the version it did not
+# use is worse than no fallback. `mise install` is one command and gets exactly
+# the pinned tool. The tests refuse a wrong version on their own account too --
+# see needPinnedShellcheck -- so neither this nor CI can route around it.
 check: agents
-	@command -v shellcheck >/dev/null 2>&1 \
-		&& shellcheck -s sh scripts/*.sh \
-		|| docker run --rm -v "$(CURDIR)/scripts:/mnt:ro" -w /mnt \
-			koalaman/shellcheck:stable -s sh $(notdir $(wildcard scripts/*.sh))
+	@test -n "$(SHELLCHECK_VERSION)" || { \
+		echo "no shellcheck pin in .mise.toml -- the lint has no version to be"; exit 1; }
+	@if ! shellcheck --version 2>/dev/null | grep -qx 'version: $(SHELLCHECK_VERSION)'; then \
+		echo "make check needs shellcheck $(SHELLCHECK_VERSION), the version .mise.toml pins."; \
+		echo "Run \`mise install\`."; \
+		echo; \
+		echo "Not falling back: the six scripts komizo writes onto a box are linted"; \
+		echo "from the Go suite, which finds shellcheck on PATH -- so a fallback"; \
+		echo "would check the files here and quietly skip the ones that run as root."; \
+		exit 1; \
+	fi
+	@echo "  lint   shellcheck $(SHELLCHECK_VERSION)"
+	shellcheck -s sh scripts/*.sh
 	gofmt -l . | tee /dev/stderr | (! read)
 	go vet ./...
-	go test ./...
+	KOMIZO_REQUIRE_SHELLCHECK=1 go test ./...
 	GOOS=darwin go build ./...
 
 clean:
