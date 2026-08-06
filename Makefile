@@ -34,17 +34,47 @@ build: agents
 test:
 	go test ./...
 
+# SHELLCHECK_VERSION is read out of .mise.toml rather than written here.
+#
+# One number, in the file that installs the tool. Two copies would drift, and
+# the drift is silent -- which is the whole of komizo#59's second half.
+SHELLCHECK_VERSION := $(shell sed -n 's/^shellcheck *= *"\(.*\)"$$/\1/p' .mise.toml)
+
 # What CI runs, and what to run before pushing.
 #
-# shellcheck FIRST, and through docker when it is not installed. The Go test
-# that runs it skips itself when the tool is absent, and a skip is a green tick
-# -- which is exactly how `A && B || C` reached CI: `make check` passed locally
-# and the gate had not run at all.
+# shellcheck FIRST, and through docker when the pinned one is not installed. The
+# Go tests that run it skip themselves when the tool is absent, and a skip is a
+# green tick -- which is exactly how `A && B || C` reached CI: `make check`
+# passed locally and the gate had not run at all.
+#
+# THE VERSION IS CHECKED, not just the presence. This used to be
+#
+#	command -v shellcheck && shellcheck ... || docker run ...
+#
+# which is two failures in one line. A local shellcheck of ANY version was
+# accepted, so 0.9.0 and 0.11.0 both counted as "the check"; and because `||`
+# reads a non-zero exit as "the first branch was unavailable", a local shellcheck
+# that FOUND SOMETHING fell through to the docker run and could be overruled by
+# it. A lint that reports a problem is not a lint that failed to run.
+#
+# So: one `if`, whose exit status is the step's, and a version comparison rather
+# than a `command -v`.
 check: agents
-	@command -v shellcheck >/dev/null 2>&1 \
-		&& shellcheck -s sh scripts/*.sh \
-		|| docker run --rm -v "$(CURDIR)/scripts:/mnt:ro" -w /mnt \
-			koalaman/shellcheck:stable -s sh $(notdir $(wildcard scripts/*.sh))
+	@test -n "$(SHELLCHECK_VERSION)" || { \
+		echo "no shellcheck pin in .mise.toml -- the lint has no version to be"; exit 1; }
+	@if shellcheck --version 2>/dev/null | grep -qx 'version: $(SHELLCHECK_VERSION)'; then \
+		echo "  lint   shellcheck $(SHELLCHECK_VERSION)"; \
+		shellcheck -s sh scripts/*.sh; \
+	elif command -v docker >/dev/null 2>&1; then \
+		echo "  lint   shellcheck $(SHELLCHECK_VERSION) (docker)"; \
+		docker run --rm -v "$(CURDIR)/scripts:/mnt:ro" -w /mnt \
+			koalaman/shellcheck:v$(SHELLCHECK_VERSION) -s sh $(notdir $(wildcard scripts/*.sh)); \
+	else \
+		echo "shellcheck $(SHELLCHECK_VERSION) is not installed and docker is not either."; \
+		echo "\`mise install\` gets it. Running the Go suite without it would SKIP"; \
+		echo "the six checks over the shell that runs as root on a box."; \
+		exit 1; \
+	fi
 	gofmt -l . | tee /dev/stderr | (! read)
 	go vet ./...
 	go test ./...

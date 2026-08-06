@@ -152,8 +152,30 @@ mv -f __STAGED__ /usr/local/bin/komizo-box
 # OpenRC, because the box is Alpine. supervise-daemon rather than start-stop-daemon
 # so a crash is restarted rather than silently leaving the box unreported --
 # which looks exactly like a box that is down.
+#
+# Each of the three service files below carries a `# shellcheck disable=SC2034`,
+# and that needs an argument rather than a shrug -- komizo#59.
+#
+# An OpenRC service file is CONFIGURATION IN SHELL SYNTAX. openrc-run sources it
+# and then acts on what it finds: `command` is what supervise-daemon execs,
+# `name` is what `rc-service` answers to, `respawn_delay` is how long it waits
+# before trying again. Every assignment is read by the framework and none is
+# read by the file, so SC2034 fires on all twenty-two of them and every one is
+# wrong. There is no rewrite that makes them "used" without inventing a use.
+#
+# The disable is at file scope rather than one per line because the argument is
+# the same argument nine times over, and nine copies of it is not nine reasons.
+# What makes that honest is that the exemption is CHECKED FROM OUTSIDE instead:
+# TestAnOpenRCServiceOnlyAssignsNamesOpenRCReads compares every name assigned in
+# these heredocs against the set openrc-run and supervise-daemon actually
+# consume, so `comand_args="serve"` is still caught -- and caught by something
+# that knows what OpenRC reads, which SC2034 does not.
 cat > /etc/init.d/komizo-rootd <<'KOMIZO_RC_EOF'
 #!/sbin/openrc-run
+# Sourced by openrc-run, which reads these; nothing here uses them, so SC2034
+# fires on every line. The set of names allowed is pinned by a test -- see
+# agent-install.sh above the heredoc.
+# shellcheck disable=SC2034
 name="komizo-rootd"
 description="komizo: writes __REPORT_PATH__"
 supervisor="supervise-daemon"
@@ -177,6 +199,10 @@ chmod 755 /etc/init.d/komizo-rootd
 # through the CLI. `komizo enrol` enables it.
 cat > /etc/init.d/komizo-agent <<'KOMIZO_AGENT_RC_EOF'
 #!/sbin/openrc-run
+# Sourced by openrc-run, which reads these; nothing here uses them, so SC2034
+# fires on every line. The set of names allowed is pinned by a test -- see
+# agent-install.sh above the first of these heredocs.
+# shellcheck disable=SC2034
 name="komizo-agent"
 description="komizo: posts __REPORT_PATH__ to the komizo service"
 supervisor="supervise-daemon"
@@ -205,6 +231,10 @@ chmod 755 /etc/init.d/komizo-agent
 # network.
 cat > /etc/init.d/komizo-api <<'KOMIZO_API_RC_EOF'
 #!/sbin/openrc-run
+# Sourced by openrc-run, which reads these; nothing here uses them, so SC2034
+# fires on every line. The set of names allowed is pinned by a test -- see
+# agent-install.sh above the first of these heredocs.
+# shellcheck disable=SC2034
 name="komizo-api"
 description="komizo: serves this box's own report and history"
 supervisor="supervise-daemon"

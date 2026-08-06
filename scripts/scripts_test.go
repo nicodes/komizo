@@ -1,9 +1,11 @@
 package scripts
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -22,6 +24,13 @@ func all(t *testing.T) map[string]string {
 		"alpine-proxy":  AlpineProxyScript,
 		"alpine-remove": AlpineRemoveScript,
 		"agent-install": AgentInstall("94d5dbd1333d", "0.0.11"),
+		// The two OPTIONAL ones. They run as root like the rest, and until
+		// komizo#59 they were the only scripts this package can produce that no
+		// whole-script check ever saw -- shellcheck reads them as files, but
+		// nothing looked at what a builder actually renders, and nothing would
+		// have seen a heredoc added inside one.
+		"agent-enrol":   AgentEnrol("https://api.komizo.dev", "kmz_enr_abc", "komizo.example.com", []string{"kmz_dev_abcdefgh"}, false),
+		"agent-unenrol": AgentUnenrol(),
 	}
 }
 
@@ -190,4 +199,256 @@ func TestShQuoteSurvivesTheShell(t *testing.T) {
 			t.Errorf("ShQuote(%q) came back as %q", in, out)
 		}
 	}
+}
+
+// shippedTemplates is every script komizo writes ONTO a box from inside another
+// script: the body of each quoted heredoc, with placeholders substituted, keyed
+// by "<file>:<TAG>".
+//
+// Found by scanning for the heredocs rather than from a list kept here, because
+// a list here is the thing that goes stale. A template added later is covered
+// without anybody editing this file.
+//
+// A SHEBANG is what marks a heredoc as shell. alpine-proxy.sh writes a Caddy
+// config the same way, and Caddy config is not shell -- so "it declares itself a
+// script" is the rule, which is self-describing and needs no exception list.
+//
+// Placeholder values are irrelevant to whether the result parses or lints, so
+// unknown ones get a path-shaped literal. What matters is that no
+// __PLACEHOLDER__ survives to be read as a bare word where a command belongs.
+func shippedTemplates(t *testing.T) map[string]string {
+	t.Helper()
+	heredoc := regexp.MustCompile(`<<'([A-Z_]+)'\n`)
+	placeholder := regexp.MustCompile(`__[A-Z][A-Z_]*__`)
+	known := map[string]string{
+		"__APP_NAME__":        "web",
+		"__APP_DIR__":         "/srv/web",
+		"__CONFIG_IMAGE__":    "registry.example/web-config",
+		"__PROXY_CONTAINER__": "komizo-proxy",
+		"__PROXY_DIR__":       "/srv/komizo-proxy",
+		"__ROUTES_DIR__":      "/srv/komizo-proxy/routes",
+		"__STATE_DIR__":       "/var/lib/komizo/apps",
+	}
+	out := map[string]string{}
+	for name, src := range all(t) {
+		for _, m := range heredoc.FindAllStringSubmatchIndex(src, -1) {
+			tag := src[m[2]:m[3]]
+			rest := src[m[1]:]
+			j := strings.Index(rest, "\n"+tag+"\n")
+			if j < 0 {
+				t.Errorf("%s: heredoc %s is never closed", name, tag)
+				continue
+			}
+			body := rest[:j+1]
+			if !strings.HasPrefix(body, "#!") {
+				continue // not a script -- alpine-proxy.sh writes Caddy config this way
+			}
+			for _, ph := range placeholder.FindAllString(body, -1) {
+				v, ok := known[ph]
+				if !ok {
+					v = "/srv/komizo-substituted"
+				}
+				body = strings.ReplaceAll(body, ph, v)
+			}
+			out[name+":"+tag] = body
+		}
+	}
+	if len(out) == 0 {
+		t.Fatal("no shell templates found -- the heredoc scan has stopped matching, and every check built on it is now vacuous")
+	}
+	return out
+}
+
+// FIVE OF THE SIX SCRIPTS KOMIZO WRITES ONTO A BOX WERE PARSED AND NEVER LINTED.
+//
+// komizo#59. TestShellcheck above reads the FILES in this directory, and inside
+// those files each of these templates is the body of a QUOTED heredoc -- a
+// string literal, which shellcheck never treats as shell. Six programs, all run
+// as root: the per-app deploy script and the secret helper out of alpine.sh,
+// three OpenRC service files out of agent-install.sh, and the boot-time
+// firewall script out of alpine-init.sh.
+//
+// `sh -n` over them is not this check. It catches an unbalanced quote and an
+// unclosed block and nothing else -- not an unquoted expansion that word-splits
+// on a path with a space in it, not a `read` without -r, not a variable used
+// before it is set. That is the class that actually reaches a box, because the
+// script runs fine until the one input that breaks it.
+//
+// EVERY template, from the scan, rather than a named subset. The deploy script
+// was linted alone for a while and the reason was honest -- the OpenRC files
+// raise SC2034 on every variable OpenRC itself consumes, and doing that
+// properly is work. It is done: see agent-install.sh, where the exemption is
+// argued next to the code and then pinned from outside by the test below, which
+// is a stronger check than the one being disabled rather than a way around it.
+//
+// Written to files with their template names, so a complaint says which heredoc
+// in which script it is about. Line numbers are into the BODY, which is what a
+// person editing alpine.sh is looking at anyway.
+func TestEveryShippedTemplatePassesShellcheck(t *testing.T) {
+	if _, err := exec.LookPath("shellcheck"); err != nil {
+		t.Skip("shellcheck is not installed")
+	}
+	dir := t.TempDir()
+	var files []string
+	for name, body := range shippedTemplates(t) {
+		f := filepath.Join(dir, strings.ReplaceAll(name, ":", "--")+".sh")
+		if err := os.WriteFile(f, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, f)
+	}
+	// Sorted, so a failure reads the same way twice running. Map order is not.
+	sort.Strings(files)
+
+	// -s sh and no excludes, for the reasons TestShellcheck gives. Anything
+	// reported is either a defect or an exemption argued in the script.
+	args := append([]string{"-s", "sh"}, files...)
+	if out, err := exec.Command("shellcheck", args...).CombinedOutput(); err != nil {
+		t.Errorf("shellcheck over the scripts komizo writes onto a box: %v\n%s\n"+
+			"(each file is one heredoc body; the name is <script>--<TAG> and the line numbers are into that body)",
+			err, out)
+	}
+}
+
+// And every one of them still PARSES, which is the check that catches a script
+// that cannot run at all.
+//
+// Kept separate from the lint above rather than folded into it, because they
+// have different failure modes and different requirements: this one needs `sh`,
+// which is everywhere, and shellcheck's absence must not take it down with it.
+// A box receiving a script with an unclosed `if` finds out at the moment the
+// script runs, as root, halfway through a deploy.
+func TestEveryShippedTemplateIsValidShell(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	placeholder := regexp.MustCompile(`__[A-Z][A-Z_]*__`)
+	for name, body := range shippedTemplates(t) {
+		if left := placeholder.FindString(body); left != "" {
+			t.Errorf("%s: %s survived substitution, so this is not what a box receives", name, left)
+			continue
+		}
+		cmd := exec.Command("sh", "-n")
+		cmd.Stdin = strings.NewReader(body)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("%s is not valid shell: %v\n%s", name, err, out)
+		}
+	}
+}
+
+// THE PRICE OF THE SC2034 DISABLE, PAID.
+//
+// The three OpenRC service files carry `# shellcheck disable=SC2034`, and that
+// is a file-scope disable of a real rule in a file that runs as root. The
+// argument for it is in agent-install.sh: an OpenRC service file is
+// configuration written in shell syntax, openrc-run sources it and reads the
+// variables, and nothing in the file uses them -- so SC2034 fires on all
+// twenty-two assignments and every one of those reports is wrong.
+//
+// What that disable costs is the thing SC2034 would otherwise have caught:
+// `comand_args="serve"`. OpenRC does not read that name, so the service starts
+// with no arguments and no complaint from anything -- an agent that runs, looks
+// healthy to rc-status, and does the wrong job.
+//
+// So the exemption is not a hole, it is a swap. This check knows what OpenRC
+// reads, which SC2034 does not, and refuses a name that is not on the list. It
+// is strictly stronger than the rule it replaces: SC2034 would have accepted
+// `comand_args` the moment anything in the file mentioned it.
+//
+// Identified by SHEBANG, so a fourth service added later is covered without
+// this list being edited -- the same rule shippedTemplates uses to decide what
+// is shell at all.
+func TestAnOpenRCServiceOnlyAssignsNamesOpenRCReads(t *testing.T) {
+	found := 0
+	for name, body := range shippedTemplates(t) {
+		if !strings.HasPrefix(body, "#!/sbin/openrc-run") {
+			continue
+		}
+		found++
+		for _, n := range unknownOpenRCNames(body) {
+			t.Errorf("%s assigns %q, which is not a name openrc-run or supervise-daemon reads.\n"+
+				"  Nothing in the file uses it either -- SC2034 is disabled there -- so it would be\n"+
+				"  silently ignored on the box. If OpenRC really does read it, add it to\n"+
+				"  openRCReads with where that is documented.", name, n)
+		}
+	}
+	// The three that exist today. A scan that stopped matching would leave this
+	// test iterating nothing and passing, which is the shape komizo-be#101 is
+	// about: the all-clear and the never-ran are the same signal.
+	if found < 3 {
+		t.Fatalf("found %d OpenRC service templates, expected at least the three in agent-install.sh -- the scan has stopped finding them", found)
+	}
+}
+
+// And the check above can actually fail.
+//
+// A positive control, because everything TestAnOpenRCServiceOnlyAssignsNamesOpenRCReads
+// looks at is clean by construction: if unknownOpenRCNames stopped finding
+// assignments at all -- a regexp that no longer matches, a body read from the
+// wrong place -- it would report nothing, which is exactly what "all names are
+// known" looks like. This is the one input where the two answers differ.
+//
+// The typo is the real one: `comand_args` is a plausible slip and the failure it
+// causes on a box is invisible.
+func TestUnknownOpenRCNamesFindsATypo(t *testing.T) {
+	got := unknownOpenRCNames(`#!/sbin/openrc-run
+name="komizo-agent"
+comand_args="agent"
+respawn_delay=5
+
+depend() {
+	local unrelated=1
+	need net
+}
+`)
+	if len(got) != 1 || got[0] != "comand_args" {
+		t.Errorf("unknownOpenRCNames = %v, want exactly [comand_args] -- a local inside a\n"+
+			"function is not a service variable, and the three real names are", got)
+	}
+}
+
+// unknownOpenRCNames is every top-level assignment in an OpenRC service file
+// that OpenRC does not read.
+//
+// TOP LEVEL ONLY -- anchored to the start of the line with no leading space.
+// Assignments inside depend() and the like are ordinary shell variables in an
+// ordinary function, used by the code around them, and SC2034 is not disabled
+// on their account.
+func unknownOpenRCNames(body string) []string {
+	assign := regexp.MustCompile(`(?m)^([A-Za-z_][A-Za-z0-9_]*)=`)
+	var out []string
+	for _, m := range assign.FindAllStringSubmatch(body, -1) {
+		if !openRCReads[m[1]] {
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
+
+// openRCReads is what openrc-run and supervise-daemon consume out of a service
+// file.
+//
+// Deliberately NOT the whole of OpenRC's vocabulary. It is the set these three
+// files use plus the near neighbours somebody would reach for next, so that
+// adding one is a moment of thought rather than a lookup that always succeeds.
+// Everything here is documented in openrc-run(8) and supervise-daemon(8) on
+// Alpine, which is the box these run on.
+var openRCReads = map[string]bool{
+	// openrc-run(8): what the service is and how rc-service addresses it.
+	"name": true, "description": true, "extra_commands": true,
+	"extra_started_commands": true, "extra_stopped_commands": true,
+	"required_dirs": true, "required_files": true,
+	// openrc-run(8): what to run, as whom, from where.
+	"command": true, "command_args": true, "command_background": true,
+	"command_user": true, "command_group": true, "directory": true,
+	"procname": true, "pidfile": true, "umask": true,
+	// supervise-daemon(8): the restart policy, which is why this box uses a
+	// supervisor at all -- a crashed agent that is not restarted looks exactly
+	// like a box that is down.
+	"supervisor": true, "respawn_delay": true, "respawn_max": true,
+	"respawn_period": true, "supervise_daemon_args": true,
+	"healthcheck_timer": true, "healthcheck_delay": true,
+	// openrc-run(8): where the daemon's own output goes.
+	"output_log": true, "error_log": true,
+	"output_logger": true, "error_logger": true,
 }

@@ -33,19 +33,42 @@ runs:
       shell: bash
       run: go vet ./...
 
-    # Installed BEFORE the tests, because one of them is the shellcheck gate and
-    # it skips itself when the tool is absent. A skip is what a contributor
-    # without shellcheck should get; a skip in CI is the check quietly not
-    # happening, which is the same as not having it.
+    # Checked BEFORE the tests, because one of them is the shellcheck gate and it
+    # skips itself when the tool is absent. A skip is what a contributor without
+    # shellcheck should get; a skip in CI is the check quietly not happening,
+    # which is the same as not having it.
     #
-    # shellcheck ships on the ubuntu-latest image, but install it explicitly so
-    # a base-image change cannot silently turn that test into a no-op.
-    - name: Install shellcheck
+    # THE VERSION, not just the presence -- komizo#59. This step used to fall
+    # back to `apt-get install shellcheck`, which on ubuntu-latest is 0.9.0,
+    # while `make check` fell back to koalaman/shellcheck:stable, which is
+    # 0.11.0. Different tools with different rules, so "shellcheck clean" meant
+    # two different things and a change verified locally could fail here on a
+    # line that was correct: 0.9.0 raises SC2015 on `A && B || continue` and
+    # 0.11.0 does not, because `continue` is flow control.
+    #
+    # The pin lives in .mise.toml, mise-action installs it in the caller's job,
+    # and this asserts it arrived. No apt fallback: a fallback is how the wrong
+    # version got here in the first place, and a lint run by an unknown tool is
+    # not the lint anybody reviewed.
+    - name: The pinned shellcheck is what is installed
       shell: bash
       run: |
-        command -v shellcheck >/dev/null 2>&1 \
-          || { sudo apt-get update && sudo apt-get install -y shellcheck; }
-        shellcheck --version
+        set -euo pipefail
+        want="$(sed -n 's/^shellcheck *= *"\(.*\)"$/\1/p' .mise.toml)"
+        if [ -z "$want" ]; then
+          echo "::error::.mise.toml pins no shellcheck version, so there is nothing for this to be"
+          exit 1
+        fi
+        if ! command -v shellcheck >/dev/null 2>&1; then
+          echo "::error::shellcheck is not on PATH -- mise did not install the pin, and every shell check below would SKIP itself green"
+          exit 1
+        fi
+        got="$(shellcheck --version | sed -n 's/^version: //p')"
+        if [ "$got" != "$want" ]; then
+          echo "::error::.mise.toml pins shellcheck $want but $got is on PATH. Those disagree about real rules, so this run would not be the check the pin describes."
+          exit 1
+        fi
+        echo "shellcheck $got, as pinned"
 
     # -race because the TUI runs commands as goroutines writing to a channel the
     # model reads, which is exactly the shape that fails only under load.
