@@ -54,8 +54,28 @@ func ReadMetrics(path string, from, to int64) (Metrics, error) {
 			out.Rows = append(out.Rows, r)
 		}
 	}
+	// THE SPAN IS NARROWED WITH THE ROWS, and this was the bug.
+	//
+	// `Probe.Metrics` computes Span over the whole tail it read; rootd keeps
+	// only MetricsWindow of rows; and copying Span through unchanged claimed
+	// coverage the rows did not have. A six-hour request came back with a
+	// six-hour span and thirty minutes of rows, and a client that blanks
+	// outside the span then draws hours of confident zeros -- which is the
+	// exact failure Span exists to prevent, and the invariant the CLI path
+	// holds. Review 1 on komizo#83.
 	if stored.Span != nil {
-		out.Span = stored.Span
+		lo, hi := stored.Span.From, stored.Span.To
+		if from > lo {
+			lo = from
+		}
+		if to < hi {
+			hi = to
+		}
+		if lo <= hi {
+			out.Span = &Span{From: lo, To: hi}
+		}
+		// An empty overlap leaves Span nil: nothing was measured across the
+		// window asked about, which is not the same as measuring zero there.
 	}
 	return out, nil
 }
