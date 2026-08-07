@@ -96,9 +96,21 @@ func runEnrol(args []string) error {
 	// Said out loud, because it decides whether this box can be read directly
 	// or only through what it pushes. A service that offered no key is not a
 	// failure, but it is a difference somebody should not have to infer.
-	if conf.CanServe() {
+	//
+	// THE REGISTRY KEY IS NOT ENOUGH ON ITS OWN. komizo-be#72 removed the reads
+	// that took only the registry's token, so answering for itself now needs a
+	// device key as well -- and this is the moment the operator is standing here
+	// with root, which is the one moment worth telling them. Review 1 on
+	// komizo#75 found this sentence surviving here after it was corrected in
+	// serve.go: the same false claim, at the point it does the most damage.
+	switch {
+	case conf.CanServe() && conf.CanCommand():
 		fmt.Println("this box can answer for itself; start komizo-api to serve it")
-	} else {
+	case conf.CanServe():
+		fmt.Println("this box has a registry key but no device key, so it will answer nothing yet.")
+		fmt.Println("every route takes an envelope signed by a device this box trusts:")
+		fmt.Println("    komizo enrol --host <this box> --device-key kmz_dev_...")
+	default:
 		fmt.Println("this service issued no registry key, so this box reports but does not serve")
 	}
 	// And the same for commands, which is a different question with a different
@@ -124,7 +136,7 @@ func runEnrol(args []string) error {
 			fmt.Printf("    %s\n", box.Fingerprint(k))
 		}
 	} else {
-		fmt.Println("no device keys were given, so this box will accept no commands")
+		fmt.Println("no device keys were given, so this box will answer nothing -- not reads, not commands")
 	}
 	return nil
 }

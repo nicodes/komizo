@@ -242,11 +242,6 @@ func refuse(w http.ResponseWriter) {
 	http.Error(w, "unauthorized", http.StatusUnauthorized)
 }
 
-// window parses the requested range, defaulting to the last hour.
-func window(r *http.Request, now time.Time) (from, to int64, ok bool) {
-	q := r.URL.Query()
-	return parseWindow(q.Get, now)
-}
 
 // parseWindow is what a window IS, wherever the two values came from.
 //

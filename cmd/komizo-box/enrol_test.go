@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -224,4 +225,92 @@ func TestAServiceForcedDropIsCounted(t *testing.T) {
 	if _, dropped := carryOperatorKeys(prev, "srv_mine", nil, false); dropped != 0 {
 		t.Errorf("dropped = %d on an ordinary re-enrol", dropped)
 	}
+}
+
+// WHAT ENROLMENT TELLS THE OPERATOR IS TRUE OF THE BOX IT JUST MADE.
+//
+// Review 1 on komizo#75. `serve.go` was corrected when komizo-be#72 removed the
+// reads that took only the registry's token, and this said the same false thing
+// -- "this box can answer for itself" -- at the one moment the operator is
+// standing there with root and could fix it in the same breath.
+//
+// A registry key alone is not answering for itself any more. Both branches are
+// asserted, because a message that is right for one box and wrong for the other
+// is what this was.
+func TestEnrolmentDoesNotClaimAKeylessBoxCanAnswer(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	regPub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"server_id":    "srv_abc123",
+			"agent_token":  "kmz_agt_x",
+			"registry_key": base64Key(regPub),
+		})
+	}))
+	defer srv.Close()
+
+	for _, tc := range []struct {
+		name       string
+		deviceKey  bool
+		want, deny string
+	}{
+		{
+			name: "no device key", deviceKey: false,
+			want: "will answer nothing yet",
+			deny: "can answer for itself",
+		},
+		{
+			name: "with a device key", deviceKey: true,
+			want: "can answer for itself",
+			deny: "will answer nothing yet",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := []string{"--api", srv.URL, "--token", "kmz_enr_x",
+				"--config", filepath.Join(t.TempDir(), "agent.json")}
+			if tc.deviceKey {
+				args = append(args, "--device-key", box.FormatDeviceKey(pub))
+			}
+			out := captureStdout(t, func() {
+				if err := runEnrol(args); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if !strings.Contains(out, tc.want) {
+				t.Errorf("enrolment did not say %q:\n%s", tc.want, out)
+			}
+			if strings.Contains(out, tc.deny) {
+				t.Errorf("enrolment said %q, which is not true of this box:\n%s", tc.deny, out)
+			}
+		})
+	}
+}
+
+// captureStdout runs fn with os.Stdout replaced by a pipe and returns what it
+// wrote. The messages under test are printed rather than returned, so there is
+// nothing else to assert on.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	fn()
+	os.Stdout = old
+	_ = w.Close()
+	return <-done
 }
