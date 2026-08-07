@@ -80,12 +80,17 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("%s holds an unusable device key: %w", *confPath, err)
 	}
-	// Said once, because it decides whether the app can do anything here beyond
-	// look. A box with no device keys serves reads and refuses commands, which
-	// is the normal box today and not a fault -- but "the button does nothing"
-	// should not be how somebody finds out.
+	// Said once, because it decides whether the app can do ANYTHING here.
+	//
+	// This used to say such a box "serves reads and refuses commands", which was
+	// true while `GET /v1/report` took the registry's token alone. komizo-be#72
+	// removed that route, and a read is now a signed envelope like everything
+	// else -- so a box with no device keys answers nothing at all. Leaving the
+	// old sentence would have told an operator their box was half working while
+	// the app showed them an empty screen.
 	if !conf.CanCommand() {
-		fmt.Fprintln(os.Stderr, "this box has no device keys, so it serves reads and refuses commands.")
+		fmt.Fprintln(os.Stderr, "this box has no device keys, so it answers nothing -- not reads, not commands.")
+		fmt.Fprintln(os.Stderr, "every route takes an envelope signed by a device this box trusts, and it trusts none.")
 		fmt.Fprintln(os.Stderr, "    komizo enrol --host <this box> --device-key kmz_dev_...")
 	}
 

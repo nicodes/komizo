@@ -77,11 +77,18 @@ type AgentConf struct {
 	OperatorKeys []string `json:"operator_keys,omitempty"`
 }
 
-// CanServe reports whether this box can answer for itself.
+// CanServe reports whether this box can open its socket at all.
 //
 // Both halves are required and neither is optional: the key is what verifies a
 // caller, and the server id is what a token has to name. A box missing either
 // could only refuse every request, so it does not open a socket at all.
+//
+// NOT THE SAME AS ANSWERING ANYTHING. Since komizo-be#72 took away the reads
+// that took only the registry's token, every route also needs an envelope
+// signed by a device -- so CanServe() && !CanCommand() is a box that listens
+// and refuses everything. Callers that treat this as "can be read" are wrong,
+// and two of them were: `komizo-box serve` and `komizo-box enrol` both told the
+// operator such a box was working.
 func (c AgentConf) CanServe() bool { return c.RegistryKey != "" && c.ServerID != "" }
 
 // Enrolled reports whether this box has been through enrolment.
