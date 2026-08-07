@@ -187,6 +187,15 @@ func runRootd(args []string) error {
 	if err := box.PrepareServedDir(filepath.Dir(*historyPath)); err != nil {
 		return err
 	}
+	// AND THE METRICS' DIRECTORY, which is the history's by default and need
+	// not be. Review 1 on komizo#83: only the history's was prepared, so
+	// pointing --metrics at another directory wrote into one that may not
+	// exist, with the mode this daemon is careful about everywhere else.
+	if d := filepath.Dir(*metricsPath); d != filepath.Dir(*historyPath) {
+		if err := box.PrepareServedDir(d); err != nil {
+			return err
+		}
+	}
 	// The read API's socket directory: owned by the account that binds the
 	// socket, grouped to the one the proxy runs as. See PrepareAPISocketDir --
 	// the proxy has no CAP_DAC_OVERRIDE, so this is not the formality it looks
