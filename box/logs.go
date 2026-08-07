@@ -123,7 +123,52 @@ func WriteLog(dir, name string, body []byte) error {
 //
 // The bound is applied HERE as well as by whoever wrote the file, because the
 // caller asks for a tail and the file holds whatever the last interval produced.
+// ServiceOf returns the service a collected line belongs to, or "" if the line
+// carries no container prefix.
+//
+// The collector runs `docker compose logs`, which prefixes every line with the
+// CONTAINER name and a bar: "web-gate-1  | ...". Compose names a container
+// <project>-<service>-<n>, and the project is the app -- so the service is what
+// is left after the app and before the replica number.
+//
+// DERIVED FROM COMPOSE'S NAMING, WHICH IS THE ONLY JOIN THERE IS. The collected
+// file is one file per app with every service interleaved; nothing in it states
+// which service a line came from except this prefix. A line whose prefix does
+// not parse belongs to no service and is dropped by a filter rather than
+// assigned to one -- guessing would put another service's output on screen
+// under this service's name.
+func ServiceOf(app, line string) string {
+	bar := strings.Index(line, "|")
+	if bar < 0 {
+		return ""
+	}
+	container := strings.TrimSpace(line[:bar])
+	rest, ok := strings.CutPrefix(container, app+"-")
+	if !ok {
+		return ""
+	}
+	// The replica number is last and always present; anything before it is the
+	// service, which may itself contain hyphens.
+	dash := strings.LastIndex(rest, "-")
+	if dash <= 0 {
+		return ""
+	}
+	return rest[:dash]
+}
+
 func ReadLog(dir, name string, n int) (string, error) {
+	return ReadLogService(dir, name, "", n)
+}
+
+// ReadLogService is the same read, narrowed to one service.
+//
+// komizo#81. `komizo logs --service S` has existed since logs did, over SSH;
+// the signed route took only an app, so the app could list a container and not
+// show its output. The narrowing happens HERE rather than at the caller because
+// `n` is a tail: filtering after tailing would return the last 200 lines of the
+// app and then show whichever of them happened to be this service, which on a
+// busy neighbour is none of them.
+func ReadLogService(dir, name, service string, n int) (string, error) {
 	path, err := LogPath(dir, name)
 	if err != nil {
 		return "", err
@@ -133,6 +178,15 @@ func ReadLog(dir, name string, n int) (string, error) {
 		return "", err
 	}
 	lines := strings.Split(strings.TrimRight(string(b), "\n"), "\n")
+	if service != "" {
+		kept := lines[:0]
+		for _, ln := range lines {
+			if ServiceOf(name, ln) == service {
+				kept = append(kept, ln)
+			}
+		}
+		lines = kept
+	}
 	if n > 0 && len(lines) > n {
 		lines = lines[len(lines)-n:]
 	}
@@ -251,7 +305,21 @@ func serveLog(cfg APIConfig, w http.ResponseWriter, r *http.Request) {
 		tail = n
 	}
 
-	lines, err := ReadLog(cfg.LogsDir, name, tail)
+	// ONE RULE FOR A SERVICE NAME, and it is the CLI's -- `validateService` in
+	// internal/app/lifecycle.go refuses a leading dash because Go's flag package
+	// would hand `--service -f` to compose as --follow. Nothing here reaches a
+	// flag parser, but two rules for one name is how the two surfaces come to
+	// disagree about which names are legal, and this one arrives over the
+	// internet.
+	service := c.Args["service"]
+	if service != "" {
+		if service[0] == '-' || strings.ContainsAny(service, "/ \t") {
+			http.Error(w, "service must be a service name, not a flag or a path", http.StatusBadRequest)
+			return
+		}
+	}
+
+	lines, err := ReadLogService(cfg.LogsDir, name, service, tail)
 	switch {
 	case errors.Is(err, errNotAnApp):
 		// A name this box will not file. A bad request rather than a missing
