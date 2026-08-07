@@ -227,8 +227,14 @@ func TestTheSeamActuallyListsAndActs(t *testing.T) {
 	if err := refreshBoxApps(func() ([]appRecord, error) { return recs, nil }, &silentProgress{}, r.run); err != nil {
 		t.Fatalf("refreshBoxApps: %v", err)
 	}
-	if len(r.envs) != 1 || r.envs[0]["APP_NAME"] != "blog" {
-		t.Fatalf("the seam listed the apps and did nothing with them: ran %d time(s)", len(r.envs))
+	if got := r.appRuns(); len(got) != 1 || got[0]["APP_NAME"] != "blog" {
+		t.Fatalf("the seam listed the apps and did nothing with them: ran %d time(s)", len(got))
+	}
+	// AND SSHD WAS RELOADED ONCE, not once per app -- komizo#65. Each per-app
+	// reload is a window in which a CI deploy dialling this box can fail, and
+	// the count used to grow with the fleet.
+	if n := r.reloads(); n != 1 {
+		t.Errorf("sshd was reloaded %d times for 1 app, want exactly 1", n)
 	}
 
 	// A box that cannot say what is on it must fail rather than report that
@@ -387,6 +393,34 @@ func (r *recordingRunner) run(script string, env map[string]string) error {
 	return r.fail[env["APP_NAME"]]
 }
 
+// appRuns is the per-app script only.
+//
+// SEPARATED FROM THE RELOAD, because komizo#65 made an update run two different
+// scripts: alpine.sh once per app, and alpine-reload-sshd.sh once at the end.
+// Counting every invocation together made "ran once per app" and "ran once per
+// app plus a reload" indistinguishable -- so a reload that fired per app, which
+// is the bug #65 is about, would look the same as one that fired once.
+func (r *recordingRunner) appRuns() []map[string]string {
+	var out []map[string]string
+	for i, sc := range r.scripts {
+		if sc != scripts.AlpineReloadSSHDScript {
+			out = append(out, r.envs[i])
+		}
+	}
+	return out
+}
+
+// reloads is how many times the daemon was actually told to pick the config up.
+func (r *recordingRunner) reloads() int {
+	n := 0
+	for _, sc := range r.scripts {
+		if sc == scripts.AlpineReloadSSHDScript {
+			n++
+		}
+	}
+	return n
+}
+
 type silentProgress struct{ lines []string }
 
 func (p *silentProgress) step(format string, a ...any) {
@@ -411,12 +445,34 @@ func TestAnUpdateReprovisionsEveryAppWithItsOwnSettings(t *testing.T) {
 	if err := refreshApps(recs, &silentProgress{}, r.run); err != nil {
 		t.Fatalf("refreshApps: %v", err)
 	}
-	if len(r.envs) != 2 {
+	runs := r.appRuns()
+	if len(runs) != 2 {
 		t.Fatalf("ran %d times for 2 apps -- an app that is not re-run is an app "+
-			"still carrying the old deploy script", len(r.envs))
+			"still carrying the old deploy script", len(runs))
+	}
+	// ONE reload for the pair, not one each -- komizo#65.
+	//
+	// BOTH HALVES, and the second is the one that matters. Counting the reload
+	// script alone says nothing about whether alpine.sh still reloads per app:
+	// setting DEFER_SSHD_RELOAD to "0" restores #65 in full -- N per-app reloads
+	// plus the new one -- and the count above stays at 1. Verified by doing it.
+	//
+	// So every app run must carry the deferral, and the script must honour it.
+	if n := r.reloads(); n != 1 {
+		t.Errorf("sshd was reloaded %d times for 2 apps, want exactly 1", n)
+	}
+	for _, env := range runs {
+		if env["DEFER_SSHD_RELOAD"] != "1" {
+			t.Errorf("%s was refreshed without DEFER_SSHD_RELOAD=1, so alpine.sh reloads sshd "+
+				"for it -- that is one window per app, which is komizo#65", env["APP_NAME"])
+		}
+	}
+	// And the script actually branches on it. A flag nothing reads is a flag.
+	if !strings.Contains(scripts.AlpineScript, `"${DEFER_SSHD_RELOAD:-0}" = "1"`) {
+		t.Error("alpine.sh no longer honours DEFER_SSHD_RELOAD, so passing it changes nothing")
 	}
 	for i, want := range recs {
-		if r.scripts[i] != scripts.AlpineScript {
+		if i < len(r.scripts) && r.scripts[i] != scripts.AlpineScript {
 			t.Errorf("%s was not re-run with the app setup script", want.name)
 		}
 		got := r.envs[i]
@@ -519,9 +575,9 @@ func TestAnAppWhoseRecordIsIncompleteIsSkippedAndReported(t *testing.T) {
 				if !strings.Contains(err.Error(), tc.rec.name) {
 					t.Errorf("the error does not name %s: %v", tc.rec.name, err)
 				}
-				if len(r.envs) != 1 || r.envs[0]["APP_NAME"] != good.name {
+				if got := r.appRuns(); len(got) != 1 || got[0]["APP_NAME"] != good.name {
 					t.Errorf("ran for %d app(s); the good one must still be refreshed and the "+
-						"bad one must not be touched", len(r.envs))
+						"bad one must not be touched", len(got))
 				}
 				// NO reason may be reported as a bad FLAG. The validators are
 				// written for `komizo add`, where there is a --user or a
@@ -567,9 +623,16 @@ func TestOneAppFailingDoesNotStopTheRest(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "shop") {
 		t.Fatalf("want a failure naming shop, got %v", err)
 	}
-	if len(r.envs) != 3 {
+	if got := r.appRuns(); len(got) != 3 {
 		t.Errorf("ran %d times; a failure on one app must not leave the ones after it "+
-			"on the old deploy script", len(r.envs))
+			"on the old deploy script", len(got))
+	}
+	// AND THE PARTIAL RUN STILL RELOADS. The apps that succeeded have written
+	// and validated their sshd blocks but deferred the reload, so skipping it
+	// would leave their deploy accounts unable to connect at all -- a worse
+	// outcome than the one failed app.
+	if n := r.reloads(); n != 1 {
+		t.Errorf("sshd was reloaded %d times after a partial refresh, want 1", n)
 	}
 }
 
@@ -838,6 +901,347 @@ func TestAnAccountSharedWithAnotherAppIsNeverRetired(t *testing.T) {
 	}
 }
 
+// stubBin writes fake executables into a directory and returns it, along with
+// the file each one appends its arguments to when called.
+func stubBin(t *testing.T, names ...string) (dir, log string) {
+	t.Helper()
+	dir = t.TempDir()
+	log = filepath.Join(dir, "calls.log")
+	for _, n := range names {
+		body := "#!/bin/sh\nprintf '%s %s\\n' " + shQuote(n) + ` "$*" >> ` + shQuote(log) + "\nexit 0\n"
+		write(t, filepath.Join(dir, n), 0o755, body)
+	}
+	return dir, log
+}
+
+func stubCalls(t *testing.T, log string) string {
+	t.Helper()
+	b, err := os.ReadFile(log)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ""
+		}
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// THE DEFERRAL IS RUN, NOT READ.
+//
+// Review 1 on komizo#73: the only thing holding komizo#65 shut was a
+// strings.Contains for the `if` line's text. Swapping the two branch bodies --
+// reloading when the flag is set and printing when it is not -- restores the
+// bug in full, 11 reloads for a 10-app update, and every assertion stays green
+// because the line it matches is still there.
+//
+// So run the branch, with `rc-service` stubbed, and look at whether the daemon
+// was actually told to reload.
+func TestTheDeferredReloadIsTheBranchThatRunsNotTheLineThatMatches(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	block := fromTo(t, scripts.AlpineScript,
+		`if [ "${DEFER_SSHD_RELOAD:-0}" = "1" ]; then`,
+		"# Success: stop guarding the file")
+
+	for _, tc := range []struct {
+		name, defer_ string
+		wantReload   bool
+	}{
+		{"deferred, as an update sets it", "1", false},
+		{"not deferred, as a single add leaves it", "0", true},
+		{"unset, which is a single add too", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			binDir, log := stubBin(t, "rc-service")
+			cmd := exec.Command("sh", "-s")
+			cmd.Stdin = strings.NewReader("set -eu\n" + block)
+			cmd.Env = []string{"PATH=" + binDir + ":" + os.Getenv("PATH")}
+			if tc.defer_ != "" {
+				cmd.Env = append(cmd.Env, "DEFER_SSHD_RELOAD="+tc.defer_)
+			}
+			var errBuf strings.Builder
+			cmd.Stderr = &errBuf
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("the reload branch failed: %v\n%s", err, errBuf.String())
+			}
+			got := strings.Contains(stubCalls(t, log), "rc-service sshd reload")
+			if got != tc.wantReload {
+				if tc.wantReload {
+					t.Errorf("sshd was not reloaded with DEFER_SSHD_RELOAD=%q -- an app added on "+
+						"its own would never pick up the rules it just wrote", tc.defer_)
+				} else {
+					t.Errorf("sshd was reloaded with DEFER_SSHD_RELOAD=%q -- komizo#65 is back, and "+
+						"an update of N apps reloads N times", tc.defer_)
+				}
+			}
+		})
+	}
+}
+
+// And the script that does the one deferred reload, run rather than read: no
+// test executed a line of it, so replacing its body with `true` was green.
+func TestTheDeferredReloadScriptValidatesBeforeItReloads(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	for _, tc := range []struct {
+		name       string
+		sshdTestOK bool
+		wantReload bool
+	}{
+		{"a config that validates is applied", true, true},
+		{"a config that does not is left unapplied", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			binDir, log := stubBin(t, "rc-service")
+			// `sshd` is the stub whose exit status this test varies; it is the
+			// only thing between a file on disk and the running daemon.
+			rc := "0"
+			if !tc.sshdTestOK {
+				rc = "1"
+			}
+			write(t, filepath.Join(binDir, "sshd"), 0o755,
+				"#!/bin/sh\nprintf 'sshd %s\\n' \"$*\" >> "+shQuote(log)+"\nexit "+rc+"\n")
+
+			cmd := exec.Command("sh", "-s")
+			cmd.Stdin = strings.NewReader(scripts.AlpineReloadSSHDScript)
+			cmd.Env = []string{"PATH=" + binDir + ":" + os.Getenv("PATH")}
+			var errBuf strings.Builder
+			cmd.Stderr = &errBuf
+			err := cmd.Run()
+			calls := stubCalls(t, log)
+
+			if !strings.Contains(calls, "sshd -t") {
+				t.Errorf("the config was never validated before the reload decision:\n%s", calls)
+			}
+			if got := strings.Contains(calls, "rc-service sshd reload"); got != tc.wantReload {
+				t.Errorf("reloaded=%v, want %v -- calls:\n%s", got, tc.wantReload, calls)
+			}
+			if tc.wantReload && err != nil {
+				t.Errorf("a valid config was reported as a failure: %v\n%s", err, errBuf.String())
+			}
+			if !tc.wantReload {
+				if err == nil {
+					t.Error("an invalid sshd config exited 0, so an update would report success")
+				}
+				// The operator has to know which rules are in force, not just
+				// that something failed.
+				if !strings.Contains(errBuf.String(), "before this update") {
+					t.Errorf("the failure does not say which rules are still in force:\n%s", errBuf.String())
+				}
+			}
+		})
+	}
+}
+
+// stateBlocksHead is the shipped setup script's account blocks -- the CI_USER
+// validation, the settings, and the refusal of an account another app already
+// holds -- with STATE_DIR repointed at a directory this test owns.
+//
+// Taken from the real script by its own line text, never retyped, and both
+// extractions are checked: an anchor that stops matching is a fatal error here
+// rather than a shorter script that quietly asserts less.
+func stateBlocksHead(t *testing.T, stateDir string) string {
+	t.Helper()
+	src := scripts.AlpineScript
+	settings := fromTo(t, src, `APP_DIR="${APP_DIR:-/srv/$APP_NAME}"`, `# If this app was previously set up`)
+	const shipped = "STATE_DIR=/var/lib/komizo/apps"
+	if strings.Count(settings, shipped) != 1 {
+		t.Fatalf("could not repoint %q -- the assignment this test rewrites has moved or changed shape", shipped)
+	}
+	settings = strings.Replace(settings, shipped, "STATE_DIR="+stateDir, 1)
+
+	head := strings.Join([]string{
+		"set -eu",
+		fromTo(t, src, `CI_USER="${CI_USER:-komizo-$APP_NAME}"`, `DEPLOY_BIN=`),
+		settings,
+	}, "\n")
+
+	// The refusal must be in what was extracted. Without this, moving it a few
+	// lines down would leave every test below running a script that cannot
+	// refuse anything, and passing.
+	if !strings.Contains(head, "already belongs to app") {
+		t.Fatalf("the one-account-per-app refusal is not in the extracted blocks -- " +
+			"it has moved outside them, and the tests that rely on it are asserting nothing")
+	}
+	return head
+}
+
+// runStateBlocks runs those blocks against records this test writes, and
+// returns what the script said and whether it refused. Unlike its Full sibling
+// a nonzero exit is a RESULT here, not a fatal error: refusing is the behaviour
+// under test.
+func runStateBlocks(t *testing.T, rec appRecord, existing string, others map[string]string, after ...func(dir string)) (string, error) {
+	t.Helper()
+
+	stateDir := t.TempDir()
+	if existing != "" {
+		if err := os.WriteFile(filepath.Join(stateDir, rec.name+".env"), []byte(existing), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, body := range others {
+		if err := os.WriteFile(filepath.Join(stateDir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, fn := range after {
+		fn(stateDir)
+	}
+
+	cmd := exec.Command("sh", "-s")
+	cmd.Stdin = strings.NewReader(stateBlocksHead(t, stateDir))
+	env := []string{"PATH=" + os.Getenv("PATH")}
+	for k, v := range appRefreshEnv(rec) {
+		env = append(env, k+"="+v)
+	}
+	cmd.Env = env
+	var errBuf strings.Builder
+	cmd.Stderr = &errBuf
+	err := cmd.Run()
+	return errBuf.String(), err
+}
+
+// A DEPLOY ACCOUNT BELONGS TO ONE APP, AND SAYS SO RATHER THAN SHARING BADLY.
+//
+// komizo#63. Everything alpine.sh writes for a deploy account is keyed by the
+// account NAME and replaced whole on each run -- the doas block naming one
+// app's two privileged scripts, the sshd Match block, and the key file. So a
+// second app naming an account that already exists does not join it, it takes
+// it: the first app's CI is left holding a key that opens nothing, and the
+// second app's key now reaches an app it was never issued for.
+func TestAnAppMayNotClaimAnotherAppsDeployAccount(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	rec := appRecord{name: "blog", user: "shared", config: "ghcr.io/you/blog-config", dir: "/srv/blog"}
+	stderr, err := runStateBlocks(t, rec, "", map[string]string{
+		"shop.env": "APP_NAME=shop\nAPP_DIR=/srv/shop\nCI_USER=shared\nCONFIG_IMAGE=ghcr.io/you/shop-config\n",
+	})
+	if err == nil {
+		t.Fatal("an app claimed a deploy account another app already holds, and the setup continued")
+	}
+	// Naming the other app is the whole value of the message: without it the
+	// operator is told a name is taken and not where to look.
+	if !strings.Contains(stderr, "already belongs to app 'shop'") {
+		t.Errorf("the refusal does not name the app that holds the account:\n%s", stderr)
+	}
+}
+
+// The positive control for the refusal, on the line that makes it usable: an
+// app re-run under the account IT already owns is an ordinary update, and
+// refusing it would make `komizo update` fail on every app on the box.
+func TestAnAppMayKeepItsOwnDeployAccountOnEveryRerun(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	rec := appRecord{name: "blog", user: "komizo-blog", config: "ghcr.io/you/blog-config", dir: "/srv/blog"}
+	stderr, err := runStateBlocks(t, rec,
+		"APP_NAME=blog\nAPP_DIR=/srv/blog\nCI_USER=komizo-blog\nCONFIG_IMAGE=ghcr.io/you/blog-config\n",
+		map[string]string{
+			"shop.env": "APP_NAME=shop\nAPP_DIR=/srv/shop\nCI_USER=komizo-shop\nCONFIG_IMAGE=ghcr.io/you/shop-config\n",
+		})
+	if err != nil {
+		t.Fatalf("an app was refused its own deploy account on a re-run: %v\n%s", err, stderr)
+	}
+}
+
+// A BOX THAT ALREADY SHARES AN ACCOUNT KEEPS WORKING, AND IS TOLD.
+//
+// Refusing here would break `komizo update` on every app of a box set up before
+// this rule existed -- a working box broken by a rule about new ones. The
+// sharing is still a real weakness, so it is said out loud on every run.
+func TestSharingThatPredatesTheRuleWarnsRatherThanBreakingTheBox(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	rec := appRecord{name: "blog", user: "shared", config: "ghcr.io/you/blog-config", dir: "/srv/blog"}
+	stderr, err := runStateBlocks(t, rec,
+		"APP_NAME=blog\nAPP_DIR=/srv/blog\nCI_USER=shared\nCONFIG_IMAGE=ghcr.io/you/blog-config\n",
+		map[string]string{
+			"shop.env": "APP_NAME=shop\nAPP_DIR=/srv/shop\nCI_USER=shared\nCONFIG_IMAGE=ghcr.io/you/shop-config\n",
+		})
+	if err != nil {
+		t.Fatalf("an update was refused on a box that already shared an account: %v\n%s", err, stderr)
+	}
+	if !strings.Contains(stderr, "share the deploy account 'shared'") {
+		t.Errorf("the run said nothing about the sharing it just accepted:\n%s", stderr)
+	}
+}
+
+// The same CR, on the other side of the comparison.
+//
+// Found by mutation rather than by review: dropping the strip from THIS app's
+// record survived every test above. It is the milder direction -- the app is
+// refused its own established account rather than another app's being deleted,
+// so it fails closed -- but "fails closed" here means `komizo update` stops
+// working on a box for a reason no message explains.
+func TestACarriageReturnInThisAppsOwnRecordDoesNotCostItItsAccount(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	rec := appRecord{name: "blog", user: "shared", config: "ghcr.io/you/blog-config", dir: "/srv/blog"}
+	stderr, err := runStateBlocks(t, rec,
+		"APP_NAME=blog\r\nAPP_DIR=/srv/blog\r\nCI_USER=shared\r\nCONFIG_IMAGE=ghcr.io/you/blog-config\r\n",
+		map[string]string{
+			"shop.env": "APP_NAME=shop\nAPP_DIR=/srv/shop\nCI_USER=shared\nCONFIG_IMAGE=ghcr.io/you/shop-config\n",
+		})
+	if err != nil {
+		t.Fatalf("a CR in this app's own record cost it the account it already holds: %v\n%s", err, stderr)
+	}
+}
+
+// A record komizo cannot READ is not a record that says the account is free.
+func TestARecordThatCannotBeReadIsNotTakenAsNoClash(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root reads every file, so an unreadable record cannot be staged here")
+	}
+	rec := appRecord{name: "blog", user: "komizo-blog", config: "ghcr.io/you/blog-config", dir: "/srv/blog"}
+	stderr, err := runStateBlocks(t, rec, "", map[string]string{
+		"shop.env": "APP_NAME=shop\nAPP_DIR=/srv/shop\nCI_USER=komizo-shop\nCONFIG_IMAGE=ghcr.io/you/shop-config\n",
+	}, func(dir string) {
+		if cerr := os.Chmod(filepath.Join(dir, "shop.env"), 0o000); cerr != nil {
+			t.Fatal(cerr)
+		}
+	})
+	if err == nil {
+		t.Fatal("a record komizo could not read was treated as proof the account is free")
+	}
+	if !strings.Contains(stderr, "cannot read") {
+		t.Errorf("the refusal does not say the record was unreadable:\n%s", stderr)
+	}
+}
+
+// THE TWO READS OF A RECORD'S CI_USER MUST AGREE, BYTE FOR BYTE.
+//
+// Review 1 on komizo#73. The refusal stripped CR and this path did not, and the
+// two decide opposite things from the same bytes: the refusal declines a clash,
+// this one DELETES an account when it finds none. So one stray CR in another
+// app's record -- edited on Windows, written by hand -- made this path conclude
+// the old account was unused and `deluser` an account another app deploys under
+// right now, taking its doas block and its sshd Match with it.
+func TestACarriageReturnInAnotherAppsRecordCannotRetireItsLiveAccount(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh is not installed")
+	}
+	rec := appRecord{name: "blog", user: "newacct", config: "ghcr.io/you/blog-config", dir: "/srv/blog"}
+	_, old := runUpdateStateBlocksFull(t, rec,
+		"APP_NAME=blog\nAPP_DIR=/srv/blog\nCI_USER=oldacct\nCONFIG_IMAGE=ghcr.io/you/blog-config\n",
+		map[string]string{
+			// The only difference from the plain shared case: a CR.
+			"shop.env": "APP_NAME=shop\r\nAPP_DIR=/srv/shop\r\nCI_USER=oldacct\r\nCONFIG_IMAGE=ghcr.io/you/shop-config\r\n",
+		})
+	if old != "" {
+		t.Errorf("OLD_CI_USER=%q -- a CR in another app's record made this run retire an account "+
+			"that app is deploying under", old)
+	}
+}
+
 func runUpdateStateBlocksFull(t *testing.T, rec appRecord, existing string, others map[string]string) (map[string]string, string) {
 	t.Helper()
 
@@ -858,17 +1262,8 @@ func runUpdateStateBlocksFull(t *testing.T, rec appRecord, existing string, othe
 	}
 
 	src := scripts.AlpineScript
-	settings := fromTo(t, src, `APP_DIR="${APP_DIR:-/srv/$APP_NAME}"`, `# If this app was previously set up`)
-	const shipped = "STATE_DIR=/var/lib/komizo/apps"
-	if strings.Count(settings, shipped) != 1 {
-		t.Fatalf("could not repoint %q -- the assignment this test rewrites has moved or changed shape", shipped)
-	}
-	settings = strings.Replace(settings, shipped, "STATE_DIR="+stateDir, 1)
-
 	script := strings.Join([]string{
-		"set -eu",
-		fromTo(t, src, `CI_USER="${CI_USER:-komizo-$APP_NAME}"`, `DEPLOY_BIN=`),
-		settings,
+		stateBlocksHead(t, stateDir),
 		// The block that decides whether this app has been renamed onto a new
 		// deploy account, and therefore whether the previous one is deleted.
 		fromTo(t, src, `OLD_CI_USER=""`, `# The deploy account's key list`),
@@ -1139,25 +1534,53 @@ func TestTheGuardsOnEtcRestoreAndStopOnEverySignal(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh is not installed")
 	}
-	src := scripts.AlpineScript
 	const original = "# untouched\n"
 
+	// BOTH SCRIPTS THAT EDIT /etc, not just the one this test was written for.
+	//
+	// Review 1 on komizo#73: this ran alpine.sh's two guards only, so gutting
+	// alpine-remove.sh's restore_doas() to `{ :; }` left the entire suite green.
+	// The regex test below did cover the removal script -- and that is the trap
+	// worth naming: it covers a DIFFERENT AXIS. It reads which signals a trap
+	// line is installed for; it cannot see whether the handler restores anything
+	// or stops. Extending it felt like closing this gap and was not.
 	for _, guard := range []struct {
-		name, target, lift, until string
+		name, src, target, pre, lift, until string
 	}{
 		{
-			name:   "doas.conf",
+			name:   "alpine.sh/doas.conf",
+			src:    scripts.AlpineScript,
 			target: "doas.conf",
 			lift:   `doas_bak="/etc/doas.conf.komizo.bak.$$"`,
 			until:  "# Delimited block,",
 		},
 		{
-			name:   "sshd_config",
+			name:   "alpine.sh/sshd_config",
+			src:    scripts.AlpineScript,
 			target: "sshd_config",
 			lift:   "conf=/etc/ssh/sshd_config",
 			until:  "# Retire the previous account's Match block",
 		},
+		{
+			name:   "alpine-remove.sh/doas.conf",
+			src:    scripts.AlpineRemoveScript,
+			target: "doas.conf",
+			lift:   "doas_bak=/etc/doas.conf.komizo.bak",
+			until:  `sed -i -E "/^# $PROJECT_MARKER: $CI_USER BEGIN`,
+		},
+		{
+			name:   "alpine-remove.sh/sshd_config",
+			src:    scripts.AlpineRemoveScript,
+			target: "sshd_config",
+			// This guard opens inside `if [ -f "$conf" ]`, so the lift starts at
+			// the backup -- as the others do -- and $conf is supplied here. The
+			// line is the script's own, and goes through the same rewrite.
+			pre:   "conf=/etc/ssh/sshd_config",
+			lift:  `conf_bak="$conf.komizo.bak"`,
+			until: "sed -i -E \\\n",
+		},
 	} {
+		src := guard.src
 		for _, sig := range []syscall.Signal{syscall.SIGHUP, syscall.SIGTERM, syscall.SIGINT, syscall.SIGPIPE} {
 			t.Run(guard.name+"/"+sig.String(), func(t *testing.T) {
 				dir := t.TempDir()
@@ -1168,7 +1591,7 @@ func TestTheGuardsOnEtcRestoreAndStopOnEverySignal(t *testing.T) {
 				// file this test owns. Everything after it stands in for the
 				// edit the guard exists to protect: the file is left in a state
 				// it must not be found in, and then the signal arrives.
-				block := fromTo(t, src, guard.lift, guard.until)
+				block := guard.pre + "\n" + fromTo(t, src, guard.lift, guard.until)
 				block = strings.NewReplacer(
 					"/etc/doas.conf", target,
 					"/etc/ssh/sshd_config", target,
@@ -1282,11 +1705,38 @@ func TestTheGuardsCatchEverySignalAnInterruptedUpdateSends(t *testing.T) {
 	nonEXIT := regexp.MustCompile(`(?m)^\s*trap\s+(?:'[^']*'|"[^"]*"|[A-Za-z_][A-Za-z0-9_]*)\s+((?:INT|TERM|HUP|PIPE|QUIT)(?:\s+(?:INT|TERM|HUP|PIPE|QUIT))*)\s*$`)
 	all := regexp.MustCompile(`(?m)^\s*trap\s+(?:'([^']*)'|"([^"]*)"|([A-Za-z_][A-Za-z0-9_]*))\s+([A-Z ]+)$`)
 
-	found := all.FindAllStringSubmatch(scripts.AlpineScript, -1)
-	if len(found) < 6 {
-		t.Fatalf("found %d trap installations in alpine.sh, expected at least 6 "+
+	// EVERY SCRIPT KOMIZO WRITES ONTO A BOX, not one of them.
+	//
+	// This read alpine.sh alone, and komizo#64 was the cost: alpine-remove.sh
+	// guarded /etc/doas.conf and /etc/ssh/sshd_config with `EXIT` only -- the
+	// same defect, in a file nothing was looking at, found by reading rather
+	// than by any check. A rule applied to one of two scripts is not a rule.
+	for _, script := range []struct {
+		name string
+		src  string
+		min  int
+	}{
+		{"alpine.sh", scripts.AlpineScript, 6},
+		{"alpine-remove.sh", scripts.AlpineRemoveScript, 4},
+	} {
+		checkTraps(t, script.name, script.src, script.min, all, nonEXIT)
+	}
+}
+
+// checkTraps judges every trap in one script.
+//
+// The rule, in both halves: a handler for a SIGNAL must exit, because POSIX sh
+// resumes at the interruption point when one returns -- so a trap that only
+// tidies carries on doing the work the operator just cancelled. And it must
+// cover the signals that actually arrive: a dropped ssh connection is HUP, or
+// PIPE at the next write to a dead stdout, and EXIT alone is raised by neither.
+func checkTraps(t *testing.T, name, src string, min int, all, nonEXIT *regexp.Regexp) {
+	t.Helper()
+	found := all.FindAllStringSubmatch(src, -1)
+	if len(found) < min {
+		t.Fatalf("found %d trap installations in %s, expected at least %d "+
 			"-- if a guard was removed say so deliberately; if this regexp stopped "+
-			"matching, it is no longer checking anything", len(found))
+			"matching, it is no longer checking anything", len(found), name, min)
 	}
 
 	for _, m := range found {
@@ -1299,24 +1749,25 @@ func TestTheGuardsCatchEverySignalAnInterruptedUpdateSends(t *testing.T) {
 		// carries on doing the work the operator just cancelled -- measured
 		// under busybox ash: TERM gave "CLEANED" then "RESUMED-AND-FINISHED".
 		if !strings.Contains(body, "exit ") {
-			t.Errorf("this trap catches %v and does not exit:\n  %s\n"+
+			t.Errorf("in %s, this trap catches %v and does not exit:\n  %s\n"+
 				"POSIX sh resumes where it was interrupted, so the script carries on "+
-				"provisioning a box whose operator cancelled it", signals, body)
+				"doing what the operator cancelled", name, signals, body)
 		}
 		// And it must cover the signals that actually arrive. A dropped ssh
 		// connection is HUP, or PIPE on the next write to a dead stdout --
 		// under busybox ash neither ran the handler at all when absent.
 		for _, need := range []string{"INT", "TERM", "HUP", "PIPE"} {
 			if !slices.Contains(signals, need) {
-				t.Errorf("this trap does not catch %s:\n  %s\n  has %v", need, body, signals)
+				t.Errorf("in %s, this trap does not catch %s:\n  %s\n  has %v", name, need, body, signals)
 			}
 		}
 	}
 
 	// And the paired form is real: every signal trap has an EXIT sibling, so
 	// the ordinary path cleans up too.
-	if got := len(nonEXIT.FindAllString(scripts.AlpineScript, -1)); got < 3 {
-		t.Errorf("found %d signal traps, want at least 3 (staging, doas, sshd)", got)
+	if got := len(nonEXIT.FindAllString(src, -1)); got < min/2 {
+		t.Errorf("%s has %d signal traps, want at least %d -- every EXIT guard needs a signal sibling",
+			name, got, min/2)
 	}
 }
 

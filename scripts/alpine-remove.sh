@@ -193,15 +193,34 @@ log "Removing doas rules for '$CI_USER'"
 if [ -f /etc/doas.conf ]; then
 	doas_bak=/etc/doas.conf.komizo.bak
 	cp /etc/doas.conf "$doas_bak"
-	trap 'mv -f "$doas_bak" /etc/doas.conf 2>/dev/null || true' EXIT
+	# EXIT ALONE DOES NOT FIRE ON THE SIGNALS THAT ACTUALLY ARRIVE, and a
+	# handler that only tidies does not stop -- komizo#64, and the third place
+	# in this codebase with the same defect after alpine.sh's doas and sshd
+	# windows.
+	#
+	# POSIX sh RESUMES at the interruption point when a handler returns, so a
+	# trap that restores and returns carries on removing an app the operator
+	# just cancelled. And EXIT is not raised at all by HUP or PIPE, which is how
+	# a dropped ssh connection arrives -- directly, or at the next write to a
+	# stdout with nothing on the other end. Measured under busybox ash on the
+	# sibling case: HUP left no cleanup, TERM cleaned up and then ran to the
+	# end, PIPE left no cleanup.
+	#
+	# So the window this guard exists for -- /etc/doas.conf mid-edit, on
+	# somebody's server -- was open on exactly the interruptions most likely to
+	# happen. The paired form restores AND stops, and `exit` from a signal
+	# handler runs the EXIT trap too, so the restore is written once.
+	restore_doas() { mv -f "$doas_bak" /etc/doas.conf 2>/dev/null || true; }
+	trap restore_doas EXIT
+	trap 'restore_doas; exit 129' INT TERM HUP PIPE
 	sed -i -E "/^# $PROJECT_MARKER: $CI_USER BEGIN\$/,/^# $PROJECT_MARKER: $CI_USER END\$/d" /etc/doas.conf
 	if ! doas -C /etc/doas.conf >/dev/null 2>&1; then
 		mv -f "$doas_bak" /etc/doas.conf
-		trap - EXIT
+		trap - EXIT INT TERM HUP PIPE
 		echo "error: removing the doas rules left an invalid config -- reverted" >&2
 		exit 1
 	fi
-	trap - EXIT
+	trap - EXIT INT TERM HUP PIPE
 	rm -f "$doas_bak"
 fi
 
@@ -215,17 +234,23 @@ conf=/etc/ssh/sshd_config
 if [ -f "$conf" ]; then
 	conf_bak="$conf.komizo.bak"
 	cp "$conf" "$conf_bak"
-	trap 'mv -f "$conf_bak" "$conf" 2>/dev/null || true' EXIT
+	# The same pairing as the doas window above, and for the same reason: an
+	# sshd_config left mid-edit does not bite now -- sshd has not been reloaded
+	# -- it bites at the next reboot, a long way from anything anyone would
+	# connect it to.
+	restore_sshd() { mv -f "$conf_bak" "$conf" 2>/dev/null || true; }
+	trap restore_sshd EXIT
+	trap 'restore_sshd; exit 129' INT TERM HUP PIPE
 	sed -i -E \
 		-e "/^# $PROJECT_MARKER: sshd $CI_USER BEGIN\$/,/^# $PROJECT_MARKER: sshd $CI_USER END\$/d" \
 		"$conf"
 	if sshd -t >/dev/null 2>&1; then
-		trap - EXIT
+		trap - EXIT INT TERM HUP PIPE
 		rm -f "$conf_bak"
 		rc-service sshd reload >/dev/null 2>&1 || rc-service sshd restart >/dev/null 2>&1 || true
 	else
 		mv -f "$conf_bak" "$conf"
-		trap - EXIT
+		trap - EXIT INT TERM HUP PIPE
 		echo "error: removing the sshd block left an invalid config -- reverted" >&2
 		exit 1
 	fi

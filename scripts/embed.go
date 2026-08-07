@@ -35,6 +35,15 @@ var AlpineScript string
 //go:embed alpine-remove.sh
 var AlpineRemoveScript string
 
+// AlpineReloadSSHDScript applies the sshd config every app in an update wrote.
+//
+// Separate from alpine.sh because it runs ONCE per update rather than once per
+// app -- komizo#65. alpine.sh validates its own edit and defers; this is what
+// makes the deferral safe to have.
+//
+//go:embed alpine-reload-sshd.sh
+var AlpineReloadSSHDScript string
+
 //go:embed alpine-init.sh
 var AlpineInitScript string
 

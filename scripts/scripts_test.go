@@ -22,11 +22,12 @@ import (
 func all(t *testing.T) map[string]string {
 	t.Helper()
 	return map[string]string{
-		"alpine":        AlpineScript,
-		"alpine-init":   AlpineInitScript,
-		"alpine-proxy":  AlpineProxyScript,
-		"alpine-remove": AlpineRemoveScript,
-		"agent-install": AgentInstall("94d5dbd1333d", "0.0.11"),
+		"alpine":             AlpineScript,
+		"alpine-init":        AlpineInitScript,
+		"alpine-proxy":       AlpineProxyScript,
+		"alpine-remove":      AlpineRemoveScript,
+		"alpine-reload-sshd": AlpineReloadSSHDScript,
+		"agent-install":      AgentInstall("94d5dbd1333d", "0.0.11"),
 		// The two OPTIONAL ones. They run as root like the rest, and until
 		// komizo#59 they were the only scripts this package can produce that no
 		// whole-script check ever saw -- shellcheck reads them as files, but
