@@ -63,6 +63,20 @@ const (
 	// boundary the report is on. It moved here from StateDir when the box became
 	// the store rather than a courier -- komizo-be design/registry.md.
 	HistoryPath = ServedDir + "/history.jsonl"
+
+	// MetricsPath is what the proxy's access log said, computed by rootd and
+	// left where the serving account can read it.
+	//
+	// komizo#80, and the location is decided by a permission rather than a
+	// preference: /srv/_proxy/logs is 0750 root:root, and the API runs as
+	// komizo_monitor. It cannot read the access log at all. Loosening that
+	// directory would be the cheap fix and the wrong one -- it holds every
+	// hostname and path this box serves, and the split exists so that a
+	// compromise of the network-facing process does not read the box.
+	//
+	// So the measurement happens where root already is, and the answer lands
+	// beside report.json and history.jsonl, which are there for the same reason.
+	MetricsPath = ServedDir + "/metrics.json"
 	VersionPath = StateDir + "/version"
 
 	// APISocketDir holds the socket the box answers on, and it is its OWN

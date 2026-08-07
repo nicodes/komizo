@@ -135,6 +135,7 @@ func runRootd(args []string) error {
 	logsDir := fs.String("logs", box.LogsDir, "where each app's recent output is kept")
 	reportPath := fs.String("report", box.ReportPath, "where to write the current report")
 	historyPath := fs.String("history", box.HistoryPath, "where to append readings")
+	metricsPath := fs.String("metrics", box.MetricsPath, "where to leave what the access log said")
 	volEvery := fs.Int("volumes-every", 15, "measure volumes every Nth reading (0 disables)")
 	once := fs.Bool("once", false, "probe once and exit")
 	if err := fs.Parse(args); err != nil {
@@ -238,6 +239,14 @@ func runRootd(args []string) error {
 		s := box.Sample{At: r.At, System: r.System}
 		if err := box.AppendSample(*historyPath, s, box.HistoryMax, box.HistoryKeep); err != nil {
 			fmt.Fprintf(os.Stderr, "komizo-box: appending history: %v\n", err)
+		}
+		// WHERE THE SERVING ACCOUNT CAN READ IT. The access log is the proxy's,
+		// 0750 root:root, and the API runs as komizo_monitor -- so the count
+		// happens here, where root already is, and the answer is left beside
+		// the report and the history. komizo#80.
+		to := r.At.Unix()
+		if err := box.WriteMetrics(*metricsPath, probe().Metrics(to-box.MetricsWindow, to)); err != nil {
+			fmt.Fprintf(os.Stderr, "komizo-box: writing metrics: %v\n", err)
 		}
 	}
 

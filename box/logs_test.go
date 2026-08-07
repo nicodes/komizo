@@ -419,7 +419,7 @@ func TestAReadEnvelopeIsRefusedByTheCommandRoute(t *testing.T) {
 // edited every time a read was added -- and an assertion you edit to make it
 // pass is not an assertion.
 func TestTheAppliedOpsAreASubsetOfWhatAnEnvelopeMayName(t *testing.T) {
-	reads := []string{OpLogsRead, OpReportRead, OpHistoryRead}
+	reads := []string{OpLogsRead, OpReportRead, OpHistoryRead, OpMetricsRead}
 
 	for _, op := range ApplyOps {
 		if !knownOp(op) {
