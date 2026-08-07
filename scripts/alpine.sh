@@ -55,9 +55,9 @@ esac
 # A box set up for one app can host a second later without renaming anything
 # that already exists, which is not true if the first one owns the bare paths.
 #
-# One account per app, so a key that leaks reaches only its own app. Sharing one
-# account across apps is possible with an explicit CI_USER, but then its doas
-# block covers all of them.
+# One account per app, so a key that leaks reaches only its own app. That is a
+# rule, not a default: an explicit CI_USER naming another app's account is
+# REFUSED below, once STATE_DIR is known.
 CI_USER="${CI_USER:-komizo-$APP_NAME}"
 # Validated here, not only in the CLI: this script is documented as hand-runnable
 # with env vars, and CI_USER is written verbatim into doas.conf and an sshd Match
@@ -85,14 +85,73 @@ APP_DIR="${APP_DIR:-/srv/$APP_NAME}"
 STATE_DIR=/var/lib/komizo/apps
 STATE_FILE="$STATE_DIR/$APP_NAME.env"
 
+# A deploy account belongs to ONE app, and this is where that is enforced.
+#
+# Sharing was never really possible, it just looked like it. Everything this
+# script writes for the account is keyed by the account NAME and replaced whole
+# on each run: the doas block (which names one app's two privileged scripts),
+# the sshd Match block, and $KEYS_DIR/$CI_USER. So a second app claiming an
+# existing account does not join it -- it takes it. The first app's CI keeps a
+# key that no longer opens anything and doas rules that are gone, and the second
+# app's key now reaches an app it was never issued for. Both halves of "one
+# account per app, so a leaked key reaches only its own app" fail at once.
+#
+# Refuse, and name the app that already holds it. The way out is a different
+# account for THIS app, which the rename path below handles.
+# What this app's record already says, read the same way every other reader
+# reads it. An account this app ALREADY holds is established state, not a new
+# claim: refusing it would make `komizo update` fail on every app of a box set
+# up before this rule, which is a working box broken by a rule about new ones.
+_mine="$(sed -n 's/^CI_USER=//p' "$STATE_FILE" 2>/dev/null | tr -d '\r' | head -n 1)"
+
+for _st in "$STATE_DIR"/*.env; do
+	[ -f "$_st" ] || continue                  # no records yet: the glob is literal
+	_a="${_st##*/}"; _a="${_a%.env}"
+	[ "$_a" = "$APP_NAME" ] && continue         # this app's own record
+	# A record that cannot be READ is not a record that says no clash. Refuse
+	# rather than provision: the whole value of this check is knowing which
+	# accounts are taken, and an unreadable file is the one case where komizo
+	# does not know.
+	if [ ! -r "$_st" ]; then
+		echo "error: cannot read $_st, so komizo cannot tell whether '$CI_USER' is another app's account" >&2
+		exit 1
+	fi
+	[ "$(sed -n 's/^CI_USER=//p' "$_st" | tr -d '\r' | head -n 1)" = "$CI_USER" ] || continue
+
+	# Already shared, from before this refusal existed. Say so on every run --
+	# loudly, because it is a real weakness and a silent one -- but do not break
+	# a box that is working today.
+	if [ "$_mine" = "$CI_USER" ]; then
+		echo "warning: apps '$APP_NAME' and '$_a' share the deploy account '$CI_USER'." >&2
+		echo "  a key that leaks reaches both. komizo no longer sets this up." >&2
+		echo "  to separate them, re-add one of the apps with an account of its own:" >&2
+		echo "    komizo add --app $APP_NAME --user komizo-$APP_NAME ..." >&2
+		continue
+	fi
+
+	echo "error: deploy account '$CI_USER' already belongs to app '$_a'" >&2
+	echo "  each app needs its own, so a key that leaks reaches only one app." >&2
+	echo "  give this app an account of its own: komizo add --user komizo-$APP_NAME ..." >&2
+	exit 1
+done
+
 # If this app was previously set up under a DIFFERENT deploy account, that old
 # account's key file, doas rule and sshd Match block would otherwise be orphaned
 # -- an invisible, still-privileged account that a key rotation never touches.
 # Note it now, before the state file is rewritten below, and remove it further
-# down. Skipped when the account is shared with another app (an explicit CI_USER
-# can be), since removing it would break those apps.
+# down. Skipped when another app is still recorded against that old account,
+# since removing it would break that app. New sharing is refused above, but a
+# box set up before that refusal existed can still be in this state -- and this
+# is the path that migrates it: give one of the apps its own account, and the
+# one left behind keeps working.
+# Every read of a record's CI_USER strips CR, here and above, because these two
+# comparisons DECIDE OPPOSITE THINGS from the same bytes: the one above refuses
+# a clash, and the one below deletes an account when it finds none. Strip in one
+# and not the other and a single stray CR -- a record edited on Windows, a
+# hand-written file -- makes this path conclude the old account is unused and
+# `deluser` an account another app is deploying under right now.
 OLD_CI_USER=""
-_old="$(sed -n 's/^CI_USER=//p' "$STATE_FILE" 2>/dev/null | head -n 1)"
+_old="$_mine"
 case "$_old" in
 	''|"$CI_USER") ;;                     # nothing recorded, or unchanged
 	*[!A-Za-z0-9_-]*) ;;                  # legacy/unreadable value -- leave it be
@@ -102,7 +161,7 @@ case "$_old" in
 			[ -f "$_st" ] || continue
 			_a="${_st##*/}"; _a="${_a%.env}"
 			[ "$_a" = "$APP_NAME" ] && continue
-			if [ "$(sed -n 's/^CI_USER=//p' "$_st" | head -n 1)" = "$OLD_CI_USER" ]; then
+			if [ "$(sed -n 's/^CI_USER=//p' "$_st" | tr -d '\r' | head -n 1)" = "$OLD_CI_USER" ]; then
 				OLD_CI_USER=""   # still in use by another app; do not touch it
 				break
 			fi
@@ -1573,7 +1632,29 @@ cat >> "$conf" <<-EOF
 EOF
 
 if sshd -t; then
-	rc-service sshd reload || rc-service sshd restart
+	# ONE RELOAD PER UPDATE, NOT ONE PER APP.
+	#
+	# komizo#65. This script runs once per app, and komizo#58 made `komizo
+	# update` run it for every app on the box -- so an upgrade of N apps
+	# reloaded sshd N times. Each reload is a window in which a CI deploy
+	# dialling this box can fail, and the count grew with the fleet rather than
+	# staying at one.
+	#
+	# The reload is DEFERRED, not skipped: `sshd -t` above still validates every
+	# app's edit as it is made, so a broken config is still caught by the app
+	# that caused it and reverted by the guard. What is postponed is only the
+	# moment the running daemon picks the file up, which the caller does once
+	# after the last app.
+	#
+	# An update that dies midway therefore leaves a valid config the daemon has
+	# not read yet -- the previous rules stay in force until the next reload,
+	# which is the safe direction: an app whose block did not take effect cannot
+	# deploy, where a half-applied reload could have let one through.
+	if [ "${DEFER_SSHD_RELOAD:-0}" = "1" ]; then
+		echo "komizo: sshd config validated; reload deferred to the end of this update"
+	else
+		rc-service sshd reload || rc-service sshd restart
+	fi
 	# Success: stop guarding the file and drop the backup, so a re-run's "backup"
 	# is the pre-komizo config rather than one that already carries komizo's edits.
 	trap - EXIT INT TERM HUP PIPE
