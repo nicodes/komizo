@@ -1631,7 +1631,44 @@ cat >> "$conf" <<-EOF
 	# komizo: sshd $CI_USER END
 EOF
 
-if sshd -t; then
+# komizo: sshd-validation BEGIN
+# Is the config valid FOR THE BINARY THAT WILL LOAD IT?
+#
+# komizo#77. `sshd -t` resolves to /usr/sbin/sshd. Alpine's init script runs
+# /usr/sbin/sshd.pam when the config says `UsePAM yes` -- a DIFFERENT binary,
+# not a link, that disagrees about which options exist. `UsePAM yes` is Alpine's
+# own default, and plain sshd calls it an unsupported option. So on every box
+# with openssh-server-pam installed, this check was validating a program that
+# was never going to read the file.
+#
+# Both directions are wrong and only one is safe: a good config rejected merely
+# reverts an edit, but a config the running daemon will NOT accept passing this
+# check is a reload into a broken sshd -- which is the thing the deferred reload
+# exists to prevent.
+#
+# The init script already selects the binary and exposes `checkconfig`, so this
+# ASKS IT instead of reimplementing update_command(). Copying that selection
+# would be copying vendor logic that can drift out from under us, and it does
+# not just test for the binary's existence -- it tests the config to decide.
+#
+# Where the action does not exist, `sshd -t` is what there is. That is no worse
+# than before this function existed.
+#
+# NOT SIDE-EFFECT FREE, and worth knowing rather than discovering: Alpine's
+# checkconfig runs `ssh-keygen -A` first, which creates any host key type the
+# box is missing. On a machine komizo is reaching over SSH they already exist,
+# so it is a no-op in practice -- but it is a write on a path named `validate`,
+# and it happens during a removal too. Found in review of komizo#77.
+komizo_sshd_config_ok() {
+	if [ -f /etc/init.d/sshd ] && grep -qE '^extra_commands=.*checkconfig' /etc/init.d/sshd; then
+		rc-service sshd checkconfig
+	else
+		sshd -t
+	fi
+}
+# komizo: sshd-validation END
+
+if komizo_sshd_config_ok; then
 	# ONE RELOAD PER UPDATE, NOT ONE PER APP.
 	#
 	# komizo#65. This script runs once per app, and komizo#58 made `komizo
@@ -1640,7 +1677,7 @@ if sshd -t; then
 	# dialling this box can fail, and the count grew with the fleet rather than
 	# staying at one.
 	#
-	# The reload is DEFERRED, not skipped: `sshd -t` above still validates every
+	# The reload is DEFERRED, not skipped: the check above still validates every
 	# app's edit as it is made, so a broken config is still caught by the app
 	# that caused it and reverted by the guard. What is postponed is only the
 	# moment the running daemon picks the file up, which the caller does once
