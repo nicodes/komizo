@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -50,6 +51,15 @@ func sshdValidationBlock(t *testing.T, name, src string) string {
 	return src[i : i+j+len(sshdBlockEnd)]
 }
 
+// The guard has to be what the `if` tests, and a quoted flag is the same flag.
+var (
+	guardDecides = regexp.MustCompile(`(?m)^\s*(if|while|until)\s+(!\s+)?komizo_sshd_config_ok\b`)
+	bareSSHDT    = regexp.MustCompile(`(?m)(^|[;&|(\s])sshd\s+-t\b`)
+)
+
+// unquote drops ASCII quotes so `sshd "-t"` reads as `sshd -t`.
+func unquote(s string) string { return strings.NewReplacer(`"`, "", `'`, "").Replace(s) }
+
 func TestEveryScriptValidatesSSHDTheSameWay(t *testing.T) {
 	scripts := map[string]string{
 		"alpine.sh":             AlpineScript,
@@ -76,12 +86,20 @@ func TestEveryScriptValidatesSSHDTheSameWay(t *testing.T) {
 	// beside it does the old thing.
 	for name, src := range scripts {
 		body := codeOnly(strings.Replace(src, sshdValidationBlock(t, name, src), "", 1))
-		if !strings.Contains(body, "komizo_sshd_config_ok") {
-			t.Errorf("%s defines the validation and never calls it", name)
+
+		// IN A CONDITION, not merely mentioned. Review 1 on #78: presence is
+		// satisfied by `: komizo_sshd_config_ok` sitting beside an `if sshd -t`
+		// that still does the deciding -- the exact bug, with the guard in the
+		// file as decoration.
+		if !guardDecides.MatchString(body) {
+			t.Errorf("%s never BRANCHES on the validation. Calling it is not enough -- something "+
+				"else is deciding whether to reload.", name)
 		}
-		// `sshd -t` outside the block means a caller went back to asking the
-		// wrong binary.
-		if strings.Contains(body, "sshd -t") {
+
+		// And no bare sshd -t anywhere near it. Quotes are stripped first,
+		// because `sshd "-t"` is the same command and passed the first version
+		// of this check.
+		if bareSSHDT.MatchString(unquote(body)) {
 			t.Errorf("%s still runs `sshd -t` outside the shared block, which is the binary that "+
 				"is NOT going to load the config on a box with openssh-server-pam", name)
 		}
@@ -102,6 +120,16 @@ func TestTheValidationAsksTheInitScriptRatherThanGuessing(t *testing.T) {
 				"itself, it is a copy of Alpine's update_command() and will drift from it", want)
 		}
 	}
+	// THE PATTERN IS PINNED, because a looser one changes which boxes take
+	// which branch. Review 1: replacing it with a plain `checkconfig` was green,
+	// and that matches `extra_started_commands="checkconfig"` -- an action
+	// OpenRC only offers on a started service, so a stopped sshd would take the
+	// wrong branch.
+	if !strings.Contains(codeOnly(block), `grep -qE '^extra_commands=.*checkconfig'`) {
+		t.Error("the test for the checkconfig action is no longer anchored to ^extra_commands=, " +
+			"so it can match a different declaration and pick the wrong branch")
+	}
+
 	// Naming either PAM binary in the CODE would be exactly that copy. The
 	// comments name them on purpose -- they are why this defers.
 	code := codeOnly(block)
@@ -126,29 +154,50 @@ func TestTheValidationPrefersCheckconfigAndFallsBackToSSHDT(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
 		initScript string // contents of /etc/init.d/sshd, empty for absent
-		want       string
+		want       string // which tool the guard asked
+		rcCode     string // exit status of the rc-service stub
+		sshdCode   string // exit status of the sshd stub
+		wantOK     bool   // and what the guard concluded
 	}{
 		{
 			name:       "the init script offers checkconfig",
 			initScript: "#!/sbin/openrc-run\nextra_commands=\"checkconfig\"\n",
-			want:       "rc-service",
+			want:       "rc-service", rcCode: "0", sshdCode: "0", wantOK: true,
+		},
+		{
+			// B1 FROM REVIEW 1, AND THE ONLY BRANCH THAT RUNS IN PRODUCTION.
+			// Nothing asserted this: adding `|| true` to the checkconfig branch
+			// alone left the whole suite green, so the guard could pass on every
+			// real box while the tests said it worked. The other case below
+			// covers the fallback, which is the branch a developer machine takes
+			// -- which is exactly why the gap was invisible.
+			name:       "checkconfig says the config is bad",
+			initScript: "#!/sbin/openrc-run\nextra_commands=\"checkconfig\"\n",
+			want:       "rc-service", rcCode: "1", sshdCode: "0", wantOK: false,
 		},
 		{
 			name:       "an init script without the action",
 			initScript: "#!/sbin/openrc-run\nextra_started_commands=\"reload\"\n",
-			want:       "sshd",
+			want:       "sshd", rcCode: "0", sshdCode: "0", wantOK: true,
 		},
 		{
 			name:       "no init script at all",
 			initScript: "",
-			want:       "sshd",
+			want:       "sshd", rcCode: "0", sshdCode: "0", wantOK: true,
+		},
+		{
+			name:       "the fallback says the config is bad",
+			initScript: "",
+			want:       "sshd", rcCode: "0", sshdCode: "1", wantOK: false,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			// Stubs that report which one was asked.
-			writeFile(t, filepath.Join(dir, "rc-service"), 0o755, "#!/bin/sh\necho rc-service \"$@\"\nexit 0\n")
-			writeFile(t, filepath.Join(dir, "sshd"), 0o755, "#!/bin/sh\necho sshd \"$@\"\nexit 0\n")
+			writeFile(t, filepath.Join(dir, "rc-service"), 0o755,
+				"#!/bin/sh\necho rc-service \"$@\"\nexit "+tc.rcCode+"\n")
+			writeFile(t, filepath.Join(dir, "sshd"), 0o755,
+				"#!/bin/sh\necho sshd \"$@\"\nexit "+tc.sshdCode+"\n")
 			// grep is real; the init script is not.
 			etc := t.TempDir()
 			if tc.initScript != "" {
@@ -156,7 +205,9 @@ func TestTheValidationPrefersCheckconfigAndFallsBackToSSHDT(t *testing.T) {
 			}
 
 			script := strings.Join([]string{
-				"set -eu",
+				// No `set -e`: the guard returning nonzero is a RESULT here, and `set -e`
+				// would end the script before the exit status could be observed.
+				"set -u",
 				// The block, with the one absolute path it reads repointed at a
 				// file this test owns. Asserted below, so a rename is fatal
 				// rather than silently testing the host's real init script.
@@ -173,8 +224,10 @@ func TestTheValidationPrefersCheckconfigAndFallsBackToSSHDT(t *testing.T) {
 			// the system's.
 			cmd.Env = []string{"PATH=" + dir + ":" + os.Getenv("PATH")}
 			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("the validation failed: %v\n%s", err, out)
+			// THE ANSWER, not just which tool was asked. A guard that runs the
+			// right command and ignores what it says is not a guard.
+			if ok := err == nil; ok != tc.wantOK {
+				t.Errorf("the validation concluded ok=%v, want %v -- output was %q", ok, tc.wantOK, out)
 			}
 			got := strings.Fields(string(out))
 			if len(got) == 0 || got[0] != tc.want {

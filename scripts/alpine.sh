@@ -1653,6 +1653,12 @@ EOF
 #
 # Where the action does not exist, `sshd -t` is what there is. That is no worse
 # than before this function existed.
+#
+# NOT SIDE-EFFECT FREE, and worth knowing rather than discovering: Alpine's
+# checkconfig runs `ssh-keygen -A` first, which creates any host key type the
+# box is missing. On a machine komizo is reaching over SSH they already exist,
+# so it is a no-op in practice -- but it is a write on a path named `validate`,
+# and it happens during a removal too. Found in review of komizo#77.
 komizo_sshd_config_ok() {
 	if [ -f /etc/init.d/sshd ] && grep -qE '^extra_commands=.*checkconfig' /etc/init.d/sshd; then
 		rc-service sshd checkconfig
@@ -1671,7 +1677,7 @@ if komizo_sshd_config_ok; then
 	# dialling this box can fail, and the count grew with the fleet rather than
 	# staying at one.
 	#
-	# The reload is DEFERRED, not skipped: `sshd -t` above still validates every
+	# The reload is DEFERRED, not skipped: the check above still validates every
 	# app's edit as it is made, so a broken config is still caught by the app
 	# that caused it and reverted by the guard. What is postponed is only the
 	# moment the running daemon picks the file up, which the caller does once
