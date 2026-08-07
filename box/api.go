@@ -242,7 +242,6 @@ func refuse(w http.ResponseWriter) {
 	http.Error(w, "unauthorized", http.StatusUnauthorized)
 }
 
-
 // parseWindow is what a window IS, wherever the two values came from.
 //
 // The default is the last hour, and it is stated once: two copies of a default
