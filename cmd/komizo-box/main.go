@@ -269,9 +269,18 @@ func runRootdAt(root string, args []string) error {
 		wantVols := *volEvery > 0 && n%*volEvery == 0
 		n++
 
-		r := probeAt(root).Report(ctx)
+		// ONE PROBE PER TICK, and that is a testability property rather than an
+		// allocation one. Review 3 on komizo-be#166: the tick built three
+		// separate probes, so the test's positive control read the report from
+		// one of them while every assertion read the metrics from another --
+		// and dropping the root at the Metrics call alone left the quiet-box
+		// row green. A control over a different probe from the assertion is
+		// Review 2's defect one level up.
+		p := probeAt(root)
+
+		r := p.Report(ctx)
 		if wantVols && r.Server.Ready() {
-			r.System.Volumes = probeAt(root).Volumes(ctx, "")
+			r.System.Volumes = p.Volumes(ctx, "")
 		}
 		if err := box.WriteReport(*reportPath, r); err != nil {
 			fmt.Fprintf(os.Stderr, "komizo-box: writing report: %v\n", err)
@@ -300,7 +309,7 @@ func runRootdAt(root string, args []string) error {
 		// ReadMetrics then answered every query with a nil span, so the app
 		// blanked nothing and drew zeros. box/metrics.go does the same clip and
 		// has always had this guard; the write side copied everything except it.
-		m := probeAt(root).Metrics(to-box.MetricsWindow, to)
+		m := p.Metrics(to-box.MetricsWindow, to)
 		if m.Span != nil {
 			lo, hi := m.Span.From, m.Span.To
 			if lo < to-box.MetricsWindow {
