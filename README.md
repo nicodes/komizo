@@ -3,27 +3,37 @@
 The `komizo` command: set up a server, add apps to it, and watch what they are
 doing.
 
+Take a binary from [releases](https://github.com/nicodes/komizo/releases). It
+connects to your server as root, so verify it before you run it:
+
 ```sh
-go install github.com/nicodes/komizo@latest
+gh release download v0.0.17 --repo nicodes/komizo \
+  -p 'komizo_Linux_x86_64.tar.gz' -p checksums.txt
+sha256sum -c checksums.txt --ignore-missing
+gh attestation verify komizo_Linux_x86_64.tar.gz --repo nicodes/komizo
+tar xzf komizo_Linux_x86_64.tar.gz && sudo install komizo /usr/local/bin/
+
 komizo init --host root@your-server
 ```
 
-Or run it without installing anything:
+**`go install` does not work, and the reason is not a bug.** komizo carries the
+server agent inside itself, so that `komizo init` can set up a box that has
+nothing on it but sshd — no network fetch, no second supply chain. Those
+binaries are build artifacts: `make agents` builds them and the release workflow
+runs it, but they are not committed, so the module the Go proxy serves does not
+contain them. `go install github.com/nicodes/komizo@latest` compiles happily and
+then cannot install an agent, which leaves a box provisioned and unreadable.
+
+From a checkout it works, because the Makefile builds them first:
 
 ```sh
-go run github.com/nicodes/komizo@latest init --host root@your-server
+git clone https://github.com/nicodes/komizo && cd komizo
+make build
 ```
 
 Every operation is a command that takes the server as a flag; `komizo` on its
 own prints the list. Watching a box — its apps, its charts, its logs — is what
 the app is for, and everything the app can do is a command here as well.
-
-No Go? Take a binary from [releases](https://github.com/nicodes/komizo/releases).
-It connects to your server as root, so verify it before you run it:
-
-```sh
-gh attestation verify komizo_Linux_x86_64.tar.gz --repo nicodes/komizo
-```
 
 ## What it is
 
