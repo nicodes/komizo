@@ -275,19 +275,34 @@ func runRootd(args []string) error {
 		// CLIPPED TO WHAT IS KEPT, at the point it is written.
 		//
 		// Probe.Metrics computes Span across the whole tail it read, which is
-		// bounded by bytes rather than by time -- so a quiet box's 4MB reaches
+		// bounded by BYTES rather than by time -- so a quiet box's 4MB reaches
 		// back days. Stored unclipped, the file claims to cover two days while
 		// holding an hour of rows, and a client that blanks outside the span
-		// draws confident zeros over the difference. #83's review caught that on
-		// the READ side; this is the same claim on the write side, and the file
-		// should not have to be corrected by every reader. komizo-be#166.
+		// draws confident zeros over the difference.
+		//
+		// THE EMPTY-OVERLAP GUARD IS THE POINT, and its absence was a bug that
+		// caused the exact failure this prevents. Review 1 on komizo-be#166: on
+		// a box whose newest log entry is older than the window, moving both
+		// endpoints inward crosses them -- From ended up 7200s AFTER To -- and
+		// ReadMetrics then answered every query with a nil span, so the app
+		// blanked nothing and drew zeros. box/metrics.go does the same clip and
+		// has always had this guard; the write side copied everything except it.
 		m := probe().Metrics(to-box.MetricsWindow, to)
 		if m.Span != nil {
-			if m.Span.From < to-box.MetricsWindow {
-				m.Span.From = to - box.MetricsWindow
+			lo, hi := m.Span.From, m.Span.To
+			if lo < to-box.MetricsWindow {
+				lo = to - box.MetricsWindow
 			}
-			if m.Span.To > to {
-				m.Span.To = to
+			if hi > to {
+				hi = to
+			}
+			if lo <= hi {
+				m.Span = &box.Span{From: lo, To: hi}
+			} else {
+				// Nothing was measured inside the window this box keeps. That is
+				// not a span of zero width -- it is no span, which is what the
+				// reader's own empty-overlap case says.
+				m.Span = nil
 			}
 		}
 		if err := box.WriteMetrics(*metricsPath, m); err != nil {

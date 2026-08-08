@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/nicodes/komizo/box"
 )
@@ -55,28 +56,81 @@ func TestRootdLeavesTheMetricsWhereTheApiCanReadThem(t *testing.T) {
 	}
 }
 
-// WHAT IS STILL NOT ASSERTED, WITH THE REASON, because a gap nobody wrote down
-// is a gap nobody fixes.
+// AND THE WINDOW IT MEASURES IS THE ONE IT KEEPS.
 //
-// Making rootd compute YESTERDAY'S window instead of the last hour is still
-// green here. --root now exists, so the tick can be pointed at a fake machine
-// with an access log on it -- that was komizo-be#166's first half and it is
-// done. What is missing is the rest of the fixture: Probe.Metrics attributes a
-// request to an app by looking up its HOST among the app records, so a machine
-// with a log and no apps produces no rows at all, and every assertion about
-// which window was measured is vacuous.
+// THIS FILE PREVIOUSLY CARRIED A COMMENT SAYING THIS COULD NOT BE ASSERTED --
+// that the span is clipped so it reads correctly whatever was measured, and
+// that a fake machine yields no rows. Review 1 on komizo-be#166 wrote the test
+// anyway, in about sixty lines. The comment was wrong and, being confident and
+// detailed, was worse than nothing: the next person would have believed it.
 //
-// Two further things worth knowing before writing it:
-//
-//   - asserting on Span does NOT work. rootd clips the stored span to the
-//     window it keeps, so it reads correctly whatever window was measured. The
-//     first version of this test did exactly that and the mutation walked
-//     through it.
-//   - the assertion has to be on the ROWS, which is what the window selects.
-//
-// The fixture needed is an app record plus its hostnames under --root, which
-// box/access_test.go's newFakeBox already builds for the unit tests. Lifting it
-// to a shared helper is the change.
+// What makes it work is asserting against WALL CLOCK rather than against
+// rootd's own `to`. The clip pins Span.From to `to - MetricsWindow`, so a tick
+// that measured two days ago reports a span two days back -- clipped relative
+// to a `to` that is also two days back. Comparing with now catches it.
+func TestRootdMeasuresTheWindowItKeeps(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "machine")
+	metrics := filepath.Join(dir, "served", "metrics.json")
+
+	logDir := filepath.Join(root, "srv", "_proxy", "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Unix()
+	line := func(ts int64) string {
+		b, _ := json.Marshal(map[string]any{
+			"ts": float64(ts), "status": 200,
+			"request": map[string]any{"host": "web.example.com"},
+		})
+		return string(b)
+	}
+	// One request a minute ago, one two days ago. A tick asking for the last
+	// hour sees the first; one asking for two days ago sees the second.
+	if err := os.WriteFile(filepath.Join(logDir, "access.log"),
+		[]byte(line(now-60)+"\n"+line(now-2*86400)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runRootd([]string{
+		"--once", "--root", root,
+		"--state", filepath.Join(dir, "state"),
+		"--socket-dir", filepath.Join(dir, "run"),
+		"--config", filepath.Join(dir, "agent.json"),
+		"--inbox", filepath.Join(dir, "inbox"),
+		"--results", filepath.Join(dir, "results"),
+		"--logs", filepath.Join(dir, "logs"),
+		"--report", filepath.Join(dir, "run", "report.json"),
+		"--history", filepath.Join(dir, "served", "history.jsonl"),
+		"--metrics", metrics, "--volumes-every", "0",
+	}); err != nil {
+		t.Fatalf("a single tick failed: %v", err)
+	}
+
+	b, err := os.ReadFile(metrics)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m box.Metrics
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.Span == nil {
+		t.Fatal("the tick reported no span at all, so which window it measured cannot be told")
+	}
+	// AGAINST NOW, not against rootd's own `to` -- that is the whole trick.
+	if m.Span.From < now-box.MetricsWindow-300 {
+		t.Errorf("span starts %ds ago, further back than the %ds window this box keeps -- "+
+			"rootd measured a different period from the one it advertises",
+			now-m.Span.From, box.MetricsWindow)
+	}
+	// AND NEVER INVERTED. A quiet box whose newest entry predates the window
+	// crossed the endpoints, and ReadMetrics then answered nil for every query.
+	if m.Span.From > m.Span.To {
+		t.Errorf("span is inverted: from %d to %d", m.Span.From, m.Span.To)
+	}
+}
+
 func TestTheWindowRootdKeepsIsTheOneItAdvertises(t *testing.T) {
 	if box.MetricsWindow != 60*60 {
 		t.Errorf("MetricsWindow = %d, want an hour -- the app asks for half of one "+
