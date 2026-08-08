@@ -136,6 +136,13 @@ func runRootd(args []string) error {
 	reportPath := fs.String("report", box.ReportPath, "where to write the current report")
 	historyPath := fs.String("history", box.HistoryPath, "where to append readings")
 	metricsPath := fs.String("metrics", box.MetricsPath, "where to leave what the access log said")
+	// FLAG-DERIVED LIKE EVERY OTHER PATH THIS WRITES, which the loop below says
+	// is the rule and this one line was breaking. PrepareStateDir took the
+	// CONSTANT, so a single tick called mkdir /var/lib/komizo and failed under
+	// any account but root -- which is why rootd's tick had no test at all, for
+	// the report or the history any more than for the metrics. komizo#84.
+	stateDir := fs.String("state", box.StateDir, "the state directory to prepare")
+	socketDir := fs.String("socket-dir", box.APISocketDir, "the directory the API socket lives in")
 	volEvery := fs.Int("volumes-every", 15, "measure volumes every Nth reading (0 disables)")
 	once := fs.Bool("once", false, "probe once and exit")
 	if err := fs.Parse(args); err != nil {
@@ -181,7 +188,7 @@ func runRootd(args []string) error {
 	// The PARENT first. ServedDir is inside the state directory, which is closed
 	// so that apps/<app>.env stays closed -- and a directory whose parent cannot
 	// be entered is one nothing can reach, whatever its own mode says.
-	if err := box.PrepareStateDir(box.StateDir); err != nil {
+	if err := box.PrepareStateDir(*stateDir); err != nil {
 		return err
 	}
 	if err := box.PrepareServedDir(filepath.Dir(*historyPath)); err != nil {
@@ -200,7 +207,7 @@ func runRootd(args []string) error {
 	// socket, grouped to the one the proxy runs as. See PrepareAPISocketDir --
 	// the proxy has no CAP_DAC_OVERRIDE, so this is not the formality it looks
 	// like.
-	if err := box.PrepareAPISocketDir(box.APISocketDir); err != nil {
+	if err := box.PrepareAPISocketDir(*socketDir); err != nil {
 		return err
 	}
 	// Where a signed command lands. Made by root, owned by the account that
