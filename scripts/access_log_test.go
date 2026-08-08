@@ -40,10 +40,16 @@ import (
 // Heredoc bodies that declare themselves scripts are skipped -- scripts_test.go
 // owns those, and "starts with a shebang" is the same self-describing rule it
 // uses rather than a second exception list.
-func caddyBlocks(t *testing.T) map[string]string {
+//
+// A SLICE, NOT A MAP KEYED BY TAG. Review 1 on this change: alpine-proxy.sh
+// already writes two heredocs tagged EOF, so a map keyed name+":"+tag silently
+// replaced one with the other. Adding a NEW logged route and deleting the
+// catch-all's whole log block left the file green and the count unchanged --
+// growing the set shrank the check, which is the shape docs/checks.md records.
+func caddyBlocks(t *testing.T) []namedConfig {
 	t.Helper()
 	heredoc := regexp.MustCompile(`<<(-?)'?([A-Z_][A-Z0-9_]*)'?\n`)
-	out := map[string]string{}
+	var out []namedConfig
 	for name, src := range all(t) {
 		for _, m := range heredoc.FindAllStringSubmatchIndex(src, -1) {
 			dash, tag := src[m[2]:m[3]] == "-", src[m[4]:m[5]]
@@ -56,7 +62,7 @@ func caddyBlocks(t *testing.T) map[string]string {
 			if !siteBlocks(body).any() {
 				continue
 			}
-			out[name+":"+tag] = body
+			out = append(out, namedConfig{where: name + ":" + tag, cfg: body})
 		}
 	}
 	if len(out) == 0 {
@@ -64,6 +70,29 @@ func caddyBlocks(t *testing.T) map[string]string {
 			"test stopped being able to find them, and either way it is asserting nothing")
 	}
 	return out
+}
+
+// namedConfig is one generated Caddy config and where it came from.
+type namedConfig struct {
+	where string
+	cfg   string
+}
+
+// uncommented is shell source with its comments removed, so a check for a call
+// cannot be satisfied by a mention of one.
+//
+// Line-wise and deliberately crude: this reads komizo's own scripts, where a
+// `#` inside a string is rare and a false negative costs a spurious red rather
+// than a missed mutation. The direction matters more than the precision.
+func uncommented(src string) string {
+	var out []string
+	for _, ln := range strings.Split(src, "\n") {
+		if i := strings.Index(ln, "#"); i >= 0 {
+			ln = ln[:i]
+		}
+		out = append(out, ln)
+	}
+	return strings.Join(out, "\n")
 }
 
 type blocks []string
@@ -105,8 +134,9 @@ func siteBlocks(cfg string) blocks {
 
 func TestEveryGeneratedSiteBlockWritesAnAccessLog(t *testing.T) {
 	seen := 0
-	for name, cfg := range caddyBlocks(t) {
-		for i, b := range siteBlocks(cfg) {
+	for _, c := range caddyBlocks(t) {
+		for i, b := range siteBlocks(c.cfg) {
+			name := c.where
 			seen++
 			if !strings.Contains(b, "log {") {
 				t.Errorf("%s: site block %d writes no access log, so nothing that reaches it "+
@@ -157,7 +187,11 @@ func TestThePerAppRouteWritesAnAccessLog(t *testing.T) {
 	if !ok {
 		t.Fatal("could not read site's body")
 	}
-	if !strings.Contains(site, "access_log") {
+	// COMMENTS STRIPPED FIRST. Review 1 on this change: `strings.Contains`
+	// matched "# access_log", so commenting the call out left the file green
+	// under a header that says AND IT IS CALLED. Deleting the line was caught;
+	// one `#` was not. docs/checks.md names this mutation by hand, twice.
+	if !strings.Contains(uncommented(site), "access_log") {
 		t.Errorf("the per-app site block does not call access_log:\n%s", site)
 	}
 }
