@@ -367,3 +367,62 @@ func boolEnv(b bool) string {
 	}
 	return "0"
 }
+
+// addResult is what `add` and `rotate` leave the user with: the two things
+// GitHub needs.
+type addResult struct {
+	app string
+	// host is the address CI should dial: what KOMIZO_SERVER_URL is set to. Carried
+	// on the result because the screen handing over the other two values is
+	// where someone is already copying from.
+	host string
+	// key is the private half, held in memory for as long as this screen is
+	// open and written nowhere. See keys.go.
+	key string
+	// keyPath is set only when --key asked for a copy on disk, which the
+	// interface never does.
+	keyPath    string
+	knownHosts string
+	// port is the SSH port CI has to dial. Carried so the screen can say so:
+	// KOMIZO_SERVER_URL is the bare hostname (see target.serverURL), and on a box
+	// that is not on 22 the port has to reach the workflow some other way -- the
+	// deploy action's own `port:` input. It used to be folded into the URL as
+	// "[host]:2222", which is a known_hosts pattern that the connect action
+	// refuses outright.
+	port int
+	// config is what the box ended up pinned to -- given on a setup, read back
+	// off the server on a rotation.
+	config  string
+	rotated bool
+
+	// Both values have to reach GitHub, so both are selectable and both are
+	// copyable.
+	//
+	// onClipboard is which one is there NOW, not which have ever been copied.
+	// There is one clipboard: ticking every value that had been copied at some
+	// point claimed two things were on it at once, and read as the mark being
+	// stuck to the first row.
+	cursor      int
+	onClipboard int // index, or -1 for nothing
+	copyErr     string
+
+	// Set when this was a config-image change rather than a fresh setup: the
+	// GitHub values are unchanged, so telling someone to paste them again
+	// would be wrong.
+	changedConfig string
+
+	// Set when this was an edit to the names CI dials the app by.
+	//
+	// Unlike a config-image change, this one DOES move a value in GitHub:
+	// known_hosts entries are written per name, so the app's KOMIZO_KNOWN_HOSTS
+	// is a different string afterwards and the repo has to be given it.
+	//
+	// A flag beside the list rather than "the list is not nil", because clearing
+	// the names is one of the edits and an emptied list is indistinguishable
+	// from an absent one -- splitNames returns nil for both. Reading the
+	// difference off a slice header would have made the emptied case render as a
+	// fresh app setup, telling someone to paste a deploy key that was never
+	// generated.
+	namesChanged bool
+	changedNames []string
+}

@@ -74,7 +74,7 @@ func RunEnrol(args []string) error {
 				return err
 			}
 			step("Filing %s under your account", tgt.host)
-			if err := registerAndEnrol(tgt, name, apiHost, keys, forgetDevices, nil); err != nil {
+			if err := registerAndEnrol(tgt, name, apiHost, keys, forgetDevices); err != nil {
 				return err
 			}
 			return nil

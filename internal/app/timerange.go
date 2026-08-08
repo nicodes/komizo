@@ -27,7 +27,18 @@ func (r timeRange) span() time.Duration {
 	return time.Duration(r.to-r.from) * time.Second
 }
 
-// orDefault is the last chartWindow minutes, which is what the screen opens on.
+// defaultWindow is how far back a range with no explicit start reaches.
+//
+// Four hours: long enough that a deploy an hour ago is still on it, short
+// enough that a minute is still a distinguishable unit of it.
+//
+// Named for the chart it opened when the interface owned this default. The
+// interface is gone (nicodes/komizo-be#55); the default is not, because
+// `komizo report` and every signed read still resolve one.
+const defaultWindow = 4 * 60 // minutes
+
+// orDefault is the last defaultWindow minutes, which is what a caller that
+// named no range asked for.
 //
 // Resolved at READ time, not when the screen opened. A default window is "the
 // last four hours" and has to still mean that after the page has been open for
@@ -36,7 +47,7 @@ func (r timeRange) span() time.Duration {
 func (r timeRange) orDefault() timeRange {
 	if r.empty() {
 		now := time.Now().Unix()
-		return timeRange{from: now - chartWindow*60, to: now}
+		return timeRange{from: now - defaultWindow*60, to: now}
 	}
 	return r
 }
@@ -164,7 +175,7 @@ func parseOffset(s string) (time.Duration, bool) {
 // the times.
 func rangeText(r timeRange, now time.Time) string {
 	if r.empty() {
-		return fmt.Sprintf("-%dh", chartWindow/60)
+		return fmt.Sprintf("-%dh", defaultWindow/60)
 	}
 	end := time.Unix(r.to, 0)
 	if now.Sub(end) < time.Minute && now.Sub(end) > -time.Minute {

@@ -82,6 +82,18 @@ func printReport(r box.Report, host string, cached bool) {
 		fmt.Printf("  komizo %s, agent %s\n",
 			dashIfEmpty(r.Server.Komizo.Version), dashIfEmpty(r.Server.Komizo.Agent))
 	}
+	// WHETHER THAT VERSION IS BEHIND THIS ONE, which is a different question
+	// from what it is and the only one anybody acts on.
+	//
+	// The interface answered it and this command did not: it printed the box's
+	// version and left the comparison to the reader, who would have to know
+	// what this komizo's own version is to make it. Deleting the interface
+	// (nicodes/komizo-be#55) without moving this would have deleted the answer,
+	// which is exactly what the parity rule forbids -- the CLI can do
+	// everything, and "everything" includes the things only the interface knew.
+	if s, remedy := agentBehind(r.Server.Komizo, host); s != "" {
+		warn("%s\n\n    %s", s, remedy)
+	}
 	fmt.Println()
 
 	// Only --cached can be stale: without it the box measures on the spot. Said
@@ -176,4 +188,41 @@ Reads the box through the komizo agent. Install one with 'komizo init'.
 Flags:
 `)
 	fs.PrintDefaults()
+}
+
+// agentBehind is whether running `komizo update` against this box would change
+// anything on it, and what to run if so. An empty first return means the box is
+// current, and nothing is printed at all.
+//
+// EITHER SIGNAL IS ENOUGH, and each catches what the other misses:
+//
+//   - a different content STAMP means the agent this komizo would write differs
+//     from the one on the box. The version alone misses this the whole time a
+//     build calls itself "dev".
+//   - a different release VERSION means something else komizo installs changed
+//     between releases -- a script, a doas rule, a service file. The stamp
+//     alone misses that whenever the changed thing is not the agent.
+//
+// Ported from the interface's server row, where it was three cases of a
+// styled-string switch. The rules are unchanged; what they produce is a
+// sentence rather than a colour and a keystroke.
+func agentBehind(k box.KomizoInstall, host string) (string, string) {
+	update := "komizo update --host " + host
+	switch {
+	case !k.Installed:
+		return "no komizo agent on this box.", "komizo init --host " + host
+	case k.Version == "":
+		// Installed by a komizo old enough to have recorded only a stamp. There
+		// is nothing to compare, and the update is what starts recording a
+		// version -- so it is always worth running. The raw stamp is NOT shown
+		// in its place: it is not a version and reads as noise to anyone
+		// deciding whether they are behind.
+		return "this box records no komizo version, so it was set up by an older one.", update
+	case k.Stamp != komizoStamp():
+		return "the agent on this box differs from the one this komizo installs.", update
+	case k.Version != versionText():
+		return fmt.Sprintf("this box was set up by komizo %s; this is %s.",
+			k.Version, versionText()), update
+	}
+	return "", ""
 }
