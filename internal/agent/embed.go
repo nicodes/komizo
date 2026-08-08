@@ -43,9 +43,21 @@ var Arches = []string{"amd64", "arm64"}
 func For(arch string) ([]byte, error) {
 	b, err := bin.ReadFile("bin/komizo-box-linux-" + arch)
 	if err != nil {
+		// NAMES THE go install CASE, because that is the one people reach.
+		//
+		// `go install github.com/nicodes/komizo@vX` and `go run ...@vX` are
+		// SOURCE builds -- the module the proxy serves carries bin/.keep and
+		// nothing else, since the binaries are gitignored build artifacts. So
+		// they produce exactly this, and "run make agents" is advice the reader
+		// cannot take: they have no checkout. The release archives are built by
+		// a workflow that runs `make agents` first, which is why they work.
 		return nil, fmt.Errorf("this komizo was built without a linux/%s agent.\n"+
-			"    Built from source? Run `make agents`, then build again.\n"+
-			"    Installed a release? Please report this -- the release is broken.", arch)
+			"    Installed with `go install` or run with `go run`? Those build from\n"+
+			"    source, and the agents are not in the module -- they are built by\n"+
+			"    `make agents`. Take a release archive instead:\n"+
+			"        https://github.com/nicodes/komizo/releases\n"+
+			"    Building from a checkout? Run `make agents`, then build again.\n"+
+			"    Installed a release archive? Please report this -- the release is broken.", arch)
 	}
 	return b, nil
 }
