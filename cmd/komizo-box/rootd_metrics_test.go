@@ -232,12 +232,39 @@ func TestRootdMeasuresTheWindowItKeeps(t *testing.T) {
 				t.Fatal("the tick reported no span, so which window it measured cannot be told")
 			}
 			// WITHIN SECONDS of now-MetricsWindow, not merely inside it. The
-			// tail reaches back two days, so the clip pins Span.From exactly --
-			// and a loose bound here is what let "rootd computes yesterday's
-			// window" stay green.
+			// tail reaches back two days, so the clip pins Span.From exactly.
+			//
+			// NOT what catches yesterday's window -- the row-age loop above
+			// does that on its own, and Review 2 measured it. This bound's own
+			// catch is a clip to HALF the window, which moves the start without
+			// moving any row out of range. Said correctly because the last
+			// version of this file recorded a false lesson and that is the
+			// thing this PR is about.
 			if d := m.Span.From - (now - box.MetricsWindow); d < -5 || d > 5 {
 				t.Errorf("stored span begins at %d, %d seconds away from an hour before now -- "+
 					"rootd measured a different period from the one it advertises", m.Span.From, d)
+			}
+			// AND THE FAR END COVERS THE NEWEST ROW. Review 3: nothing asserted
+			// Span.To, so `&box.Span{From: lo, To: lo}` -- a span of zero width
+			// on a box holding an hour of traffic -- left the whole suite
+			// green, -race included. A client that blanks outside the span then
+			// renders the entire hour as unmeasured, over requests this box did
+			// count. Span.From being right is half a claim.
+			//
+			// Against the newest ROW rather than against the tick's own `to`,
+			// for the same reason the start is checked against wall clock: the
+			// rows are what the span is a claim about, and `to` moves with the
+			// mutation.
+			newest := m.Rows[0].Minute
+			for _, r := range m.Rows {
+				if r.Minute > newest {
+					newest = r.Minute
+				}
+			}
+			if m.Span.To < newest {
+				t.Errorf("stored span ends at %d, before the newest minute it counted (%d) -- "+
+					"a reader that blanks outside the span hides traffic this box measured",
+					m.Span.To, newest)
 			}
 		})
 	}
