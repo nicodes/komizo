@@ -130,75 +130,134 @@ func fakeMachine(t *testing.T, root string, newest int64) {
 // test owns catches it; comparing against rootd's own `to` is circular, which
 // is what the first version did. The clip made the window MORE assertable, not
 // less.
+//
+// TABLE-DRIVEN OVER ONE CALL SITE, and that is the fix for Review 2's B1 rather
+// than a tidying. The quiet-box case asserts an ABSENCE -- no span -- and an
+// absence is what a tick that read nothing at all also produces. Written as its
+// own function it was green with the probe root ignored, which is precisely the
+// "passing result is indistinguishable from the not-running result" shape
+// docs/checks.md opens with. Probing the fixture separately to prove it is
+// there does not fix it either: that is a control over a COPY, and it stays
+// green while the tick under test reads /srv.
+//
+// The control has to come from the SAME TICK, so it is `wantApp`: every case
+// reads the report that tick wrote and requires the app that exists only on the
+// fake machine. One `runRootdAt`, one probe, one report -- if the root was
+// ignored, there is no blog app to find and every row goes red, including the
+// one whose real assertion is that something is absent.
 func TestRootdMeasuresTheWindowItKeeps(t *testing.T) {
-	dir := t.TempDir()
-	root := filepath.Join(dir, "machine")
-	fakeMachine(t, root, 60)
+	for _, tc := range []struct {
+		name string
+		// newest is how long before now the newest access-log entry is.
+		newest int64
+		// wantSpan is whether the tick should have stored one at all.
+		wantSpan bool
+		wantRows bool
+	}{
+		{
+			name:     "a box serving traffic reports the hour it keeps",
+			newest:   60,
+			wantSpan: true,
+			wantRows: true,
+		},
+		{
+			// The clip moves From forward to to-MetricsWindow and leaves To at
+			// that old entry, so From ends up 7200s AFTER To. ReadMetrics then
+			// computes lo = max(from, From) and hi = min(to, To), and lo > hi
+			// for EVERY window a client can ask about -- so the route answers
+			// Span: nil always, the app blanks nothing, and the chart draws
+			// confident zeros. The clip reintroduced the exact failure it was
+			// written to prevent, on exactly the box shape it was aimed at.
+			//
+			// nil is the honest answer: nothing was measured across this
+			// window, which is not the same as having measured zero across it.
+			name:     "a box that served nothing this hour reports no span",
+			newest:   3 * 60 * 60,
+			wantSpan: false,
+			wantRows: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			root := filepath.Join(dir, "machine")
+			fakeMachine(t, root, tc.newest)
 
-	now := time.Now().Unix()
-	if err := runRootdAt(root, rootdArgs(dir)); err != nil {
-		t.Fatalf("a single tick failed: %v", err)
-	}
-	m := storedMetrics(t, dir)
+			now := time.Now().Unix()
+			if err := runRootdAt(root, rootdArgs(dir)); err != nil {
+				t.Fatalf("a single tick failed: %v", err)
+			}
 
-	// THE ROWS FIRST, because they are what proves the machine was read at all.
-	// Without them everything below is an assertion about an empty document.
-	if len(m.Rows) == 0 {
-		t.Fatal("the tick attributed no requests, so it did not read the machine it was given")
-	}
-	for _, r := range m.Rows {
-		if r.Minute < now-box.MetricsWindow-60 {
-			t.Errorf("row at %d is %ds old, outside the %ds window rootd keeps",
-				r.Minute, now-r.Minute, box.MetricsWindow)
-		}
-	}
+			// THE POSITIVE CONTROL, from the tick under test rather than beside
+			// it. `blog` exists only under --root; a tick that read the real
+			// machine finds no such app, and everything below becomes an
+			// assertion about an empty document.
+			var rep box.Report
+			b, err := os.ReadFile(filepath.Join(dir, "run", "report.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(b, &rep); err != nil {
+				t.Fatal(err)
+			}
+			if !namesApp(rep, "blog") {
+				t.Fatalf("the tick reported apps %v, not the one on the machine it was given -- "+
+					"it read some other machine, so nothing below this is about the fixture",
+					reportedApps(rep))
+			}
 
-	if m.Span == nil {
-		t.Fatal("the tick reported no span, so which window it measured cannot be told")
-	}
-	// WITHIN SECONDS of now-MetricsWindow, not merely inside it. The tail
-	// reaches back two days, so the clip pins Span.From exactly -- and a loose
-	// bound here is what let "rootd computes yesterday's window" stay green.
-	if d := m.Span.From - (now - box.MetricsWindow); d < -5 || d > 5 {
-		t.Errorf("stored span begins at %d, %d seconds away from an hour before now -- "+
-			"rootd measured a different period from the one it advertises", m.Span.From, d)
-	}
-	if m.Span.From > m.Span.To {
-		t.Errorf("span is inverted: from %d to %d", m.Span.From, m.Span.To)
+			m := storedMetrics(t, dir)
+
+			if got := len(m.Rows) > 0; got != tc.wantRows {
+				t.Errorf("rows present = %v, want %v (%d rows)", got, tc.wantRows, len(m.Rows))
+			}
+			for _, r := range m.Rows {
+				if r.Minute < now-box.MetricsWindow-60 {
+					t.Errorf("row at %d is %ds old, outside the %ds window rootd keeps",
+						r.Minute, now-r.Minute, box.MetricsWindow)
+				}
+			}
+
+			if m.Span != nil && m.Span.From > m.Span.To {
+				t.Fatalf("stored span is inverted: from %d to %d, crossed by %ds -- "+
+					"ReadMetrics then answers nil for every window a client can ask",
+					m.Span.From, m.Span.To, m.Span.From-m.Span.To)
+			}
+			if !tc.wantSpan {
+				if m.Span != nil {
+					t.Errorf("stored span %v, claiming to have measured a period this box holds nothing for", *m.Span)
+				}
+				return
+			}
+			if m.Span == nil {
+				t.Fatal("the tick reported no span, so which window it measured cannot be told")
+			}
+			// WITHIN SECONDS of now-MetricsWindow, not merely inside it. The
+			// tail reaches back two days, so the clip pins Span.From exactly --
+			// and a loose bound here is what let "rootd computes yesterday's
+			// window" stay green.
+			if d := m.Span.From - (now - box.MetricsWindow); d < -5 || d > 5 {
+				t.Errorf("stored span begins at %d, %d seconds away from an hour before now -- "+
+					"rootd measured a different period from the one it advertises", m.Span.From, d)
+			}
+		})
 	}
 }
 
-// A BOX THAT SERVED NOTHING THIS HOUR REPORTS NO SPAN, rather than a crossed one.
-//
-// Review 1's B1, reproduced. When the newest log entry predates the window, the
-// clip moves From forward to to-MetricsWindow and leaves To at that old entry --
-// From ends up 7200s AFTER To. ReadMetrics then computes lo = max(from, From)
-// and hi = min(to, To), and lo > hi for EVERY window a client can ask about, so
-// the route answers Span: nil always, the app blanks nothing, and the chart
-// draws confident zeros. The clip reintroduced the exact failure it was written
-// to prevent, on exactly the box shape it was aimed at.
-//
-// nil is the honest answer: nothing was measured across this window, which is
-// not the same as having measured zero across it.
-func TestRootdWritesNoSpanWhenTheLogPredatesTheWindow(t *testing.T) {
-	dir := t.TempDir()
-	root := filepath.Join(dir, "machine")
-	fakeMachine(t, root, 3*60*60) // newest request three hours ago
+func namesApp(r box.Report, name string) bool {
+	for _, a := range r.Apps {
+		if a.Name == name {
+			return true
+		}
+	}
+	return false
+}
 
-	if err := runRootdAt(root, rootdArgs(dir)); err != nil {
-		t.Fatalf("a single tick failed: %v", err)
+func reportedApps(r box.Report) []string {
+	out := []string{}
+	for _, a := range r.Apps {
+		out = append(out, a.Name)
 	}
-	m := storedMetrics(t, dir)
-
-	if m.Span != nil && m.Span.From > m.Span.To {
-		t.Fatalf("stored span is inverted: from %d to %d, crossed by %ds -- "+
-			"ReadMetrics then answers nil for every window a client can ask",
-			m.Span.From, m.Span.To, m.Span.From-m.Span.To)
-	}
-	if m.Span != nil {
-		t.Errorf("a box whose newest request predates the window stored span %v, "+
-			"claiming to have measured a period it holds nothing for", *m.Span)
-	}
+	return out
 }
 
 func TestTheWindowRootdKeepsIsTheOneItAdvertises(t *testing.T) {
