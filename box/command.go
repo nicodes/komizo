@@ -518,6 +518,27 @@ var ApplyOps = []string{OpAppStart, OpAppStop, OpAppRestart, OpAppAdd, OpAppRota
 // Applies reports whether this op is one the command route takes.
 func Applies(op string) bool { return slices.Contains(ApplyOps, op) }
 
+// KnownOp reports whether this box would recognise the name at all.
+//
+// EXPORTED FOR THE SIGNER, which since komizo-be#180 is the service rather than
+// a device. Something has to decide what it is willing to put a signature on,
+// and the answer is "an op a box could act on" -- so the service asks this
+// rather than keeping a list of its own. Two lists of what may be signed are two
+// chances to disagree about it, and the one that is wrong is whichever the
+// reviewer did not read; operator.go makes the same argument about device-key
+// parsers, in the same words.
+//
+// A FUNCTION RATHER THAN THE SLICE. `commandOps` stays unexported because an
+// exported slice is a mutable global: any package that can see it can append to
+// it, and what it would be appending to is the set of instructions a box acts
+// on. ApplyOps above is exported and predates this, which makes it the exception
+// to fix rather than the precedent to follow.
+//
+// This is NOT an authorisation check and must not be read as one. It says a name
+// is spellable, nothing more. Who may spend it is settled by ownership at the
+// service and by the signature at the box.
+func KnownOp(op string) bool { return knownOp(op) }
+
 func knownOp(op string) bool { return slices.Contains(commandOps, op) }
 
 // AppOf is the app an op names, checked as an app name rather than trusted.

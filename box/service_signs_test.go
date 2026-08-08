@@ -209,3 +209,37 @@ func TestAStopRecordsTheAccountWhenTheServiceSignedForOne(t *testing.T) {
 		t.Errorf("the account did not reach the record:\n%s", got)
 	}
 }
+
+// KnownOp is the same answer VerifyCommand gives, and it has to stay that way.
+//
+// The service asks this before it signs anything. If it drifted from what the
+// box accepts, the two failures are a signed envelope the box refuses -- which
+// presents as a button that does nothing -- and a signature refused here for an
+// op the box would have taken, which presents the same way. Both are silent, so
+// they are pinned to one source rather than to a copy of the list.
+func TestKnownOpAgreesWithWhatTheBoxWillVerify(t *testing.T) {
+	pub, priv := device(t)
+	now := time.Now()
+
+	// The empty op is left out of the loop on purpose: SignCommand refuses to
+	// produce an envelope without one, so there is nothing to verify. Asserted
+	// on its own so the case is covered rather than quietly absent.
+	if KnownOp("") {
+		t.Error(`KnownOp("") is true, so the service would sign a command that says nothing`)
+	}
+	for _, op := range append(append([]string{}, commandOps...),
+		"app.delete", "shell", "APP.STOP", "app.stop ") {
+		c := stopWeb(now.Add(time.Minute))
+		c.Op = op
+		_, _, err := VerifyCommand([]ed25519.PublicKey{pub}, signed(t, priv, c), "srv_mine", now)
+		// An unknown op comes back as a SENTENCE rather than a refusal, because
+		// it is a trusted signer asking for something this box cannot do. Either
+		// way it did not verify as actionable, which is what KnownOp predicts.
+		verified := err == nil
+		if KnownOp(op) != verified {
+			t.Errorf("KnownOp(%q) = %v but VerifyCommand %s it -- "+
+				"the service would sign the wrong set",
+				op, KnownOp(op), map[bool]string{true: "accepted", false: "refused"}[verified])
+		}
+	}
+}
