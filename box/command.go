@@ -371,6 +371,29 @@ const (
 	// shows the private half once -- app-only.md §5a.
 	OpAppAdd = "app.add"
 
+	// OpAppRotate replaces one app's deploy key and changes nothing else.
+	//
+	// nicodes/komizo-be#112. The moment a deploy key is discovered leaked is the
+	// moment most likely to happen away from a laptop, and it was the one
+	// capability with time pressure that the app could not reach.
+	//
+	// SEPARATE FROM app.add RATHER THAN app.add WITH FEWER ARGUMENTS. app.add
+	// carries every setting an app has -- config image, deploy account, app
+	// directory, hostnames -- and a caller that had to supply those to rotate a
+	// key would be a caller that could CHANGE them while rotating one. The
+	// screen doing it knows the app's name and nothing else, and it should not
+	// have to know more to revoke a credential.
+	//
+	// So the box reads the rest off its own record. Every setting comes from
+	// /var/lib/komizo/apps/<app>.env, which root wrote, and the only thing the
+	// envelope decides is which app and which key.
+	//
+	// AND THE APP MUST ALREADY EXIST. app.add creates one; this refuses a name
+	// it has no record of rather than provisioning it, because "rotate the key
+	// of an app that is not here" is a typo and creating an app in response to
+	// one is the worst available reading of it.
+	OpAppRotate = "app.rotate"
+
 	// OpLogsRead is a READ, and the only op here that nothing applies.
 	//
 	// It exists because app-only.md §5 asks for logs to be authorised by the
@@ -419,7 +442,7 @@ const (
 )
 
 // commandOps is every op an ENVELOPE may name.
-var commandOps = []string{OpAppStart, OpAppStop, OpAppRestart, OpAppAdd,
+var commandOps = []string{OpAppStart, OpAppStop, OpAppRestart, OpAppAdd, OpAppRotate,
 	OpLogsRead, OpReportRead, OpHistoryRead, OpMetricsRead}
 
 // ApplyOps is the subset /v1/commands accepts, which is every op that CHANGES
@@ -429,7 +452,7 @@ var commandOps = []string{OpAppStart, OpAppStop, OpAppRestart, OpAppAdd,
 // is how a read envelope became something root would pick up, parse and write
 // two files about. apply.go asserts its own dispatch against this, so adding an
 // op to one and not the other is a refusal rather than a silent success.
-var ApplyOps = []string{OpAppStart, OpAppStop, OpAppRestart, OpAppAdd}
+var ApplyOps = []string{OpAppStart, OpAppStop, OpAppRestart, OpAppAdd, OpAppRotate}
 
 // Applies reports whether this op is one the command route takes.
 func Applies(op string) bool { return slices.Contains(ApplyOps, op) }
@@ -477,6 +500,56 @@ type AddSpec struct {
 }
 
 // AddOf reads app.add's arguments, refusing anything that is not what it claims.
+// RotateOf is which app and which key, and nothing else.
+//
+// The public half only. A private key is not carried, generated or returned
+// here for the reason OpAppAdd gives: a result file lives where the account
+// that talks to the internet can read it.
+//
+// The key rules are AddOf's, deliberately shared rather than restated -- a
+// second copy is a second chance for one of them to relax, and the one that
+// matters is that komizo authorises ed25519 and nothing else, whoever signed
+// for it.
+func (c Command) RotateOf() (app, pubkey string, err error) {
+	app, err = c.AppOf()
+	if err != nil {
+		return "", "", err
+	}
+	if strings.HasPrefix(app, "_") {
+		return "", "", fmt.Errorf("%q is reserved", app)
+	}
+	pubkey = c.Args["pubkey"]
+	if err := validPubKey(pubkey); err != nil {
+		return "", "", err
+	}
+	// NOTHING ELSE IS ACCEPTED. An envelope carrying `config` or `app_dir`
+	// alongside a rotation is one whose signer meant something this op does not
+	// do, and silently ignoring it is how a caller comes to believe a setting
+	// changed. Refused rather than dropped.
+	for k := range c.Args {
+		switch k {
+		case "app", "pubkey":
+		default:
+			return "", "", fmt.Errorf("app.rotate does not take %q -- it changes the deploy key and nothing else", k)
+		}
+	}
+	return app, pubkey, nil
+}
+
+// validPubKey is what komizo will write into an authorized_keys file.
+func validPubKey(k string) error {
+	if k == "" {
+		return fmt.Errorf("needs the public half of a deploy key")
+	}
+	if strings.ContainsAny(k, "\n\r") {
+		return fmt.Errorf("a deploy key is one line")
+	}
+	if !strings.HasPrefix(k, "ssh-ed25519 ") {
+		return fmt.Errorf("a deploy key is ssh-ed25519")
+	}
+	return nil
+}
+
 func (c Command) AddOf() (AddSpec, error) {
 	app, err := c.AppOf()
 	if err != nil {
@@ -493,17 +566,13 @@ func (c Command) AddOf() (AddSpec, error) {
 
 	// The PUBLIC half of a deploy key, and one line of it. A second line would
 	// be a second key nobody asked to authorise.
-	if spec.PubKey == "" {
-		return AddSpec{}, fmt.Errorf("app.add needs the public half of a deploy key")
-	}
-	if strings.ContainsAny(spec.PubKey, "\n\r") {
-		return AddSpec{}, fmt.Errorf("a deploy key is one line")
-	}
-	if !strings.HasPrefix(spec.PubKey, "ssh-ed25519 ") {
-		// komizo issues ed25519 and nothing else. Refusing the rest here means
-		// the box never authorises a key type this project has not thought
-		// about, whoever signed for it.
-		return AddSpec{}, fmt.Errorf("a deploy key is ssh-ed25519")
+	//
+	// komizo issues ed25519 and nothing else. Refusing the rest means the box
+	// never authorises a key type this project has not thought about, whoever
+	// signed for it -- and app.rotate holds to the same rule from the same
+	// function, because two copies is two chances for one of them to relax.
+	if err := validPubKey(spec.PubKey); err != nil {
+		return AddSpec{}, fmt.Errorf("app.add %w", err)
 	}
 
 	// RESERVED. validateApp and alpine.sh both refuse a leading underscore --
