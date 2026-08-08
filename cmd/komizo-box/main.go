@@ -116,8 +116,28 @@ func signalContext() (context.Context, context.CancelFunc) {
 }
 
 // probe is the machine, with the version this binary was built as.
-func probe() *box.Probe {
-	return &box.Probe{Now: box.Now, Agent: version}
+func probe() *box.Probe { return probeAt("") }
+
+// probeAt is the same machine seen through a prefix, which box.Probe documents
+// as "empty in production".
+//
+// A PARAMETER RATHER THAN A FLAG, and that is the security decision rather than
+// a style one. The first version of komizo-be#166 shipped `--root` on rootd
+// with the help text "tests only". Review 1 measured what that flag does on a
+// real box: it prefixes every path the probe READS and nothing it WRITES, so
+// `komizo-box rootd --root /tmp/x` reads a fake machine and overwrites the real
+// report.json and metrics.json. The docker version and the disk figures do not
+// go through Probe.path, so they stay real -- and the result is a plausible
+// report of a healthy, correctly-sized box with no apps and no komizo
+// installed. The agent posts it. An operator following the help gets a
+// confident wrong answer instead of an obviously broken one.
+//
+// Reachable only from source, so there is no build of this binary -- tagged or
+// otherwise -- that can be pointed at a machine that does not exist. It also
+// ends the package variable the flag needed, which leaked across tests in one
+// binary and would have raced the moment a rootd test wanted t.Parallel().
+func probeAt(root string) *box.Probe {
+	return &box.Probe{Now: box.Now, Agent: version, Root: root}
 }
 
 // runRootd is the timer. Root runs this; nothing else does.
@@ -126,7 +146,11 @@ func probe() *box.Probe {
 // design/appify.md §3 is built around: an unprivileged agent reading a file
 // cannot make root code run, whenever and as often as it likes, the way a doas
 // rule would let it.
-func runRootd(args []string) error {
+func runRootd(args []string) error { return runRootdAt("", args) }
+
+// runRootdAt is runRootd against a probe root. Production passes "": see
+// probeAt for why this is not a flag.
+func runRootdAt(root string, args []string) error {
 	fs := flag.NewFlagSet("rootd", flag.ContinueOnError)
 	interval := fs.Duration("interval", time.Minute, "how often to probe")
 	confPath := fs.String("config", box.AgentConfPath, "the credential whose keys commands are verified against")
@@ -245,9 +269,18 @@ func runRootd(args []string) error {
 		wantVols := *volEvery > 0 && n%*volEvery == 0
 		n++
 
-		r := probe().Report(ctx)
+		// ONE PROBE PER TICK, and that is a testability property rather than an
+		// allocation one. Review 3 on komizo-be#166: the tick built three
+		// separate probes, so the test's positive control read the report from
+		// one of them while every assertion read the metrics from another --
+		// and dropping the root at the Metrics call alone left the quiet-box
+		// row green. A control over a different probe from the assertion is
+		// Review 2's defect one level up.
+		p := probeAt(root)
+
+		r := p.Report(ctx)
 		if wantVols && r.Server.Ready() {
-			r.System.Volumes = probe().Volumes(ctx, "")
+			r.System.Volumes = p.Volumes(ctx, "")
 		}
 		if err := box.WriteReport(*reportPath, r); err != nil {
 			fmt.Fprintf(os.Stderr, "komizo-box: writing report: %v\n", err)
@@ -261,7 +294,40 @@ func runRootd(args []string) error {
 		// happens here, where root already is, and the answer is left beside
 		// the report and the history. komizo#80.
 		to := r.At.Unix()
-		if err := box.WriteMetrics(*metricsPath, probe().Metrics(to-box.MetricsWindow, to)); err != nil {
+		// CLIPPED TO WHAT IS KEPT, at the point it is written.
+		//
+		// Probe.Metrics computes Span across the whole tail it read, which is
+		// bounded by BYTES rather than by time -- so a quiet box's 4MB reaches
+		// back days. Stored unclipped, the file claims to cover two days while
+		// holding an hour of rows, and a client that blanks outside the span
+		// draws confident zeros over the difference.
+		//
+		// THE EMPTY-OVERLAP GUARD IS THE POINT, and its absence was a bug that
+		// caused the exact failure this prevents. Review 1 on komizo-be#166: on
+		// a box whose newest log entry is older than the window, moving both
+		// endpoints inward crosses them -- From ended up 7200s AFTER To -- and
+		// ReadMetrics then answered every query with a nil span, so the app
+		// blanked nothing and drew zeros. box/metrics.go does the same clip and
+		// has always had this guard; the write side copied everything except it.
+		m := p.Metrics(to-box.MetricsWindow, to)
+		if m.Span != nil {
+			lo, hi := m.Span.From, m.Span.To
+			if lo < to-box.MetricsWindow {
+				lo = to - box.MetricsWindow
+			}
+			if hi > to {
+				hi = to
+			}
+			if lo <= hi {
+				m.Span = &box.Span{From: lo, To: hi}
+			} else {
+				// Nothing was measured inside the window this box keeps. That is
+				// not a span of zero width -- it is no span, which is what the
+				// reader's own empty-overlap case says.
+				m.Span = nil
+			}
+		}
+		if err := box.WriteMetrics(*metricsPath, m); err != nil {
 			fmt.Fprintf(os.Stderr, "komizo-box: writing metrics: %v\n", err)
 		}
 	}
