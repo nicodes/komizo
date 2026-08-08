@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -250,20 +251,55 @@ func TestSettingUpAFreshBoxRegistersIt(t *testing.T) {
 // Registering must never fail the setup. The box is set up and works; what
 // failed is the half that needs the service, and failing the whole command
 // would make an outage look like a broken server.
+//
+// PARSED RATHER THAN SCANNED, and the rewrite is itself the finding. This read
+// the text from "registerAndEnrol" to the next blank line and failed on any
+// `return` in it -- which was right only while enrolment had another step after
+// it. komizo#180 moved the proxy install ABOVE enrolment (agent-enrol.sh cannot
+// publish a route into a directory the proxy has not created yet), leaving
+// enrolment last, so the function's own closing `return nil` -- the SUCCESS
+// path -- landed inside the window and the guard failed on correct code.
+//
+// A check that fires on the right answer gets deleted, and deleting this one
+// would have taken the property with it. So it now asks the question directly:
+// does the error branch of the registerAndEnrol call return? Nothing about
+// where the call sits in the function can make that ambiguous again.
 func TestRegisteringIsNotFatalToSetup(t *testing.T) {
-	body := functionBody(t, sourceOf(t, "init.go"), "RunInit")
-	i := strings.Index(body, "registerAndEnrol")
-	if i < 0 {
-		t.Skip("the test above already reports this")
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "init.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// The lines up to the next blank one decide it: a `return` there ends the
-	// setup, and anything else carries on.
-	rest := body[i:]
-	if cut := strings.Index(rest, "\n\n"); cut > 0 {
-		rest = rest[:cut]
-	}
-	if regexp.MustCompile(`(?m)^\s*return`).MatchString(rest) {
-		t.Errorf("RunInit abandons setup when registering fails:\n%s", rest)
+
+	var checked bool
+	ast.Inspect(f, func(n ast.Node) bool {
+		stmt, ok := n.(*ast.IfStmt)
+		if !ok || stmt.Init == nil {
+			return true
+		}
+		var names []string
+		ast.Inspect(stmt.Init, func(n ast.Node) bool {
+			if id, ok := n.(*ast.Ident); ok {
+				names = append(names, id.Name)
+			}
+			return true
+		})
+		if !slices.Contains(names, "registerAndEnrol") {
+			return true
+		}
+		checked = true
+		ast.Inspect(stmt.Body, func(n ast.Node) bool {
+			if r, ok := n.(*ast.ReturnStmt); ok {
+				t.Errorf("RunInit abandons setup when registering fails, at %s -- "+
+					"a service outage would present as a broken server",
+					fset.Position(r.Pos()))
+			}
+			return true
+		})
+		return true
+	})
+	if !checked {
+		t.Skip("the test above already reports that RunInit does not register")
 	}
 }
 

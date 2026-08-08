@@ -82,6 +82,33 @@ func RunInit(args []string) error {
 			"    the app will not work against this box until it is fixed.", err)
 	}
 
+	// THE PROXY GOES IN BEFORE ENROLMENT, and the order is the whole of the fix.
+	//
+	// It was the other way round, and the consequence was not a rare race: on
+	// every fresh box, every time, `komizo init` published NO ROUTE for the box's
+	// own name. agent-enrol.sh writes that route only when /srv/_proxy/routes
+	// exists, and the proxy script below is what creates it -- so enrolling first
+	// meant the guard was always false, the route was skipped in silence, and the
+	// box came up enrolled, reporting, and unreachable at its own hostname.
+	//
+	// The symptom was three steps from the cause: the app showed komizo's stored
+	// copy of the report with "could not reach this box" over the top, so it read
+	// as DNS, or a certificate, or a box that was down. Nothing said a step had
+	// been skipped, because from the script's point of view nothing went wrong.
+	//
+	// Nothing about enrolment needs the proxy to be absent, and nothing about the
+	// proxy needs the box to be enrolled -- it is the shared, app-agnostic half,
+	// installed on every box whether or not it ever joins a registry. So the
+	// dependency runs one way and the steps now run in that direction.
+	step("Installing the shared reverse proxy")
+	if err := tgt.runScript(scripts.AlpineProxyScript, proxyEnv(proxyOpts{
+		network: o.network,
+		image:   o.image,
+	})); err != nil {
+		return fmt.Errorf("Docker is installed, but the proxy failed -- see the output above.\n" +
+			"    Re-run 'komizo proxy' once you have fixed it; the server itself is ready.")
+	}
+
 	step("Filing this server under your account")
 	if err := registerAndEnrol(tgt, o.name, o.apiHost, o.deviceKeys, o.forgetDevices); err != nil {
 		// NOT fatal. The box is set up and works; what failed is the half that
@@ -90,15 +117,6 @@ func RunInit(args []string) error {
 		// server.
 		note("could not register this server: %v", err)
 		note("the box is set up. %s", enrolAdvice(err, tgt.host))
-	}
-
-	step("Installing the shared reverse proxy")
-	if err := tgt.runScript(scripts.AlpineProxyScript, proxyEnv(proxyOpts{
-		network: o.network,
-		image:   o.image,
-	})); err != nil {
-		return fmt.Errorf("Docker is installed, but the proxy failed -- see the output above.\n" +
-			"    Re-run 'komizo proxy' once you have fixed it; the server itself is ready.")
 	}
 	return nil
 }

@@ -84,6 +84,31 @@ func StoppedByDevice(pub ed25519.PublicKey) string {
 	return "device " + Fingerprint(FormatDeviceKey(pub))
 }
 
+// StoppedByCommand is who stopped an app, given the whole verified envelope.
+//
+// THE SUBJECT WINS WHEN THERE IS ONE, and the reason is that after
+// komizo-be#180 the signing key stopped being an identity. Every command the
+// app sends is signed by the registry key, so a fingerprint of the verified key
+// is the same eight characters on every box for every account komizo has --
+// technically accurate, completely useless, and worse than useless because it
+// LOOKS like an answer. The subject is the account the service signed for, and
+// it is inside the signature; see Command.Sub.
+//
+// FALLS BACK TO THE DEVICE, which is not a degraded case. An operator's device
+// key carries no subject because it does not need one, and that path is
+// unchanged: a fingerprint there names one real device out of however many were
+// planted.
+//
+// Both forms are PREFIXED with what kind of thing they name. "account" and
+// "device" are different sorts of claim -- one this box verified, one this box
+// was told -- and a reader who cannot tell them apart cannot weigh either.
+func StoppedByCommand(c Command, pub ed25519.PublicKey) string {
+	if c.Sub != "" {
+		return "account " + c.Sub
+	}
+	return StoppedByDevice(pub)
+}
+
 // MarkStopped records a deliberate stop in the app's own record.
 //
 // at is passed in rather than read from the clock here so the caller decides
