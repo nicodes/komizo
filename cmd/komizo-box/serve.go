@@ -81,19 +81,26 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("%s holds an unusable device key: %w", *confPath, err)
 	}
-	// Said once, because it decides whether the app can do ANYTHING here.
+	// THE WARNING THAT USED TO BE HERE IS GONE BECAUSE IT COULD NO LONGER FIRE,
+	// and that is worth a paragraph rather than a silent deletion.
 	//
-	// This used to say such a box "serves reads and refuses commands", which was
-	// true while `GET /v1/report` took the registry's token alone. komizo-be#72
-	// removed that route, and a read is now a signed envelope like everything
-	// else -- so a box with no device keys answers nothing at all. Leaving the
-	// old sentence would have told an operator their box was half working while
-	// the app showed them an empty screen.
-	if !conf.CanCommand() {
-		fmt.Fprintln(os.Stderr, "this box has no device keys, so it answers nothing -- not reads, not commands.")
-		fmt.Fprintln(os.Stderr, "every route takes an envelope signed by a device this box trusts, and it trusts none.")
-		fmt.Fprintln(os.Stderr, "    komizo enrol --host <this box> --device-key kmz_dev_...")
-	}
+	// It said: "this box has no device keys, so it answers nothing -- not reads,
+	// not commands", and it was correct twice over. The first version said such
+	// a box "serves reads and refuses commands", which was true until
+	// komizo-be#72 took away the route that read with the registry's token
+	// alone; the second said it answered nothing, which was true until
+	// komizo-be#180 made the registry key an authority to command.
+	//
+	// It is now UNREACHABLE. CanServe above requires a registry key and a server
+	// id, and returns early without them. CanCommand requires a server id and
+	// EITHER kind of key. So anything that gets past CanServe satisfies
+	// CanCommand by construction, and the branch could only ever be skipped.
+	//
+	// Dead code that prints a false sentence is worse than dead code, because
+	// the way it is found is somebody reading it and believing it. The pair of
+	// conditions is asserted in serve_test.go instead, where a future change
+	// that pulls them apart shows up as a failure rather than as a warning
+	// nobody has seen since it was written.
 
 	ln, err := listenUnix(*sock)
 	if err != nil {

@@ -472,3 +472,51 @@ func TestTheStateDirectoryStaysTraversableByTheAgent(t *testing.T) {
 			"working box stops its history being readable")
 	}
 }
+
+// A box that can serve can also be commanded, and serve.go depends on it.
+//
+// It used to warn, on startup, that a servable box with no device keys answered
+// nothing. komizo-be#180 made that false AND made the branch unreachable:
+// CanServe requires a registry key and a server id, and CanCommand requires a
+// server id and either kind of key, so everything past the first check
+// satisfies the second by construction.
+//
+// The warning was removed rather than corrected, and this is what replaces it.
+// If somebody narrows CanCommand later -- back to operator keys only, say --
+// serve.go will silently be missing a guard it once had, and the symptom will
+// be a box that opens a socket and refuses every request with nothing on stderr
+// to say why. That is the exact failure the deleted warning existed to prevent.
+func TestAnythingThisBoxWillServeItWillAlsoTakeOrdersFor(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, conf := range map[string]box.AgentConf{
+		"enrolled, no devices":   {ServerID: "srv_x", RegistryKey: base64Key(pub)},
+		"enrolled, with devices": {ServerID: "srv_x", RegistryKey: base64Key(pub), OperatorKeys: []string{box.FormatDeviceKey(dev)}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !conf.CanServe() {
+				t.Fatal("this fixture cannot serve, so it says nothing about the pair")
+			}
+			if !conf.CanCommand() {
+				t.Error("a box serve.go will open a socket for takes orders from nobody, " +
+					"and nothing on startup says so")
+			}
+		})
+	}
+
+	// The other direction is NOT claimed and must not be: a box with operator
+	// keys and no registry key commands and does not serve. That is a real
+	// state, `komizo-box serve` exits on it above, and it is why these stay two
+	// functions rather than one.
+	commandsOnly := box.AgentConf{ServerID: "srv_x", OperatorKeys: []string{box.FormatDeviceKey(dev)}}
+	if commandsOnly.CanServe() {
+		t.Error("an operator key made a box serve reads, which is a different authority")
+	}
+}
