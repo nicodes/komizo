@@ -55,24 +55,28 @@ func TestRootdLeavesTheMetricsWhereTheApiCanReadThem(t *testing.T) {
 	}
 }
 
-// WHAT THIS STILL CANNOT SEE, and it is the same defect one level down.
+// WHAT IS STILL NOT ASSERTED, WITH THE REASON, because a gap nobody wrote down
+// is a gap nobody fixes.
 //
-// Making rootd compute YESTERDAY'S window instead of the last hour leaves this
-// green: the file is written, decodes, and has no rows either way. Asserting
-// which window was asked for needs an access log to have said something, and
-// `Probe` reads box.AccessLog -- a CONSTANT, `/srv/_proxy/logs/access.log`, not
-// derived from anything a test can point elsewhere.
+// Making rootd compute YESTERDAY'S window instead of the last hour is still
+// green here. --root now exists, so the tick can be pointed at a fake machine
+// with an access log on it -- that was komizo-be#166's first half and it is
+// done. What is missing is the rest of the fixture: Probe.Metrics attributes a
+// request to an app by looking up its HOST among the app records, so a machine
+// with a log and no apps produces no rows at all, and every assertion about
+// which window was measured is vacuous.
 //
-// So it is the same shape as komizo#84, which this change fixed for the state
-// and socket directories: a path taken from a constant makes the behaviour that
-// depends on it unassertable. Recorded on #84 rather than left as a mutation
-// somebody re-runs and wonders about.
-
-// THE WINDOW ROOTD KEEPS IS THE ONE IT ADVERTISES.
+// Two further things worth knowing before writing it:
 //
-// Review 1 on komizo#83 showed MetricsWindow 1h -> 1m was green: a tick that
-// computes the wrong window still writes a file, still decodes, and still
-// serves 200 -- with most of the sparkline missing and nothing saying so.
+//   - asserting on Span does NOT work. rootd clips the stored span to the
+//     window it keeps, so it reads correctly whatever window was measured. The
+//     first version of this test did exactly that and the mutation walked
+//     through it.
+//   - the assertion has to be on the ROWS, which is what the window selects.
+//
+// The fixture needed is an app record plus its hostnames under --root, which
+// box/access_test.go's newFakeBox already builds for the unit tests. Lifting it
+// to a shared helper is the change.
 func TestTheWindowRootdKeepsIsTheOneItAdvertises(t *testing.T) {
 	if box.MetricsWindow != 60*60 {
 		t.Errorf("MetricsWindow = %d, want an hour -- the app asks for half of one "+
