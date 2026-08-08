@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/nicodes/komizo/internal/agent"
 	"github.com/nicodes/komizo/scripts"
 )
@@ -20,10 +19,7 @@ import (
 // syntax error in the middle of a script running as root.
 
 // installAgent stages komizo-box on the box and runs the installer.
-//
-// ch is where the installer's output goes when the interface is driving; nil
-// sends it straight to the terminal, which is what the CLI wants.
-func installAgent(t target, ch chan tea.Msg) error {
+func installAgent(t target) error {
 	arch, err := boxArch(t)
 	if err != nil {
 		return err
@@ -35,11 +31,7 @@ func installAgent(t target, ch chan tea.Msg) error {
 	if err := stageAgent(t, bin); err != nil {
 		return fmt.Errorf("could not copy the agent to %s: %w", t.host, err)
 	}
-	sh := scripts.AgentInstall(agent.Stamp(), versionText())
-	if ch == nil {
-		return t.runScript(sh, nil)
-	}
-	return stream(ch, exec.Command("ssh", t.sshArgs("sh -s")...), sh)
+	return t.runScript(scripts.AgentInstall(agent.Stamp(), versionText()), nil)
 }
 
 // boxArch asks the box what it is.

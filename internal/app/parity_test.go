@@ -41,8 +41,14 @@ func TestUpdateRefusesContradictoryProxyFlags(t *testing.T) {
 	}
 }
 
-// The help has to name it, or the command exists and nobody finds it.
-func TestUpdateUsageNamesTheInterfaceEquivalent(t *testing.T) {
+// The help has to name how you find out a box needs this, or the command exists
+// and nobody knows when to run it.
+//
+// It used to require the string `"u"` -- the interface's keystroke for the same
+// operation, which was the honest cross-reference while there were two
+// surfaces. There is one now (nicodes/komizo-be#55), and the thing that tells
+// you a box is behind is `komizo report`, so that is what the help must name.
+func TestUpdateUsageNamesHowYouLearnABoxNeedsIt(t *testing.T) {
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	var buf bytes.Buffer
 	fs.SetOutput(&buf)
@@ -50,7 +56,7 @@ func TestUpdateUsageNamesTheInterfaceEquivalent(t *testing.T) {
 	usageUpdate(fs)
 
 	got := buf.String()
-	for _, want := range []string{"komizo update", "agent", `"u"`} {
+	for _, want := range []string{"komizo update", "agent", "komizo report"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("update usage does not mention %q:\n%s", want, got)
 		}

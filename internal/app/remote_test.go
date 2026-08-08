@@ -84,17 +84,6 @@ func TestShQuoteClosesTheValueItIsGiven(t *testing.T) {
 	}
 }
 
-func TestAQuoteInAContainerNameCannotEscapeTheCommand(t *testing.T) {
-	cmd := containerCmd("evil'; touch /tmp/pwned; '", "stop")
-	if strings.Contains(cmd, "; touch /tmp/pwned; ") && !strings.Contains(cmd, `'\''`) {
-		t.Errorf("the name broke out of its quoting: %s", cmd)
-	}
-	// And the shell agrees about how many words that is.
-	if n := strings.Count(cmd, "'")%2 != 0; n {
-		t.Errorf("unbalanced quoting: %s", cmd)
-	}
-}
-
 func TestEnvPrefixQuotesValuesRatherThanTrustingThem(t *testing.T) {
 	got := envPrefix(map[string]string{"KNOWN_AS": "a'b", "APP_NAME": "blog"})
 	if !strings.Contains(got, `APP_NAME='blog'`) {
@@ -160,24 +149,6 @@ func TestAContainerWithNoRecordedTimestampsStillAppears(t *testing.T) {
 }
 
 // --- typing ----------------------------------------------------------------
-
-func TestBackspaceRemovesACharacterNotAByte(t *testing.T) {
-	for _, c := range []struct{ in, want string }{
-		{"abc", "ab"},
-		{"café", "caf"},
-		{"日本", "日"},
-		{"a", ""},
-		{"", ""},
-	} {
-		got := trimLastRune(c.in)
-		if got != c.want {
-			t.Errorf("trimLastRune(%q) = %q, want %q", c.in, got, c.want)
-		}
-		if !isValidUTF8(got) {
-			t.Errorf("trimLastRune(%q) left invalid UTF-8: %q", c.in, got)
-		}
-	}
-}
 
 func isValidUTF8(s string) bool {
 	for _, r := range s {

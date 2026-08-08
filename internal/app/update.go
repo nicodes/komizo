@@ -11,15 +11,16 @@ import (
 
 // Bringing a server up to this komizo, from the command line.
 //
-// This is the `u` on the interface's komizo row, and it exists here because the
-// two surfaces do the same things: the interface is what most people use, and
-// it is not allowed to be the only way to reach a capability. A TUI-only
-// operation cannot be scripted, cannot run in CI, and cannot be the answer when
-// something has gone wrong with the interface itself.
+// This was the `u` on the interface's komizo row before that was deleted
+// (nicodes/komizo-be#55). It existed as a command first, and the reason is the
+// rule that outlived the interface: a capability reachable from one surface
+// only cannot be scripted, cannot run in CI, and cannot be the answer when
+// something has gone wrong with that surface.
 //
 // It also gave the errors nothing to name. "not installed -- press u" is advice
 // that only works if you are already looking at a full-screen program, which is
-// exactly not the case for whoever is reading it out of a log.
+// exactly not the case for whoever is reading it out of a log -- and is why
+// `komizo report` now says the sentence rather than the keystroke.
 //
 // ONE operation, re-running the whole setup rather than only replacing the
 // agent binary. Docker, the shared network, the agent and EVERY APP'S OWN
@@ -106,10 +107,10 @@ func RunUpdate(args []string) error {
 	}
 
 	step("Installing the komizo agent")
-	if err := installAgent(tgt, nil); err != nil {
+	if err := installAgent(tgt); err != nil {
 		return fmt.Errorf("the server is set up, but the agent failed to install:\n    %w\n\n"+
-			"    komizo reads a server through that agent, so `komizo list` and the\n"+
-			"    interface will not work against this box until it is fixed.", err)
+			"    komizo reads a server through that agent, so `komizo list` and\n"+
+			"    the app will not work against this box until it is fixed.", err)
 	}
 
 	// Every app's own scripts, regenerated from that app's own record.
@@ -154,7 +155,7 @@ Each app is re-provisioned from the record komizo already holds for it, so its
 deploy account, config image, directory and hostnames are unchanged -- and so is
 a deliberate stop. No deploy key is rotated and nothing is restarted.
 
-This is what "u" does on the komizo row in the interface.
+"komizo report" says when a box is due one.
 
   komizo update --host root@box
 
