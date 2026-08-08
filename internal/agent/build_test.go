@@ -138,19 +138,54 @@ func TestTheBuiltAgentIsFoundInTheCrossCompileDirectory(t *testing.T) {
 	}
 }
 
-// A BUILD WITH NO MODULE VERSION IS REFUSED RATHER THAN GUESSED AT.
+// WHAT Get DOES DEPENDS ON WHETHER THIS BUILD CARRIES AGENTS, AND BOTH ARE
+// ASSERTED.
 //
-// A checkout, or a binary compiled with VCS stamping off, has nothing for
-// `go install <module>@<version>` to pin to. Guessing one installs an agent that
-// need not match the CLI managing the box, which is worse than saying so.
-func TestAnAgentIsNotBuiltWithoutAVersionToPinTo(t *testing.T) {
+// The first version of this test assumed the embedded FS was empty and failed in
+// the RELEASE, which runs `make agents` before its tests -- while CI, which does
+// not, passed it. The same test saw two different worlds and only complained in
+// one. That asymmetry is worth stating plainly: `.github/actions/build` runs
+// `make agents` and `.github/actions/test` does not, so a test whose answer
+// depends on embedded agents tells you about the pipeline it happened to run in.
+//
+// So this branches on the fact instead of assuming it, and each branch asserts
+// the behaviour that matters there:
+//
+//   - agents embedded (a release build): Get hands one back and NEVER consults
+//     the module version, because a release must not need a toolchain or a
+//     network to set a box up.
+//   - none embedded (a source build): Get refuses a reference it could not
+//     resolve, rather than guessing a version and installing an agent that need
+//     not match the CLI managing the box.
+func TestGetPrefersAnEmbeddedAgentAndOtherwiseNeedsAVersion(t *testing.T) {
+	_, embedded := For("amd64")
+	hasEmbedded := embedded == nil
+
 	for _, tc := range []struct{ name, path, version string }{
 		{"no module path", "", "v0.0.17"},
 		{"no version", "github.com/nicodes/komizo", ""},
 		{"a version that is not one", "github.com/nicodes/komizo", "(devel)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := Get(context.Background(), tc.path, tc.version, "amd64")
+			b, stamp, err := Get(context.Background(), tc.path, tc.version, "amd64")
+
+			if hasEmbedded {
+				// THE RELEASE CASE. An unusable module reference is irrelevant
+				// when the agent is already carried, and Get must not fail over
+				// one -- that would make a release archive need a toolchain.
+				if err != nil {
+					t.Fatalf("a komizo carrying agents refused to use one: %v", err)
+				}
+				if len(b) == 0 {
+					t.Error("it returned no agent and no error")
+				}
+				if ByVersion(stamp) {
+					t.Error("an embedded agent was stamped by version rather than by content")
+				}
+				return
+			}
+
+			// THE SOURCE-BUILD CASE.
 			if err == nil {
 				t.Fatal("it built an agent from a reference it could not have resolved")
 			}
