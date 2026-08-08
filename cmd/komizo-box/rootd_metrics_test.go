@@ -207,8 +207,21 @@ func TestRootdMeasuresTheWindowItKeeps(t *testing.T) {
 
 			m := storedMetrics(t, dir)
 
+			// FATAL, not an error, and that is about the SIGNAL rather than
+			// about this assertion.
+			//
+			// The Span.To check below opens with m.Rows[0]. Left as t.Errorf,
+			// a mutation that empties the rows while leaving a span -- the
+			// 10-minute and 70-second window shifts both do -- reported its
+			// three real failures and then panicked with index out of range,
+			// which aborts the whole cmd/komizo-box binary. The quiet row never
+			// ran, and neither did any other test in the package.
+			//
+			// The suite still exits 1 either way, so this was never a false
+			// green. What it cost was every other test's answer during exactly
+			// the mutation runs the verdicts on this file were built from.
 			if got := len(m.Rows) > 0; got != tc.wantRows {
-				t.Errorf("rows present = %v, want %v (%d rows)", got, tc.wantRows, len(m.Rows))
+				t.Fatalf("rows present = %v, want %v (%d rows)", got, tc.wantRows, len(m.Rows))
 			}
 			for _, r := range m.Rows {
 				if r.Minute < now-box.MetricsWindow-60 {
