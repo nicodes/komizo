@@ -1089,7 +1089,7 @@ if [ -f "$ROUTE_FILE" ] && [ "$proxy_up" = 0 ]; then
 	revert
 	echo "deploy: this app publishes routes, but the reverse proxy is not running." >&2
 	echo "deploy: nothing would serve them, so this is a failure rather than a no-op." >&2
-	echo "deploy: start it with 'komizo proxy --host <this box>', or press s in the interface." >&2
+	echo "deploy: start it with 'komizo proxy --host <this box>'." >&2
 	echo "deploy: reverted, nothing restarted" >&2
 	exit 1
 fi
@@ -1245,7 +1245,7 @@ if [ "$stopped" = "1" ]; then
 	# printed only in the unusual case cannot express.
 	echo "deploy: started=no"
 	echo "deploy: $APP_NAME is recorded as stopped, so $ref was pulled and APP_VERSION=$version committed, but nothing was started."
-	echo "deploy: 'komizo start --host <this box> --app $APP_NAME' brings up $version, or press s in the interface."
+	echo "deploy: 'komizo start --host <this box> --app $APP_NAME' brings up $version."
 else
 	docker compose up -d --remove-orphans
 
@@ -1286,7 +1286,7 @@ else
 		docker compose stop
 		echo "deploy: started=no"
 		echo "deploy: $APP_NAME was stopped while this deploy was running, so it has been brought back down and stays recorded as stopped."
-		echo "deploy: 'komizo start --host <this box> --app $APP_NAME' brings up $version, or press s in the interface."
+		echo "deploy: 'komizo start --host <this box> --app $APP_NAME' brings up $version."
 	else
 		# AFTER the start AND after the re-read, not before either. `set -e` ends
 		# the script on a failed `up -d`, so an echo above it would claim the app
@@ -1537,6 +1537,14 @@ rm -f "$doas_bak"
 #            whole machine, not something a deploy tool should impose.
 #            HARDEN_SSH=1 asks for it.
 
+# BEFORE ANYTHING IS TOUCHED. The check is defined further down with the
+# validation block it belongs to (see komizo_sshd_conf_is_ours), and it is
+# called here because the first write is the backup below -- refusing after
+# that has already put a .komizo.bak beside a file komizo does not own.
+if ! komizo_sshd_conf_is_ours; then
+	exit 1
+fi
+
 conf=/etc/ssh/sshd_config
 # Per run, for the reason doas_bak above is: two concurrent runs sharing one
 # backup name lose each other's, and the loser restores a file that already
@@ -1665,6 +1673,50 @@ komizo_sshd_config_ok() {
 	else
 		sshd -t
 	fi
+}
+# AND IS IT THE FILE THE DAEMON ACTUALLY READS?
+#
+# nicodes/komizo-be#164, and the other half of the problem above. Validating the
+# right file with the right binary is only correct if komizo is EDITING the file
+# the daemon reads -- and Alpine's init script takes `cfgfile` from
+# /etc/conf.d/sshd, so an operator can point their daemon anywhere.
+#
+# komizo wrote to /etc/ssh/sshd_config unconditionally. On a box with cfgfile
+# set, every consequence is silent: the deploy account's Match block is not in
+# force, so AllowTcpForwarding no and the rest never take effect and a leaked
+# deploy key can tunnel TCP through the box; AuthorizedKeysFile still points
+# wherever the real config says, so the root-owned key list komizo relies on is
+# not the one consulted and the account can authorise a second key for itself;
+# and a key rotation rewrites a file nothing loads, so the old key keeps
+# working. komizo reports success for all three.
+#
+# READ THE SAME WAY THE INIT SCRIPT READS IT -- last assignment wins, quotes
+# stripped -- rather than grepping for the default. A file that sets it twice
+# is a file whose daemon uses the second one.
+komizo_sshd_conf() {
+	_cf=""
+	if [ -r /etc/conf.d/sshd ]; then
+		_cf=$(sed -n "s/^[[:space:]]*cfgfile=//p" /etc/conf.d/sshd |
+			tail -n 1 | tr -d "\"'" | tr -d "\r")
+	fi
+	[ -n "$_cf" ] || _cf=/etc/ssh/sshd_config
+	printf '%s\n' "$_cf"
+}
+
+# REFUSED RATHER THAN FOLLOWED, and that is the deliberate half.
+#
+# A box with a relocated sshd config is one somebody configured on purpose.
+# Silently rewriting their real config is worse than stopping: komizo would be
+# editing a file it was never asked to own, on the strength of a variable it
+# just discovered. Saying which file this box uses is the whole remedy -- move
+# it back, or manage that box's ssh rules yourself.
+komizo_sshd_conf_is_ours() {
+	_conf=$(komizo_sshd_conf)
+	[ "$_conf" = /etc/ssh/sshd_config ] && return 0
+	echo "error: this box points sshd at $_conf (cfgfile in /etc/conf.d/sshd)." >&2
+	echo "       komizo only manages /etc/ssh/sshd_config, so the deploy account's" >&2
+	echo "       restrictions would be written to a file the daemon never reads." >&2
+	return 1
 }
 # komizo: sshd-validation END
 

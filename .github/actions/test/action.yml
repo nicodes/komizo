@@ -70,8 +70,10 @@ runs:
         fi
         echo "shellcheck $got, as pinned"
 
-    # -race because the TUI runs commands as goroutines writing to a channel the
-    # model reads, which is exactly the shape that fails only under load.
+    # -race because the box agent's rootd runs its command loop and its log
+    # writer as goroutines beside the tick, which is exactly the shape that
+    # fails only under load. It was added for the interface's run channel; the
+    # interface is gone (nicodes/komizo-be#55) and the concurrency is not.
     #
     # -count=1 because a cached PASS from an earlier run is not evidence about
     # this one, and the cache is keyed on inputs this suite deliberately reaches
