@@ -230,27 +230,6 @@ rm -f "$DEPLOY_BIN" "$SECRET_BIN"
 # --- 3. sshd ---------------------------------------------------------------
 
 log "Removing the sshd restrictions for '$CI_USER'"
-# The same refusal as the setup script, and it matters as much here: a removal
-# that edits a file the daemon does not read leaves the deploy account's Match
-# block in force on the file it does, so the account komizo just deleted still
-# has rules pointing at it. See komizo_sshd_conf_is_ours below.
-if ! komizo_sshd_conf_is_ours; then
-	exit 1
-fi
-conf=/etc/ssh/sshd_config
-if [ -f "$conf" ]; then
-	conf_bak="$conf.komizo.bak"
-	cp "$conf" "$conf_bak"
-	# The same pairing as the doas window above, and for the same reason: an
-	# sshd_config left mid-edit does not bite now -- sshd has not been reloaded
-	# -- it bites at the next reboot, a long way from anything anyone would
-	# connect it to.
-	restore_sshd() { mv -f "$conf_bak" "$conf" 2>/dev/null || true; }
-	trap restore_sshd EXIT
-	trap 'restore_sshd; exit 129' INT TERM HUP PIPE
-	sed -i -E \
-		-e "/^# $PROJECT_MARKER: sshd $CI_USER BEGIN\$/,/^# $PROJECT_MARKER: sshd $CI_USER END\$/d" \
-		"$conf"
 # komizo: sshd-validation BEGIN
 # Is the config valid FOR THE BINARY THAT WILL LOAD IT?
 #
@@ -331,6 +310,32 @@ komizo_sshd_conf_is_ours() {
 	return 1
 }
 # komizo: sshd-validation END
+
+# The same refusal as the setup script, and it matters as much here: a removal
+# that edits a file the daemon does not read leaves the deploy account's Match
+# block in force on the file it does, so the account komizo just deleted still
+# has rules pointing at it.
+#
+# The validation block sits ABOVE this, and had to move to get there -- shell
+# does not hoist function definitions, and this call was reached before the
+# definition in the file as first written.
+if ! komizo_sshd_conf_is_ours; then
+	exit 1
+fi
+conf=/etc/ssh/sshd_config
+if [ -f "$conf" ]; then
+	conf_bak="$conf.komizo.bak"
+	cp "$conf" "$conf_bak"
+	# The same pairing as the doas window above, and for the same reason: an
+	# sshd_config left mid-edit does not bite now -- sshd has not been reloaded
+	# -- it bites at the next reboot, a long way from anything anyone would
+	# connect it to.
+	restore_sshd() { mv -f "$conf_bak" "$conf" 2>/dev/null || true; }
+	trap restore_sshd EXIT
+	trap 'restore_sshd; exit 129' INT TERM HUP PIPE
+	sed -i -E \
+		-e "/^# $PROJECT_MARKER: sshd $CI_USER BEGIN\$/,/^# $PROJECT_MARKER: sshd $CI_USER END\$/d" \
+		"$conf"
 
 	if komizo_sshd_config_ok >/dev/null 2>&1; then
 		trap - EXIT INT TERM HUP PIPE
