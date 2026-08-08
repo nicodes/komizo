@@ -39,8 +39,8 @@ func RunRemove(args []string) error {
 	if !yes {
 		return fmt.Errorf("this deletes %s, its volumes, its deploy account and its rules.\n"+
 			"    Other apps on the box are untouched, and images stay in your registry.\n"+
-			"    Re-run with --yes if that is what you want, or use the interface:\n"+
-			"        komizo %s", "/srv/"+app, host)
+			"    Re-run with --yes if that is what you want:\n"+
+			"        komizo remove --host %s --app %s --yes", "/srv/"+app, host, app)
 	}
 
 	if err := ensureReachable(tgt, acceptHostKey); err != nil {

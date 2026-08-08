@@ -81,7 +81,12 @@ func classify(raw string) reachKind {
 //
 // Shared because the error text offers --accept-host-key, and a command that
 // printed that advice without accepting the flag sent people to a dead end.
-func ensureReachable(t target, acceptUnknown bool) error {
+// A package variable for the same reason askBox is one: the commands that read
+// a box are asserted against a stubbed box, and a preflight that opens a real
+// SSH connection makes those tests a network test of somebody else's DNS.
+var ensureReachable = ensureReachableOverSSH
+
+func ensureReachableOverSSH(t target, acceptUnknown bool) error {
 	r := t.probe()
 	if !r.ok() && r.kind == reachUnknownHost && acceptUnknown {
 		if err := acceptHostKey(t, true); err != nil {

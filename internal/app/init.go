@@ -11,8 +11,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	tea "github.com/charmbracelet/bubbletea"
-
 	"github.com/nicodes/komizo/box"
 	"github.com/nicodes/komizo/scripts"
 )
@@ -78,14 +76,14 @@ func RunInit(args []string) error {
 	}
 
 	step("Installing the komizo agent")
-	if err := installAgent(tgt, nil); err != nil {
+	if err := installAgent(tgt); err != nil {
 		return fmt.Errorf("the server is ready, but the agent failed to install:\n    %w\n\n"+
 			"    komizo reads a server through that agent, so `komizo list` and the\n"+
 			"    monitor will not work against this box until it is fixed.", err)
 	}
 
 	step("Filing this server under your account")
-	if err := registerAndEnrol(tgt, o.name, o.apiHost, o.deviceKeys, o.forgetDevices, nil); err != nil {
+	if err := registerAndEnrol(tgt, o.name, o.apiHost, o.deviceKeys, o.forgetDevices); err != nil {
 		// NOT fatal. The box is set up and works; what failed is the half that
 		// needs the service, and komizo enrol does exactly this later. Failing
 		// the whole command would make a service outage look like a broken
@@ -157,7 +155,7 @@ func signalContextCLI() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 }
 
-func registerAndEnrol(t target, name, apiHost string, keys []string, forget bool, ch chan tea.Msg) error {
+func registerAndEnrol(t target, name, apiHost string, keys []string, forget bool) error {
 	s, err := requireSession()
 	if err != nil {
 		return err
@@ -190,17 +188,13 @@ func registerAndEnrol(t target, name, apiHost string, keys []string, forget bool
 	// command line: a command line is visible in the box's process table to
 	// every account on it, for as long as the command runs.
 	sh := scripts.AgentEnrol(s.API, created.Token, endpoint, keys, forget)
-	if ch == nil {
-		if err := t.runScript(sh, nil); err != nil {
-			return fmt.Errorf("the server was created but did not enrol -- run `komizo enrol --host %s` to retry", t.host)
-		}
-	} else if err := stream(ch, exec.Command("ssh", t.sshArgs("sh -s")...), sh); err != nil {
-		return fmt.Errorf("the server was created but did not enrol -- press u to retry")
+	if err := t.runScript(sh, nil); err != nil {
+		return fmt.Errorf("the server was created but did not enrol -- run `komizo enrol --host %s` to retry", t.host)
 	}
 
-	say(ch, fmt.Sprintf("this server is in your app as %q.", name))
+	note("this server is in your app as %q.", name)
 	if endpoint == "" {
-		say(ch, fmt.Sprintf("no endpoint: %s is an address, not a name, so the app cannot open it.", t.host))
+		note("no endpoint: %s is an address, not a name, so the app cannot open it.", t.host)
 	}
 	return nil
 }
@@ -239,19 +233,4 @@ func existingServerID(t target) string {
 		return ""
 	}
 	return conf.ServerID
-}
-
-// say reports progress to whichever surface asked for the work.
-//
-// The two are not interchangeable: note() writes to stdout, which under a
-// full-screen interface lands in the middle of the frame. This is the same
-// split installAgent already makes, and forgetting it is how the interface
-// ended up not registering a server at all -- the capability was written for
-// one surface and the other was never given it.
-func say(ch chan tea.Msg, line string) {
-	if ch == nil {
-		note("%s", line)
-		return
-	}
-	ch <- runOutputMsg(line)
 }

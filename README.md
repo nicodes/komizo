@@ -5,18 +5,18 @@ doing.
 
 ```sh
 go install github.com/nicodes/komizo@latest
-komizo root@your-server
+komizo init --host root@your-server
 ```
 
 Or run it without installing anything:
 
 ```sh
-go run github.com/nicodes/komizo@latest root@your-server
+go run github.com/nicodes/komizo@latest init --host root@your-server
 ```
 
-That opens the interface. Everything is done from there — the flag-driven
-subcommands remain for scripting, but nobody should have to learn them to set a
-box up.
+Every operation is a command that takes the server as a flag; `komizo` on its
+own prints the list. Watching a box — its apps, its charts, its logs — is what
+the app is for, and everything the app can do is a command here as well.
 
 No Go? Take a binary from [releases](https://github.com/nicodes/komizo/releases).
 It connects to your server as root, so verify it before you run it:
@@ -75,7 +75,7 @@ and an app somebody deliberately stopped stays stopped.
 ```
 main.go            the CLI
 cmd/komizo-box/    the agent, which runs on the server
-internal/app/      the TUI and the subcommands
+internal/app/      the subcommands, and everything they do to a server
 box/               the probes and the report -- shared by both binaries AND the service
 internal/agent/    the compiled agents, embedded into the CLI
 scripts/           the provisioning shell, embedded with go:embed
