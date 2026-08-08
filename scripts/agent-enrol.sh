@@ -60,7 +60,21 @@ fi
 # REFUSED rather than written if an app already claims the name. Two site blocks
 # for one hostname is a config Caddy will not load, and this proxy is shared --
 # so getting it wrong would take every app on the box down, not just komizo.
+#
+# AND IT SAYS SO WHEN IT DOES NOT WRITE IT. The guard below used to fail in
+# silence, and komizo init ran this step BEFORE installing the proxy -- so on
+# every fresh box the directory did not exist yet, the route was skipped, and
+# nothing anywhere said a step had not happened. The box came up enrolled,
+# reporting, and unreachable at its own name, and the app blamed DNS.
+#
+# The ordering is fixed in internal/app/init.go. This message is the part that
+# would have found it in an afternoon instead of a week, and it stays for the
+# next time something arrives here before the proxy does.
 API_HOST=__API_HOST__
+if [ -n "$API_HOST" ] && [ ! -d /srv/_proxy/routes ]; then
+	printf 'warning: the proxy is not installed, so %s was not published.\n' "$API_HOST" >&2
+	printf '         Run "komizo proxy", then "komizo enrol", to make this box readable.\n' >&2
+fi
 if [ -n "$API_HOST" ] && [ -d /srv/_proxy/routes ]; then
 	if grep -rlF "$API_HOST" /srv/_proxy/routes 2>/dev/null | grep -qv "_komizo.caddy"; then
 		printf 'warning: %s is already served by an app on this box; leaving the proxy alone.\n' "$API_HOST" >&2
