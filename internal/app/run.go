@@ -47,6 +47,26 @@ var Version = "dev"
 // "dev" survives only where there is nothing better: no build info at all, or
 // VCS stamping turned off, which reports "(devel)" and says no more than "dev"
 // does with fewer characters.
+// moduleRef is the module path and version this binary was built from, as the
+// Go proxy would resolve them -- ("github.com/nicodes/komizo", "v0.0.17").
+//
+// Both empty when there is no build info, when the version is "(devel)", or on
+// a build from a checkout: those are builds no `go install <module>@<version>`
+// could reproduce, so there is nothing to pin an agent build to. Said as empty
+// rather than guessed, because guessing installs an agent that need not match
+// the CLI managing the box. nicodes/komizo-be#177.
+func moduleRef() (path, version string) {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok || bi.Main.Path == "" {
+		return "", ""
+	}
+	v := bi.Main.Version
+	if v == "" || v == "(devel)" || !strings.HasPrefix(v, "v") {
+		return "", ""
+	}
+	return bi.Main.Path, v
+}
+
 func versionText() string {
 	if Version != "dev" {
 		return Version

@@ -3,8 +3,21 @@
 The `komizo` command: set up a server, add apps to it, and watch what they are
 doing.
 
-Take a binary from [releases](https://github.com/nicodes/komizo/releases). It
-connects to your server as root, so verify it before you run it:
+One command, nothing to install first:
+
+```sh
+go run github.com/nicodes/komizo@latest init --host root@your-server
+```
+
+komizo carries the server agent inside itself, so that setting up a box needs
+nothing from the box but sshd. Those agents are build artifacts and are not in
+the module the Go proxy serves — so a `go run` build compiles one on demand,
+from the same module at the same version it is itself. Nothing new is fetched
+that was not already fetched to get here, and a warm module cache reaches the
+network not at all.
+
+**Or take a release binary.** It carries the agents already, so it needs no Go
+toolchain. It connects to your server as root, so verify it before you run it:
 
 ```sh
 gh release download v0.0.17 --repo nicodes/komizo \
@@ -16,20 +29,7 @@ tar xzf komizo_Linux_x86_64.tar.gz && sudo install komizo /usr/local/bin/
 komizo init --host root@your-server
 ```
 
-**`go install` does not work, and the reason is not a bug.** komizo carries the
-server agent inside itself, so that `komizo init` can set up a box that has
-nothing on it but sshd — no network fetch, no second supply chain. Those
-binaries are build artifacts: `make agents` builds them and the release workflow
-runs it, but they are not committed, so the module the Go proxy serves does not
-contain them. `go install github.com/nicodes/komizo@latest` compiles happily and
-then cannot install an agent, which leaves a box provisioned and unreadable.
-
-From a checkout it works, because the Makefile builds them first:
-
-```sh
-git clone https://github.com/nicodes/komizo && cd komizo
-make build
-```
+From a checkout, `make build` compiles the agents first.
 
 Every operation is a command that takes the server as a flag; `komizo` on its
 own prints the list. Watching a box — its apps, its charts, its logs — is what
