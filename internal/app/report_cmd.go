@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nicodes/komizo/box"
+	"github.com/nicodes/komizo/internal/agent"
 )
 
 // `komizo report` -- one reading of a box, as the box itself describes it.
@@ -390,11 +391,31 @@ func agentBehind(k box.KomizoInstall, host string) (string, string) {
 		// in its place: it is not a version and reads as noise to anyone
 		// deciding whether they are behind.
 		return "this box records no komizo version, so it was set up by an older one.", update
-	case k.Stamp != komizoStamp():
+	case stampsDisagree(k.Stamp, komizoStamp()):
 		return "the agent on this box differs from the one this komizo installs.", update
 	case k.Version != versionText():
 		return fmt.Sprintf("this box was set up by komizo %s; this is %s.",
 			k.Version, versionText()), update
 	}
 	return "", ""
+}
+
+// stampsDisagree compares two agent stamps, and knows the two kinds apart.
+//
+// nicodes/komizo-be#177. A komizo that carries embedded agents stamps by
+// CONTENT; one that compiled its agent on demand stamps by VERSION, prefixed
+// "v:". Comparing a hash against a version string always differs, so a box set
+// up by a `go run` komizo would read as out of date to a release one and back
+// again -- a never-settling false alarm, on the exact screen that exists to
+// tell somebody when to act.
+//
+// When either side is version-stamped the stamp cannot answer the question, and
+// says so by abstaining. The VERSION comparison is not weakened by that: it is
+// the case immediately after this one, and it is the honest test for a build
+// whose identity is its version.
+func stampsDisagree(box, mine string) bool {
+	if agent.ByVersion(box) || agent.ByVersion(mine) {
+		return false
+	}
+	return box != mine
 }
