@@ -75,6 +75,30 @@ type AgentConf struct {
 	// Empty is the ordinary state: the box reports, serves reads, and accepts
 	// no commands.
 	OperatorKeys []string `json:"operator_keys,omitempty"`
+
+	// LogKeys are the ACCOUNTS that may read this box's logs -- komizo-be#187.
+	//
+	// One per account rather than one per device, and that difference is the
+	// whole reason this exists. app-only.md §5 wanted logs behind a key the
+	// service does not hold, and got there with device keys; komizo-be#180
+	// removed those from the required path because a per-device key means a root
+	// session per browser, which is the step that broke the product.
+	//
+	// An account key is PORTABLE. Its private half is derived from a passphrase
+	// the person knows, so it works on any device they sign in from -- the
+	// property a device key could never have -- while komizo stores only the
+	// encrypted form and cannot read a log.
+	//
+	// PLANTED WITH ROOT, AND ONLY WITH ROOT. There is deliberately no op that
+	// writes this: if the service could push a log key to a box it could push
+	// its own, and everything above would be theatre. See commandOps, which is
+	// asserted to contain nothing that reaches here.
+	//
+	// Changing the passphrase does NOT change this value -- it re-encrypts the
+	// same private half -- so the ordinary case touches no box. Only a lost
+	// passphrase needs a new keypair and a visit with root, which is the bargain
+	// app-only.md §6 already struck for losing every device.
+	LogKeys []string `json:"log_keys,omitempty"`
 }
 
 // CanServe reports whether this box can open its socket at all.

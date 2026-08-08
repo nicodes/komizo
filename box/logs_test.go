@@ -25,8 +25,15 @@ func logsFixture(t *testing.T) (APIConfig, string, string, ed25519.PrivateKey) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
+	// BOTH SETS, and the device key is in both. komizo-be#187 split what a log
+	// verifies against from what a command does; an operator's planted device
+	// still reads logs, so every case below is unchanged in what it means. What
+	// changed is that the REGISTRY key is no longer implicitly in the log set --
+	// see TestTheRegistryKeyCommandsThisBoxAndCannotReadItsLogs, which is the
+	// assertion this split exists for.
 	cfg := APIConfig{ServerID: "srv_mine", RegistryKey: regPub,
-		OperatorKeys: []ed25519.PublicKey{devPub}, LogsDir: dir}
+		OperatorKeys: []ed25519.PublicKey{devPub},
+		LogKeys:      []ed25519.PublicKey{devPub}, LogsDir: dir}
 	tok, err := SignReadToken(regPriv, cfg.ServerID, time.Now().Add(5*time.Minute))
 	if err != nil {
 		t.Fatal(err)
@@ -247,11 +254,16 @@ func TestTheLogResponseAndItsRefusals(t *testing.T) {
 	if w := ask(t, off, tok, dev, map[string]string{"app": "web"}); w.Code != http.StatusServiceUnavailable {
 		t.Errorf("a box not collecting = %d, want 503", w.Code)
 	}
-	// And one that takes orders from nobody cannot be asked at all.
+	// And one nobody may read the logs of cannot be asked at all.
+	//
+	// LogKeys, not OperatorKeys -- komizo-be#187. Clearing OperatorKeys alone no
+	// longer changes this answer, and that is the point of the split rather than
+	// an oversight in this test: an operator's device is in both sets, so a box
+	// that still has one still serves its own logs.
 	none := cfg
-	none.OperatorKeys = nil
+	none.LogKeys = nil
 	if w := ask(t, none, tok, dev, map[string]string{"app": "web"}); w.Code != http.StatusConflict {
-		t.Errorf("a box with no devices = %d, want 409", w.Code)
+		t.Errorf("a box with no log keys = %d, want 409", w.Code)
 	}
 }
 
