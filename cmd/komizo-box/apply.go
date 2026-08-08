@@ -194,10 +194,14 @@ func applyOne(ctx context.Context, keys []ed25519.PublicKey, serverID, path, res
 		return
 	}
 
-	// The signer is kept, not discarded. It is the only identity on this path
-	// the box established rather than accepted, and a deliberate stop records
-	// which device made it -- see box.StoppedByDevice. VerifyCommand returns it
-	// for exactly this: "a result should be able to say who asked".
+	// The signer is kept, not discarded. It is the identity on this path the box
+	// ESTABLISHED rather than accepted, and a deliberate stop records who made
+	// it -- see box.StoppedByCommand. VerifyCommand returns it for exactly this:
+	// "a result should be able to say who asked".
+	//
+	// Since komizo-be#180 it is no longer the whole of the answer, because the
+	// registry key signs for everybody. The envelope's subject names the
+	// account; the signer still names the device when an operator's key signed.
 	c, signer, err := box.VerifyCommand(keys, raw, serverID, time.Now())
 	if err != nil {
 		// Logged locally, where the operator is. A REFUSAL is never answered:
@@ -237,7 +241,7 @@ func applyOne(ctx context.Context, keys []ed25519.PublicKey, serverID, path, res
 		return
 	}
 
-	err = perform(ctx, c, box.StoppedByDevice(signer))
+	err = perform(ctx, c, box.StoppedByCommand(c, signer))
 	res := box.Result{ID: c.ID, Op: c.Op, At: time.Now().UTC(), OK: err == nil}
 	if err != nil {
 		res.Detail = err.Error()

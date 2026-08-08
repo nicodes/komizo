@@ -84,6 +84,30 @@ type Command struct {
 	// design, with the signature as the thing that authorised it.
 	Op string `json:"op"`
 
+	// Sub is WHO this was signed for, and it is only meaningful because it is
+	// inside the signature.
+	//
+	// komizo-be#180 made the registry key an authority to command, which solved
+	// the product flow and cost the box the one identity it used to be able to
+	// assert: with device keys, the key that verified WAS the person. Now every
+	// command from the app verifies against the same registry key, so "which
+	// device stopped this app" has exactly one answer for every account komizo
+	// serves, which is no answer at all.
+	//
+	// So the service names the account it signed for. The box cannot check that
+	// claim -- it has no idea who komizo's users are, and asking would be the
+	// network dependency registry.md §6 exists to remove -- but it does not need
+	// to. SETTING THIS REQUIRES SIGNING. A caller who could put an arbitrary
+	// subject here could put an arbitrary op here, and the signature is what
+	// stops both. It is exactly as trustworthy as the key that signed it, which
+	// is the correct amount for a field whose whole job is attribution.
+	//
+	// OPTIONAL, and stays optional. A command signed by an operator's device key
+	// carries no subject and does not need one: the key itself is the identity,
+	// and that path is unchanged. An empty value means "the signer did not say",
+	// which stopped.go renders as the device rather than as nobody.
+	Sub string `json:"sub,omitempty"`
+
 	// Args are flat strings, deliberately.
 	//
 	// No nesting, no lists, no numbers. Every value here is destined to become
@@ -163,6 +187,31 @@ func ValidCommandID(id string) error {
 		}
 	}
 	return nil
+}
+
+// MaxSubjectBytes bounds the account name in an envelope.
+//
+// Generous next to what fills it -- komizo signs a PocketBase record id, which
+// is fifteen characters -- and deliberately not sized to that. The box does not
+// get to decide what a service calls its accounts, and a limit tuned to today's
+// id would be a limit that breaks the day the service changes one.
+const MaxSubjectBytes = 64
+
+// validSubject is what may be attributed.
+//
+// The same alphabet as a command id, and the same reason: this string is copied
+// out of a signed envelope into a file root writes. Empty is valid and is the
+// ordinary case for a command signed by a device.
+func validSubject(s string) bool {
+	if len(s) > MaxSubjectBytes {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // NewCommandID is 128 random bits, hex-free and URL-safe.
@@ -258,6 +307,18 @@ func VerifyCommand(keys []ed25519.PublicKey, raw []byte, serverID string, now ti
 		// Dated too far out. Without this the signer chooses how long a captured
 		// signature stays spendable, which is exactly the thing a short life is
 		// for.
+		return Command{}, nil, ErrCommandRefused
+	case !validSubject(c.Sub):
+		// Bounded and narrow-alphabeted for the reason ValidCommandID is: this
+		// value LEAVES the envelope. It is written into an app's own record as
+		// STOPPED_BY, and that record is read by three parsers in two languages,
+		// one of them generated into a script that runs as root on every deploy.
+		//
+		// setStateValues refuses a newline in a value and is the guard that
+		// matters; this is the second one, and it is here rather than only there
+		// because a field the box will not act on should be refused before it is
+		// acted on. A subject that cannot be written is a stop that half happens:
+		// the app goes down and the record does not say so.
 		return Command{}, nil, ErrCommandRefused
 	case !knownOp(c.Op):
 		return c, signer, fmt.Errorf("this box does not know how to %q", c.Op)
