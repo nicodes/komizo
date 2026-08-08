@@ -182,6 +182,20 @@ const baselineWindow = 30
 // madScale converts a median absolute deviation into something comparable to a
 // standard deviation, for a normal distribution. Only so the numbers read at a
 // familiar scale -- "about two" meaning unusual, "about three" meaning notable.
+// devLimit is how far out a deviation score is allowed to go before it is
+// clamped.
+//
+// A property of the STATISTIC, not of any drawing of it. Beyond this the exact
+// number stops mattering -- five robust deviations from normal is "look at
+// this", and so is forty -- and the first failure after a completely clean
+// window, which is off the scale rather than on it, takes this value for
+// exactly that reason.
+//
+// It lived in the interface's monitor screen, where it also happened to be the
+// top of a y axis. The interface is gone (nicodes/komizo-be#55) and the clamp
+// is not: it decides a number this package computes.
+const devLimit = 5
+
 const madScale = 1.4826
 
 func trailingBaseline(v []float64) baseline {

@@ -446,29 +446,6 @@ func pctText(f float64) string {
 	return fmt.Sprintf("%.0f%%", f*100)
 }
 
-// takeSample keeps the newest reading and the recent ones.
-//
-// Readings, not derived rates. A rate belongs to a pair, and storing only pairs
-// meant memory and disk -- which need no pair at all -- inherited a rate's
-// requirements and went missing whenever one could not be formed.
-//
-// The oldest are dropped rather than the buffer grown, so a session left open
-// overnight costs the same as one opened a minute ago.
-func (m *model) takeSample(s sysSample) {
-	if s.at.IsZero() {
-		return
-	}
-	m.sysSamples = append(m.sysSamples, s)
-	// Shifted in place rather than copied into a fresh slice. The old form
-	// allocated a new 360-element backing array on every poll once the buffer
-	// was full -- once every five seconds, forever, for a window left open --
-	// to drop one reading off the front. copy reuses the array it already has.
-	if n := len(m.sysSamples) - sysHistory; n > 0 {
-		m.sysSamples = m.sysSamples[:copy(m.sysSamples, m.sysSamples[n:])]
-	}
-	m.sys, m.sysHave = s, true
-}
-
 // komizoStamp is what komizo has installed on a box, and how the interface can
 // tell whether it is current.
 //

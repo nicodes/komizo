@@ -14,7 +14,7 @@
 // disagree. See Version for what that costs and what the rule is.
 //
 // Nothing in here may import internal/app. The CLI is allowed to know about the
-// box; the box is not allowed to know about the interface.
+// box; the box is not allowed to know about what reads it.
 package box
 
 import "time"
@@ -117,8 +117,8 @@ type Server struct {
 	UptimeS int64  `json:"uptime_s,omitempty"`
 
 	// Komizo is what komizo last installed here, read back rather than assumed.
-	// The alternative is for the interface to print what it WOULD install, which
-	// is a fact about the laptop.
+	// The alternative is for komizo to print what it WOULD install, which is a
+	// fact about the laptop rather than about the box.
 	Komizo KomizoInstall `json:"komizo"`
 
 	// HostKeys are the box's own public keys, for the known_hosts value CI pins.
