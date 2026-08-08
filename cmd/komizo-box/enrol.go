@@ -36,7 +36,10 @@ func runEnrol(args []string) error {
 	apiHost := fs.String("api-host", "", "the hostname this box answers on, if it has one")
 	var deviceKeys box.DeviceKeyList
 	fs.Var(&deviceKeys, "device-key", box.DeviceKeyUsage)
+	var logKeys box.LogKeyList
+	fs.Var(&logKeys, "log-key", box.LogKeyUsage)
 	forget := fs.Bool("forget-devices", false, "drop the devices this box already takes orders from")
+	forgetLogs := fs.Bool("forget-log-keys", false, "drop the accounts that may read this box's logs")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -89,6 +92,12 @@ func runEnrol(args []string) error {
 	// with root rather than returned by the service -- see box/operator.go.
 	var dropped int
 	conf.OperatorKeys, dropped = carryOperatorKeys(prev, conf.ServerID, deviceKeys, *forget)
+	// The same rule, for the same reason -- see carryOperatorKeys. Kept as its
+	// own call rather than folded in: these are DIFFERENT AUTHORITIES with
+	// different consequences, and a shared helper that took two lists would be
+	// one place to get the pairing wrong.
+	var logsDropped int
+	conf.LogKeys, logsDropped = carryKeys(prev.LogKeys, prev.ServerID, conf.ServerID, logKeys, *forgetLogs)
 	if err := box.WriteAgentConf(*confPath, conf); err != nil {
 		return fmt.Errorf("enrolled, but could not store the credential: %w", err)
 	}
@@ -158,6 +167,33 @@ func runEnrol(args []string) error {
 	default:
 		fmt.Println("this box is not enrolled with a registry, so it will take orders from nobody")
 	}
+
+	// LOGS ARE A SEPARATE SENTENCE, because they are a separate authority and
+	// the two answers genuinely differ -- komizo-be#187. An ordinary box today
+	// takes orders from the account and serves no logs, and somebody who is told
+	// only the first will go looking for a fault on the machine when the log
+	// screen is empty. There is no fault: komizo cannot read these and was never
+	// meant to.
+	switch {
+	case len(conf.LogKeys) > 0:
+		fmt.Printf("%d account(s) may read this box's logs:\n", len(conf.LogKeys))
+		for _, k := range conf.LogKeys {
+			fmt.Printf("    %s\n", box.Fingerprint(k))
+		}
+	case len(conf.OperatorKeys) > 0:
+		fmt.Println("no log keys -- only the planted device(s) may read this box's logs.")
+	default:
+		fmt.Println("no log keys, so this box serves no logs. That is not a fault:")
+		fmt.Println("komizo cannot read them, which is the point -- set a log passphrase")
+		fmt.Println("in the app, then re-run this with --log-key kmz_log_...")
+	}
+	if logsDropped > 0 && !*forgetLogs {
+		fmt.Fprintf(os.Stderr, "warning: this box now reports as %s, which is not the server it "+
+			"was enrolled as,\n         so the %d account(s) that could read its logs were dropped.\n",
+			conf.ServerID, logsDropped)
+	} else if logsDropped > 0 {
+		fmt.Printf("dropped %d account(s) that could read this box's logs\n", logsDropped)
+	}
 	return nil
 }
 
@@ -186,14 +222,24 @@ func runEnrol(args []string) error {
 // out loud, naming the count, rather than reporting the same "no device keys
 // were given" a fresh box gets.
 func carryOperatorKeys(prev box.AgentConf, serverID string, added []string, forget bool) (keys []string, dropped int) {
+	return carryKeys(prev.OperatorKeys, prev.ServerID, serverID, added, forget)
+}
+
+// carryKeys is that rule, once, for both kinds of key.
+//
+// Extracted when komizo-be#187 added a second list rather than copied, because
+// two copies of "which authorities survive a re-enrolment" are two chances to
+// get the re-issued-under-a-new-id case wrong -- and that case is the one that
+// silently keeps trusting whoever owned the box last.
+func carryKeys(prevKeys []string, prevServerID, serverID string, added []string, forget bool) (keys []string, dropped int) {
 	out := []string{}
 	switch {
 	case forget:
-		dropped = len(prev.OperatorKeys)
-	case prev.ServerID != "" && prev.ServerID != serverID:
-		dropped = len(prev.OperatorKeys)
+		dropped = len(prevKeys)
+	case prevServerID != "" && prevServerID != serverID:
+		dropped = len(prevKeys)
 	default:
-		out = append(out, prev.OperatorKeys...)
+		out = append(out, prevKeys...)
 	}
 	for _, k := range added {
 		if !slices.Contains(out, k) {

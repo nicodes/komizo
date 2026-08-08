@@ -209,9 +209,15 @@ func serveLog(cfg APIConfig, w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "this box is not collecting logs", http.StatusServiceUnavailable)
 		return
 	}
-	if len(cfg.OperatorKeys) == 0 {
+	// LogKeys, NOT OperatorKeys -- komizo-be#187, and this one line is the
+	// whole of what the epic buys. OperatorKeys carries the registry key, so
+	// verifying against it here would let whoever holds komizo's signing key
+	// read every log on every enrolled box. See APIConfig.LogKeys.
+	if len(cfg.LogKeys) == 0 {
 		// Nobody may read these, because nobody has been given the means to ask.
-		// Said plainly rather than answered with an empty log.
+		// Said plainly rather than answered with an empty log: "this box has no
+		// logs" and "you may not read them" are different sentences and send
+		// somebody to different places.
 		http.Error(w, "this box takes orders from nobody", http.StatusConflict)
 		return
 	}
@@ -225,7 +231,7 @@ func serveLog(cfg APIConfig, w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "that request is too large", http.StatusRequestEntityTooLarge)
 		return
 	}
-	c, _, err := VerifyCommand(cfg.OperatorKeys, raw, cfg.ServerID, cfg.Now())
+	c, _, err := VerifyCommand(cfg.LogKeys, raw, cfg.ServerID, cfg.Now())
 	switch {
 	case err != nil && !errors.Is(err, ErrCommandRefused):
 		// A version this box does not speak. The signature already verified, so

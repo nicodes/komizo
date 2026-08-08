@@ -1,6 +1,7 @@
 package box
 
 import (
+	"crypto/ed25519"
 	"errors"
 	"io"
 	"net/http"
@@ -43,8 +44,14 @@ import (
 // Returns ok=false when it has already written a response, so a handler is
 // three lines rather than thirty repeated four times -- which is how the log
 // route came to read c.Args["app"] directly while every other path used AppOf.
-func verifiedRead(cfg APIConfig, w http.ResponseWriter, r *http.Request, op string) (Command, bool) {
-	if len(cfg.OperatorKeys) == 0 {
+// keys is passed rather than read from cfg, and that is komizo-be#187's whole
+// mechanism. There are now TWO trust sets -- OperatorKeys, which contains the
+// registry key so any signed-in device can command this box, and LogKeys, which
+// does not. A default would mean a route that forgot to choose got the wider
+// one, silently, in the direction that does not announce itself. So every call
+// site names its set and a new route cannot avoid the decision.
+func verifiedRead(cfg APIConfig, keys []ed25519.PublicKey, w http.ResponseWriter, r *http.Request, op string) (Command, bool) {
+	if len(keys) == 0 {
 		// Nobody may read this, because nobody has been given the means to ask.
 		// Said plainly rather than answered with an empty document -- this is
 		// the state of every box until an operator plants a key, and "your
@@ -63,7 +70,7 @@ func verifiedRead(cfg APIConfig, w http.ResponseWriter, r *http.Request, op stri
 		return Command{}, false
 	}
 
-	c, _, err := VerifyCommand(cfg.OperatorKeys, raw, cfg.ServerID, cfg.Now())
+	c, _, err := VerifyCommand(keys, raw, cfg.ServerID, cfg.Now())
 	switch {
 	case err != nil && !errors.Is(err, ErrCommandRefused):
 		// A version this box does not speak. The signature already verified, so
