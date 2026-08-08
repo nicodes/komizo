@@ -189,6 +189,22 @@ func ValidCommandID(id string) error {
 	return nil
 }
 
+// MaxArgNameBytes and MaxArgValueBytes bound one argument.
+//
+// These were two literals inside VerifyCommand, and they are named for the same
+// reason KnownOp exists: since komizo-be#180 the SIGNER is the service, and a
+// signer that guesses these produces envelopes the box silently refuses. The
+// symptom of that guess being wrong is a button that does nothing, which is the
+// hardest kind of wrong to find.
+//
+// The app has its own copies (MAX_ARG_NAME_BYTES in app/src/lib/device.ts) and
+// always will -- it is a browser and cannot import Go. Those are checked against
+// these by CI rather than trusted to stay in step.
+const (
+	MaxArgNameBytes  = 64
+	MaxArgValueBytes = 256
+)
+
 // MaxSubjectBytes bounds the account name in an envelope.
 //
 // Generous next to what fills it -- komizo signs a PocketBase record id, which
@@ -324,7 +340,7 @@ func VerifyCommand(keys []ed25519.PublicKey, raw []byte, serverID string, now ti
 		return c, signer, fmt.Errorf("this box does not know how to %q", c.Op)
 	}
 	for k, v := range c.Args {
-		if len(k) > 64 || len(v) > 256 {
+		if len(k) > MaxArgNameBytes || len(v) > MaxArgValueBytes {
 			return Command{}, nil, ErrCommandRefused
 		}
 	}
