@@ -61,6 +61,7 @@ type APIConfig struct {
 	// ReportPath and HistoryPath are the files rootd writes.
 	ReportPath  string
 	HistoryPath string
+	MetricsPath string
 
 	// InboxDir is where a signed command is left for rootd, and ResultsDir is
 	// where rootd leaves what happened. Two directions, two directories, each
@@ -76,6 +77,13 @@ type APIConfig struct {
 }
 
 // ReportResponse is the current state, whole.
+type MetricsResponse struct {
+	V       int     `json:"v"`
+	From    int64   `json:"from"`
+	To      int64   `json:"to"`
+	Metrics Metrics `json:"metrics"`
+}
+
 type ReportResponse struct {
 	V      int    `json:"v"`
 	Report Report `json:"report"`
@@ -179,6 +187,34 @@ func Handler(cfg APIConfig) http.Handler {
 	// What an app has been saying. NOT a read like the others: §5 asks that logs
 	// be authorised by the device rather than by the registry, so this takes a
 	// signed envelope as well as a token -- see logs.go.
+	// WHAT THE PROXY'S ACCESS LOG SAID, which until komizo#80 only the CLI
+	// could ask for -- it runs `komizo-box poll` over SSH, and the app has no
+	// SSH. The one column of the TUI's main page with no path to a device.
+	mux.HandleFunc("POST /v1/metrics", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(cfg, r) {
+			refuse(w)
+			return
+		}
+		c, ok := verifiedRead(cfg, w, r, OpMetricsRead)
+		if !ok {
+			return
+		}
+		from, to, ok := signedWindow(c, cfg.Now())
+		if !ok {
+			http.Error(w, "from and to must be unix seconds, and from must not be after to", http.StatusBadRequest)
+			return
+		}
+		m, err := ReadMetrics(cfg.MetricsPath, from, to)
+		if err != nil {
+			// The file is there and unreadable, which is a fault rather than an
+			// absence -- ReadMetrics already answers "nothing computed yet"
+			// with an empty window.
+			http.Error(w, "could not read what was measured", http.StatusServiceUnavailable)
+			return
+		}
+		writeJSON(w, MetricsResponse{V: APIVersion, From: from, To: to, Metrics: m})
+	})
+
 	mux.HandleFunc("POST /v1/logs", func(w http.ResponseWriter, r *http.Request) {
 		if !authorized(cfg, r) {
 			refuse(w)

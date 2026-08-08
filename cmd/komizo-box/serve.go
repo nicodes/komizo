@@ -48,6 +48,7 @@ func runServe(args []string) error {
 	confPath := fs.String("config", box.AgentConfPath, "the credential to read")
 	reportPath := fs.String("report", box.ReportPath, "the report to serve")
 	historyPath := fs.String("history", box.HistoryPath, "the history to serve")
+	metricsPath := fs.String("metrics", box.MetricsPath, "the measured traffic to serve")
 	inboxDir := fs.String("inbox", box.InboxDir, "where to leave a signed command for rootd")
 	resultsDir := fs.String("results", box.ResultsDir, "where rootd leaves what happened")
 	logsDir := fs.String("logs", box.LogsDir, "where rootd leaves each app's recent output")
@@ -107,6 +108,7 @@ func runServe(args []string) error {
 			OperatorKeys: opKeys,
 			ReportPath:   *reportPath,
 			HistoryPath:  *historyPath,
+			MetricsPath:  *metricsPath,
 			InboxDir:     *inboxDir,
 			ResultsDir:   *resultsDir,
 			LogsDir:      *logsDir,

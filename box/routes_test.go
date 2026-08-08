@@ -38,6 +38,10 @@ func TestEveryRouteNamesItsGuard(t *testing.T) {
 		// the same bar as the two above.
 		"POST /v1/logs": "serveLog",
 
+		// A read like the three above: what the proxy's access log said, counted
+		// by rootd where it can be read and served from beside the report.
+		"POST /v1/metrics": "verifiedRead",
+
 		// postCommand verifies the envelope before anything is claimed; the
 		// signature is the authority and the token is only transport.
 		"POST /v1/commands": "postCommand",

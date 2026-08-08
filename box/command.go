@@ -401,11 +401,26 @@ const (
 	// Neither is applied. See ApplyOps.
 	OpReportRead  = "report.read"
 	OpHistoryRead = "history.read"
+
+	// OpMetricsRead is what the proxy's access log says about an app: requests
+	// and failures per minute, per service.
+	//
+	// komizo#80. It was computed only by `komizo-box poll` and `monitor`, which
+	// the CLI runs over SSH, so the TUI could draw a sparkline and the app could
+	// not -- the one column of the interface with no path to a device. A READ,
+	// like the three above, and not applied.
+	//
+	// SEPARATE FROM history.read RATHER THAN FOLDED INTO IT. Samples are written
+	// on rootd's timer; metrics are computed from a log over an arbitrary
+	// window. Serving them together would force one cadence on two things that
+	// do not share one, and would grow every stored sample to carry counts it
+	// was not measured with.
+	OpMetricsRead = "metrics.read"
 )
 
 // commandOps is every op an ENVELOPE may name.
 var commandOps = []string{OpAppStart, OpAppStop, OpAppRestart, OpAppAdd,
-	OpLogsRead, OpReportRead, OpHistoryRead}
+	OpLogsRead, OpReportRead, OpHistoryRead, OpMetricsRead}
 
 // ApplyOps is the subset /v1/commands accepts, which is every op that CHANGES
 // something. app.add is one of them: it provisions, which is work for root.
