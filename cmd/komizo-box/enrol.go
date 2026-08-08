@@ -97,27 +97,32 @@ func runEnrol(args []string) error {
 	// or only through what it pushes. A service that offered no key is not a
 	// failure, but it is a difference somebody should not have to infer.
 	//
-	// THE REGISTRY KEY IS NOT ENOUGH ON ITS OWN. komizo-be#72 removed the reads
-	// that took only the registry's token, so answering for itself now needs a
-	// device key as well -- and this is the moment the operator is standing here
-	// with root, which is the one moment worth telling them. Review 1 on
-	// komizo#75 found this sentence surviving here after it was corrected in
-	// serve.go: the same false claim, at the point it does the most damage.
+	// THE REGISTRY KEY IS ENOUGH ON ITS OWN AGAIN, and this sentence has now been
+	// wrong in both directions, which is worth recording rather than tidying.
+	//
+	// komizo-be#72 removed the reads that took only the registry's token, so
+	// answering for itself needed a device key too, and Review 1 on komizo#75
+	// found the OLD sentence surviving here after serve.go had been corrected --
+	// the same false claim, at the point it does the most damage. komizo-be#180
+	// then made the registry key an authority to command as well as to verify,
+	// so a box that enrolled successfully answers reads AND takes orders from
+	// whoever owns it, with nothing further to plant.
+	//
+	// The lesson that outlives both is that this is the moment the operator is
+	// standing here with root. What is printed here is the last thing they are
+	// told before they walk away, so it has to describe the box they are
+	// actually leaving behind.
 	switch {
-	case conf.CanServe() && conf.CanCommand():
-		fmt.Println("this box can answer for itself; start komizo-api to serve it")
 	case conf.CanServe():
-		fmt.Println("this box has a registry key but no device key, so it will answer nothing yet.")
-		fmt.Println("every route takes an envelope signed by a device this box trusts:")
-		fmt.Println("    komizo enrol --host <this box> --device-key kmz_dev_...")
+		fmt.Println("this box can answer for itself; start komizo-api to serve it")
 	default:
 		fmt.Println("this service issued no registry key, so this box reports but does not serve")
 	}
-	// And the same for commands, which is a different question with a different
-	// answer: reading is authorised by the registry's signature, commanding is
-	// authorised only by a key an operator planted. A box with none is the
-	// normal box and is not warned about -- it is TOLD, once, because "why does
-	// the app say it cannot do that" should not need a support conversation.
+	// And the same for commands. It used to be a different question with a
+	// different answer -- reading was authorised by the registry's signature and
+	// commanding only by a key an operator planted -- and komizo-be#180 made
+	// them one question. Both now rest on the registry key, and the operator
+	// keys below are an ADDITIONAL set rather than the only one.
 	if dropped > 0 && !*forget {
 		// Said loudly, because this is the one way the service can reduce what a
 		// box trusts and the operator did not ask for it.
@@ -127,16 +132,31 @@ func runEnrol(args []string) error {
 	} else if dropped > 0 {
 		fmt.Printf("dropped %d device(s) this box used to take orders from\n", dropped)
 	}
-	if conf.CanCommand() {
+	switch {
+	case len(conf.OperatorKeys) > 0:
 		// PRINTED, so the person who pasted the command can see that what landed
 		// here is what their app showed them. That comparison is the only step in
 		// this design that depends on somebody looking, and it costs one line.
-		fmt.Printf("it will take orders from %d device(s):\n", len(conf.OperatorKeys))
+		//
+		// "AS WELL AS" is the whole correction. These keys used to be the only
+		// way in, so listing them was a complete account of who could command
+		// this box; after komizo-be#180 it is a partial one, and a partial
+		// account that reads like a complete one is how somebody concludes that
+		// removing the last device key locks komizo out. It does not.
+		fmt.Printf("it will take orders from your komizo account, and from %d device(s) as well:\n",
+			len(conf.OperatorKeys))
 		for _, k := range conf.OperatorKeys {
 			fmt.Printf("    %s\n", box.Fingerprint(k))
 		}
-	} else {
-		fmt.Println("no device keys were given, so this box will answer nothing -- not reads, not commands")
+	case conf.CanCommand():
+		// The ordinary box now, and the flow komizo-be#180 exists for: sign in on
+		// any device, and it works. Said out loud because it is ALSO the sentence
+		// that discloses what was traded for it -- komizo holds the key that
+		// signs for you, and the operator is entitled to learn that here rather
+		// than from a design doc.
+		fmt.Println("it will take orders from anyone signed into your komizo account, on any device")
+	default:
+		fmt.Println("this box is not enrolled with a registry, so it will take orders from nobody")
 	}
 	return nil
 }

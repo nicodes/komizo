@@ -65,22 +65,58 @@ func ParseDeviceKey(s string) (ed25519.PublicKey, error) {
 
 // TrustedKeys is what this box will verify a command against.
 //
+// TWO SOURCES, and the second one is a reversal recorded rather than edited
+// away. The operator keys above are carried here by a person with root. The
+// REGISTRY KEY is issued by the service at enrolment, and it is now also an
+// authority to command -- komizo-be#180.
+//
+// The whole of the argument for that is the product flow. Somebody runs
+// `komizo login`, runs `komizo init`, and expects the app to work on every
+// device they are signed into. Device keys made that a per-device root session:
+// each browser generated its own keypair and each one had to be planted on the
+// box by hand before any button did anything. That is not a step that can be
+// asked for, and it was the step that killed the flow.
+//
+// What is given up is stated plainly, because it is real: KOMIZO CAN COMMAND
+// EVERY ENROLLED BOX. app.add creates a deploy account, so that means root.
+// design/app-only.md §6 was written to prevent exactly this and is reversed by
+// komizo-be#180 -- see the reversal note there, which carries the argument.
+//
+// What is NOT given up is the shape of the check. This is a key in a trusted
+// set, verified by the same VerifyCommand, against the same audience and the
+// same expiry -- authority by a stated fact rather than by the absence of one.
+// The alternative considered was deleting verification and letting the bearer
+// token be the whole authority, which would have deleted every test asserting
+// an untrusted caller is refused: the written inventory of what this box
+// guarantees.
+//
+// A box with no registry key still commands nothing, and that is the same
+// sentence as before with a different subject: it is a box no service has
+// enrolled.
+//
 // ALL OR NOTHING. One unreadable key fails the set rather than being skipped,
 // because the alternative is a box that silently trusts fewer devices than the
 // operator believes it does -- and the way that is discovered is somebody's app
 // refusing to work on one box out of six, months later, with nothing to read.
 // A conf carrying a value somebody meant to work is the same argument the
-// service makes about an unreadable signing key.
-// Nothing calls this yet. The enforcement point is rootd verifying a command --
-// app-only.md §9 step 3 -- and until then the only way an unparseable key
-// reaches here is somebody editing agent.json by hand, because both flag
-// parsers refuse one on the way in.
+// service makes about an unreadable signing key. That now covers the registry
+// key too: a box whose registry key is corrupt refuses commands rather than
+// falling back to whatever operator keys happen to be there, because the
+// fallback would be a box quietly commanding-by-device on the day the service
+// stopped working, with nobody able to tell which mode they were in.
 func (c AgentConf) TrustedKeys() ([]ed25519.PublicKey, error) {
-	out := make([]ed25519.PublicKey, 0, len(c.OperatorKeys))
+	out := make([]ed25519.PublicKey, 0, len(c.OperatorKeys)+1)
 	for i, raw := range c.OperatorKeys {
 		k, err := ParseDeviceKey(raw)
 		if err != nil {
 			return nil, fmt.Errorf("operator key %d of %d: %w", i+1, len(c.OperatorKeys), err)
+		}
+		out = append(out, k)
+	}
+	if c.RegistryKey != "" {
+		k, err := ParsePublicKey(c.RegistryKey)
+		if err != nil {
+			return nil, fmt.Errorf("the registry key in this box's credential: %w", err)
 		}
 		out = append(out, k)
 	}
@@ -89,18 +125,25 @@ func (c AgentConf) TrustedKeys() ([]ed25519.PublicKey, error) {
 
 // CanCommand reports whether anything may tell this box to do something.
 //
-// Deliberately separate from CanServe. A box can serve reads with no operator
-// key at all -- reading is authorised by the registry's signature and commanding
-// is not -- and conflating them would mean planting a device key was the price
-// of looking at a chart.
+// Deliberately separate from CanServe, and no longer a different answer in
+// practice. A box can serve reads with no operator key at all, and since
+// komizo-be#180 it can be commanded with none either -- the registry key that
+// verifies its read tokens also verifies a command signed for its owner.
+//
+// The two stay separate functions because they are separate questions and the
+// answers can still differ: a box enrolled against a service that offers no
+// signing key has no registry key, serves nothing, and commands nothing; a box
+// with operator keys and no registry key commands but does not serve.
 //
 // It DOES require a server id, which couples command authority to registry
 // state: `komizo-box unenrol` deletes the whole credential, so leaving the
-// service also de-authorises every device. That follows from a command naming
-// the box it is for (app-only.md §4's srv), and it is worth knowing rather than
-// discovering -- a box taken off komizo is managed over SSH, as it was before
-// it ever joined.
-func (c AgentConf) CanCommand() bool { return len(c.OperatorKeys) > 0 && c.ServerID != "" }
+// service also de-authorises every device AND the service itself. That follows
+// from a command naming the box it is for (app-only.md §4's srv), and it is
+// worth knowing rather than discovering -- a box taken off komizo is managed
+// over SSH, as it was before it ever joined.
+func (c AgentConf) CanCommand() bool {
+	return c.ServerID != "" && (len(c.OperatorKeys) > 0 || c.RegistryKey != "")
+}
 
 // Fingerprint is a device key in the form somebody compares by eye.
 //

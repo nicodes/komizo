@@ -262,13 +262,22 @@ func TestEnrolmentDoesNotClaimAKeylessBoxCanAnswer(t *testing.T) {
 		want, deny string
 	}{
 		{
+			// INVERTED BY komizo-be#180, and the old expectation is left in the
+			// comment because it is the more interesting half of the history: this
+			// case used to demand "will answer nothing yet", which was true when a
+			// device key was the only authority to command. It is now the ordinary
+			// working box -- enrolled, readable, commandable by its owner -- so
+			// demanding the old sentence would be demanding a lie.
 			name: "no device key", deviceKey: false,
-			want: "will answer nothing yet",
-			deny: "can answer for itself",
+			want: "anyone signed into your komizo account",
+			deny: "will answer nothing yet",
 		},
 		{
+			// A device key does not REPLACE that; it adds to it. The word under
+			// test is "as well", because dropping it is how this line quietly goes
+			// back to claiming the planted devices are the whole list.
 			name: "with a device key", deviceKey: true,
-			want: "can answer for itself",
+			want: "as well",
 			deny: "will answer nothing yet",
 		},
 	} {
