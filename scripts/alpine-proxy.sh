@@ -264,7 +264,7 @@ services:
     # Unbounded by default, which is a disk filling up slowly enough that
     # nobody notices until it has. This is Caddy's RUNTIME log -- TLS renewals,
     # ACME, startup. The access log is a separate file under the logs volume,
-    # written by a per-site-block `log` directive in each generated route, and
+    # written by a per-site-block "log" directive in each generated route, and
     # it rotates itself.
     logging:
       driver: json-file
