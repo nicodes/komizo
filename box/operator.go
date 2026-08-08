@@ -202,3 +202,110 @@ func (d *DeviceKeyList) Set(v string) error {
 // DeviceKeyUsage is the one wording for the flag, so the two commands that take
 // it cannot describe it differently.
 const DeviceKeyUsage = "a device that may command this box, from the app (repeatable)"
+
+// LogKeyPrefix marks an account's log key.
+//
+// Its own prefix, for the reason DeviceKeyPrefix has one and then some: there
+// are now four opaque base64-ish blobs in this system -- a registry key, an
+// agent token, a device key and this -- and a person moving one between two
+// windows cannot tell them apart by looking. Planting the wrong one as a log
+// key is planting an authority nobody meant to grant.
+const LogKeyPrefix = "kmz_log_"
+
+// FormatLogKey renders an account log key as it is carried and stored.
+func FormatLogKey(pub ed25519.PublicKey) string { return LogKeyPrefix + b64(pub) }
+
+// ParseLogKey reads one, and is strict about the prefix.
+//
+// STRICT ABOUT THIS ONE IN PARTICULAR. The failure it prevents is planting the
+// REGISTRY key here -- which is the one string that would silently undo
+// komizo-be#187 entirely, because it is exactly what a service would send if it
+// wanted to read your logs, and it is the same 32 bytes the box already holds
+// and trusts for everything else. A prefix will not stop a determined service;
+// it stops the accident, and the accident is the likely one.
+func ParseLogKey(s string) (ed25519.PublicKey, error) {
+	s = strings.TrimSpace(s)
+	rest, ok := strings.CutPrefix(s, LogKeyPrefix)
+	if !ok {
+		return nil, fmt.Errorf("a log key starts with %s -- this one does not, so it is some other kind of credential", LogKeyPrefix)
+	}
+	b, err := unb64(rest)
+	if err != nil {
+		return nil, fmt.Errorf("that log key is not valid base64: %w", err)
+	}
+	if len(b) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("that log key is %d bytes, want %d", len(b), ed25519.PublicKeySize)
+	}
+	return ed25519.PublicKey(b), nil
+}
+
+// LogTrustedKeys is what this box will verify a LOG read against.
+//
+// Operator keys plus account log keys, AND NOT THE REGISTRY KEY. That absence
+// is the whole of komizo-be#187 and it is the one thing about this function
+// worth checking: TrustedKeys above deliberately includes the registry key so
+// that any signed-in device can command this box, and using it here would let
+// whoever holds komizo's signing key read every log on every enrolled box --
+// which app-only.md §5 refused, and which komizo-be#180 accidentally allowed.
+//
+// BUILT SEPARATELY RATHER THAN FILTERED. Deriving this from TrustedKeys by
+// removing the registry key would be shorter and would fail OPEN the day
+// somebody refactors the derivation -- and failing open here is silent, because
+// a log that can be read looks exactly like a log that should be readable.
+//
+// Operator keys are still in it. They were §5's original answer, the CLI's
+// over-SSH path still uses them, and an operator who planted one has root on
+// the box anyway -- so this grants them nothing they did not already have.
+//
+// ALL OR NOTHING, for the reason TrustedKeys gives: a set that silently trusts
+// fewer keys than the operator believes is discovered months later with nothing
+// to read.
+func (c AgentConf) LogTrustedKeys() ([]ed25519.PublicKey, error) {
+	out := make([]ed25519.PublicKey, 0, len(c.OperatorKeys)+len(c.LogKeys))
+	for i, raw := range c.OperatorKeys {
+		k, err := ParseDeviceKey(raw)
+		if err != nil {
+			return nil, fmt.Errorf("operator key %d of %d: %w", i+1, len(c.OperatorKeys), err)
+		}
+		out = append(out, k)
+	}
+	for i, raw := range c.LogKeys {
+		k, err := ParseLogKey(raw)
+		if err != nil {
+			return nil, fmt.Errorf("log key %d of %d: %w", i+1, len(c.LogKeys), err)
+		}
+		out = append(out, k)
+	}
+	return out, nil
+}
+
+// CanReadLogs reports whether anybody may read this box's logs.
+//
+// Separate from CanCommand, and the answers genuinely differ: an ordinary box
+// today takes orders from its owner's account and refuses every log, because
+// commanding needs the registry key and reading a log needs one komizo does not
+// have. That is not a broken state and must not be reported as one.
+func (c AgentConf) CanReadLogs() bool {
+	return c.ServerID != "" && (len(c.OperatorKeys) > 0 || len(c.LogKeys) > 0)
+}
+
+// LogKeyList collects a repeatable --log-key, the way DeviceKeyList does.
+type LogKeyList []string
+
+func (d *LogKeyList) String() string { return strings.Join(*d, ",") }
+
+func (d *LogKeyList) Set(v string) error {
+	v = strings.TrimSpace(v)
+	if _, err := ParseLogKey(v); err != nil {
+		return err
+	}
+	if slices.Contains(*d, v) {
+		return nil
+	}
+	*d = append(*d, v)
+	return nil
+}
+
+// LogKeyUsage is the one wording, so the commands that take it cannot describe
+// it differently.
+const LogKeyUsage = "an account that may read this box's logs (repeatable)"

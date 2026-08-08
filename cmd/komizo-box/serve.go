@@ -81,6 +81,24 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("%s holds an unusable device key: %w", *confPath, err)
 	}
+	// A SECOND SET, for logs alone -- komizo-be#187. It is operator keys plus
+	// account log keys and NOT the registry key, so whoever holds komizo's
+	// signing key can command this box and cannot read a line of its output.
+	// See box.LogTrustedKeys for why it is built rather than filtered.
+	logKeys, err := conf.LogTrustedKeys()
+	if err != nil {
+		return fmt.Errorf("%s holds an unusable log key: %w", *confPath, err)
+	}
+	if !conf.CanReadLogs() {
+		// Said once, because it is a state somebody will otherwise diagnose as a
+		// broken box. An ordinary box today commands fine and serves no logs:
+		// commanding rests on the registry key and reading a log deliberately
+		// does not, so there is nothing wrong here and nothing to repair on the
+		// machine. The fix is on the account, not the server.
+		fmt.Fprintln(os.Stderr, "no log keys, so this box will not serve logs -- everything else works.")
+		fmt.Fprintln(os.Stderr, "set a log passphrase in the app, then re-run:")
+		fmt.Fprintln(os.Stderr, "    komizo enrol --host <this box> --log-key kmz_log_...")
+	}
 	// THE WARNING THAT USED TO BE HERE IS GONE BECAUSE IT COULD NO LONGER FIRE,
 	// and that is worth a paragraph rather than a silent deletion.
 	//
@@ -113,6 +131,7 @@ func runServe(args []string) error {
 			ServerID:     conf.ServerID,
 			RegistryKey:  key,
 			OperatorKeys: opKeys,
+			LogKeys:      logKeys,
 			ReportPath:   *reportPath,
 			HistoryPath:  *historyPath,
 			MetricsPath:  *metricsPath,
