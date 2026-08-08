@@ -1,5 +1,4 @@
-// Package app is komizo: the commands, the interface, and everything they do
-// to a server.
+// Package app is komizo: the commands, and everything they do to a server.
 //
 // It runs on YOUR machine. Every command opens an SSH connection itself; you do
 // not run anything on the server by hand. The server-side work is a shell
@@ -204,16 +203,9 @@ Run "komizo" on its own for the whole list.`, args[0], args[0], args[0], args[0]
 func Usage() {
 	fmt.Print(`komizo - deploy to your own servers from GitHub Actions
 
-  komizo
-  komizo root@your-server
-  komizo root@your-server --port 2222
-
-On its own it asks which server; with an address it goes straight there. Either
-way opens the interface, and everything -- adding an app, rotating its deploy
-key, removing one -- is done from there. It runs on your machine and connects to the
-server itself; you never run anything on the box by hand.
-
-The same operations are available non-interactively, for scripting:
+Every operation is a command, and each takes the server as a flag. komizo runs
+on your machine and connects to the box itself; you never run anything on it by
+hand.
 
   komizo login
   komizo logout
@@ -242,9 +234,9 @@ init" does at the end, and what "komizo enrol" does when you do not pass a token
 appear in the app until you enrol it.
 
 Everything else -- adding an app, starting or stopping one, reading a report,
-repairing the proxy, the interface -- is you and your server over SSH, and needs
-nothing from komizo at all. The session is read from disk rather than checked
-over the network, so an outage costs registration and nothing else.
+repairing the proxy -- is you and your server over SSH, and needs nothing from
+komizo at all. The session is read from disk rather than checked over the
+network, so an outage costs registration and nothing else.
 
 "komizo init" prepares a fresh server: Docker, the shared network, and the one
 Caddy that terminates TLS for every app on the box. It is a separate step from
@@ -252,7 +244,7 @@ adding an app, so a server is either set up or it is not.
 
 "komizo update" re-runs all of that on a server that already has it, which is
 how a box is brought up to a newer komizo and how one with a missing or broken
-agent is repaired. It is the same operation as "u" in the interface.
+agent is repaired. "komizo report" says when a box is due one.
 
 "komizo start", "stop", "restart" and "logs" act on one app. They run through
 the agent on the box rather than composing a docker command here, so they take
