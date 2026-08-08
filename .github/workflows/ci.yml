@@ -29,16 +29,40 @@ concurrency:
 jobs:
   ci:
     runs-on: ubuntu-latest
-    # Bounded, so a step that hangs fails here rather than sitting until the
-    # runner's own timeout hours later. The Go suite alone is allowed 5m.
-    timeout-minutes: 20
+    # A BACKSTOP, NOT THE GUARD. The guard is on the steps below.
+    #
+    # nicodes/komizo-be#147. A job's timeout-minutes INCLUDES QUEUE TIME, and a
+    # step's does not. During the Actions incident on 2026-08-06 three runs
+    # across two repositories were killed by a 20-minute job ceiling having done
+    # no work at all: two never acquired a runner, and one reached its steps 13
+    # minutes in, passed gofmt, vet, five test packages, the cross-compile and
+    # the version assertion, and was killed anyway.
+    #
+    # So the guard fired most readily in exactly the situation where it had the
+    # least to say, and the failure it produced was indistinguishable from a
+    # real one -- a red tick that meant "GitHub was slow", on a run that was
+    # green. That is the shape docs/checks.md keeps recording, in the thing
+    # meant to catch it.
+    #
+    # A step cannot hang before it starts, so time spent waiting for a runner is
+    # time no ceiling should be counting. This number is now only here to stop a
+    # job holding a slot for six hours if something escapes every step bound
+    # below; it is deliberately larger than the sum of them, so it can only fire
+    # when one of them has failed to.
+    timeout-minutes: 45
     steps:
+      # Every step that can hang carries its own bound, and each is roughly
+      # three times its observed time -- close enough to catch a hang, loose
+      # enough that a cold cache or a slow mirror is not reported as one.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 5
 
       # mise rather than setup-go, so every repository in the fleet installs its
       # toolchain the same way. The cost is that the Go version now lives in
       # .mise.toml as well as go.mod; the step below is what keeps them honest.
       - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+        # Downloads a toolchain, so it depends on somebody else's mirror.
+        timeout-minutes: 10
 
       - name: Toolchain pins agree
         shell: bash
@@ -59,6 +83,7 @@ jobs:
       # What setup-go did for free. mise installs the toolchain and caches
       # nothing else, so this is what stops every run recompiling from cold.
       - name: Cache Go build
+        timeout-minutes: 10
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -71,7 +96,11 @@ jobs:
       # Built first: a compile error should fail before a test suite spends
       # five minutes reaching the same conclusion more slowly.
       - name: Test
+        # The Go suite bounds itself at 5m; this bounds everything around it,
+        # including the shellcheck pin and the scripts that run real sh.
+        timeout-minutes: 15
         uses: ./.github/actions/test
 
       - name: Build
+        timeout-minutes: 15
         uses: ./.github/actions/build
