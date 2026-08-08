@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -24,14 +25,25 @@ func installAgent(t target) error {
 	if err != nil {
 		return err
 	}
-	bin, err := agent.For(arch)
+	// EMBEDDED IF THIS KOMIZO CARRIES ONE, BUILT IF IT DOES NOT.
+	//
+	// A release archive carries the agents, so this needs no toolchain and no
+	// network. A `go install`/`go run` build carries none -- the agents are
+	// gitignored build artifacts, absent from the module the proxy serves -- and
+	// for that case agent.Get compiles one from the same module at the same
+	// version. See internal/agent/build.go for why building beats fetching.
+	//
+	// The stamp comes back with the bytes because the two paths record
+	// different KINDS of stamp, and only agent.Get knows which one it took.
+	path, version := moduleRef()
+	bin, stamp, err := agent.Get(context.Background(), path, version, arch)
 	if err != nil {
 		return err
 	}
 	if err := stageAgent(t, bin); err != nil {
 		return fmt.Errorf("could not copy the agent to %s: %w", t.host, err)
 	}
-	return t.runScript(scripts.AgentInstall(agent.Stamp(), versionText()), nil)
+	return t.runScript(scripts.AgentInstall(stamp, versionText()), nil)
 }
 
 // boxArch asks the box what it is.

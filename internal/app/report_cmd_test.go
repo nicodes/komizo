@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/nicodes/komizo/box"
+	"github.com/nicodes/komizo/internal/agent"
 )
 
 // `komizo report` says whether the agent on a box is BEHIND, not just what it is.
@@ -333,4 +334,39 @@ func reachable(t *testing.T) {
 	orig := ensureReachable
 	ensureReachable = func(target, bool) error { return nil }
 	t.Cleanup(func() { ensureReachable = orig })
+}
+
+// A BOX SET UP BY A `go run` KOMIZO IS NOT PERMANENTLY OUT OF DATE.
+//
+// nicodes/komizo-be#177. A komizo carrying embedded agents stamps by CONTENT; one
+// that compiled its agent on demand stamps by VERSION, prefixed "v:". Comparing a
+// hash to a version string always differs, so without this the two would read each
+// other's boxes as out of date forever -- a never-settling false alarm on the one
+// screen that exists to say when to act.
+func TestAVersionStampedBoxIsNotReportedOutOfDateForever(t *testing.T) {
+	k := box.KomizoInstall{
+		Installed: true,
+		Version:   versionText(),
+		Stamp:     agent.BuiltStamp(versionText()),
+	}
+	if s, _ := agentBehind(k, "root@box"); s != "" {
+		t.Errorf("a box set up by a source-built komizo of THIS version reads as behind: %q", s)
+	}
+
+	// AND THE COMPARISON IS NOT SIMPLY SWITCHED OFF. A version-stamped box on an
+	// older version must still be reported -- the stamp abstains, the version does
+	// not.
+	old := k
+	old.Version = "0.0.1"
+	if s, _ := agentBehind(old, "root@box"); s == "" {
+		t.Error("a version-stamped box on an older komizo was reported as current")
+	}
+
+	// AND TWO CONTENT HASHES STILL DISAGREE, or the check has stopped working for
+	// the release path it was written for.
+	hashed := k
+	hashed.Stamp = "0badc0ffee11"
+	if s, _ := agentBehind(hashed, "root@box"); s == "" {
+		t.Error("a box carrying a different agent was reported as current")
+	}
 }
