@@ -116,17 +116,28 @@ func signalContext() (context.Context, context.CancelFunc) {
 }
 
 // probe is the machine, with the version this binary was built as.
-// probeRoot is prefixed to every absolute path the probe reads.
-//
-// Empty in production, as box.Probe documents. rootd sets it from --root so a
-// test can give the tick a machine to look at -- without it the daemon reads
-// /srv and /proc whatever a test does, which is why asserting WHICH window it
-// measures was impossible even after --state made the tick runnable
-// (komizo-be#166).
-var probeRoot string
+func probe() *box.Probe { return probeAt("") }
 
-func probe() *box.Probe {
-	return &box.Probe{Now: box.Now, Agent: version, Root: probeRoot}
+// probeAt is the same machine seen through a prefix, which box.Probe documents
+// as "empty in production".
+//
+// A PARAMETER RATHER THAN A FLAG, and that is the security decision rather than
+// a style one. The first version of komizo-be#166 shipped `--root` on rootd
+// with the help text "tests only". Review 1 measured what that flag does on a
+// real box: it prefixes every path the probe READS and nothing it WRITES, so
+// `komizo-box rootd --root /tmp/x` reads a fake machine and overwrites the real
+// report.json and metrics.json. The docker version and the disk figures do not
+// go through Probe.path, so they stay real -- and the result is a plausible
+// report of a healthy, correctly-sized box with no apps and no komizo
+// installed. The agent posts it. An operator following the help gets a
+// confident wrong answer instead of an obviously broken one.
+//
+// Reachable only from source, so there is no build of this binary -- tagged or
+// otherwise -- that can be pointed at a machine that does not exist. It also
+// ends the package variable the flag needed, which leaked across tests in one
+// binary and would have raced the moment a rootd test wanted t.Parallel().
+func probeAt(root string) *box.Probe {
+	return &box.Probe{Now: box.Now, Agent: version, Root: root}
 }
 
 // runRootd is the timer. Root runs this; nothing else does.
@@ -135,7 +146,11 @@ func probe() *box.Probe {
 // design/appify.md §3 is built around: an unprivileged agent reading a file
 // cannot make root code run, whenever and as often as it likes, the way a doas
 // rule would let it.
-func runRootd(args []string) error {
+func runRootd(args []string) error { return runRootdAt("", args) }
+
+// runRootdAt is runRootd against a probe root. Production passes "": see
+// probeAt for why this is not a flag.
+func runRootdAt(root string, args []string) error {
 	fs := flag.NewFlagSet("rootd", flag.ContinueOnError)
 	interval := fs.Duration("interval", time.Minute, "how often to probe")
 	confPath := fs.String("config", box.AgentConfPath, "the credential whose keys commands are verified against")
@@ -152,7 +167,6 @@ func runRootd(args []string) error {
 	// the report or the history any more than for the metrics. komizo#84.
 	stateDir := fs.String("state", box.StateDir, "the state directory to prepare")
 	socketDir := fs.String("socket-dir", box.APISocketDir, "the directory the API socket lives in")
-	root := fs.String("root", "", "prefix every path the probe reads (tests only)")
 	volEvery := fs.Int("volumes-every", 15, "measure volumes every Nth reading (0 disables)")
 	once := fs.Bool("once", false, "probe once and exit")
 	if err := fs.Parse(args); err != nil {
@@ -198,7 +212,6 @@ func runRootd(args []string) error {
 	// The PARENT first. ServedDir is inside the state directory, which is closed
 	// so that apps/<app>.env stays closed -- and a directory whose parent cannot
 	// be entered is one nothing can reach, whatever its own mode says.
-	probeRoot = *root
 	if err := box.PrepareStateDir(*stateDir); err != nil {
 		return err
 	}
@@ -256,9 +269,9 @@ func runRootd(args []string) error {
 		wantVols := *volEvery > 0 && n%*volEvery == 0
 		n++
 
-		r := probe().Report(ctx)
+		r := probeAt(root).Report(ctx)
 		if wantVols && r.Server.Ready() {
-			r.System.Volumes = probe().Volumes(ctx, "")
+			r.System.Volumes = probeAt(root).Volumes(ctx, "")
 		}
 		if err := box.WriteReport(*reportPath, r); err != nil {
 			fmt.Fprintf(os.Stderr, "komizo-box: writing report: %v\n", err)
@@ -287,7 +300,7 @@ func runRootd(args []string) error {
 		// ReadMetrics then answered every query with a nil span, so the app
 		// blanked nothing and drew zeros. box/metrics.go does the same clip and
 		// has always had this guard; the write side copied everything except it.
-		m := probe().Metrics(to-box.MetricsWindow, to)
+		m := probeAt(root).Metrics(to-box.MetricsWindow, to)
 		if m.Span != nil {
 			lo, hi := m.Span.From, m.Span.To
 			if lo < to-box.MetricsWindow {
