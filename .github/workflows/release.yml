@@ -28,19 +28,27 @@ concurrency: release-${{ github.repository }}
 jobs:
   release:
     runs-on: ubuntu-latest
-    # Bounded, so a step that hangs fails here rather than sitting until the
-    # runner's own timeout hours later.
-    timeout-minutes: 20
+    # A BACKSTOP, NOT THE CEILING. The ceiling is on the steps below.
+    #
+    # nicodes/komizo-be#147 moved this off the job in ci.yml and missed every
+    # other workflow. A job's timeout-minutes INCLUDES QUEUE TIME and a step's
+    # does not, so this fired most readily on the days GitHub was slowest --
+    # and on THIS job a kill lands somewhere particular: it creates a tag, and a
+    # tag is the one thing here that cannot be taken back (a Go module version
+    # is permanent once anything has fetched it).
+    timeout-minutes: 75
     permissions:
       contents: write # create the tag and the release
       id-token: write # OIDC identity for build provenance
       attestations: write # record the provenance attestation
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 5
         with:
           fetch-depth: 0
 
       - name: Determine release version
+        timeout-minutes: 5
         id: release
         env:
           BUMP: ${{ inputs.bump }}
@@ -76,8 +84,10 @@ jobs:
       # toolchain the same way. The cost is that the Go version now lives in
       # .mise.toml as well as go.mod; the step below is what keeps them honest.
       - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+        timeout-minutes: 10
 
       - name: Toolchain pins agree
+        timeout-minutes: 5
         shell: bash
         run: |
           set -euo pipefail
@@ -96,6 +106,7 @@ jobs:
       # What setup-go did for free. mise installs the toolchain and caches
       # nothing else, so this is what stops every run recompiling from cold.
       - name: Cache Go build
+        timeout-minutes: 10
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -117,11 +128,13 @@ jobs:
       # and the exception cost more to remember than the runner minutes it saved
       # on releases that were going to fail anyway.
       - name: Build
+        timeout-minutes: 15
         uses: ./.github/actions/build
         with:
           version: ${{ steps.release.outputs.version }}
 
       - name: Test
+        timeout-minutes: 15
         uses: ./.github/actions/test
 
       # This binary connects to your server AS ROOT and runs shell there, which
