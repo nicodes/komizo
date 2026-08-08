@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 )
 
 // actionsVersion is the komizo-actions release the pasted workflow pins.
@@ -188,4 +189,42 @@ func printNextSteps(o addOpts, t target, knownHosts, key string) {
           registry-token: ${{ secrets.GITHUB_TOKEN }}
 
 `, o.app, portLine, o.config, actionsVersion)
+}
+
+// since is how long ago something happened, in the one format this page uses
+// for every duration on it: largest unit first, zero units left out.
+//
+//	1d 12h 4m    4m    2h 30m    1d 5m    now
+//
+// Truncated rather than rounded, because a row that says "3h" and a row that
+// says "2h 59m" should not be able to describe the same moment.
+//
+// No seconds. Minutes is the finest resolution anything here is worth watching
+// at, and a number ticking every second draws the eye to the row that changed
+// rather than to the row that is wrong.
+func since(t time.Time) string {
+	if t.IsZero() {
+		return "—"
+	}
+	d := time.Since(t)
+	if d < time.Minute {
+		// Covers a clock ahead of ours as well; a skew between here and the box
+		// is not worth reporting as a negative age.
+		return "now"
+	}
+
+	days, hours, mins := int(d.Hours())/24, int(d.Hours())%24, int(d.Minutes())%60
+	var parts []string
+	if days > 0 {
+		parts = append(parts, fmt.Sprintf("%dd", days))
+	}
+	if hours > 0 {
+		parts = append(parts, fmt.Sprintf("%dh", hours))
+	}
+	// Minutes are shown unless they are zero AND something larger was, so a
+	// duration is never an empty string.
+	if mins > 0 || len(parts) == 0 {
+		parts = append(parts, fmt.Sprintf("%dm", mins))
+	}
+	return strings.Join(parts, " ")
 }

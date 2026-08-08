@@ -12,16 +12,23 @@ import (
 )
 
 type addOpts struct {
-	host       string
-	app        string
-	config     string
-	user       string
-	appDir     string
-	keyPath    string
-	knownAs    string
-	port       int
-	hardenSSHD bool
-	rotateKey  bool
+	host    string
+	app     string
+	config  string
+	user    string
+	appDir  string
+	keyPath string
+	knownAs string
+	// keepKey leaves the deploy key alone, for an edit that is about settings.
+	keepKey bool
+	// clearKnownAs is whether --known-as was GIVEN, as opposed to what it was
+	// given. An empty value means two different things -- "I did not say" and
+	// "I say: none" -- and the box needs to be told which. fs.Visit is the only
+	// thing that knows.
+	clearKnownAs bool
+	port         int
+	hardenSSHD   bool
+	rotateKey    bool
 	// acceptHostKey records an unseen server's key instead of refusing. Only
 	// ever trust-on-first-use, which is why it is opt-in rather than the
 	// default: it is the one moment nothing can verify the box for you.
@@ -40,6 +47,18 @@ func (o *addOpts) bind(fs *flag.FlagSet) {
 	fs.BoolVar(&o.hardenSSHD, "harden-sshd", false, "also disable password auth and root password login for EVERY user")
 	fs.BoolVar(&o.acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
 	fs.BoolVar(&o.rotateKey, "rotate-key", false, "replace the deploy key and reprint the values; skip the rest")
+	// KEEPING THE KEY IS WHAT A SETTINGS CHANGE WANTS, and it had no flag.
+	//
+	// Review 1 on nicodes/komizo-be#55: `keepKey` and the box's support for it
+	// both survived the interface's deletion, and the only caller did not --
+	// the interface's `c`, which said on its own result screen "Nothing in
+	// GitHub changed". So re-pointing an app at a new config image issued the
+	// repo a deploy key it does not know about, and its next deploy failed for
+	// a reason nobody would connect to what they just did.
+	//
+	// `komizo update` is not the alternative: it keeps the key but reads the
+	// image back off the record and cannot change it.
+	fs.BoolVar(&o.keepKey, "keep-key", false, "change settings without issuing a new deploy key (CI keeps working)")
 }
 
 // deriveUser is the deploy account for an app. It mirrors what the server
@@ -131,6 +150,18 @@ func RunAdd(args []string) error {
 	if err != nil {
 		return err
 	}
+	// ASKED OF THE FLAG SET, not inferred from the value. `--known-as ""` is how
+	// somebody removes the last extra name, and it is indistinguishable from
+	// not passing the flag at all unless the parser is asked. The box reads an
+	// empty KNOWN_AS without CLEAR_KNOWN_AS as "unchanged" and restores what it
+	// had recorded -- so editing the list down to nothing was the one edit that
+	// silently did nothing. Review 1 on nicodes/komizo-be#55.
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "known-as" {
+			o.clearKnownAs = true
+		}
+	})
+
 	var knownAs []string
 	for _, a := range strings.Split(o.knownAs, ",") {
 		a = strings.TrimSpace(a)
@@ -168,8 +199,12 @@ func RunAdd(args []string) error {
 		appDir:  o.appDir,
 		keyPath: o.keyPath,
 		knownAs: knownAs,
-		rotate:  o.rotateKey,
-		harden:  o.hardenSSHD && !o.rotateKey,
+		// Only an answer when the flag was given AND resolved to nothing.
+		// Passing names and clearing are not the same request.
+		clearKnownAs: o.clearKnownAs && len(knownAs) == 0,
+		keepKey:      o.keepKey,
+		rotate:       o.rotateKey,
+		harden:       o.hardenSSHD && !o.rotateKey,
 	}, cliProgress{}, tgt.runScript)
 	if err != nil {
 		return err
@@ -366,4 +401,63 @@ func boolEnv(b bool) string {
 		return "1"
 	}
 	return "0"
+}
+
+// addResult is what `add` and `rotate` leave the user with: the two things
+// GitHub needs.
+type addResult struct {
+	app string
+	// host is the address CI should dial: what KOMIZO_SERVER_URL is set to. Carried
+	// on the result because the screen handing over the other two values is
+	// where someone is already copying from.
+	host string
+	// key is the private half, held in memory for as long as this screen is
+	// open and written nowhere. See keys.go.
+	key string
+	// keyPath is set only when --key asked for a copy on disk, which the
+	// interface never does.
+	keyPath    string
+	knownHosts string
+	// port is the SSH port CI has to dial. Carried so the screen can say so:
+	// KOMIZO_SERVER_URL is the bare hostname (see target.serverURL), and on a box
+	// that is not on 22 the port has to reach the workflow some other way -- the
+	// deploy action's own `port:` input. It used to be folded into the URL as
+	// "[host]:2222", which is a known_hosts pattern that the connect action
+	// refuses outright.
+	port int
+	// config is what the box ended up pinned to -- given on a setup, read back
+	// off the server on a rotation.
+	config  string
+	rotated bool
+
+	// Both values have to reach GitHub, so both are selectable and both are
+	// copyable.
+	//
+	// onClipboard is which one is there NOW, not which have ever been copied.
+	// There is one clipboard: ticking every value that had been copied at some
+	// point claimed two things were on it at once, and read as the mark being
+	// stuck to the first row.
+	cursor      int
+	onClipboard int // index, or -1 for nothing
+	copyErr     string
+
+	// Set when this was a config-image change rather than a fresh setup: the
+	// GitHub values are unchanged, so telling someone to paste them again
+	// would be wrong.
+	changedConfig string
+
+	// Set when this was an edit to the names CI dials the app by.
+	//
+	// Unlike a config-image change, this one DOES move a value in GitHub:
+	// known_hosts entries are written per name, so the app's KOMIZO_KNOWN_HOSTS
+	// is a different string afterwards and the repo has to be given it.
+	//
+	// A flag beside the list rather than "the list is not nil", because clearing
+	// the names is one of the edits and an emptied list is indistinguishable
+	// from an absent one -- splitNames returns nil for both. Reading the
+	// difference off a slice header would have made the emptied case render as a
+	// fresh app setup, telling someone to paste a deploy key that was never
+	// generated.
+	namesChanged bool
+	changedNames []string
 }

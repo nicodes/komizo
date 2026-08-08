@@ -38,16 +38,22 @@ import (
 // produced by executing alpine.sh's own blocks, driven by the environment the
 // Go code actually builds.
 
-// --- layer 1: both surfaces call it ----------------------------------------
+// --- layer 1: the update path calls it --------------------------------------
 
-// A capability on one surface and not the other is the shape of bug this whole
-// change is about, one level up: `komizo update` and the interface's `u` are
+// A capability on one surface and not the other was the shape of bug this whole
+// change is about, one level up: `komizo update` and the interface's `u` were
 // the same operation, and the sentence in update.go promising to re-run "the
 // whole setup" was true of the comment and of neither caller.
+//
+// The interface is gone (nicodes/komizo-be#55), so there is one row here now --
+// and a one-row table is a table that says nothing about a row somebody adds
+// later. What stops that is parity_setup_test.go's
+// TestTheSetupPathsAreTheOnesWeKnowAbout, which finds every function that
+// provisions a box and fails on one it has not been told about. A second update
+// path cannot appear without going red there first.
 func TestEveryUpdatePathRefreshesEveryAppsScripts(t *testing.T) {
 	for _, tc := range []struct{ file, fn string }{
 		{"update.go", "RunUpdate"},
-		{"tui_server.go", "startKomizoUpdate"},
 	} {
 		body := functionBody(t, sourceOf(t, tc.file), tc.fn)
 		if !strings.Contains(body, "refreshBoxApps") {
