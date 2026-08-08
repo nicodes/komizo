@@ -1,24 +1,184 @@
 package app
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
 
-// Setting a server up files it under an account -- from BOTH surfaces.
+// Setting a server up files it under an account, and installs the agent.
 //
-// This shipped working from `komizo init` and not from the interface, which is
-// the surface most people use. The capability was written for one and the other
-// was never given it, so a box set up from the interface never appeared in the
-// app and there was nothing on screen to say why.
+// This shipped working from `komizo init` and not from the interface, which was
+// then the surface most people used: the capability was written for one and the
+// other was never given it, so a box set up from the interface never appeared in
+// the app and there was nothing on screen to say why.
 //
-// A test that reads the source rather than runs it, because the alternative is
-// standing up a service and a box to prove a function is called. What is being
-// guarded here is not behaviour under load, it is somebody adding a third
-// setup path and giving it to one surface again.
+// THE SECOND SURFACE IS GONE (nicodes/komizo-be#55) and this file is not,
+// because the failure it caught was never really about having two surfaces. It
+// was about a second code path to the same operation, written by somebody who
+// did not know the first one had a step in it. `komizo update` is that second
+// path today.
+//
+// So this no longer takes a hardcoded list of paths -- a list is what let the
+// original bug through, since the interface's path was simply not on it. It
+// FINDS every function that provisions a box and holds each one to the rules.
+
+// setupPaths is every function in this package that runs the provisioning
+// script, found rather than listed.
+//
+// go/ast rather than a grep: a grep over the source counts the constant's name
+// wherever it appears, including in a comment saying a function does not run it,
+// and cannot tell which function it appeared inside.
+func setupPaths(t *testing.T) map[string]*ast.FuncDecl {
+	t.Helper()
+	fset := token.NewFileSet()
+	pkg, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool {
+		return !strings.HasSuffix(fi.Name(), "_test.go")
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]*ast.FuncDecl{}
+	for _, p := range pkg {
+		for _, f := range p.Files {
+			for _, d := range f.Decls {
+				fn, ok := d.(*ast.FuncDecl)
+				if !ok || fn.Body == nil {
+					continue
+				}
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					sel, ok := n.(*ast.SelectorExpr)
+					if !ok || sel.Sel.Name != "AlpineInitScript" {
+						return true
+					}
+					// `komizo script init` PRINTS the script rather than
+					// running it, which is the one legitimate mention that is
+					// not a setup path.
+					if isPrintArg(fn, sel) {
+						return true
+					}
+					found[fn.Name.Name] = fn
+					return true
+				})
+			}
+		}
+	}
+	if len(found) == 0 {
+		t.Fatal("no function in this package runs the provisioning script -- " +
+			"either setup moved or this test stopped being able to find it")
+	}
+	return found
+}
+
+// isPrintArg reports whether the script is being handed to fmt.Print rather than
+// to a runner.
+func isPrintArg(fn *ast.FuncDecl, target *ast.SelectorExpr) bool {
+	printed := false
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok || !strings.HasPrefix(sel.Sel.Name, "Print") {
+			return true
+		}
+		for _, a := range call.Args {
+			if a == target {
+				printed = true
+			}
+		}
+		return true
+	})
+	return printed
+}
+
+// calls reports whether a function's body calls the named function anywhere.
+func calls(fn *ast.FuncDecl, name string) bool {
+	found := false
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		id, ok := n.(*ast.Ident)
+		if ok && id.Name == name {
+			found = true
+		}
+		return true
+	})
+	return found
+}
+
+// THE SET ITSELF IS PINNED, so a third path cannot be added quietly.
+//
+// Every rule below is "each path must also do X", and a rule of that shape is
+// satisfied vacuously by a path nobody added to the list -- which is precisely
+// how the original bug shipped. This one fails on a NEW path, and the fix is to
+// come here and decide which rules it is under.
+func TestTheSetupPathsAreTheOnesWeKnowAbout(t *testing.T) {
+	var got []string
+	for name := range setupPaths(t) {
+		got = append(got, name)
+	}
+	sort.Strings(got)
+	want := "RunInit, RunUpdate"
+	if strings.Join(got, ", ") != want {
+		t.Errorf("functions that provision a box = %q, want %q -- a new one has to be "+
+			"held to the rules below rather than added here", strings.Join(got, ", "), want)
+	}
+}
+
+// EVERY setup path installs the agent. A box without one is set up and unusable:
+// nothing reports, so nothing about it can be read or commanded.
+func TestEverySetupPathInstallsTheAgent(t *testing.T) {
+	for name, fn := range setupPaths(t) {
+		if !calls(fn, "installAgent") {
+			t.Errorf("%s provisions a box without installing the agent -- "+
+				"nothing on that box would ever report", name)
+		}
+	}
+}
+
+// A FRESH box is filed under an account. `komizo update` is exempt and must be:
+// it runs against a box that is already set up, and re-registering one would be
+// how a second row with the same name appears in somebody's app.
+func TestSettingUpAFreshBoxRegistersIt(t *testing.T) {
+	fn, ok := setupPaths(t)["RunInit"]
+	if !ok {
+		t.Fatal("RunInit no longer provisions a box, so nothing here is guarding setup")
+	}
+	if !calls(fn, "registerAndEnrol") {
+		t.Error("RunInit sets a box up without filing it under an account -- " +
+			"a server set up this way never appears in the app")
+	}
+	if u, ok := setupPaths(t)["RunUpdate"]; ok && calls(u, "registerAndEnrol") {
+		t.Error("RunUpdate registers the box it is updating -- a box that has " +
+			"already enrolled would get a second row in somebody's app")
+	}
+}
+
+// Registering must never fail the setup. The box is set up and works; what
+// failed is the half that needs the service, and failing the whole command
+// would make an outage look like a broken server.
+func TestRegisteringIsNotFatalToSetup(t *testing.T) {
+	body := functionBody(t, sourceOf(t, "init.go"), "RunInit")
+	i := strings.Index(body, "registerAndEnrol")
+	if i < 0 {
+		t.Skip("the test above already reports this")
+	}
+	// The lines up to the next blank one decide it: a `return` there ends the
+	// setup, and anything else carries on.
+	rest := body[i:]
+	if cut := strings.Index(rest, "\n\n"); cut > 0 {
+		rest = rest[:cut]
+	}
+	if regexp.MustCompile(`(?m)^\s*return`).MatchString(rest) {
+		t.Errorf("RunInit abandons setup when registering fails:\n%s", rest)
+	}
+}
 
 func sourceOf(t *testing.T, name string) string {
 	t.Helper()
@@ -27,62 +187,6 @@ func sourceOf(t *testing.T, name string) string {
 		t.Fatal(err)
 	}
 	return string(b)
-}
-
-func TestEverySetupPathRegistersTheServer(t *testing.T) {
-	// The two ways a fresh box gets set up: the subcommand, and the interface's
-	// start button.
-	for _, tc := range []struct{ file, fn string }{
-		{"init.go", "RunInit"},
-		{"tui_ops.go", "startInit"},
-	} {
-		src := sourceOf(t, tc.file)
-		body := functionBody(t, src, tc.fn)
-		if !strings.Contains(body, "registerAndEnrol") {
-			t.Errorf("%s in %s sets a box up without filing it under an account -- "+
-				"a server set up this way never appears in the app", tc.fn, tc.file)
-		}
-	}
-}
-
-// Both surfaces install the agent too, which is the other thing a box is not
-// usable without. Same failure shape, and it has happened once already.
-func TestEverySetupPathInstallsTheAgent(t *testing.T) {
-	for _, tc := range []struct{ file, fn, want string }{
-		{"init.go", "RunInit", "installAgent"},
-		{"tui_ops.go", "startInit", "streamAgent"},
-	} {
-		src := sourceOf(t, tc.file)
-		body := functionBody(t, src, tc.fn)
-		if !strings.Contains(body, tc.want) {
-			t.Errorf("%s in %s does not install the agent", tc.fn, tc.file)
-		}
-	}
-}
-
-// Registering must never fail the setup. The box is set up and works; what
-// failed is the half that needs the service, and failing the whole command
-// would make an outage look like a broken server.
-func TestRegisteringIsNotFatalToSetup(t *testing.T) {
-	for _, tc := range []struct{ file, fn string }{
-		{"init.go", "RunInit"},
-		{"tui_ops.go", "startInit"},
-	} {
-		body := functionBody(t, sourceOf(t, tc.file), tc.fn)
-		i := strings.Index(body, "registerAndEnrol")
-		if i < 0 {
-			continue // the test above already reports this
-		}
-		// The eight lines after the call decide it: a `return` there ends the
-		// setup, and anything else carries on.
-		rest := body[i:]
-		if cut := strings.Index(rest, "\n\n"); cut > 0 {
-			rest = rest[:cut]
-		}
-		if regexp.MustCompile(`(?m)^\s*(return|ch <- runDoneMsg\{err)`).MatchString(rest) {
-			t.Errorf("%s in %s abandons setup when registering fails:\n%s", tc.fn, tc.file, rest)
-		}
-	}
 }
 
 // functionBody is the text between a function's opening brace and the closing

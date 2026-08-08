@@ -106,7 +106,7 @@ func RunUpdate(args []string) error {
 	}
 
 	step("Installing the komizo agent")
-	if err := installAgent(tgt, nil); err != nil {
+	if err := installAgent(tgt); err != nil {
 		return fmt.Errorf("the server is set up, but the agent failed to install:\n    %w\n\n"+
 			"    komizo reads a server through that agent, so `komizo list` and the\n"+
 			"    interface will not work against this box until it is fixed.", err)

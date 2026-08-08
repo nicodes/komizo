@@ -108,12 +108,16 @@ func runCommand(name string, args []string) error {
 // app-only.md §7 left standing.
 
 func Main(args []string) error {
-	// `komizo` on its own is the interface with nothing to connect to yet: it
-	// opens and asks for an address. It used to print the usage and exit 2,
-	// which made the shortest thing anyone would type the one thing that did
-	// not work.
+	// `komizo` on its own prints what it can do, and SUCCEEDS.
+	//
+	// It used to open the interface, and before that it printed the usage and
+	// exited 2 -- which made the shortest thing anyone would type the one thing
+	// that did not work. Exit 0 because asking a tool what it does is not a
+	// misuse of it: a script running `komizo || echo broken` should not be told
+	// the tool is broken for having been asked.
 	if len(args) == 0 {
-		return RunLoginTUI()
+		Usage()
+		return nil
 	}
 
 	var err error
@@ -154,53 +158,44 @@ func Main(args []string) error {
 	case "-h", "--help", "help":
 		Usage()
 	default:
-		// Anything that is not a known command is treated as a host: the normal
-		// way to use this is `komizo root@your-server`, which opens the interface
-		// and does everything from there. Requiring a subcommand for the common
-		// case would be one more thing to know for no benefit.
+		// A BARE ADDRESS USED TO OPEN THE INTERFACE, and there is no longer one
+		// to open (nicodes/komizo-be#55). It was the documented front door, so
+		// it gets an answer that names where the work moved rather than the
+		// generic usage -- somebody typing the thing the README taught them is
+		// the last person who should have to work out what changed.
 		if strings.HasPrefix(args[0], "-") {
 			fmt.Fprintf(os.Stderr, "unknown flag %q\n\n", args[0])
 			Usage()
 			os.Exit(2)
 		}
-		// --port is the one flag the interactive path takes. Without it we read
-		// the port from the user's ssh config instead of assuming 22.
-		fs := flag.NewFlagSet("komizo", flag.ContinueOnError)
-		fs.Usage = Usage
-		port := fs.Int("port", 22, "SSH port")
-		// Interactive, so this only skips the confirmation -- without it komizo
-		// still offers to accept an unseen host key, it just asks first.
-		yes := fs.Bool("accept-host-key", false, "accept an unseen host key without asking")
-		if perr := fs.Parse(args[1:]); perr != nil {
-			os.Exit(2)
-		}
-		if fs.NArg() > 0 {
-			// A space in `root @host`. The shell handed this two arguments and
-			// the second carries the hostname, so the address was typed
-			// correctly and split by one keystroke.
-			//
-			// Named rather than answered with the usage, which is thirty lines
-			// that do not mention the problem -- and which is what somebody who
-			// typed almost the right thing least needs to read.
-			if rest := fs.Arg(0); strings.HasPrefix(rest, "@") && !strings.Contains(args[0], "@") {
-				fmt.Fprintf(os.Stderr, "there is a space in the address, so %q was read as the whole host.\n\n    komizo %s%s\n\n",
-					args[0], args[0], rest)
-				os.Exit(2)
-			}
-			fmt.Fprintf(os.Stderr, "unexpected argument %q after a host\n\n", fs.Arg(0))
-			Usage()
-			os.Exit(2)
-		}
-		// NO ACCOUNT. The interface is a route into a server like any other, and
-		// this gate said the opposite of what the rule now is -- while `komizo`
-		// on its own already reached the same screens without one, because the
-		// address prompt runs before this switch. So it refused the documented
-		// way in and allowed the undocumented one.
+		// A space in `root @host`. The shell handed this two arguments and the
+		// second carries the hostname, so the address was typed correctly and
+		// split by one keystroke.
 		//
-		// The only thing in here that talks to the service is setting a box up,
-		// and that asks for itself and treats a refusal as a note rather than a
-		// failure.
-		err = RunTUI(args[0], *port, portWasSet(fs), *yes)
+		// Named rather than answered with the usage, which is thirty lines that
+		// do not mention the problem -- and which is what somebody who typed
+		// almost the right thing least needs to read. Checked BEFORE the
+		// address is echoed back, so the suggestion below is not built from
+		// half of one.
+		if len(args) > 1 && strings.HasPrefix(args[1], "@") && !strings.Contains(args[0], "@") {
+			fmt.Fprintf(os.Stderr, "there is a space in the address, so %q was read as the whole host.\n\n    komizo report --host %s%s\n\n",
+				args[0], args[0], args[1])
+			os.Exit(2)
+		}
+		// RETURNED, not exited on. Every other outcome of this switch comes back
+		// as an error and `Main` is what tests drive -- an os.Exit here takes
+		// the test binary with it, which is how this first went in.
+		err = fmt.Errorf(`%q is not a command.
+
+The full-screen interface is gone; the app is where a server is watched and
+operated now. Everything it did is a command here, and each one takes the
+address as a flag:
+
+    komizo report --host %s
+    komizo list   --host %s
+    komizo init   --host %s
+
+Run "komizo" on its own for the whole list.`, args[0], args[0], args[0], args[0])
 	}
 
 	return err
