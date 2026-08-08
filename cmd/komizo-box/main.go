@@ -116,8 +116,17 @@ func signalContext() (context.Context, context.CancelFunc) {
 }
 
 // probe is the machine, with the version this binary was built as.
+// probeRoot is prefixed to every absolute path the probe reads.
+//
+// Empty in production, as box.Probe documents. rootd sets it from --root so a
+// test can give the tick a machine to look at -- without it the daemon reads
+// /srv and /proc whatever a test does, which is why asserting WHICH window it
+// measures was impossible even after --state made the tick runnable
+// (komizo-be#166).
+var probeRoot string
+
 func probe() *box.Probe {
-	return &box.Probe{Now: box.Now, Agent: version}
+	return &box.Probe{Now: box.Now, Agent: version, Root: probeRoot}
 }
 
 // runRootd is the timer. Root runs this; nothing else does.
@@ -143,6 +152,7 @@ func runRootd(args []string) error {
 	// the report or the history any more than for the metrics. komizo#84.
 	stateDir := fs.String("state", box.StateDir, "the state directory to prepare")
 	socketDir := fs.String("socket-dir", box.APISocketDir, "the directory the API socket lives in")
+	root := fs.String("root", "", "prefix every path the probe reads (tests only)")
 	volEvery := fs.Int("volumes-every", 15, "measure volumes every Nth reading (0 disables)")
 	once := fs.Bool("once", false, "probe once and exit")
 	if err := fs.Parse(args); err != nil {
@@ -188,6 +198,7 @@ func runRootd(args []string) error {
 	// The PARENT first. ServedDir is inside the state directory, which is closed
 	// so that apps/<app>.env stays closed -- and a directory whose parent cannot
 	// be entered is one nothing can reach, whatever its own mode says.
+	probeRoot = *root
 	if err := box.PrepareStateDir(*stateDir); err != nil {
 		return err
 	}
@@ -261,7 +272,25 @@ func runRootd(args []string) error {
 		// happens here, where root already is, and the answer is left beside
 		// the report and the history. komizo#80.
 		to := r.At.Unix()
-		if err := box.WriteMetrics(*metricsPath, probe().Metrics(to-box.MetricsWindow, to)); err != nil {
+		// CLIPPED TO WHAT IS KEPT, at the point it is written.
+		//
+		// Probe.Metrics computes Span across the whole tail it read, which is
+		// bounded by bytes rather than by time -- so a quiet box's 4MB reaches
+		// back days. Stored unclipped, the file claims to cover two days while
+		// holding an hour of rows, and a client that blanks outside the span
+		// draws confident zeros over the difference. #83's review caught that on
+		// the READ side; this is the same claim on the write side, and the file
+		// should not have to be corrected by every reader. komizo-be#166.
+		m := probe().Metrics(to-box.MetricsWindow, to)
+		if m.Span != nil {
+			if m.Span.From < to-box.MetricsWindow {
+				m.Span.From = to - box.MetricsWindow
+			}
+			if m.Span.To > to {
+				m.Span.To = to
+			}
+		}
+		if err := box.WriteMetrics(*metricsPath, m); err != nil {
 			fmt.Fprintf(os.Stderr, "komizo-box: writing metrics: %v\n", err)
 		}
 	}
