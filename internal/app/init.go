@@ -78,8 +78,8 @@ func RunInit(args []string) error {
 	step("Installing the komizo agent")
 	if err := installAgent(tgt); err != nil {
 		return fmt.Errorf("the server is ready, but the agent failed to install:\n    %w\n\n"+
-			"    komizo reads a server through that agent, so `komizo list` and the\n"+
-			"    monitor will not work against this box until it is fixed.", err)
+			"    komizo reads a server through that agent, so `komizo list` and\n"+
+			"    the app will not work against this box until it is fixed.", err)
 	}
 
 	step("Filing this server under your account")
