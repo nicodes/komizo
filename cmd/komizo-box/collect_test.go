@@ -94,13 +94,23 @@ func TestWhatTheCollectorRuns(t *testing.T) {
 	runs := stubCompose(t, "x\n", 0)
 	collectLogs(context.Background(), root, t.TempDir())
 
-	if len(*runs) != 1 {
-		t.Fatalf("%d invocations, want 1: %v", len(*runs), *runs)
+	// TWO NOW, and the second is the point of nicodes/komizo-be#165: compose is
+	// asked which container is which service, because the container prefix it
+	// writes on each line varies by compose version and a name is not a service.
+	// Pinned as a COUNT as well as a shape, since one call per app per fifteen
+	// seconds is a cost worth noticing if it grows.
+	if len(*runs) != 2 {
+		t.Fatalf("%d invocations, want 2: %v", len(*runs), *runs)
 	}
 	got := strings.Join((*runs)[0], " ")
 	want := "docker compose -f /srv/web/compose.yml --project-directory /srv/web logs --tail 500 --no-color"
 	if got != want {
 		t.Errorf("ran %q,\n want %q", got, want)
+	}
+	gotPS := strings.Join((*runs)[1], " ")
+	wantPS := "docker compose -f /srv/web/compose.yml --project-directory /srv/web ps --all --format json"
+	if gotPS != wantPS {
+		t.Errorf("ran %q,\n want %q", gotPS, wantPS)
 	}
 	// Checked per ARGUMENT, not as substrings of the joined line: "--no-color"
 	// contains "-c", and the first version of this failed on its own command.
@@ -238,5 +248,114 @@ func TestTheCaptureIsBoundedInBytes(t *testing.T) {
 	}
 	if fi.Size() > int64(box.LogsMax) {
 		t.Errorf("%d bytes written, want at most %d", fi.Size(), box.LogsMax)
+	}
+}
+
+// stubComposePer answers each invocation by what it was asked to do.
+func stubComposePer(t *testing.T, by map[string]string) *[][]string {
+	t.Helper()
+	var runs [][]string
+	orig := execCompose
+	execCompose = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		runs = append(runs, append([]string{name}, args...))
+		out := ""
+		for _, a := range args {
+			if v, ok := by[a]; ok {
+				out = v
+				break
+			}
+		}
+		return exec.CommandContext(ctx, "printf", "%s", out)
+	}
+	t.Cleanup(func() { execCompose = orig })
+	return &runs
+}
+
+// THE SERVICE IS ASKED FOR, NOT DERIVED FROM THE CONTAINER NAME.
+//
+// nicodes/komizo-be#165. compose prefixes each line with the CONTAINER name and
+// review of komizo#82 found that prefix's format varies by compose version --
+// 5.0.0 writes "gate-1  |" where 5.1.4 writes "web-gate-1  |" for the same
+// stack. Deriving a service from it also cannot tell an app whose service is
+// called "web-1" from replica 1 of "web".
+//
+// The fixture is deliberately the hostile case: the container names share no
+// consistent relationship with the service names, so anything that got the right
+// answer by stripping a prefix would get this one wrong.
+func TestTheCollectorRecordsTheServiceComposeReported(t *testing.T) {
+	root := appsFixture(t, "web")
+	logs := t.TempDir()
+	stubComposePer(t, map[string]string{
+		"logs": "web-gate-1  | listening\nsome-other-1  | job 1\n",
+		"ps": `{"Name":"web-gate-1","Service":"gate"}
+{"Name":"some-other-1","Service":"worker"}`,
+	})
+
+	collectLogs(context.Background(), root, logs)
+
+	got, err := box.ReadLog(logs, "web", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := box.ParseLog(got)
+	if len(lines) != 2 {
+		t.Fatalf("collected %d lines, want 2: %q", len(lines), got)
+	}
+	if lines[0].Service != "gate" {
+		t.Errorf("first line's service = %q, want gate -- taken from the container name "+
+			"rather than from what compose reported", lines[0].Service)
+	}
+	if lines[1].Service != "worker" {
+		t.Errorf("second line's service = %q, want worker", lines[1].Service)
+	}
+	if lines[0].Text != "listening" || lines[1].Text != "job 1" {
+		t.Errorf("the messages did not survive the rewrite: %+v", lines)
+	}
+}
+
+// AND A `ps` THAT FAILS COSTS THE SERVICE, NOT THE LOG.
+//
+// One extra command per app per interval is one more thing that can fail, and
+// losing the whole log because the second call did would be trading the feature
+// for part of it. A line with no service reads as "not recorded", which is what
+// a reader is told rather than what it has to infer.
+func TestALogIsStillCollectedWhenComposeCannotSayWhichServiceIsWhich(t *testing.T) {
+	root := appsFixture(t, "web")
+	logs := t.TempDir()
+	stubComposePer(t, map[string]string{
+		"logs": "web-gate-1  | listening\n",
+		"ps":   "", // compose said nothing usable
+	})
+
+	collectLogs(context.Background(), root, logs)
+
+	got, err := box.ReadLog(logs, "web", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "listening") {
+		t.Errorf("the log was dropped because ps failed: %q", got)
+	}
+	if s := box.LogServices(box.ParseLog(got)); len(s) != 0 {
+		t.Errorf("a service was invented from a container name: %v", s)
+	}
+}
+
+// AN ARRAY IS READ TOO. compose has emitted both a JSON array and one document
+// per line across versions, and this box does not choose which docker an
+// operator installed.
+func TestTheCollectorReadsBothShapesOfComposePs(t *testing.T) {
+	root := appsFixture(t, "web")
+	logs := t.TempDir()
+	stubComposePer(t, map[string]string{
+		"logs": "web-gate-1  | listening\n",
+		"ps":   `[{"Name":"web-gate-1","Service":"gate"}]`,
+	})
+
+	collectLogs(context.Background(), root, logs)
+
+	got, _ := box.ReadLog(logs, "web", 10)
+	if s := box.LogServices(box.ParseLog(got)); strings.Join(s, ",") != "gate" {
+		t.Errorf("services from an array = %v, want [gate]", s)
 	}
 }

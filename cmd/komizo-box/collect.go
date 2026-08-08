@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"strconv"
 	"strings"
@@ -102,7 +103,112 @@ func write(ctx context.Context, dir, name string, sub subject) {
 		// were the two that wiped the last thing the app said.
 		return
 	}
-	_ = box.WriteLog(dir, name, []byte(out))
+	// WHICH SERVICE SAID WHAT, recorded rather than inferred.
+	//
+	// nicodes/komizo-be#165. compose prefixes each line with the CONTAINER
+	// name, and the prefix format varies by compose version -- 5.0.0 writes
+	// "gate-1  |" where 5.1.4 writes "web-gate-1  |" for the same stack. So this
+	// asks compose which container is which service and stores the answer.
+	//
+	// ONE EXTRA CALL PER APP PER INTERVAL, and it is worth being explicit about
+	// the cost: `ps` stats the project, where `logs` reads files. If it fails,
+	// the lines are stored WITHOUT a service rather than not stored -- a log
+	// nobody can filter is still a log, and losing it because a second command
+	// failed would be trading the whole feature for part of one.
+	_ = box.WriteLog(dir, name, []byte(withServices(ctx, sub, out)))
+}
+
+// withServices rewrites compose's container-prefixed output into komizo's form.
+func withServices(ctx context.Context, sub subject, out string) string {
+	byContainer := serviceOf(ctx, sub)
+	lines := make([]box.LogLine, 0, 64)
+	for _, ln := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		if ln == "" {
+			continue
+		}
+		name, text, ok := cutComposePrefix(ln)
+		if !ok {
+			// compose writes un-prefixed lines too -- its own "Attaching to
+			// ..." among them. Kept, with no service, rather than dropped:
+			// deciding which of compose's own lines are worth keeping is a
+			// judgement this has no basis for making.
+			lines = append(lines, box.LogLine{Text: ln})
+			continue
+		}
+		lines = append(lines, box.LogLine{Service: byContainer[name], Text: text})
+	}
+	return box.FormatLog(lines)
+}
+
+// cutComposePrefix splits "container-name  | message" at the pipe.
+//
+// The container name is only used to look up a service, so a prefix this does
+// not recognise costs the service and keeps the line. It must NOT be used to
+// derive the service itself -- that is the guess komizo-be#165 exists to remove.
+func cutComposePrefix(ln string) (name, text string, ok bool) {
+	i := strings.Index(ln, "|")
+	if i < 0 {
+		return "", "", false
+	}
+	name = strings.TrimSpace(ln[:i])
+	if name == "" || strings.ContainsAny(name, " \t") {
+		// A pipe inside a message rather than compose's separator. A container
+		// name has no spaces, so one before the first pipe means this line was
+		// never prefixed.
+		return "", "", false
+	}
+	text = ln[i+1:]
+	if len(text) > 0 && text[0] == ' ' {
+		text = text[1:]
+	}
+	return name, text, true
+}
+
+// serviceOf maps each of a project's containers to the service it runs.
+//
+// ASKED, NEVER DERIVED. The alternative is stripping the project prefix and a
+// replica suffix off the container name, which cannot tell an app whose service
+// is called "web-1" from replica 1 of "web" -- and which depends on a naming
+// scheme compose has already changed once.
+//
+// An empty map is a valid answer: the lines are then stored with no service,
+// which is what a reader is told rather than what it has to infer.
+func serviceOf(ctx context.Context, sub subject) map[string]string {
+	out, err := composeOut(ctx, sub.dir, sub.project, "ps", "--all", "--format", "json")
+	if err != nil {
+		return nil
+	}
+	byContainer := map[string]string{}
+	// ONE JSON DOCUMENT PER LINE, not an array. compose has emitted both across
+	// versions -- and a decoder in a loop reads either, because a stream of one
+	// array is just one document.
+	dec := json.NewDecoder(strings.NewReader(out))
+	for {
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			break
+		}
+		var rows []struct {
+			Name    string `json:"Name"`
+			Service string `json:"Service"`
+		}
+		if err := json.Unmarshal(v, &rows); err != nil {
+			var one struct {
+				Name    string `json:"Name"`
+				Service string `json:"Service"`
+			}
+			if json.Unmarshal(v, &one) != nil {
+				continue
+			}
+			rows = append(rows, one)
+		}
+		for _, r := range rows {
+			if r.Name != "" && r.Service != "" {
+				byContainer[r.Name] = r.Service
+			}
+		}
+	}
+	return byContainer
 }
 
 // appNames is every app komizo has a record of, by name.

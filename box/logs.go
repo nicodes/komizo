@@ -170,6 +170,15 @@ type LogsResponse struct {
 	V     int    `json:"v"`
 	App   string `json:"app"`
 	Lines string `json:"lines"`
+	// Service is what was asked for, echoed back. Empty means the whole app.
+	Service string `json:"service,omitempty"`
+	// Services is every service the tail names, so a reader can offer the
+	// choice without parsing the lines itself -- and so a box that has not
+	// recorded any can say so by sending none.
+	//
+	// Absent and empty are the same here on purpose: JSON omits it either way,
+	// and "no services in this tail" is the only meaning either could have.
+	Services []string `json:"services,omitempty"`
 }
 
 func (l LogsResponse) Schema() int { return l.V }
@@ -251,7 +260,33 @@ func serveLog(cfg APIConfig, w http.ResponseWriter, r *http.Request) {
 		tail = n
 	}
 
-	lines, err := ReadLog(cfg.LogsDir, name, tail)
+	// THE SERVICE, if one was named.
+	//
+	// nicodes/komizo-be#165. Filtered HERE rather than by the caller, because
+	// the alternative is sending an app's whole tail over the wire so a phone
+	// can drop nine tenths of it -- and because the box is the only thing that
+	// knows the service names are the ones compose reported rather than ones
+	// somebody guessed from a container name.
+	//
+	// Validated as a compose service name: no separator, no whitespace, and
+	// bounded. A value carrying the line separator would let a caller ask for
+	// something no line can be, which is a filter that always answers nothing.
+	service := c.Args["service"]
+	if !validService(service) {
+		http.Error(w, "that is not a service name", http.StatusBadRequest)
+		return
+	}
+
+	// READ WIDER WHEN FILTERING. `tail` is what the caller wants to SEE, and
+	// filtering after reading N lines returns only the ones that happened to be
+	// this service's within the last N of the whole app -- so a chatty sidecar
+	// can push a quiet service off the end entirely and the answer is an empty
+	// log for a service that is talking. Read the maximum and cut after.
+	read := tail
+	if service != "" {
+		read = logTailMax
+	}
+	lines, err := ReadLog(cfg.LogsDir, name, read)
 	switch {
 	case errors.Is(err, errNotAnApp):
 		// A name this box will not file. A bad request rather than a missing
@@ -272,5 +307,41 @@ func serveLog(cfg APIConfig, w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "this box could not read that log", http.StatusServiceUnavailable)
 		return
 	}
-	writeJSON(w, LogsResponse{V: APIVersion, App: name, Lines: lines})
+	parsed := ParseLog(lines)
+	services := LogServices(parsed)
+	if service != "" {
+		parsed = FilterLog(parsed, service)
+		if len(parsed) > tail {
+			parsed = parsed[len(parsed)-tail:]
+		}
+	}
+	// TRIMMED, because that is what this route has always sent. FormatLog ends
+	// every line -- right for the file on disk, and a change to the wire that
+	// no reader asked for.
+	writeJSON(w, LogsResponse{
+		V: APIVersion, App: name, Lines: strings.TrimSuffix(FormatLog(parsed), "\n"),
+		Service: service, Services: services,
+	})
+}
+
+// validService is what may be asked for.
+//
+// EMPTY IS VALID and means the whole app -- the same "not asked" that every
+// other optional arg means. What is refused is a value that could not name a
+// service: compose forbids whitespace in one, and the line separator is a tab,
+// so a value carrying either is a filter that could never match and a caller
+// that would be told "no lines" about a service that is talking.
+func validService(s string) bool {
+	if s == "" {
+		return true
+	}
+	if len(s) > 100 {
+		return false
+	}
+	for _, r := range s {
+		if r <= ' ' || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
