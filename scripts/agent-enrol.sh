@@ -97,6 +97,24 @@ $API_HOST {
 		X-Content-Type-Options "nosniff"
 	}
 
+	# LOGGED, and deliberately rather than by omission. This route is reads of
+	# somebody's server -- who asked this box for a report, and when. It kept no
+	# record of that at all, which is the one question an operator cannot answer
+	# any other way.
+	#
+	# THE REDACTION MATTERS MOST HERE, because every request to this route
+	# carries a device token in Authorization. Caddy logs that header as
+	# REDACTED by default and the global "log_credentials" option is what turns
+	# that off -- so it is not set anywhere, and setting it would write live
+	# credentials for this server onto this server.
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10mb
+			roll_keep 3
+		}
+		format json
+	}
+
 	reverse_proxy unix/__API_SOCKET__
 }
 KOMIZO_ROUTE_EOF

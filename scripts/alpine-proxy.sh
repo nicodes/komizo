@@ -154,6 +154,31 @@ chmod 644 "$PROXY_DIR/Caddyfile"
 cat > "$ROUTES_DIR/_catchall.caddy" <<'EOF'
 # Written by komizo. Requests for a hostname with no app behind it land here.
 :80 {
+	# LOGGED, because this is where a scan shows up.
+	#
+	# `log` is a per-SITE-BLOCK directive; the global `log` option configures
+	# Caddy's runtime log and there is no global switch for access logs. So a
+	# site block without this one records nothing, which is what this block did
+	# -- and it is the block whose whole subject is requests nobody expected.
+	# A hostname pointed at this box with no app behind it, a probe of the
+	# catch-all, a misdirected DNS record: none of it left a trace.
+	#
+	# Same shape and same bound as the per-app routes alpine.sh writes, so a
+	# reader comparing two route files finds one answer rather than two.
+	# box/access.go parses this JSON and reads only the last 4MB of it.
+	#
+	# NOT `log_credentials`. Caddy redacts Authorization, Proxy-Authorization,
+	# Cookie and Set-Cookie by default, and that global option is what turns the
+	# redaction OFF. Somebody debugging a token problem is exactly who would
+	# reach for it, and it would write device tokens for somebody's server to
+	# disk on that server.
+	log {
+		output file /var/log/caddy/access.log {
+			roll_size 10mb
+			roll_keep 3
+		}
+		format json
+	}
 	respond "no app is configured for this hostname" 404
 }
 EOF
@@ -237,8 +262,10 @@ services:
     networks:
       - shared
     # Unbounded by default, which is a disk filling up slowly enough that
-    # nobody notices until it has. This is Caddy's operational log; the access
-    # log is a file and rotates itself, see the Caddyfile.
+    # nobody notices until it has. This is Caddy's RUNTIME log -- TLS renewals,
+    # ACME, startup. The access log is a separate file under the logs volume,
+    # written by a per-site-block "log" directive in each generated route, and
+    # it rotates itself.
     logging:
       driver: json-file
       options:
