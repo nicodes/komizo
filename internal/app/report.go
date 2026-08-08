@@ -60,7 +60,17 @@ func (e errNoAgent) Error() string {
 // Stderr is captured rather than passed through. This runs under a full-screen
 // interface, and anything written to the terminal behind its back lands in the
 // middle of the frame.
-func askBox(t target, args ...string) ([]byte, error) {
+// askBox is a package variable so a test can answer for the box.
+//
+// Not a seam for its own sake: the flags on `komizo report` that read volumes,
+// processor use and request counts were added because Review 1 on
+// nicodes/komizo-be#55 found no command could answer those questions, and a
+// capability added without a way to assert it is the next one to go missing
+// quietly. Everything below the SSH call is real -- the decode, the arithmetic,
+// the table -- and only the box's answer is supplied.
+var askBox = askBoxOverSSH
+
+func askBoxOverSSH(t target, args ...string) ([]byte, error) {
 	var stdout, stderr bytes.Buffer
 	c := exec.Command("ssh", t.sshArgs(BoxBin+" "+strings.Join(args, " "))...)
 	c.Stdout, c.Stderr = &stdout, &stderr

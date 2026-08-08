@@ -1089,7 +1089,7 @@ if [ -f "$ROUTE_FILE" ] && [ "$proxy_up" = 0 ]; then
 	revert
 	echo "deploy: this app publishes routes, but the reverse proxy is not running." >&2
 	echo "deploy: nothing would serve them, so this is a failure rather than a no-op." >&2
-	echo "deploy: start it with 'komizo proxy --host <this box>', or press s in the interface." >&2
+	echo "deploy: start it with 'komizo proxy --host <this box>'." >&2
 	echo "deploy: reverted, nothing restarted" >&2
 	exit 1
 fi
@@ -1245,7 +1245,7 @@ if [ "$stopped" = "1" ]; then
 	# printed only in the unusual case cannot express.
 	echo "deploy: started=no"
 	echo "deploy: $APP_NAME is recorded as stopped, so $ref was pulled and APP_VERSION=$version committed, but nothing was started."
-	echo "deploy: 'komizo start --host <this box> --app $APP_NAME' brings up $version, or press s in the interface."
+	echo "deploy: 'komizo start --host <this box> --app $APP_NAME' brings up $version."
 else
 	docker compose up -d --remove-orphans
 
@@ -1286,7 +1286,7 @@ else
 		docker compose stop
 		echo "deploy: started=no"
 		echo "deploy: $APP_NAME was stopped while this deploy was running, so it has been brought back down and stays recorded as stopped."
-		echo "deploy: 'komizo start --host <this box> --app $APP_NAME' brings up $version, or press s in the interface."
+		echo "deploy: 'komizo start --host <this box> --app $APP_NAME' brings up $version."
 	else
 		# AFTER the start AND after the re-read, not before either. `set -e` ends
 		# the script on a failed `up -d`, so an echo above it would claim the app
