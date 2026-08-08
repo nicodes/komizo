@@ -4,6 +4,8 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -25,12 +27,35 @@ func RunReport(args []string) error {
 	fs.Usage = func() { usageReport(fs) }
 	var host string
 	var port int
-	var acceptHostKey, asJSON, cached bool
+	var acceptHostKey, asJSON, cached, volumes, usage, knownHosts bool
 	fs.StringVar(&host, "host", "", "server to read, [user@]HOST")
 	fs.IntVar(&port, "port", 22, "SSH port")
 	fs.BoolVar(&acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
 	fs.BoolVar(&asJSON, "json", false, "print the report as the box produced it")
 	fs.BoolVar(&cached, "cached", false, "print the last report the agent wrote, rather than measuring now")
+	// THREE CLASSES OF INFORMATION THE INTERFACE HAD AND NO COMMAND DID.
+	//
+	// Review 1 on nicodes/komizo-be#55 found them by walking the deleted
+	// screens rather than the diff: an app's volume sizes, whether the box is
+	// busy, and how many requests each app served and how many failed. The
+	// decoders for all three survived -- volumesFromBox, samplesFrom,
+	// metricsFromBox -- and became unreachable, which is why the source still
+	// looked like it could answer.
+	//
+	// Behind flags rather than always, because each costs something the plain
+	// report does not: --volumes walks every volume on the box, and --usage is
+	// a second call over the same connection.
+	fs.BoolVar(&volumes, "volumes", false, "also measure volume sizes (slow: walks every volume)")
+	fs.BoolVar(&usage, "usage", false, "also read the last hours' processor use and request counts")
+	// READING IT MUST NOT COST A KEY ROTATION, which is what it did.
+	//
+	// Review 1 on nicodes/komizo-be#55: the interface copied this value for the
+	// selected app and touched nothing. Afterwards formatKnownHosts was
+	// reachable only from `komizo add`, so somebody who lost the secret had to
+	// re-provision the app to get it back -- and that reissued the deploy key.
+	// --json gave server.host_keys, which is the ingredients rather than the
+	// value CI pins, and is not scoped to the app's own names.
+	fs.BoolVar(&knownHosts, "known-hosts", false, "print the KOMIZO_KNOWN_HOSTS value each app's CI pins")
 	if err := fs.Parse(args); err != nil {
 		return ErrSilent
 	}
@@ -48,6 +73,9 @@ func RunReport(args []string) error {
 	args2 := []string{"report"}
 	if cached {
 		args2 = append(args2, "--cached")
+	}
+	if volumes {
+		args2 = append(args2, "--volumes")
 	}
 
 	// --json prints what the BOX said, byte for byte, rather than this binary's
@@ -68,7 +96,129 @@ func RunReport(args []string) error {
 		return err
 	}
 	printReport(r, tgt.host, cached)
+
+	if knownHosts {
+		printKnownHosts(r, tgt)
+	}
+
+	// A SECOND CALL, AND ONLY WHEN ASKED. The counts and the past readings are
+	// not in the report -- the box keeps them in its history and its access log
+	// -- so this is `komizo-box monitor`, which returns both in one document.
+	//
+	// A failure here does NOT fail the command: everything above it is already
+	// on the screen and is the answer to "is this server all right". A box too
+	// old to have the mode, or one whose history has not been written yet, must
+	// not turn a working report into an error.
+	if usage {
+		if err := printUsage(tgt); err != nil {
+			warn("could not read this box's usage: %v", err)
+		}
+	}
 	return nil
+}
+
+// printKnownHosts is the secret each repo pins, per app.
+//
+// PER APP rather than per box, because known_hosts matches the exact string the
+// client dialled: each repo dials one name, so the value it pins should name
+// that one and not every name every app on this box answers to.
+func printKnownHosts(r box.Report, tgt target) {
+	keys := make([][2]string, 0, len(r.Server.HostKeys))
+	for _, k := range r.Server.HostKeys {
+		keys = append(keys, [2]string{scrub(k.Type), scrub(k.Key)})
+	}
+	if len(keys) == 0 {
+		warn("this box reported no host keys, so there is no value to pin.")
+		return
+	}
+	for _, a := range r.Apps {
+		step("KOMIZO_KNOWN_HOSTS for %s", a.Name)
+		fmt.Println(formatKnownHosts(tgt.namedFor(a.KnownAs), keys))
+	}
+	if len(r.Apps) == 0 {
+		note("no apps on this box, so nothing pins a known_hosts value yet.")
+	}
+}
+
+// printUsage is what the box has been doing, as opposed to what it is.
+//
+// THE WINDOW IS defaultWindow, which is what makes that constant load-bearing
+// again rather than a leftover -- Review 1's non-blocking (b) was right that
+// nothing resolved a range after the interface went.
+func printUsage(tgt target) error {
+	now := time.Now()
+	from := now.Add(-time.Duration(defaultWindow) * time.Minute).Unix()
+	m, err := fetchBox[box.Monitor](tgt, "monitor",
+		"--from", strconv.FormatInt(from, 10),
+		"--to", strconv.FormatInt(now.Unix(), 10))
+	if err != nil {
+		return err
+	}
+
+	fmt.Println()
+	// THE PROCESSOR NEEDS TWO READINGS AND THERE IS NO OTHER WAY TO GET ONE.
+	// System.CPU is cumulative jiffies, so a single reading is a total since
+	// boot rather than a rate -- which is why this asks for history at all and
+	// why "the report already has System" was not the answer.
+	samples := samplesFrom(m.History)
+	if len(samples) >= 2 {
+		if v, ok := boxCPUAt(samples[len(samples)-2], samples[len(samples)-1]); ok {
+			note("processor %s over the last %s", pctText(v),
+				durText(samples[len(samples)-1].at.Sub(samples[len(samples)-2].at)))
+		}
+	} else {
+		note("not enough readings yet to say whether this box is busy.")
+	}
+
+	rows := metricsFromBox(m.Metrics)
+	span, haveSpan := metricSpanFrom(m.Metrics)
+	if len(rows) == 0 {
+		if haveSpan {
+			note("no requests recorded between %s and %s.",
+				stampText(time.Unix(span.from, 0), now), stampText(time.Unix(span.to, 0), now))
+		} else {
+			// SAID APART from "nothing was served". A box whose proxy keeps no
+			// access log for a route answers exactly the same as a box nobody
+			// asked for anything, and the two want different actions.
+			note("this box has no request record to read.")
+		}
+		return nil
+	}
+
+	// PER APP, and failures separately. "Is anything reaching this" and "is any
+	// of it failing" are different questions and one total answers neither.
+	fmt.Println()
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "APP\tREQUESTS\t5XX")
+	for _, name := range appsIn(rows) {
+		s := seriesFor(rows, name, from, now.Unix())
+		fmt.Fprintf(w, "%s\t%d\t%d\n", name, sum(s.total), sum(s.errors))
+	}
+	w.Flush()
+	return nil
+}
+
+// appsIn is every app the counts name, in a stable order.
+func appsIn(rows []metricRow) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range rows {
+		if r.app == "" || seen[r.app] {
+			continue
+		}
+		seen[r.app] = true
+		out = append(out, r.app)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sum(v []float64) int {
+	t := 0.0
+	for _, x := range v {
+		t += x
+	}
+	return int(t)
 }
 
 // printReport is the report as a person reads it.
@@ -160,6 +310,28 @@ func printReport(r box.Report, host string, cached bool) {
 	}
 	if len(parts) > 0 {
 		note("%s", strings.Join(parts, ", "))
+	}
+
+	// AND THE VOLUMES, when the box was asked to measure them.
+	//
+	// Only present on a --volumes run: measuring costs a walk of every volume
+	// on the box, so the plain report does not pay for it. Absent is therefore
+	// "not asked", not "none" -- and printing a zero here would say the second
+	// about a box that was never asked the first.
+	if len(s.Volumes) > 0 {
+		fmt.Println()
+		rows := volumesFromBox(s.Volumes)
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(w, "APP\tVOLUMES")
+		for _, a := range r.Apps {
+			// SHARED VOLUMES COUNTED ONCE. Two services of one app mounting the
+			// same volume is one volume; volTotal de-duplicates by name, which
+			// is why this asks it rather than summing the rows.
+			if n, ok := volTotal(rows, a.Name, ""); ok {
+				fmt.Fprintf(w, "%s\t%s\n", a.Name, bytesText(n))
+			}
+		}
+		w.Flush()
 	}
 }
 
