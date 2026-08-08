@@ -198,6 +198,30 @@ func readValue(path, key string) string {
 	return ""
 }
 
+// AppSettings is one app's record, as komizo wrote it.
+//
+// EVERY VALUE ROOT DECIDED, handed back so a re-provision can preserve them.
+// nicodes/komizo-be#112: app.rotate replaces a deploy key and must change
+// nothing else, and the only way to be sure of that is to re-run the
+// provisioning script with the values already on the box rather than with
+// values a caller supplied. A caller that had to supply them is a caller that
+// could change them while rotating a key.
+//
+// A missing record is an error rather than an empty map: "rotate the key of an
+// app this box has never heard of" is a typo, and provisioning one in response
+// to it is the worst available reading.
+func AppSettings(root, name string) (map[string]string, error) {
+	path, err := appStatePath(root, name)
+	if err != nil {
+		return nil, err
+	}
+	st, err := readState(path)
+	if err != nil {
+		return nil, fmt.Errorf("no app called %q on this box", name)
+	}
+	return st, nil
+}
+
 // AppDir is where one app lives, from komizo's own record of it.
 //
 // Read from AppsDir/<name>.env rather than assumed to be SrvDir/<name>. An app

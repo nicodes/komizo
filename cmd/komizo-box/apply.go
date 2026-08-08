@@ -273,6 +273,9 @@ func perform(ctx context.Context, c box.Command, by string) error {
 	if c.Op == box.OpAppAdd {
 		return performAdd(ctx, c)
 	}
+	if c.Op == box.OpAppRotate {
+		return performRotate(ctx, c)
+	}
 	verb, ok := opVerbs[c.Op]
 	if !ok {
 		// VerifyCommand refuses an unknown op already; this is the second half
@@ -374,6 +377,56 @@ func performAdd(ctx context.Context, c box.Command) error {
 	}
 	if spec.AppDir != "" {
 		env["APP_DIR"] = spec.AppDir
+	}
+	return runProvision(ctx, scripts.AlpineScript, env)
+}
+
+// performRotate replaces one app's deploy key and changes nothing else.
+//
+// nicodes/komizo-be#112. It runs the same provisioning script `komizo add
+// --rotate-key` runs -- app-only.md §8's condition that both triggers end in
+// one implementation -- with EVERY OTHER VALUE read back off this box's own
+// record rather than taken from the envelope.
+//
+// That is the whole security property. The signed command decides which app and
+// which key; root decides the config image, the deploy account, the directory
+// and the hostnames, because root is what wrote them. A rotation cannot
+// re-point an app at another registry, move it, or change which names it
+// answers on, whatever the envelope says -- and RotateOf refuses an envelope
+// that even mentions those, rather than dropping them quietly.
+func performRotate(ctx context.Context, c box.Command) error {
+	app, pubkey, err := c.RotateOf()
+	if err != nil {
+		return err
+	}
+	st, err := box.AppSettings(lookupRoot, app)
+	if err != nil {
+		return err
+	}
+	// THE RECORD MUST BE COMPLETE. alpine.sh derives a deploy account from the
+	// app name when CI_USER is empty and defaults APP_DIR to /srv/<app> -- both
+	// reasonable when SETTING UP, and both wrong here: an app whose record is
+	// half-written would be re-provisioned onto a directory and an account that
+	// may not be the ones it is using. Refused rather than defaulted.
+	for _, k := range []string{"CI_USER", "CONFIG_IMAGE", "APP_DIR"} {
+		if st[k] == "" {
+			return fmt.Errorf("this box's record of %q has no %s, so komizo cannot rotate its key without guessing the rest", app, k)
+		}
+	}
+	env := map[string]string{
+		"APP_NAME":     app,
+		"CI_PUBKEY":    pubkey,
+		"CI_USER":      st["CI_USER"],
+		"CONFIG_IMAGE": st["CONFIG_IMAGE"],
+		"APP_DIR":      st["APP_DIR"],
+		"KNOWN_AS":     st["KNOWN_AS"],
+		// NOT INHERITED, and this is the one value deliberately not carried
+		// over. HARDEN_SSH disables password login for EVERY user on the box --
+		// a decision about the whole machine, which app-only.md §7 says a deploy
+		// tool does not get to make on its own. Re-asserting it because it was
+		// asked for once, on a path whose subject is one app's key, is a policy
+		// change nobody requested in this envelope.
+		"HARDEN_SSH": "0",
 	}
 	return runProvision(ctx, scripts.AlpineScript, env)
 }
