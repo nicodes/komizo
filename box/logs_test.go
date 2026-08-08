@@ -535,3 +535,99 @@ func TestALogRouteTellsATrustedDeviceAboutVersionSkew(t *testing.T) {
 		t.Errorf("a stranger = %d, want the opaque 403", w.Code)
 	}
 }
+
+// THE ROUTE SCOPES A LOG TO ONE SERVICE.
+//
+// nicodes/komizo-be#165. `logs.read` took an app and a tail, so the app could
+// show everything a stack said and nothing about which part of it said what.
+// Filtered on the BOX rather than by the caller: the alternative sends the whole
+// tail over the wire so a phone can drop nine tenths of it, and only the box
+// knows the service names are the ones compose reported.
+func TestALogCanBeScopedToOneService(t *testing.T) {
+	cfg, dir, tok, dev := logsFixture(t)
+	stored := FormatLog([]LogLine{
+		{Service: "web", Text: "listening"},
+		{Service: "worker", Text: "job 1"},
+		{Service: "web", Text: "GET /"},
+	})
+	if err := WriteLog(dir, "web", []byte(stored)); err != nil {
+		t.Fatal(err)
+	}
+
+	w := ask(t, cfg, tok, dev, map[string]string{"app": "web", "service": "worker"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("a scoped read = %d", w.Code)
+	}
+	var doc LogsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(doc.Lines, "listening") || strings.Contains(doc.Lines, "GET /") {
+		t.Errorf("asking for worker returned web's lines:\n%s", doc.Lines)
+	}
+	if !strings.Contains(doc.Lines, "job 1") {
+		t.Errorf("asking for worker returned none of worker's lines:\n%s", doc.Lines)
+	}
+	// ECHOED BACK, so a reader knows what it is looking at rather than assuming
+	// the box honoured what it asked for.
+	if doc.Service != "worker" {
+		t.Errorf("the response does not say which service it is: %+v", doc)
+	}
+	// AND THE CHOICE IS OFFERED, so a screen can build a picker without parsing
+	// the lines itself.
+	if strings.Join(doc.Services, ",") != "web,worker" {
+		t.Errorf("services = %v, want both, in the order they spoke", doc.Services)
+	}
+}
+
+// THE TAIL IS OF THE SERVICE, NOT OF THE APP.
+//
+// Filtering after reading N lines returns only the ones that happened to be
+// this service's within the last N of the WHOLE app -- so a chatty sidecar
+// pushes a quiet service off the end and the answer is an empty log for a
+// service that is talking. That is the failure this route exists to prevent,
+// one level in.
+func TestAChattyServiceCannotPushAQuietOneOffTheEnd(t *testing.T) {
+	cfg, dir, tok, dev := logsFixture(t)
+
+	var lines []LogLine
+	lines = append(lines, LogLine{Service: "web", Text: "the only thing web said"})
+	for i := 0; i < 300; i++ {
+		lines = append(lines, LogLine{Service: "noisy", Text: "chatter"})
+	}
+	if err := WriteLog(dir, "web", []byte(FormatLog(lines))); err != nil {
+		t.Fatal(err)
+	}
+
+	w := ask(t, cfg, tok, dev, map[string]string{"app": "web", "service": "web", "tail": "50"})
+	var doc LogsResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(doc.Lines, "the only thing web said") {
+		t.Errorf("a quiet service was pushed off the end by a chatty one:\n%q", doc.Lines)
+	}
+}
+
+// AND A SERVICE NAME THAT COULD NEVER MATCH IS REFUSED RATHER THAN ANSWERED.
+//
+// A value carrying whitespace or the line separator is a filter no line can
+// satisfy, so answering it with an empty log would report "this service said
+// nothing" about a request that was malformed.
+func TestALogRouteRefusesAServiceNameNoLineCouldCarry(t *testing.T) {
+	cfg, dir, tok, dev := logsFixture(t)
+	if err := WriteLog(dir, "web", []byte(FormatLog([]LogLine{{Service: "web", Text: "x"}}))); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"we b", "web\tworker", "web\n", strings.Repeat("a", 101)} {
+		w := ask(t, cfg, tok, dev, map[string]string{"app": "web", "service": bad})
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("service %q = %d, want 400", bad, w.Code)
+		}
+	}
+	// AND THE EMPTY ONE IS NOT REFUSED -- it is how a caller asks for the whole
+	// app, the same "not asked" every other optional argument means.
+	if w := ask(t, cfg, tok, dev, map[string]string{"app": "web", "service": ""}); w.Code != http.StatusOK {
+		t.Errorf("asking for the whole app = %d, want 200", w.Code)
+	}
+}
