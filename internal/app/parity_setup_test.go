@@ -35,6 +35,18 @@ import (
 // go/ast rather than a grep: a grep over the source counts the constant's name
 // wherever it appears, including in a comment saying a function does not run it,
 // and cannot tell which function it appeared inside.
+//
+// IT FOLLOWS THE VALUE, NOT THE NAME. Review 1 on nicodes/komizo-be#55 walked
+// past the first version two ways, and both are the original bug's shape --
+// a setup path that exists and that the guard cannot see:
+//
+//	var provisionScript = scripts.AlpineInitScript   // the name never appears
+//	func RunProvisionThree(t target) error {         // inside this body
+//		return t.runScript(provisionScript, nil)
+//	}
+//
+// So the script's ALIASES are collected first -- anything bound to it, at
+// package level or inside a function -- and a reference to any of them counts.
 func setupPaths(t *testing.T) map[string]*ast.FuncDecl {
 	t.Helper()
 	fset := token.NewFileSet()
@@ -44,28 +56,38 @@ func setupPaths(t *testing.T) map[string]*ast.FuncDecl {
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := map[string]*ast.FuncDecl{}
+
+	files := []*ast.File{}
 	for _, p := range pkg {
 		for _, f := range p.Files {
-			for _, d := range f.Decls {
-				fn, ok := d.(*ast.FuncDecl)
-				if !ok || fn.Body == nil {
-					continue
-				}
-				ast.Inspect(fn.Body, func(n ast.Node) bool {
-					sel, ok := n.(*ast.SelectorExpr)
-					if !ok || sel.Sel.Name != "AlpineInitScript" {
-						return true
-					}
-					// `komizo script init` PRINTS the script rather than
-					// running it, which is the one legitimate mention that is
-					// not a setup path.
-					if isPrintArg(fn, sel) {
-						return true
-					}
-					found[fn.Name.Name] = fn
-					return true
-				})
+			files = append(files, f)
+		}
+	}
+
+	// Every name that holds the script. Two passes, because a package-level
+	// alias can be declared in one file and used in another.
+	aliases := map[string]bool{}
+	for _, f := range files {
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch v := n.(type) {
+			case *ast.ValueSpec:
+				bindAliases(aliases, namesOf(v.Names), v.Values)
+			case *ast.AssignStmt:
+				bindAliases(aliases, exprNames(v.Lhs), v.Rhs)
+			}
+			return true
+		})
+	}
+
+	found := map[string]*ast.FuncDecl{}
+	for _, f := range files {
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			if runsScript(fn, aliases) {
+				found[fn.Name.Name] = fn
 			}
 		}
 	}
@@ -76,27 +98,92 @@ func setupPaths(t *testing.T) map[string]*ast.FuncDecl {
 	return found
 }
 
-// isPrintArg reports whether the script is being handed to fmt.Print rather than
-// to a runner.
-func isPrintArg(fn *ast.FuncDecl, target *ast.SelectorExpr) bool {
-	printed := false
+// isScript reports whether an expression IS the provisioning script -- the
+// constant itself, or a name already known to hold it.
+func isScript(e ast.Expr, aliases map[string]bool) bool {
+	switch v := e.(type) {
+	case *ast.SelectorExpr:
+		return v.Sel.Name == "AlpineInitScript"
+	case *ast.Ident:
+		return aliases[v.Name]
+	}
+	return false
+}
+
+func bindAliases(aliases map[string]bool, names []string, values []ast.Expr) {
+	for i, v := range values {
+		if i < len(names) && isScript(v, aliases) {
+			aliases[names[i]] = true
+		}
+	}
+}
+
+func namesOf(ids []*ast.Ident) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, id.Name)
+	}
+	return out
+}
+
+func exprNames(es []ast.Expr) []string {
+	out := make([]string, 0, len(es))
+	for _, e := range es {
+		if id, ok := e.(*ast.Ident); ok {
+			out = append(out, id.Name)
+			continue
+		}
+		out = append(out, "")
+	}
+	return out
+}
+
+// runsScript reports whether a function does anything with the script other
+// than print it.
+//
+// INVERTED from "is this a print call", which is how the first version let a
+// real setup path through. It accepted any selector whose name began with
+// "Print", without checking the receiver -- so a method called PrintAndRun was
+// exempted as though it were `komizo script init`. It failed the other way too:
+// rewriting `fmt.Print(...)` as `fmt.Fprint(os.Stdout, ...)` broke the guard,
+// because "Fprint" does not begin with "Print", so a refactor with no
+// behavioural change went red.
+//
+// Both are closed by asking who the receiver is. `fmt` prints; everything else
+// is a runner until somebody says otherwise here, and having to say so is the
+// point.
+func runsScript(fn *ast.FuncDecl, aliases map[string]bool) bool {
+	printed := map[ast.Expr]bool{}
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
 			return true
 		}
 		sel, ok := call.Fun.(*ast.SelectorExpr)
-		if !ok || !strings.HasPrefix(sel.Sel.Name, "Print") {
+		if !ok {
+			return true
+		}
+		pkg, ok := sel.X.(*ast.Ident)
+		if !ok || pkg.Name != "fmt" {
 			return true
 		}
 		for _, a := range call.Args {
-			if a == target {
-				printed = true
-			}
+			printed[a] = true
 		}
 		return true
 	})
-	return printed
+
+	runs := false
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		if e, ok := n.(ast.Expr); ok && isScript(e, aliases) && !printed[e] {
+			// Not a use at all: this is the alias being BOUND, and the binding
+			// is not itself a run. The function that uses the alias is the one
+			// this is looking for.
+			runs = true
+		}
+		return true
+	})
+	return runs
 }
 
 // calls reports whether a function's body calls the named function anywhere.
