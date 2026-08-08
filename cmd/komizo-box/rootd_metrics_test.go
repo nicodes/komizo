@@ -23,25 +23,12 @@ import (
 // coverage.
 func TestRootdLeavesTheMetricsWhereTheApiCanReadThem(t *testing.T) {
 	dir := t.TempDir()
-	metrics := filepath.Join(dir, "served", "metrics.json")
 
-	if err := runRootd([]string{
-		"--once",
-		"--state", filepath.Join(dir, "state"),
-		"--socket-dir", filepath.Join(dir, "run"),
-		"--config", filepath.Join(dir, "agent.json"),
-		"--inbox", filepath.Join(dir, "inbox"),
-		"--results", filepath.Join(dir, "results"),
-		"--logs", filepath.Join(dir, "logs"),
-		"--report", filepath.Join(dir, "run", "report.json"),
-		"--history", filepath.Join(dir, "served", "history.jsonl"),
-		"--metrics", metrics,
-		"--volumes-every", "0",
-	}); err != nil {
+	if err := runRootd(rootdArgs(dir)); err != nil {
 		t.Fatalf("a single tick failed: %v", err)
 	}
 
-	b, err := os.ReadFile(metrics)
+	b, err := os.ReadFile(filepath.Join(dir, "served", "metrics.json"))
 	if err != nil {
 		t.Fatalf("rootd ticked and left no metrics for the API to serve: %v", err)
 	}
@@ -56,44 +43,11 @@ func TestRootdLeavesTheMetricsWhereTheApiCanReadThem(t *testing.T) {
 	}
 }
 
-// AND THE WINDOW IT MEASURES IS THE ONE IT KEEPS.
-//
-// THIS FILE PREVIOUSLY CARRIED A COMMENT SAYING THIS COULD NOT BE ASSERTED --
-// that the span is clipped so it reads correctly whatever was measured, and
-// that a fake machine yields no rows. Review 1 on komizo-be#166 wrote the test
-// anyway, in about sixty lines. The comment was wrong and, being confident and
-// detailed, was worse than nothing: the next person would have believed it.
-//
-// What makes it work is asserting against WALL CLOCK rather than against
-// rootd's own `to`. The clip pins Span.From to `to - MetricsWindow`, so a tick
-// that measured two days ago reports a span two days back -- clipped relative
-// to a `to` that is also two days back. Comparing with now catches it.
-func TestRootdMeasuresTheWindowItKeeps(t *testing.T) {
-	dir := t.TempDir()
-	root := filepath.Join(dir, "machine")
-	metrics := filepath.Join(dir, "served", "metrics.json")
-
-	logDir := filepath.Join(root, "srv", "_proxy", "logs")
-	if err := os.MkdirAll(logDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().Unix()
-	line := func(ts int64) string {
-		b, _ := json.Marshal(map[string]any{
-			"ts": float64(ts), "status": 200,
-			"request": map[string]any{"host": "web.example.com"},
-		})
-		return string(b)
-	}
-	// One request a minute ago, one two days ago. A tick asking for the last
-	// hour sees the first; one asking for two days ago sees the second.
-	if err := os.WriteFile(filepath.Join(logDir, "access.log"),
-		[]byte(line(now-60)+"\n"+line(now-2*86400)+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := runRootd([]string{
-		"--once", "--root", root,
+// rootdArgs points every path a tick writes inside dir, so the daemon runs as
+// whoever is running the tests rather than demanding /var/lib/komizo.
+func rootdArgs(dir string) []string {
+	return []string{
+		"--once", "--volumes-every", "0",
 		"--state", filepath.Join(dir, "state"),
 		"--socket-dir", filepath.Join(dir, "run"),
 		"--config", filepath.Join(dir, "agent.json"),
@@ -102,12 +56,14 @@ func TestRootdMeasuresTheWindowItKeeps(t *testing.T) {
 		"--logs", filepath.Join(dir, "logs"),
 		"--report", filepath.Join(dir, "run", "report.json"),
 		"--history", filepath.Join(dir, "served", "history.jsonl"),
-		"--metrics", metrics, "--volumes-every", "0",
-	}); err != nil {
-		t.Fatalf("a single tick failed: %v", err)
+		"--metrics", filepath.Join(dir, "served", "metrics.json"),
 	}
+}
 
-	b, err := os.ReadFile(metrics)
+// storedMetrics is what the tick left where the API reads it.
+func storedMetrics(t *testing.T, dir string) box.Metrics {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, "served", "metrics.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,19 +71,133 @@ func TestRootdMeasuresTheWindowItKeeps(t *testing.T) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		t.Fatal(err)
 	}
+	return m
+}
+
+// fakeMachine writes the smallest box Probe.Metrics can attribute a request on:
+// one app record naming its directory, and that directory's hostnames file.
+//
+// BOTH ARE NEEDED AND NEITHER IS OPTIONAL. Probe.Metrics builds its host->app
+// map from appStates(), so an access log on a machine with no app records
+// yields rows=[] -- and then every assertion about which window was measured is
+// vacuously true. That is the trap the first version of this file fell into and
+// then wrote up as a law.
+//
+// The log's newest line is `newest` seconds before now and its oldest reaches
+// back two days: the shape a quiet box's 4MB tail actually has, and the one the
+// clip exists for. The tail being wider than the window is what pins Span.From,
+// which is what makes the window assertable at all.
+func fakeMachine(t *testing.T, root string, newest int64) {
+	t.Helper()
+	write := func(p, s string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(s), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(root, "var/lib/komizo/apps/blog.env"), "APP_DIR=/srv/blog\n")
+	write(filepath.Join(root, "srv/blog/hostnames"), "blog.example.com -> web\n")
+
+	now := time.Now().Unix()
+	line := func(ts int64) string {
+		b, _ := json.Marshal(map[string]any{
+			"ts": float64(ts), "status": 200,
+			"request": map[string]any{"host": "blog.example.com"},
+		})
+		return string(b) + "\n"
+	}
+	write(filepath.Join(root, "srv/_proxy/logs/access.log"),
+		line(now-2*86400)+line(now-86400)+line(now-newest))
+}
+
+// AND THE WINDOW IT MEASURES IS THE ONE IT KEEPS.
+//
+// THIS FILE PREVIOUSLY CARRIED A CONFIDENT PARAGRAPH SAYING THIS COULD NOT BE
+// ASSERTED -- that the clip makes the span read correctly whatever was
+// measured, and that a fake machine yields no rows. Review 1 on komizo-be#166
+// wrote the test anyway, in about sixty lines, red on every mutation the
+// paragraph existed to excuse. A wrong lesson recorded in code is worse than no
+// lesson: it is written in the register of hard-won knowledge, so the next
+// person believes it and stops trying.
+//
+// WHAT MAKES IT WORK is asserting against WALL CLOCK rather than against
+// rootd's own `to`. With a tail wider than the window the clip PINS Span.From
+// to `to - MetricsWindow` -- so the stored span encodes `to` exactly, and `to`
+// is the thing a wrong-window mutation moves. Comparing against a clock the
+// test owns catches it; comparing against rootd's own `to` is circular, which
+// is what the first version did. The clip made the window MORE assertable, not
+// less.
+func TestRootdMeasuresTheWindowItKeeps(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "machine")
+	fakeMachine(t, root, 60)
+
+	now := time.Now().Unix()
+	if err := runRootdAt(root, rootdArgs(dir)); err != nil {
+		t.Fatalf("a single tick failed: %v", err)
+	}
+	m := storedMetrics(t, dir)
+
+	// THE ROWS FIRST, because they are what proves the machine was read at all.
+	// Without them everything below is an assertion about an empty document.
+	if len(m.Rows) == 0 {
+		t.Fatal("the tick attributed no requests, so it did not read the machine it was given")
+	}
+	for _, r := range m.Rows {
+		if r.Minute < now-box.MetricsWindow-60 {
+			t.Errorf("row at %d is %ds old, outside the %ds window rootd keeps",
+				r.Minute, now-r.Minute, box.MetricsWindow)
+		}
+	}
+
 	if m.Span == nil {
-		t.Fatal("the tick reported no span at all, so which window it measured cannot be told")
+		t.Fatal("the tick reported no span, so which window it measured cannot be told")
 	}
-	// AGAINST NOW, not against rootd's own `to` -- that is the whole trick.
-	if m.Span.From < now-box.MetricsWindow-300 {
-		t.Errorf("span starts %ds ago, further back than the %ds window this box keeps -- "+
-			"rootd measured a different period from the one it advertises",
-			now-m.Span.From, box.MetricsWindow)
+	// WITHIN SECONDS of now-MetricsWindow, not merely inside it. The tail
+	// reaches back two days, so the clip pins Span.From exactly -- and a loose
+	// bound here is what let "rootd computes yesterday's window" stay green.
+	if d := m.Span.From - (now - box.MetricsWindow); d < -5 || d > 5 {
+		t.Errorf("stored span begins at %d, %d seconds away from an hour before now -- "+
+			"rootd measured a different period from the one it advertises", m.Span.From, d)
 	}
-	// AND NEVER INVERTED. A quiet box whose newest entry predates the window
-	// crossed the endpoints, and ReadMetrics then answered nil for every query.
 	if m.Span.From > m.Span.To {
 		t.Errorf("span is inverted: from %d to %d", m.Span.From, m.Span.To)
+	}
+}
+
+// A BOX THAT SERVED NOTHING THIS HOUR REPORTS NO SPAN, rather than a crossed one.
+//
+// Review 1's B1, reproduced. When the newest log entry predates the window, the
+// clip moves From forward to to-MetricsWindow and leaves To at that old entry --
+// From ends up 7200s AFTER To. ReadMetrics then computes lo = max(from, From)
+// and hi = min(to, To), and lo > hi for EVERY window a client can ask about, so
+// the route answers Span: nil always, the app blanks nothing, and the chart
+// draws confident zeros. The clip reintroduced the exact failure it was written
+// to prevent, on exactly the box shape it was aimed at.
+//
+// nil is the honest answer: nothing was measured across this window, which is
+// not the same as having measured zero across it.
+func TestRootdWritesNoSpanWhenTheLogPredatesTheWindow(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "machine")
+	fakeMachine(t, root, 3*60*60) // newest request three hours ago
+
+	if err := runRootdAt(root, rootdArgs(dir)); err != nil {
+		t.Fatalf("a single tick failed: %v", err)
+	}
+	m := storedMetrics(t, dir)
+
+	if m.Span != nil && m.Span.From > m.Span.To {
+		t.Fatalf("stored span is inverted: from %d to %d, crossed by %ds -- "+
+			"ReadMetrics then answers nil for every window a client can ask",
+			m.Span.From, m.Span.To, m.Span.From-m.Span.To)
+	}
+	if m.Span != nil {
+		t.Errorf("a box whose newest request predates the window stored span %v, "+
+			"claiming to have measured a period it holds nothing for", *m.Span)
 	}
 }
 
