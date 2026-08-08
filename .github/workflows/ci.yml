@@ -49,7 +49,7 @@ jobs:
     # job holding a slot for six hours if something escapes every step bound
     # below; it is deliberately larger than the sum of them, so it can only fire
     # when one of them has failed to.
-    timeout-minutes: 45
+    timeout-minutes: 75
     steps:
       # Every step that can hang carries its own bound, and each is roughly
       # three times its observed time -- close enough to catch a hang, loose
