@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -503,4 +505,75 @@ func contains(ss []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// A FIFO IS NOT AN INVENTORY. os.Open on a FIFO blocks until a writer appears
+// and a slow writer stalls the read indefinitely -- the 1 MiB cap bounds
+// bytes, not time -- so the path must be a regular file, checked before the
+// open and again on the descriptor. The timeout is not decoration: if the
+// regular-file check is ever removed, this test fails by CLOCK rather than
+// hanging the suite.
+func TestTheInventoryMustBeARegularFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("syscall.Mkfifo is a unix facility")
+	}
+	fifo := filepath.Join(t.TempDir(), "expected-apps.json")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := loadInventory(fifo)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "regular file") {
+			t.Fatalf("a FIFO inventory was not refused as a non-regular file: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("loadInventory blocked on a FIFO -- the regular-file check is not running before the open")
+	}
+}
+
+// TWO FAULTS, TWO FINDINGS. A stray app registered twice is a duplicate
+// registration AND an unexpected app -- one line for each, not three lines for
+// two faults. This is the exact [blog, stray, stray] control: the duplicate
+// group and the unexpected group each say their piece once.
+func TestDuplicateUnexpectedRegistrationsAreCountedOnce(t *testing.T) {
+	inv := expectedInventory{Apps: []expectedApp{
+		{Name: "blog", Config: "ghcr.io/example/blog-config", Hosts: []string{"blog.example.com"}},
+	}}
+	stray := box.App{Name: "stray", ConfigImage: "ghcr.io/example/stray-config",
+		Hosts: []box.Host{{Name: "stray.example.com"}}}
+	blog := box.App{Name: "blog", ConfigImage: "ghcr.io/example/blog-config",
+		Hosts: []box.Host{{Name: "blog.example.com"}}}
+
+	got := reconcileInventory(inv, []box.App{blog, stray, stray})
+	want := []string{
+		"duplicate registered app: stray",
+		"unexpected registered app: stray",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("findings = %v, want exactly %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("findings = %v, want exactly %v", got, want)
+		}
+	}
+}
+
+// THE TOP-LEVEL HELP TELLS THE SAME TRUTH AS THE SUBCOMMAND'S. An operator who
+// reads only `komizo`'s own list must still learn that reconcile opens SSH
+// sessions (the preflight and one report fetch) and that --accept-host-key can
+// append to the LOCAL known_hosts -- before running it, not after.
+func TestTheTopLevelHelpStatesReconcilesExactContact(t *testing.T) {
+	out := capture(t, Usage)
+	for _, want := range []string{"reachability preflight", "report once", "known_hosts"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the top-level help does not mention %q:\n%s", want, out)
+		}
+	}
 }
