@@ -93,11 +93,32 @@ func validateRouteName(s string) error {
 // name -- instead of silently keeping it in a file people commit.
 func loadInventory(path string) (expectedInventory, error) {
 	var inv expectedInventory
+	// REGULAR FILES ONLY, checked BEFORE opening: os.Open on a FIFO blocks
+	// until a writer appears, so the check has to happen first for the refusal
+	// to be immediate rather than a hang. The cap bounds bytes, not time, and
+	// it says nothing about what a device would produce.
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return inv, fmt.Errorf("could not read the inventory: %w", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return inv, fmt.Errorf("the inventory must be a regular file, not %s (%s)",
+			fi.Mode().Type(), path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return inv, fmt.Errorf("could not read the inventory: %w", err)
 	}
 	defer f.Close()
+	// AND CHECKED AGAIN on the descriptor actually opened: a path swapped
+	// between the check and the open is bound to this handle, so a FIFO or
+	// device slipped in mid-race is still refused rather than read.
+	if fi, err := f.Stat(); err != nil {
+		return inv, fmt.Errorf("could not read the inventory: %w", err)
+	} else if !fi.Mode().IsRegular() {
+		return inv, fmt.Errorf("the inventory must be a regular file, not %s (%s)",
+			fi.Mode().Type(), path)
+	}
 	// Bounded BEFORE the allocation: a LimitReader of cap+1 means ReadAll can
 	// never hold more than that, so a swapped-in multi-gigabyte file is
 	// refused at the cap instead of exhausting memory first and being measured
@@ -241,7 +262,14 @@ func reconcileInventory(inv expectedInventory, registered []box.App) []string {
 		}
 	}
 	sort.Strings(extra)
-	for _, name := range extra {
+	for i, name := range extra {
+		// A stray app registered TWICE is two faults -- the duplicate, already
+		// reported above, and the unexpected registration, reported here once.
+		// Printing the same unexpected line per occurrence would count one
+		// fault as many and bury the difference between the two.
+		if i > 0 && extra[i-1] == name {
+			continue
+		}
 		findings = append(findings, "unexpected registered app: "+name)
 	}
 	return findings
