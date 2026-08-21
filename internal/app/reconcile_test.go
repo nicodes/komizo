@@ -421,6 +421,13 @@ func TestADuplicateRegisteredAppIsReportedRatherThanMasking(t *testing.T) {
 // one -- matched EXACTLY, string for string. Expanding a wildcard to bless
 // whatever an app published under it would invert what an inventory is for.
 func TestWildcardRoutesReconcileByExactMatch(t *testing.T) {
+	// A wildcard survives the LOAD path, not just the in-memory comparison:
+	// an inventory that cannot be written down is not support.
+	if _, err := loadInventory(inventoryFile(t,
+		`{"apps":[{"name":"api","config":"ghcr.io/example/api-config","hosts":["api.example.com","*.api.example.com"]}]}`)); err != nil {
+		t.Fatalf("a valid wildcard inventory was refused at load: %v", err)
+	}
+
 	inv := expectedInventory{Apps: []expectedApp{
 		{Name: "api", Config: "ghcr.io/example/api-config",
 			Hosts: []string{"api.example.com", "*.api.example.com"}},
