@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -367,12 +366,12 @@ func lockRecord(path string) func() {
 	}
 	deadline := time.Now().Add(recordLockWait)
 	for {
-		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+		if flockExclusiveNB(f.Fd()) {
 			return func() {
 				// Unlocked explicitly before the close. Closing releases it too,
 				// but only as a side effect of the last descriptor going away --
 				// and this process may hold another one on a later call.
-				_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+				flockUnlock(f.Fd())
 				_ = f.Close()
 			}
 		}

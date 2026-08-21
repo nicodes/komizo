@@ -33,6 +33,17 @@ runs:
       shell: bash
       run: go vet ./...
 
+    # The CLI's other compile target. Tests do not RUN on Windows in CI, but
+    # they must COMPILE: vet type-checks test files, which is where a unix-only
+    # syscall (Mkfifo, Stat_t, Flock) in a shared test file goes unnoticed
+    # until somebody builds on a Windows machine. Unix-only tests live behind
+    # a unix build tag instead.
+    - name: Windows compiles, tests included
+      shell: bash
+      run: |
+        GOOS=windows go build ./...
+        GOOS=windows go vet ./...
+
     # Checked BEFORE the tests, because one of them is the shellcheck gate and it
     # skips itself when the tool is absent. A skip is what a contributor without
     # shellcheck should get; a skip in CI is the check quietly not happening,

@@ -17,15 +17,20 @@ import (
 // `komizo reconcile` -- does this box hold exactly the apps the inventory says
 // it must?
 //
-// INSPECTION ONLY, and exactly what that means: against the BOX the command is
+// INSPECTION ONLY, and exactly what that means. Against the BOX the command is
 // the reachability preflight every komizo command runs (`ssh ... true`, plus a
 // trust-on-first-use host-key acceptance when --accept-host-key is given for a
-// box never seen before -- that one appends to the LOCAL ~/.ssh/known_hosts,
-// reach.go) followed by ONE fetch of the box's report through the agent. It
-// provisions nothing, deploys nothing, rotates no key and writes nothing on
-// the box: after a host rebuild it is the check that answers "did everything
-// expected come back" BEFORE anyone starts re-adding apps by hand. See the
-// README's rebuild section.
+// box never seen before) followed by ONE fetch of the box's report through the
+// agent. It provisions nothing, deploys nothing, rotates no key and writes
+// nothing on the box: after a host rebuild it is the check that answers "did
+// everything expected come back" BEFORE anyone starts re-adding apps by hand.
+// See the README's rebuild section.
+//
+// LOCALLY, opening SSH has its own ordinary effects, none of them the box's:
+// the connection's control socket lives under ~/.ssh, so that directory may be
+// created or tightened to 0700 on first use (ssh.go's controlPath), and
+// --accept-host-key appends the server's host key to ~/.ssh/known_hosts
+// (reach.go). Those are the whole list -- anything further would be a defect.
 //
 // The inventory is deliberately thin: an app's name, its pinned config-image
 // reference, and the public hostnames it is expected to publish. Anything
@@ -93,32 +98,15 @@ func validateRouteName(s string) error {
 // name -- instead of silently keeping it in a file people commit.
 func loadInventory(path string) (expectedInventory, error) {
 	var inv expectedInventory
-	// REGULAR FILES ONLY, checked BEFORE opening: os.Open on a FIFO blocks
-	// until a writer appears, so the check has to happen first for the refusal
-	// to be immediate rather than a hang. The cap bounds bytes, not time, and
-	// it says nothing about what a device would produce.
-	fi, err := os.Lstat(path)
+	// openInventory is race-safe on unix (O_NOFOLLOW|O_NONBLOCK, regular-file
+	// check on the descriptor) and refuses symlinks as the final component
+	// there; see reconcile_open_unix.go for the policy and
+	// reconcile_open_other.go for the Windows difference.
+	f, err := openInventory(path)
 	if err != nil {
-		return inv, fmt.Errorf("could not read the inventory: %w", err)
-	}
-	if !fi.Mode().IsRegular() {
-		return inv, fmt.Errorf("the inventory must be a regular file, not %s (%s)",
-			fi.Mode().Type(), path)
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		return inv, fmt.Errorf("could not read the inventory: %w", err)
+		return inv, err
 	}
 	defer f.Close()
-	// AND CHECKED AGAIN on the descriptor actually opened: a path swapped
-	// between the check and the open is bound to this handle, so a FIFO or
-	// device slipped in mid-race is still refused rather than read.
-	if fi, err := f.Stat(); err != nil {
-		return inv, fmt.Errorf("could not read the inventory: %w", err)
-	} else if !fi.Mode().IsRegular() {
-		return inv, fmt.Errorf("the inventory must be a regular file, not %s (%s)",
-			fi.Mode().Type(), path)
-	}
 	// Bounded BEFORE the allocation: a LimitReader of cap+1 means ReadAll can
 	// never hold more than that, so a swapped-in multi-gigabyte file is
 	// refused at the cap instead of exhausting memory first and being measured
@@ -323,11 +311,13 @@ func RunReconcile(args []string) error {
 		return fmt.Errorf("reconcile is an operator check and %q is a per-app deploy account;\n"+
 			"    run it as the box's operator login (root), which is what holds the agent.", tgt.user)
 	}
-	// The preflight every komizo command runs: one `ssh ... true`. With
-	// --accept-host-key and a box never seen before it first appends the
-	// scanned host key to the LOCAL ~/.ssh/known_hosts (trust-on-first-use,
-	// reach.go) -- the only write this command can ever make, and it is to a
-	// local file, not the box.
+	// The preflight every komizo command runs: one `ssh ... true`. Locally,
+	// building the SSH command line can create or tighten ~/.ssh to 0700 for
+	// the connection's control socket (ssh.go's controlPath), and with
+	// --accept-host-key against a box never seen before the preflight appends
+	// the scanned host key to ~/.ssh/known_hosts (trust-on-first-use,
+	// reach.go). Those two local files are the whole of what connecting can
+	// change; the box is never written.
 	if err := ensureReachable(tgt, acceptHostKey); err != nil {
 		return err
 	}
@@ -367,11 +357,14 @@ is nonzero.
 
 The BOX is only ever read: this command provisions nothing, deploys nothing
 and rotates no key -- run it as the operator (root), and as often as you like.
-The one local file it can ever change is ~/.ssh/known_hosts, and only when
---accept-host-key is passed for a server never seen before (trust-on-first-use).
+Locally, connecting can create or tighten ~/.ssh to 0700 (for the SSH control
+socket), and --accept-host-key against a server never seen before appends its
+host key to ~/.ssh/known_hosts (trust-on-first-use). Those are the only local
+files it can ever touch.
 
-The inventory is JSON, and carries ONLY non-sensitive values -- the schema
-refuses anything else, including secret- or key-looking fields:
+The inventory is JSON, must be a regular file (symlinks are refused), and
+carries ONLY non-sensitive values -- the schema refuses anything else,
+including secret- or key-looking fields:
 
   {"apps":[
     {"name":"blog","config":"ghcr.io/you/blog-config","hosts":["blog.example.com"]}

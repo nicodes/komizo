@@ -279,9 +279,10 @@ and pages nobody.
 local inventory says it must, with the pinned config image and the expected
 public hostnames? It runs the reachability preflight every komizo command runs,
 fetches the box's report once, and writes nothing on the box -- any missing,
-unexpected or mismatched entry is printed and the exit status is nonzero. The
-one local file it can ever change is ~/.ssh/known_hosts, and only when
---accept-host-key is passed for a box never seen before.
+unexpected or mismatched entry is printed and the exit status is nonzero.
+Locally, connecting can create or tighten ~/.ssh to 0700 (for the SSH control
+socket), and --accept-host-key against a box never seen before appends its host
+key to ~/.ssh/known_hosts; those are the only local files it can touch.
 
 "komizo script" prints the shell this ships to the server, so you can read what
 will run as root before it does.
