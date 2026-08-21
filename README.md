@@ -88,13 +88,17 @@ komizo reconcile --host root@box --inventory expected-apps.json
 
 The order matters: `add` needs the network and agent that `init` installs, and
 a deploy needs the proxy route. `reconcile` is last and is the proof the
-rebuild worked — it reads the box ONCE, compares every registered app and
-route against the inventory, and exits nonzero on any missing, unexpected or
-mismatched entry. It only ever reads: it provisions nothing, deploys nothing
-and rotates no key, so run it as often as you like, as the operator (root)
-login. The inventory holds only app names, pinned config-image references and
-public hostnames; the schema refuses anything secret- or key-looking, so the
-file is safe to commit beside the runbooks.
+rebuild worked — after the reachability preflight every komizo command runs,
+it fetches the box's report exactly once and compares every registered app and
+route against the inventory, exiting nonzero on any missing, unexpected,
+duplicate or mismatched entry. The box is only ever read: reconcile provisions
+nothing, deploys nothing and rotates no key, so run it as often as you like,
+as the operator (root) login. The one local file it can ever change is
+`~/.ssh/known_hosts`, and only when `--accept-host-key` is passed for a box
+never seen before (trust-on-first-use). The inventory holds only app names,
+pinned config-image references and public hostnames (wildcards like
+`*.api.example.com` included, matched exactly); the schema refuses anything
+secret- or key-looking, so the file is safe to commit beside the runbooks.
 
 ### The deploy-key and known-hosts handoff
 
