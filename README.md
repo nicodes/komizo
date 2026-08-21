@@ -74,6 +74,47 @@ The trade is real and worth stating: the old shell arrived fresh on every poll,
 so a newer `komizo` read new things off an untouched box. An agent has to be
 updated to learn anything new, and `komizo report` says when one is behind.
 
+## Rebuilding a box
+
+A fresh machine is brought back in a fixed order, and every step is safe to
+re-run:
+
+```sh
+komizo init      --host root@box                          # Docker, network, agent
+komizo proxy     --host root@box                          # the shared Caddy
+komizo add       --host root@box --app NAME --config REF  # once per app
+komizo reconcile --host root@box --inventory expected-apps.json
+```
+
+The order matters: `add` needs the network and agent that `init` installs, and
+a deploy needs the proxy route. `reconcile` is last and is the proof the
+rebuild worked — it reads the box ONCE, compares every registered app and
+route against the inventory, and exits nonzero on any missing, unexpected or
+mismatched entry. It only ever reads: it provisions nothing, deploys nothing
+and rotates no key, so run it as often as you like, as the operator (root)
+login. The inventory holds only app names, pinned config-image references and
+public hostnames; the schema refuses anything secret- or key-looking, so the
+file is safe to commit beside the runbooks.
+
+### The deploy-key and known-hosts handoff
+
+Two values per app have to reach its repository before CI can deploy, and a
+rebuild changes exactly one of them:
+
+- **`KOMIZO_DEPLOY_KEY`** (secret) — the app's deploy key. `komizo add`
+  generates a fresh pair; on a rebuild where the old key is still in the repo
+  and still intended, `komizo add --keep-key` regenerates everything else and
+  leaves the account's authorized key alone. The private half is printed once,
+  held in memory and written nowhere unless `--key PATH` says so.
+- **`KOMIZO_KNOWN_HOSTS`** (variable) — the box's host keys against the names
+  this app's CI dials. A rebuilt box has NEW host keys, so this value always
+  changes on a rebuild. `komizo report --host root@box --known-hosts` prints
+  each app's value without touching the box — reading it costs no rotation.
+
+Both go to the app's repository under Settings → Secrets and variables →
+Actions. Values are never written down here, in the inventory, or in any log
+komizo keeps.
+
 Four things live on a server: `komizo-box` and its OpenRC service, the two
 per-app scripts, and the shared proxy. `komizo update` renews all of them --
 including the per-app scripts, which are regenerated from the record komizo
