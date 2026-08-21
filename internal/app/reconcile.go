@@ -3,8 +3,10 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -15,11 +17,15 @@ import (
 // `komizo reconcile` -- does this box hold exactly the apps the inventory says
 // it must?
 //
-// INSPECTION ONLY. The whole command is one read of the box's report through
-// the agent, compared against a local file. It provisions nothing, deploys
-// nothing, rotates no key and changes no setting: after a host rebuild it is
-// the check that answers "did everything expected come back" BEFORE anyone
-// starts re-adding apps by hand. See the README's rebuild section.
+// INSPECTION ONLY, and exactly what that means: against the BOX the command is
+// the reachability preflight every komizo command runs (`ssh ... true`, plus a
+// trust-on-first-use host-key acceptance when --accept-host-key is given for a
+// box never seen before -- that one appends to the LOCAL ~/.ssh/known_hosts,
+// reach.go) followed by ONE fetch of the box's report through the agent. It
+// provisions nothing, deploys nothing, rotates no key and writes nothing on
+// the box: after a host rebuild it is the check that answers "did everything
+// expected come back" BEFORE anyone starts re-adding apps by hand. See the
+// README's rebuild section.
 //
 // The inventory is deliberately thin: an app's name, its pinned config-image
 // reference, and the public hostnames it is expected to publish. Anything
@@ -54,6 +60,32 @@ type expectedInventory struct {
 // apart field by field.
 const keyMaterialMarker = "-----BEGIN"
 
+// validateRouteName is one expected route.
+//
+// Route-specific rather than validateHost, because the report's route schema
+// carries WILDCARD hostnames ("*.api.example.com") -- an app serving a
+// wildcard through the proxy's on-demand-TLS gate publishes one, and an
+// inventory that cannot name it can never reconcile a box that uses one. A
+// wildcard is exactly "*." followed by a hostname; a bare "*" or a "*" in any
+// other position matches no route the proxy can serve, so it is refused.
+//
+// Comparison is then an exact string match: the inventory's "*.api.example.com"
+// matches the report's identical route and nothing else. Expanding wildcards
+// to match concrete hostnames would bless whatever an app chose to publish
+// under one -- the opposite of what an inventory is for.
+func validateRouteName(s string) error {
+	if rest, ok := strings.CutPrefix(s, "*."); ok {
+		if rest == "" || strings.Contains(rest, "*") {
+			return fmt.Errorf("wildcard route %q must be %q followed by a hostname", s, "*.")
+		}
+		return validateHost(rest)
+	}
+	if strings.Contains(s, "*") {
+		return fmt.Errorf("a wildcard route must start with %q, got %q", "*.", s)
+	}
+	return validateHost(s)
+}
+
 // loadInventory reads and validates the expected-app file.
 //
 // Strict, on purpose. DisallowUnknownFields is what rejects a
@@ -61,7 +93,16 @@ const keyMaterialMarker = "-----BEGIN"
 // name -- instead of silently keeping it in a file people commit.
 func loadInventory(path string) (expectedInventory, error) {
 	var inv expectedInventory
-	raw, err := os.ReadFile(path)
+	f, err := os.Open(path)
+	if err != nil {
+		return inv, fmt.Errorf("could not read the inventory: %w", err)
+	}
+	defer f.Close()
+	// Bounded BEFORE the allocation: a LimitReader of cap+1 means ReadAll can
+	// never hold more than that, so a swapped-in multi-gigabyte file is
+	// refused at the cap instead of exhausting memory first and being measured
+	// afterwards.
+	raw, err := io.ReadAll(io.LimitReader(f, inventoryMaxBytes+1))
 	if err != nil {
 		return inv, fmt.Errorf("could not read the inventory: %w", err)
 	}
@@ -83,10 +124,15 @@ func loadInventory(path string) (expectedInventory, error) {
 		}
 		return inv, fmt.Errorf("could not parse the inventory: %w", err)
 	}
-	// Trailing data after the document is a second document, which is how one
-	// file quietly becomes two inventories.
-	if dec.More() {
-		return inv, fmt.Errorf("the inventory has data after the document -- one file, one inventory")
+	// A SECOND DECODE, and it must be io.EOF. More() answers whether the array
+	// or object being parsed has another element -- it is not the end-of-stream
+	// check its placement here would imply, and it lets a second document or
+	// trailing garbage through. One file is one inventory.
+	var extra any
+	if err := dec.Decode(&extra); err == nil {
+		return inv, fmt.Errorf("the inventory has a second JSON document after the first -- one file, one inventory")
+	} else if !errors.Is(err, io.EOF) {
+		return inv, fmt.Errorf("the inventory has trailing data after the document: %w", err)
 	}
 
 	seen := map[string]bool{}
@@ -101,8 +147,15 @@ func loadInventory(path string) (expectedInventory, error) {
 		if err := validateConfigImage(a.Config); err != nil {
 			return inv, fmt.Errorf("inventory for %q: %w", a.Name, err)
 		}
+		hosts := map[string]bool{}
 		for _, h := range a.Hosts {
-			if err := validateHost(h); err != nil {
+			// A repeated expected hostname would make the set comparison below
+			// silently pass on half a declaration: said twice, read as one.
+			if hosts[h] {
+				return inv, fmt.Errorf("the inventory lists host %q twice for %q", h, a.Name)
+			}
+			hosts[h] = true
+			if err := validateRouteName(h); err != nil {
 				return inv, fmt.Errorf("inventory for %q: %w", a.Name, err)
 			}
 		}
@@ -118,12 +171,32 @@ func loadInventory(path string) (expectedInventory, error) {
 // the line a rebuild runbook greps for, and a message that drifts between
 // releases breaks the check that watches for it.
 func reconcileInventory(inv expectedInventory, registered []box.App) []string {
+	var findings []string
+
+	// The FIRST registration of a name is the one compared, and any later one
+	// is a finding of its own. Indexing into a map with last-write-wins lets a
+	// duplicate registration hide a mismatch: [blog(wrong), blog(expected)]
+	// would pass an inventory expecting the correct one, because the second
+	// entry overwrote the first before anyone looked. A box reporting two apps
+	// under one name is already a fault; saying so beats picking a winner
+	// silently.
 	byName := make(map[string]box.App, len(registered))
+	var dupes []string
 	for _, a := range registered {
+		if _, seen := byName[a.Name]; seen {
+			dupes = append(dupes, a.Name)
+			continue
+		}
 		byName[a.Name] = a
 	}
-
-	var findings []string
+	sort.Strings(dupes)
+	for i, name := range dupes {
+		// A name registered three times is one fault, not two.
+		if i > 0 && dupes[i-1] == name {
+			continue
+		}
+		findings = append(findings, "duplicate registered app: "+name)
+	}
 
 	// Sorted, so two runs over the same mismatch print the same lines in the
 	// same order -- a diff between yesterday's check and today's should be the
@@ -192,7 +265,7 @@ func RunReconcile(args []string) error {
 	fs.StringVar(&host, "host", "", "server to check, [user@]HOST (the operator login, not a deploy account)")
 	fs.IntVar(&port, "port", 22, "SSH port")
 	fs.StringVar(&invPath, "inventory", "", "expected-app inventory file (JSON; names, config images, hostnames only)")
-	fs.BoolVar(&acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
+	fs.BoolVar(&acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use; appends to the LOCAL ~/.ssh/known_hosts)")
 	if err := fs.Parse(args); err != nil {
 		return ErrSilent
 	}
@@ -222,13 +295,18 @@ func RunReconcile(args []string) error {
 		return fmt.Errorf("reconcile is an operator check and %q is a per-app deploy account;\n"+
 			"    run it as the box's operator login (root), which is what holds the agent.", tgt.user)
 	}
+	// The preflight every komizo command runs: one `ssh ... true`. With
+	// --accept-host-key and a box never seen before it first appends the
+	// scanned host key to the LOCAL ~/.ssh/known_hosts (trust-on-first-use,
+	// reach.go) -- the only write this command can ever make, and it is to a
+	// local file, not the box.
 	if err := ensureReachable(tgt, acceptHostKey); err != nil {
 		return err
 	}
 
-	// THE ONE READ. "report" is the only verb this command ever sends, and it
-	// sends it once: the report carries every app's registration and routes,
-	// and nothing else this command does touches the box at all.
+	// ONE report fetch is the only thing this command ever asks of the agent:
+	// the report carries every app's registration and routes, and nothing else
+	// the command does contacts the box at all.
 	rep, err := fetchBox[box.Report](tgt, "report")
 	if err != nil {
 		return err
@@ -252,13 +330,17 @@ func usageReconcile(fs *flag.FlagSet) {
 
   komizo reconcile --host root@server --inventory expected-apps.json
 
-Reads the box's report ONCE and compares it with the inventory: every expected
-app must be registered with the pinned config image and publish the expected
-hostnames, and no other app may be registered. Any disagreement is printed and
-the exit status is nonzero.
+After the reachability preflight every komizo command runs, it fetches the
+box's report ONCE and compares it with the inventory: every expected app must
+be registered with the pinned config image and publish exactly the expected
+hostnames (wildcards like *.api.example.com included, matched exactly), and no
+other app may be registered. Any disagreement is printed and the exit status
+is nonzero.
 
-This command only ever READS. It provisions nothing, deploys nothing and
-rotates no key -- run it as the operator (root), and as often as you like.
+The BOX is only ever read: this command provisions nothing, deploys nothing
+and rotates no key -- run it as the operator (root), and as often as you like.
+The one local file it can ever change is ~/.ssh/known_hosts, and only when
+--accept-host-key is passed for a server never seen before (trust-on-first-use).
 
 The inventory is JSON, and carries ONLY non-sensitive values -- the schema
 refuses anything else, including secret- or key-looking fields:

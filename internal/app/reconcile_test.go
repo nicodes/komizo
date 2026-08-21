@@ -252,14 +252,20 @@ func TestTheInventoryRejectsSecretAndKeyLookingContent(t *testing.T) {
 	}
 }
 
-// THE COMMAND NEVER WRITES. Reconciliation is one read of the box's report and
-// nothing else -- no script is piped, no key is rotated, nothing is deployed
-// or provisioned. The proof is the stubbed boundary: every word this command
-// sends to a box goes through askBox, and the stub records each call. More
-// than one call, or any verb but "report", fails this test.
+// THE BOX IS NEVER WRITTEN. Reconcile's exact contact with a box is two seams,
+// and both are stubbed and counted here:
 //
-// Checked on a FAILING run as well as a passing one: a check that "helpfully"
-// repaired what it found would only do so when something was wrong.
+//   - ensureReachable, the preflight every komizo command runs (`ssh ... true`
+//     on the far end; a LOCAL ~/.ssh/known_hosts append only when
+//     --accept-host-key is passed to a box never seen before), stubbed because
+//     the real one opens SSH sessions and makes this a test of somebody's DNS;
+//   - askBox, the one channel to the agent, through which the only verb this
+//     command may send is a single "report".
+//
+// Anything further -- a piped script, a key rotation, a deploy, a provision --
+// would go through one of these two and would fail the counts. Checked on a
+// FAILING run as well as a passing one: a check that "helpfully" repaired what
+// it found would only do so when something was wrong.
 func TestReconcileDoesNotWriteProvisionRotateOrDeploy(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -269,17 +275,23 @@ func TestReconcileDoesNotWriteProvisionRotateOrDeploy(t *testing.T) {
 		{"when an app is missing", withoutApp(registeredFixture(), "termcade")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			reachable(t)
+			preflights := 0
+			orig := ensureReachable
+			ensureReachable = func(target, bool) error { preflights++; return nil }
+			t.Cleanup(func() { ensureReachable = orig })
 			asked := stubBox(t, func([]string) ([]byte, error) { return marshalBox(t, tc.rep), nil })
 			_ = capture(t, func() {
 				_ = RunReconcile([]string{"--host", "root@box", "--inventory", fixtureFile(t)})
 			})
 
+			if preflights != 1 {
+				t.Fatalf("the reachability preflight ran %d times, want exactly one", preflights)
+			}
 			if len(*asked) != 1 {
-				t.Fatalf("reconcile addressed the box %d times, want exactly one read: %v", len(*asked), *asked)
+				t.Fatalf("reconcile asked the agent %d times, want exactly one report fetch: %v", len(*asked), *asked)
 			}
 			if got := (*asked)[0]; len(got) != 1 || got[0] != "report" {
-				t.Fatalf("reconcile sent %v to the box; the only verb it may send is \"report\"", got)
+				t.Fatalf("reconcile sent %v to the agent; the only verb it may send is \"report\"", got)
 			}
 		})
 	}
@@ -287,7 +299,7 @@ func TestReconcileDoesNotWriteProvisionRotateOrDeploy(t *testing.T) {
 
 // AND THERE IS NO WRITE PATH TO REACH. The commands that change a box take a
 // script runner or call target.runScript/quiet; RunReconcile's signature takes
-// neither and its only box call is fetchBox over askBox, asserted above.
+// neither and its only agent call is fetchBox over askBox, asserted above.
 // This test is the executable half of that claim; the other half is that
 // "reconcile" appears nowhere in scripts/ and its command function has no
 // runner parameter.
@@ -331,4 +343,157 @@ func TestTheInventoryRejectsDuplicatesAndTaggedImages(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "tag") {
 		t.Errorf("a tagged config image was not refused: %v", err)
 	}
+
+	// AND A REPEATED EXPECTED HOSTNAME. The comparison is set-based, so a host
+	// listed twice reads as one -- said twice, counted once, and nobody can
+	// tell which was meant. Refused at load, where the author is looking.
+	_, err = loadInventory(inventoryFile(t,
+		`{"apps":[{"name":"blog","config":"ghcr.io/example/blog-config",
+			"hosts":["blog.example.com","blog.example.com"]}]}`))
+	if err == nil || !strings.Contains(err.Error(), "twice") {
+		t.Errorf("a duplicate expected hostname was not refused: %v", err)
+	}
+}
+
+// THE SIZE CAP BITES BEFORE THE ALLOCATION. The file is read through a
+// LimitReader of inventoryMaxBytes+1, so inventoryMaxBytes+1 bytes on disk is
+// the deliberate oversize: refused at the cap rather than after an unbounded
+// read of a swapped-in blob.
+func TestTheInventoryCapIsEnforcedOnTheWayIn(t *testing.T) {
+	big := strings.Repeat(" ", inventoryMaxBytes+1)
+	_, err := loadInventory(inventoryFile(t, big))
+	if err == nil || !strings.Contains(err.Error(), "over") {
+		t.Fatalf("a %d-byte inventory was not refused at the %d-byte cap: %v",
+			inventoryMaxBytes+1, inventoryMaxBytes, err)
+	}
+
+	// AND EXACTLY AT THE CAP IS STILL READ, or the boundary is off by one in
+	// the direction that rejects a legitimate file.
+	doc := `{"apps":[{"name":"blog","config":"ghcr.io/example/blog-config","hosts":["blog.example.com"]}]}`
+	if len(doc) >= inventoryMaxBytes {
+		t.Fatal("the fixture document should be far under the cap")
+	}
+	padded := doc + strings.Repeat(" ", inventoryMaxBytes-len(doc))
+	if _, err := loadInventory(inventoryFile(t, padded)); err != nil {
+		t.Errorf("an inventory of exactly inventoryMaxBytes was refused: %v", err)
+	}
+}
+
+// A DUPLICATE REGISTRATION CANNOT HIDE A MISMATCH. Last-write-wins indexing
+// would let [blog(wrong), blog(expected)] pass an inventory expecting the
+// correct config, because the second entry overwrote the first before the
+// comparison ran. The control below is that exact arrangement, and the two
+// orderings beside it: the duplicate is a finding either way, and the FIRST
+// registration is the one compared.
+func TestADuplicateRegisteredAppIsReportedRatherThanMasking(t *testing.T) {
+	blog := func(config string) box.App {
+		return box.App{Name: "blog", ConfigImage: config,
+			Hosts: []box.Host{{Name: "blog.example.com"}}}
+	}
+	termcade := registeredFixture().Apps[1]
+
+	inv := expectedFixture()
+
+	// The masking control: wrong FIRST, then correct -- last-write-wins would
+	// pass this silently.
+	findings := reconcileInventory(inv, []box.App{
+		blog("ghcr.io/example/wrong-config"), blog("ghcr.io/example/blog-config"), termcade})
+	if !contains(findings, "duplicate registered app: blog") {
+		t.Errorf("the duplicate was not reported: %v", findings)
+	}
+	if !contains(findings,
+		"wrong config image for blog: expected ghcr.io/example/blog-config, registered ghcr.io/example/wrong-config") {
+		t.Errorf("the FIRST registration was not the one compared: %v", findings)
+	}
+
+	// And the mirror: correct first, wrong second. The config comparison
+	// passes, but the duplicate is still a finding -- a box reporting two apps
+	// under one name is a fault in its own right.
+	findings = reconcileInventory(inv, []box.App{
+		blog("ghcr.io/example/blog-config"), blog("ghcr.io/example/wrong-config"), termcade})
+	if len(findings) != 1 || findings[0] != "duplicate registered app: blog" {
+		t.Errorf("findings = %v, want exactly the duplicate report", findings)
+	}
+}
+
+// WILDCARDS ARE ROUTES TOO. The report schema carries them ("*.api.example.com"
+// from an app on the proxy's on-demand-TLS gate), so the inventory can name
+// one -- matched EXACTLY, string for string. Expanding a wildcard to bless
+// whatever an app published under it would invert what an inventory is for.
+func TestWildcardRoutesReconcileByExactMatch(t *testing.T) {
+	inv := expectedInventory{Apps: []expectedApp{
+		{Name: "api", Config: "ghcr.io/example/api-config",
+			Hosts: []string{"api.example.com", "*.api.example.com"}},
+	}}
+	matching := []box.App{{
+		Name: "api", ConfigImage: "ghcr.io/example/api-config",
+		Hosts: []box.Host{{Name: "api.example.com"}, {Name: "*.api.example.com"}},
+	}}
+	if got := reconcileInventory(inv, matching); len(got) != 0 {
+		t.Errorf("an exactly matching wildcard route produced findings: %v", got)
+	}
+
+	// The wildcard and the concrete hostname are NOT interchangeable.
+	concrete := []box.App{{
+		Name: "api", ConfigImage: "ghcr.io/example/api-config",
+		Hosts: []box.Host{{Name: "api.example.com"}, {Name: "a.api.example.com"}},
+	}}
+	got := reconcileInventory(inv, concrete)
+	if !contains(got, "wrong hostname for api: *.api.example.com is expected but not a published route") {
+		t.Errorf("a concrete hostname stood in for the wildcard: %v", got)
+	}
+	if !contains(got, "wrong hostname for api: a.api.example.com is a published route but not expected") {
+		t.Errorf("the unexpected concrete route was not reported: %v", got)
+	}
+}
+
+func TestWildcardInventoryEntriesAreValidated(t *testing.T) {
+	for _, tc := range []struct {
+		host, want string
+	}{
+		{"*", "must start with"},
+		{"*api.example.com", "must start with"},
+		{"a.*.example.com", "must start with"},
+		{"*.*.example.com", "followed by a hostname"},
+		{"*.", "followed by a hostname"},
+	} {
+		_, err := loadInventory(inventoryFile(t,
+			`{"apps":[{"name":"api","config":"ghcr.io/example/api-config","hosts":["`+tc.host+`"]}]}`))
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("wildcard %q: rejection = %v, want it to mention %q", tc.host, err, tc.want)
+		}
+	}
+}
+
+// ONE FILE, ONE DOCUMENT -- CHECKED AT THE STREAM, NOT THE CONTAINER. More()
+// answers whether the array or object being parsed has another element; it is
+// not an end-of-stream check. The strict check is a second Decode that must
+// come back io.EOF, and both spellings of "there is more here" are refused.
+func TestTheInventoryIsExactlyOneJSONDocument(t *testing.T) {
+	doc := `{"apps":[{"name":"blog","config":"ghcr.io/example/blog-config"}]}`
+
+	_, err := loadInventory(inventoryFile(t, doc+"\n"+doc))
+	if err == nil || !strings.Contains(err.Error(), "second JSON document") {
+		t.Errorf("a second document was not refused: %v", err)
+	}
+
+	_, err = loadInventory(inventoryFile(t, doc+" }}}"))
+	if err == nil || !strings.Contains(err.Error(), "trailing data") {
+		t.Errorf("malformed trailing input was not refused: %v", err)
+	}
+
+	// AND TRAILING WHITESPACE IS FINE, or every editor that ends a file with a
+	// newline just broke the check.
+	if _, err := loadInventory(inventoryFile(t, doc+" \n\t\n")); err != nil {
+		t.Errorf("trailing whitespace was refused: %v", err)
+	}
+}
+
+func contains(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
