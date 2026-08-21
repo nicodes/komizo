@@ -13,7 +13,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/nicodes/komizo/box"
@@ -332,7 +331,7 @@ var opVerbs = map[string]string{
 // Bounded before it is read rather than after, because an unbounded read at
 // root is an unbounded allocation.
 func readBounded(path string, max int) ([]byte, error) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(path, os.O_RDONLY|oNoFollow|oNonBlock, 0)
 	if err != nil {
 		return nil, err
 	}

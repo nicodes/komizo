@@ -93,10 +93,13 @@ it fetches the box's report exactly once and compares every registered app and
 route against the inventory, exiting nonzero on any missing, unexpected,
 duplicate or mismatched entry. The box is only ever read: reconcile provisions
 nothing, deploys nothing and rotates no key, so run it as often as you like,
-as the operator (root) login. The one local file it can ever change is
-`~/.ssh/known_hosts`, and only when `--accept-host-key` is passed for a box
-never seen before (trust-on-first-use). The inventory holds only app names,
-pinned config-image references and public hostnames (wildcards like
+as the operator (root) login. Locally, connecting can create or tighten
+`~/.ssh` to 0700 (for the SSH control socket), and `--accept-host-key` against
+a box never seen before appends its host key to `~/.ssh/known_hosts`
+(trust-on-first-use) — those are the only local files it can ever touch. The
+inventory must be a regular file (a symlink as the final component is refused,
+so a writable directory cannot point the check at another file) and holds only
+app names, pinned config-image references and public hostnames (wildcards like
 `*.api.example.com` included, matched exactly); the schema refuses anything
 secret- or key-looking, so the file is safe to commit beside the runbooks.
 
