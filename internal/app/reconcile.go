@@ -51,8 +51,12 @@ import (
 // blob of something else into an error instead of a slow parse.
 const inventoryMaxBytes = 1 << 20
 
-// expectedApp is the one line the inventory holds per app: nothing an attacker
-// could use, everything a rebuild check needs.
+// expectedApp is the one line the inventory holds per app, and the whole of
+// the schema: a name, a config reference, public hostnames. Nothing else
+// survives the load -- unknown fields are refused, so a key or token cannot
+// arrive as its own member. Whether a VALUE that fits the syntax is sensitive
+// is not decidable here (see the package comment and the fake-token control),
+// so the guarantee is the boundary, not the content.
 type expectedApp struct {
 	Name   string   `json:"name"`
 	Config string   `json:"config"`
