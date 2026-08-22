@@ -1,5 +1,14 @@
 //go:build unix
 
+// The unix tag is the EXACT capability set here, not an approximation: the
+// gc toolchain's unix targets are aix, android, darwin, dragonfly, freebsd,
+// illumos, ios, linux, netbsd, openbsd and solaris (hurd has no gc port), and
+// every one of them carries O_NOFOLLOW, O_NONBLOCK, O_CLOEXEC and
+// syscall.Open -- probed per target with `GOOS=<target> go doc syscall.<sym>`
+// under Go 1.26.5, and compiled per family by the cross-build step in
+// `make check` and CI. The platforms WITHOUT those constants (windows,
+// wasip1, js, plan9) take reconcile_open_other.go.
+
 package app
 
 import (

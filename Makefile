@@ -87,12 +87,24 @@ check: agents
 	gofmt -l . | tee /dev/stderr | (! read)
 	go vet ./...
 	KOMIZO_REQUIRE_SHELLCHECK=1 go test ./...
-	GOOS=darwin go build ./...
-	# Tests do not RUN on Windows here, but they must COMPILE: vet type-checks
-	# test files, which is where a unix-only syscall in a shared test file
-	# would otherwise go unnoticed until somebody built on a Windows machine.
-	GOOS=windows go build ./...
-	GOOS=windows go vet ./...
+	# Every gc target family, cross-compiled AND cross-vetted. The capability
+	# build tags (flock, O_NOFOLLOW|O_NONBLOCK, Mkfifo, signals) name exact
+	# platform sets; this is what proves those sets compile everywhere they
+	# are selected. vet type-checks the TESTS, which is where a unix-only
+	# syscall in a shared test file hides.
+	#
+	# Scope, stated: android is vet-only because linking needs cgo; ios needs
+	# cgo to type-check at all; hurd has no gc port. None is an operator or
+	# box platform for komizo.
+	GOOS=darwin GOARCH=amd64 go build ./...
+	@for t in windows/amd64 freebsd/amd64 netbsd/amd64 openbsd/amd64 dragonfly/amd64 \
+		aix/ppc64 illumos/amd64 solaris/amd64 wasip1/wasm js/wasm plan9/amd64; do \
+		os=$${t%/*}; arch=$${t#*/}; \
+		echo "  cross  $$os/$$arch"; \
+		GOOS=$$os GOARCH=$$arch go build ./... || exit 1; \
+		GOOS=$$os GOARCH=$$arch go vet ./... || exit 1; \
+	done
+	@GOOS=android GOARCH=arm64 go vet ./... && echo "  cross  android/arm64 (vet only; linking needs cgo)"
 
 clean:
 	rm -rf bin $(AGENT_DIR)/komizo-box-*
