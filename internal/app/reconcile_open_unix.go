@@ -18,7 +18,8 @@ import (
 	"syscall"
 )
 
-// openInventory opens the inventory the way a replacement cannot hurt us.
+// openInventory opens the inventory without following a final-component link
+// or hanging on a FIFO.
 //
 // The naive sequence -- Lstat to check, then os.Open -- has a window between
 // the two in which a writable directory can swap the checked regular file for
@@ -26,24 +27,26 @@ import (
 // appears. So the checks happen on the OPENED descriptor, and the open itself
 // is made safe:
 //
-//   - O_NOFOLLOW refuses a symlink as the FINAL component (ELOOP). The
-//     inventory is an operator's committed file, and silently following a
-//     link would let a writable directory point the check at another file.
-//     Intermediate directories MAY still be symlinks -- $HOME itself
-//     sometimes is one.
+//   - O_NOFOLLOW refuses a symlink as the FINAL component (ELOOP) -- exactly
+//     that, and no more. Intermediate directories MAY still be symlinks
+//     ($HOME itself sometimes is one), and an attacker who can WRITE the
+//     parent directory can rename a different regular file over the path
+//     outright; the descriptor check then correctly validates the replacement.
+//     No open flag prevents that, and none is claimed to: the inventory and
+//     its parent directories must be owned and writable only by the operator,
+//     like every other file a check's answer depends on.
 //   - O_NONBLOCK means that even if the descriptor somehow names a FIFO, the
 //     open and any read return immediately instead of waiting on a writer
 //     that may never come. It is ignored for regular files, so it costs a
 //     real inventory nothing.
-//   - The regular-file check on the descriptor is the answer about the thing
-//     actually held. A pre-open Lstat answers about a path that can change
-//     the moment it returns; this one cannot.
+//   - The regular-file check on the descriptor rules out FIFOs and devices:
+//     it is the answer about the thing actually held, where a pre-open Lstat
+//     answers about a path that can change the moment it returns.
 func openInventory(path string) (*os.File, error) {
 	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		if errors.Is(err, syscall.ELOOP) {
-			return nil, fmt.Errorf("the inventory must be a real file, not a symlink (%s);\n"+
-				"    a link would let a writable directory point the check at another file.\n"+
+			return nil, fmt.Errorf("the inventory must be a real file, not a symlink (%s).\n"+
 				"    Intermediate directories may be links; the file itself may not.", path)
 		}
 		return nil, fmt.Errorf("could not read the inventory: %w", err)

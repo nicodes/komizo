@@ -99,8 +99,13 @@ a box never seen before appends its host key to `~/.ssh/known_hosts`
 (trust-on-first-use) — those are the only local files it can ever touch (SSH
 is run with `UpdateHostKeys=no`, so the box cannot quietly add keys to
 `known_hosts` either). The inventory must be a regular file — on unix a
-symlink as the final component is refused, so a writable directory cannot
-point the check at another file; on Windows a link is followed — and holds
+symlink as the final component is refused, and a FIFO or device is rejected
+on the opened descriptor; on Windows a link is followed. That refusal covers
+the link itself, not the directory around it: someone who can write the
+inventory's parent directory can rename a different file over the path
+outright, and no open flag prevents that. Keep the inventory and its parent
+directories owned and writable only by the operator, like every other file a
+check's answer depends on. It holds
 only app names, pinned config-image references and public hostnames (wildcards
 like
 `*.api.example.com` included, matched exactly); the schema refuses anything
