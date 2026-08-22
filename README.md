@@ -107,9 +107,13 @@ outright, and no open flag prevents that. Keep the inventory and its parent
 directories owned and writable only by the operator, like every other file a
 check's answer depends on. It holds
 only app names, pinned config-image references and public hostnames (wildcards
-like
-`*.api.example.com` included, matched exactly); the schema refuses anything
-secret- or key-looking, so the file is safe to commit beside the runbooks.
+like `*.api.example.com` included, matched exactly). The loader enforces the
+boundary mechanically where it can: unknown fields are rejected (a member
+named for a secret, token or key cannot ride along), repeated object members
+are rejected, values must fit the app/config/route syntax, and literal PEM
+(`-----BEGIN`) material is rejected. It cannot judge meaning — a token-shaped
+string that fits the syntax is accepted — so keeping the values non-sensitive
+stays the operator's job.
 
 ### The deploy-key and known-hosts handoff
 

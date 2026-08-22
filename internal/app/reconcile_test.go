@@ -208,10 +208,13 @@ func TestReconcileReportsAWrongHostname(t *testing.T) {
 	}
 }
 
-// THE SCHEMA REFUSES SECRETS. Both spellings of the attempt: a FIELD the
-// schema does not name -- "deploy_key" and friends are rejected by the strict
-// decoder rather than kept -- and a VALUE that opens a PEM block, which no
-// name, image reference or hostname can legitimately contain.
+// WHAT THE SCHEMA ACTUALLY REFUSES, no more: a FIELD it does not name --
+// "deploy_key" and friends are rejected by the strict decoder rather than
+// kept -- and a VALUE that opens a PEM block, which no name, image reference
+// or hostname can legitimately contain. Issue aviorstudio/termcade-be#49
+// asks for exactly this: secret/private-key-looking fields rejected. It does
+// not ask for, and this loader does not provide, semantic secret detection --
+// the control below pins that honesty.
 func TestTheInventoryRejectsSecretAndKeyLookingContent(t *testing.T) {
 	for _, tc := range []struct {
 		name, doc, want string
@@ -244,12 +247,45 @@ func TestTheInventoryRejectsSecretAndKeyLookingContent(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := loadInventory(inventoryFile(t, tc.doc))
 			if err == nil {
-				t.Fatal("an inventory carrying secret-looking content was accepted")
+				t.Fatal("an inventory carrying a secret-named field or PEM material was accepted")
 			}
 			if !strings.Contains(err.Error(), tc.want) {
 				t.Errorf("rejection = %q, want it to mention %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// THE CONTROL THAT KEEPS THE DOCS HONEST: a token-shaped string that fits the
+// app-name charset is ACCEPTED. The loader checks syntax, not meaning, and
+// "looks like a credential" is meaning. If this ever starts failing, somebody
+// added semantic detection -- and the README, help and package comment must
+// stop saying it is the operator's job, because it no longer would be.
+//
+// The value is deliberately and obviously fake: shaped like a token, marked
+// as an example, and not a credential for anything.
+func TestATokenShapedButSyntacticallyValidValueIsAccepted(t *testing.T) {
+	_, err := loadInventory(inventoryFile(t,
+		`{"apps":[{"name":"tkn_EXAMPLE_NOT_A_SECRET_0000000000000000","config":"ghcr.io/example/blog-config"}]}`))
+	if err != nil {
+		t.Fatalf("a syntactically valid token-shaped app name was refused: %v", err)
+	}
+}
+
+// AND THE HELP SAYS SO. The published language must name the mechanical
+// refusals (unknown fields, PEM material) and assign the rest to the
+// operator -- never "the schema refuses anything else", which is the
+// overclaim this file's control disproves.
+func TestTheHelpStatesExactlyWhatTheSchemaRefuses(t *testing.T) {
+	fs := flag.NewFlagSet("reconcile", flag.ContinueOnError)
+	out := capture(t, func() { usageReconcile(fs) })
+	for _, want := range []string{"unknown fields", "PEM", "operator's job"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the help does not state the exact enforcement (%q missing):\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "refuses anything else") {
+		t.Errorf("the help still overclaims blanket secret refusal:\n%s", out)
 	}
 }
 
