@@ -35,12 +35,16 @@ import (
 // -- anything further would be a defect.
 //
 // The inventory is deliberately thin: an app's name, its pinned config-image
-// reference, and the public hostnames it is expected to publish. Anything
-// beyond that -- a deploy key, a token, a secret of any spelling -- is
-// REJECTED at load, so the file stays safe to commit next to the runbooks
-// that use it. The schema refusing extra fields is the guard: an inventory
-// that quietly accepted a "deploy_key" entry would become the place keys go
-// to be leaked.
+// reference, and the public hostnames it is expected to publish. The load
+// enforces exactly four things: the strict schema rejects unknown FIELDS (so
+// a "deploy_key" or "token" member is refused rather than kept), a repeated
+// member in any object is rejected, every VALUE is constrained by the
+// app/config/route syntax, and literal PEM material ("-----BEGIN") is
+// rejected. What it cannot do is semantics: a token-shaped string that fits
+// the app-name or image charset is indistinguishable from a legitimate one,
+// so keeping the values non-sensitive remains the operator's job. What the
+// schema guarantees is narrower and true: nothing OUTSIDE name/config/hosts
+// survives the load.
 
 // inventoryMaxBytes caps the file. It is a list of a handful of apps; a
 // megabyte is a thousand times what one needs, and the cap turns a swapped-in
@@ -95,9 +99,12 @@ func validateRouteName(s string) error {
 
 // loadInventory reads and validates the expected-app file.
 //
-// Strict, on purpose. DisallowUnknownFields is what rejects a
-// secret-looking field -- "deploy_key", "token", anything the schema does not
-// name -- instead of silently keeping it in a file people commit.
+// Strict, on purpose, about the part a schema CAN be strict about:
+// DisallowUnknownFields rejects any field the schema does not name --
+// "deploy_key", "token", "secret", anything else -- instead of silently
+// keeping it in a file people commit. Values are the operator's
+// responsibility: the charset checks and the PEM-marker refusal catch what
+// syntax can catch, and no more.
 func loadInventory(path string) (expectedInventory, error) {
 	var inv expectedInventory
 	// openInventory is race-safe on unix (O_NOFOLLOW|O_NONBLOCK, regular-file
@@ -137,8 +144,8 @@ func loadInventory(path string) (expectedInventory, error) {
 	if err := dec.Decode(&inv); err != nil {
 		if strings.Contains(err.Error(), "unknown field") {
 			return inv, fmt.Errorf("the inventory carries a field the schema does not allow: %w\n"+
-				"    Only \"name\", \"config\" and \"hosts\" exist. A secret, token or key field\n"+
-				"    is refused here so this file stays safe to commit.", err)
+				"    Only \"name\", \"config\" and \"hosts\" exist -- so a field named for a\n"+
+				"    secret, token or key cannot be smuggled in beside them.", err)
 		}
 		return inv, fmt.Errorf("could not parse the inventory: %w", err)
 	}
@@ -440,9 +447,13 @@ host key to ~/.ssh/known_hosts (trust-on-first-use). Those are the only local
 files it can ever touch.
 
 The inventory is JSON, must be a regular file (on unix a symlink as the final
-component is refused; on Windows a link is followed), and carries ONLY
-non-sensitive values -- the schema refuses anything else, including secret- or
-key-looking fields, and any object member repeated at any level.
+component is refused; on Windows a link is followed), and must hold only
+non-sensitive values. What the loader enforces, exactly: unknown fields are
+rejected (so a member named for a secret, token or key cannot ride along),
+repeated object members are rejected, values must fit the app/config/route
+syntax, and literal PEM ("-----BEGIN") material is rejected. What it cannot
+enforce is meaning: a token-shaped string that fits the syntax is accepted, so
+keeping the values non-sensitive is the operator's job, not the schema's.
 
 The link refusal covers the link ITSELF, not the directory around it: someone
 who can write the inventory's parent directory can replace the file outright,
