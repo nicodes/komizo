@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/nicodes/komizo/scripts"
 )
@@ -371,7 +370,7 @@ func writeKeyFile(path string, kp keypair) error {
 	// a shared directory, would take the private key at the wrong permissions or
 	// the wrong place. Refuse both -- a private key must land at 0600 on a real,
 	// new file.
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL|oNoFollow, 0o600)
 	if err != nil {
 		return fmt.Errorf("could not write the private key: %w", err)
 	}
@@ -382,7 +381,7 @@ func writeKeyFile(path string, kp keypair) error {
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("could not write the private key: %w", err)
 	}
-	pf, err := os.OpenFile(path+".pub", os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o644)
+	pf, err := os.OpenFile(path+".pub", os.O_WRONLY|os.O_CREATE|os.O_EXCL|oNoFollow, 0o644)
 	if err != nil {
 		return fmt.Errorf("could not write the public key: %w", err)
 	}

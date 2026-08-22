@@ -74,6 +74,66 @@ The trade is real and worth stating: the old shell arrived fresh on every poll,
 so a newer `komizo` read new things off an untouched box. An agent has to be
 updated to learn anything new, and `komizo report` says when one is behind.
 
+## Rebuilding a box
+
+A fresh machine is brought back in a fixed order, and every step is safe to
+re-run:
+
+```sh
+komizo init      --host root@box                          # Docker, network, agent
+komizo proxy     --host root@box                          # the shared Caddy
+komizo add       --host root@box --app NAME --config REF  # once per app
+komizo reconcile --host root@box --inventory expected-apps.json
+```
+
+The order matters: `add` needs the network and agent that `init` installs, and
+a deploy needs the proxy route. `reconcile` is last and is the proof the
+rebuild worked — after the reachability preflight every komizo command runs,
+it fetches the box's report exactly once and compares every registered app and
+route against the inventory, exiting nonzero on any missing, unexpected,
+duplicate or mismatched entry. The box is only ever read: reconcile provisions
+nothing, deploys nothing and rotates no key, so run it as often as you like,
+as the operator (root) login. Locally, connecting can create or tighten
+`~/.ssh` to 0700 (for the SSH control socket), and `--accept-host-key` against
+a box never seen before appends its host key to `~/.ssh/known_hosts`
+(trust-on-first-use) — those are the only local files it can ever touch (SSH
+is run with `UpdateHostKeys=no`, so the box cannot quietly add keys to
+`known_hosts` either). The inventory must be a regular file — on unix a
+symlink as the final component is refused, and a FIFO or device is rejected
+on the opened descriptor; on Windows a link is followed. That refusal covers
+the link itself, not the directory around it: someone who can write the
+inventory's parent directory can rename a different file over the path
+outright, and no open flag prevents that. Keep the inventory and its parent
+directories owned and writable only by the operator, like every other file a
+check's answer depends on. It holds
+only app names, pinned config-image references and public hostnames (wildcards
+like `*.api.example.com` included, matched exactly). The loader enforces the
+boundary mechanically where it can: unknown fields are rejected (a member
+named for a secret, token or key cannot ride along), repeated object members
+are rejected, values must fit the app/config/route syntax, and literal PEM
+(`-----BEGIN`) material is rejected. It cannot judge meaning — a token-shaped
+string that fits the syntax is accepted — so keeping the values non-sensitive
+stays the operator's job.
+
+### The deploy-key and known-hosts handoff
+
+Two values per app have to reach its repository before CI can deploy, and a
+rebuild changes exactly one of them:
+
+- **`KOMIZO_DEPLOY_KEY`** (secret) — the app's deploy key. `komizo add`
+  generates a fresh pair; on a rebuild where the old key is still in the repo
+  and still intended, `komizo add --keep-key` regenerates everything else and
+  leaves the account's authorized key alone. The private half is printed once,
+  held in memory and written nowhere unless `--key PATH` says so.
+- **`KOMIZO_KNOWN_HOSTS`** (variable) — the box's host keys against the names
+  this app's CI dials. A rebuilt box has NEW host keys, so this value always
+  changes on a rebuild. `komizo report --host root@box --known-hosts` prints
+  each app's value without touching the box — reading it costs no rotation.
+
+Both go to the app's repository under Settings → Secrets and variables →
+Actions. Values are never written down here, in the inventory, or in any log
+komizo keeps.
+
 Four things live on a server: `komizo-box` and its OpenRC service, the two
 per-app scripts, and the shared proxy. `komizo update` renews all of them --
 including the per-app scripts, which are regenerated from the record komizo
