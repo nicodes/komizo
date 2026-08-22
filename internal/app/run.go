@@ -109,6 +109,8 @@ func runCommand(name string, args []string) error {
 		return RunLogs(args)
 	case "proxy":
 		return RunProxy(args)
+	case "reconcile":
+		return RunReconcile(args)
 	}
 	return fmt.Errorf("unknown command %q", name)
 }
@@ -155,7 +157,7 @@ func Main(args []string) error {
 	case "logout":
 		err = RunLogout(args[1:])
 	case "init", "update", "add", "list", "report", "enrol", "remove", "proxy",
-		"start", "stop", "restart", "logs":
+		"start", "stop", "restart", "logs", "reconcile":
 		// No gate. An account is needed to REGISTER a box, and the two places
 		// that do it ask for one where they do it.
 		//
@@ -241,6 +243,7 @@ hand.
   komizo restart --host root@HOST --app NAME
   komizo logs    --host root@HOST --app NAME [--tail N] [--service S]
   komizo proxy   --host root@HOST
+  komizo reconcile --host root@HOST --inventory expected-apps.json
   komizo script [init|add|remove|proxy]
 
 "komizo login" signs this machine in. It shows a code to approve from a device
@@ -271,6 +274,15 @@ the agent on the box rather than composing a docker command here, so they take
 exactly the path a signed command from the app will take and the two cannot
 drift apart. "stop" is durable: a stopped app stays stopped across a deploy,
 and pages nobody.
+
+"komizo reconcile" is the rebuild check: does this box hold exactly the apps a
+local inventory says it must, with the pinned config image and the expected
+public hostnames? It runs the reachability preflight every komizo command runs,
+fetches the box's report once, and writes nothing on the box -- any missing,
+unexpected or mismatched entry is printed and the exit status is nonzero.
+Locally, connecting can create or tighten ~/.ssh to 0700 (for the SSH control
+socket), and --accept-host-key against a box never seen before appends its host
+key to ~/.ssh/known_hosts; those are the only local files it can touch.
 
 "komizo script" prints the shell this ships to the server, so you can read what
 will run as root before it does.
