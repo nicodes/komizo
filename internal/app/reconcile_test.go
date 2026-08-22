@@ -592,6 +592,26 @@ func TestTheHelpQualifiesTheSymlinkPolicyByPlatform(t *testing.T) {
 	}
 }
 
+// AND THE TRUST BOUNDARY IS STATED, NOT OVERCLAIMED. O_NOFOLLOW refuses the
+// final-component link; it does nothing about a parent directory somebody
+// else can write, where a rename replaces the file outright. The help must
+// say exactly that -- a guarantee the command does not enforce is the one
+// claim a security check cannot afford to make.
+func TestTheHelpStatesTheParentDirectoryTrustBoundary(t *testing.T) {
+	fs := flag.NewFlagSet("reconcile", flag.ContinueOnError)
+	out := capture(t, func() { usageReconcile(fs) })
+	for _, want := range []string{"parent directory", "writable only by the operator"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the help does not state the trust boundary (%q missing):\n%s", want, out)
+		}
+	}
+	// And the overclaim is gone, in both directions: nothing may say a
+	// writable directory cannot redirect the check.
+	if strings.Contains(out, "cannot") && strings.Contains(out, "point the check") {
+		t.Errorf("the help still claims a writable directory cannot redirect the check:\n%s", out)
+	}
+}
+
 // A FIFO and symlink replacement tests live in reconcile_unix_test.go: the
 // facilities are unix-only (Mkfifo, O_NOFOLLOW), and compiling them here would
 // break the Windows build before any runtime skip could run.

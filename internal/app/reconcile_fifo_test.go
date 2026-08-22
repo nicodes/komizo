@@ -44,11 +44,14 @@ func TestTheInventoryMustBeARegularFile(t *testing.T) {
 }
 
 // A SYMLINK IS NOT AN INVENTORY EITHER. The file is an operator's committed
-// answer to "what should be on this box", and following a final-component link
-// would let a writable directory point the check at another file -- including
-// at a FIFO, which is the blocking case above arriving by a second door.
-// Refusing the link is deterministic (O_NOFOLLOW fails the open with ELOOP),
-// unlike the mid-open replacement race it stands in for.
+// answer to "what should be on this box", and a final-component link is the
+// quiet way to aim the check at another file -- including at a FIFO, which is
+// the blocking case above arriving by a second door. Refusing the link is
+// deterministic (O_NOFOLLOW fails the open with ELOOP). What it does NOT cover
+// is a parent directory somebody else can write: a rename over the path lands
+// a different regular file, not a link, and that boundary is the operator's to
+// keep -- which is why the help and README say so, and why no race test here
+// pretends otherwise.
 func TestAnInventorySymlinkIsRefused(t *testing.T) {
 	dir := t.TempDir()
 	real := filepath.Join(dir, "real.json")

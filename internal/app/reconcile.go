@@ -442,12 +442,16 @@ files it can ever touch.
 The inventory is JSON, must be a regular file (on unix a symlink as the final
 component is refused; on Windows a link is followed), and carries ONLY
 non-sensitive values -- the schema refuses anything else, including secret- or
-key-looking fields, and any object member repeated at any level:
+key-looking fields, and any object member repeated at any level.
+
+The link refusal covers the link ITSELF, not the directory around it: someone
+who can write the inventory's parent directory can replace the file outright,
+and no open flag prevents that. Keep the inventory and its parent directories
+owned and writable only by the operator.
 
   {"apps":[
     {"name":"blog","config":"ghcr.io/you/blog-config","hosts":["blog.example.com"]}
   ]}
-
 Flags:
 `)
 	fs.PrintDefaults()
