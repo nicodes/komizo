@@ -30,7 +30,9 @@ import (
 // the connection's control socket lives under ~/.ssh, so that directory may be
 // created or tightened to 0700 on first use (ssh.go's controlPath), and
 // --accept-host-key appends the server's host key to ~/.ssh/known_hosts
-// (reach.go). Those are the whole list -- anything further would be a defect.
+// (reach.go). SSH itself is run with UpdateHostKeys=no, so the box cannot add
+// to known_hosts behind the command's back either. Those are the whole list
+// -- anything further would be a defect.
 //
 // The inventory is deliberately thin: an app's name, its pinned config-image
 // reference, and the public hostnames it is expected to publish. Anything
@@ -123,6 +125,13 @@ func loadInventory(path string) (expectedInventory, error) {
 			"    it may hold only app names, config-image references and public hostnames.\n"+
 			"    Keys, tokens and secrets never belong in it.", keyMaterialMarker+" ...")
 	}
+	// Duplicate object members are refused BEFORE the typed decode:
+	// encoding/json answers a repeated key with last-write-wins, so a reviewed
+	// file could carry both "config":"approved" and "config":"compromised" and
+	// reconcile the second. One file, one value per key, at every object level.
+	if err := rejectDuplicateMembers(raw); err != nil {
+		return inv, err
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&inv); err != nil {
@@ -170,6 +179,74 @@ func loadInventory(path string) (expectedInventory, error) {
 		}
 	}
 	return inv, nil
+}
+
+// rejectDuplicateMembers scans the token stream and refuses any object that
+// names the same member twice -- at ANY level, top-level "apps" down to an
+// app's "hosts".
+//
+// The typed decoder cannot do this: encoding/json decodes a repeated member by
+// overwriting, and DisallowUnknownFields says nothing about it. For a file
+// whose value is "what a reviewer approved", last-write-wins is the exact
+// ambiguity to remove: two "config" keys are not a shorthand, they are two
+// different inventories in one file.
+//
+// A parse failure here is not reported: the typed decode that follows produces
+// the precise syntax error, and this scan exists only for the question the
+// decoder does not answer.
+func rejectDuplicateMembers(raw []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	// One frame per open array or object. Object frames alternate key, value:
+	// expectKey tracks which side of the alternation the next token is on.
+	type frame struct {
+		obj       bool
+		expectKey bool
+		keys      map[string]bool
+	}
+	var stack []frame
+	// valueDone records that a value just ended at the current depth, so an
+	// enclosing object knows the next string is a key again.
+	valueDone := func() {
+		if len(stack) > 0 && stack[len(stack)-1].obj {
+			stack[len(stack)-1].expectKey = true
+		}
+	}
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil // malformed: the typed decode reports it, precisely
+		}
+		switch t := tok.(type) {
+		case json.Delim:
+			switch t {
+			case '{':
+				stack = append(stack, frame{obj: true, expectKey: true, keys: map[string]bool{}})
+			case '[':
+				stack = append(stack, frame{})
+			case '}', ']':
+				stack = stack[:len(stack)-1]
+				valueDone()
+			}
+		case string:
+			// A string outside any object (a bare top-level document) is a
+			// value, never a key -- the typed decode will refuse it.
+			if len(stack) == 0 {
+				continue
+			}
+			top := &stack[len(stack)-1]
+			if top.obj && top.expectKey {
+				if top.keys[t] {
+					return fmt.Errorf("the inventory repeats the key %q -- one file, one value per key", t)
+				}
+				top.keys[t] = true
+				top.expectKey = false
+			} else {
+				valueDone()
+			}
+		default:
+			valueDone()
+		}
+	}
 }
 
 // reconcileInventory is the comparison, with the IO nowhere near it: what the
@@ -362,9 +439,10 @@ socket), and --accept-host-key against a server never seen before appends its
 host key to ~/.ssh/known_hosts (trust-on-first-use). Those are the only local
 files it can ever touch.
 
-The inventory is JSON, must be a regular file (symlinks are refused), and
-carries ONLY non-sensitive values -- the schema refuses anything else,
-including secret- or key-looking fields:
+The inventory is JSON, must be a regular file (on unix a symlink as the final
+component is refused; on Windows a link is followed), and carries ONLY
+non-sensitive values -- the schema refuses anything else, including secret- or
+key-looking fields, and any object member repeated at any level:
 
   {"apps":[
     {"name":"blog","config":"ghcr.io/you/blog-config","hosts":["blog.example.com"]}

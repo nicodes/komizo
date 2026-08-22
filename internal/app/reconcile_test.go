@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"flag"
 	"os"
 	"path/filepath"
 	"strings"
@@ -504,6 +505,91 @@ func contains(ss []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// A REPEATED MEMBER IS TWO INVENTORIES IN ONE FILE. encoding/json answers a
+// duplicate key with last-write-wins, so a reviewed file could carry
+// "config":"approved-ref" and later "config":"compromised-ref" and reconcile
+// the second. The token scan refuses a repeated member at EVERY object level
+// before the typed decode runs.
+func TestTheInventoryRejectsDuplicateObjectMembers(t *testing.T) {
+	for _, tc := range []struct {
+		name, doc, want string
+	}{
+		{
+			name: "top-level apps twice",
+			doc:  `{"apps":[],"apps":[{"name":"blog","config":"ghcr.io/example/blog-config"}]}`,
+			want: `repeats the key "apps"`,
+		},
+		{
+			name: "name twice",
+			doc:  `{"apps":[{"name":"blog","name":"stray","config":"ghcr.io/example/blog-config"}]}`,
+			want: `repeats the key "name"`,
+		},
+		{
+			name: "config twice -- the ambiguity that motivated this",
+			doc:  `{"apps":[{"name":"blog","config":"ghcr.io/example/approved-config","config":"ghcr.io/example/compromised-config"}]}`,
+			want: `repeats the key "config"`,
+		},
+		{
+			name: "hosts twice",
+			doc:  `{"apps":[{"name":"blog","config":"ghcr.io/example/blog-config","hosts":[],"hosts":["blog.example.com"]}]}`,
+			want: `repeats the key "hosts"`,
+		},
+		{
+			// An unknown field repeated is a duplicate before it is unknown.
+			name: "an unknown key twice",
+			doc:  `{"apps":[],"x":1,"x":2}`,
+			want: `repeats the key "x"`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadInventory(inventoryFile(t, tc.doc))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("rejection = %v, want it to mention %q", err, tc.want)
+			}
+		})
+	}
+
+	// AND LEGITIMATE REPEATS ARE NOT CAUGHT. The same member name in two
+	// DIFFERENT app objects is the normal case -- one value per object, many
+	// objects. A scan that cannot tell those apart rejects every real
+	// inventory.
+	if _, err := loadInventory(inventoryFile(t,
+		`{"apps":[{"name":"a","config":"ghcr.io/example/a-config"},
+		          {"name":"b","config":"ghcr.io/example/b-config"}]}`)); err != nil {
+		t.Errorf("the same member name in two different objects was refused: %v", err)
+	}
+}
+
+// SSH CANNOT ADD KEYS BEHIND THE COMMAND'S BACK. OpenSSH's UpdateHostKeys lets
+// an already-trusted server teach the client its other keys after
+// authentication -- a silent known_hosts write that would falsify every
+// "these are the only local files" claim this command makes. komizo manages
+// known_hosts itself (TOFU via reach.go, CI's value via hostkeys.go), so the
+// option is pinned off on every ssh invocation, and this is the assertion that
+// keeps it pinned.
+func TestSSHNeverUpdatesHostKeysImplicitly(t *testing.T) {
+	tgt := target{user: "root", host: "box", port: 22}
+	args := tgt.sshArgs()
+	for i, a := range args {
+		if a == "UpdateHostKeys=no" && i > 0 && args[i-1] == "-o" {
+			return
+		}
+	}
+	t.Errorf("sshArgs does not pin UpdateHostKeys=no: %v", args)
+}
+
+// THE PUBLISHED SYMLINK POLICY MATCHES THE COMPILED BEHAVIOR. On unix a
+// final-component link is refused; on Windows the stdlib has no no-follow
+// open, so the link is followed -- and the help says both, or an operator on
+// the follow-platform reads "refused" and trusts a check that is not running.
+func TestTheHelpQualifiesTheSymlinkPolicyByPlatform(t *testing.T) {
+	fs := flag.NewFlagSet("reconcile", flag.ContinueOnError)
+	out := capture(t, func() { usageReconcile(fs) })
+	if !strings.Contains(out, "on unix") || !strings.Contains(out, "on Windows") {
+		t.Errorf("the help does not qualify the symlink policy by platform:\n%s", out)
+	}
 }
 
 // A FIFO and symlink replacement tests live in reconcile_unix_test.go: the
