@@ -1624,12 +1624,22 @@ pb_data_drill" ] || { echo "task-termcade: wrong volume contract" >&2; exit 65; 
 			PB_DATA_VOLUME="$fresh_volume" docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" up -d db api
 			resume_old=0
 			PB_DATA_VOLUME="$fresh_volume" timeout -s TERM -k 30 120 docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" --profile maintenance run --rm --no-deps -T --name "$container" maintenance empty
+			state_tmp="$app_dir/.env.task.$$"
+			grep -v '^PB_DATA_VOLUME=' "$app_dir/.env" > "$state_tmp" 2>/dev/null || true
+			printf 'PB_DATA_VOLUME=%s\n' "$fresh_volume" >> "$state_tmp"
+			chown root:root "$state_tmp" && chmod 600 "$state_tmp"
+			mv "$state_tmp" "$app_dir/.env"
 			echo reset_volume=$fresh_volume
 			;;
 		rollback)
 			docker volume inspect "$old_volume" >/dev/null
 			PB_DATA_VOLUME="$fresh_volume" docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" stop api db >/dev/null 2>&1 || true
 			PB_DATA_VOLUME="$old_volume" docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" up -d db api
+			state_tmp="$app_dir/.env.task.$$"
+			grep -v '^PB_DATA_VOLUME=' "$app_dir/.env" > "$state_tmp" 2>/dev/null || true
+			printf 'PB_DATA_VOLUME=%s\n' "$old_volume" >> "$state_tmp"
+			chown root:root "$state_tmp" && chmod 600 "$state_tmp"
+			mv "$state_tmp" "$app_dir/.env"
 			echo rollback_volume=$old_volume
 			;;
 	esac
