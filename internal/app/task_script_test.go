@@ -108,6 +108,15 @@ func TestTaskWrapperExactAllowlistAndFixedInvocation(t *testing.T) {
 	if !strings.Contains(b.script, "--entrypoint /usr/local/bin/pocketbase db migrate up") {
 		t.Error("the only entrypoint override must remain the fixed PocketBase migration executable")
 	}
+	for _, want := range []string{
+		"PB_DATA_VOLUME=%s\\n' \"$fresh_volume\"",
+		"PB_DATA_VOLUME=%s\\n' \"$old_volume\"",
+		"grep -v '^PB_DATA_VOLUME=' \"$app_dir/.env\"",
+	} {
+		if !strings.Contains(b.script, want) {
+			t.Errorf("persistent volume-state transition missing %q", want)
+		}
+	}
 }
 
 func TestTaskWrapperRejectsMalformedInputsBeforeDocker(t *testing.T) {
