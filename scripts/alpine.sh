@@ -1569,8 +1569,8 @@ if [ "$task" = release-identity-backfill ]; then
 		run --rm --no-deps -T --name "$container" "$service" "$executable" "$mode" || rc=$?
 else
 	mkdir -p "$backup_dir"
-	chown root:root "$backup_dir"
-	chmod 700 "$backup_dir"
+	chown root:"$DOAS_USER" "$backup_dir"
+	chmod 710 "$backup_dir"
 	case "$mode" in
 		inspect)
 			docker volume inspect "$old_volume" >/dev/null
@@ -1615,6 +1615,7 @@ pb_data_drill" ] || { echo "task-termcade: wrong volume contract" >&2; exit 65; 
 			sha256sum "$backup_dir/current.tar.age" | cut -d' ' -f1 > "$backup_dir/offhost.sealed"
 			chown root:root "$backup_dir/current.tar.age" "$backup_dir/current.metadata" "$backup_dir/offhost.sealed"
 			chmod 400 "$backup_dir/current.tar.age" "$backup_dir/offhost.sealed" && chmod 444 "$backup_dir/current.metadata"
+			chown root:root "$backup_dir" && chmod 700 "$backup_dir"
 			;;
 		reset)
 			[ -s "$backup_dir/offhost.sealed" ] || { echo "task-termcade: off-host backup is not sealed" >&2; exit 65; }
