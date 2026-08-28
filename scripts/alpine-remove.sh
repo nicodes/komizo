@@ -71,6 +71,7 @@ case "$KEEP_DATA" in
 esac
 DEPLOY_BIN="/usr/local/bin/deploy-$APP_NAME"
 SECRET_BIN="/usr/local/bin/set-secret-$APP_NAME"
+TASK_BIN="/usr/local/bin/task-$APP_NAME"
 PROJECT_MARKER=komizo
 PROXY_CONTAINER=komizo-proxy
 ROUTE_FILE="/srv/_proxy/routes/$APP_NAME.caddy"
@@ -224,8 +225,8 @@ if [ -f /etc/doas.conf ]; then
 	rm -f "$doas_bak"
 fi
 
-log "Removing $DEPLOY_BIN and $SECRET_BIN"
-rm -f "$DEPLOY_BIN" "$SECRET_BIN"
+log "Removing $DEPLOY_BIN, $SECRET_BIN and $TASK_BIN"
+rm -f "$DEPLOY_BIN" "$SECRET_BIN" "$TASK_BIN"
 
 # --- 3. sshd ---------------------------------------------------------------
 

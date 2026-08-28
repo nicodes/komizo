@@ -26,6 +26,9 @@
 #   APP_NAME       which app on this box                          (default: app)
 #   CI_USER        deploy account        (default: komizo-<app>)
 #   APP_DIR        root-owned app directory                (default: /srv/<app>)
+#   TASKS          fixed named-task profile; currently only the Termcade
+#                  release-identity-backfill task                    (optional)
+#   TASKS_SET      1 when TASKS is an explicit edit; otherwise keep recorded
 #   KNOWN_AS       names CI dials this app by, comma-separated    (kept if unset)
 #   CLEAR_KNOWN_AS 1 to record that there are none                (default: 0)
 #   HARDEN_SSH     1 to also harden sshd machine-wide             (default: 0)
@@ -72,6 +75,7 @@ case "$CI_USER" in
 esac
 DEPLOY_BIN="/usr/local/bin/deploy-$APP_NAME"
 SECRET_BIN="/usr/local/bin/set-secret-$APP_NAME"
+TASK_BIN="/usr/local/bin/task-$APP_NAME"
 
 APP_DIR="${APP_DIR:-/srv/$APP_NAME}"
 
@@ -195,6 +199,29 @@ ROUTES_DIR="$PROXY_DIR/routes"
 CI_PUBKEY="${CI_PUBKEY:-${1:-}}"
 CONFIG_IMAGE="${CONFIG_IMAGE:-}"
 HARDEN_SSH="${HARDEN_SSH:-0}"
+TASKS="${TASKS:-}"
+TASKS_SET="${TASKS_SET:-0}"
+
+case "$TASKS_SET" in
+	1|yes|true) TASKS_SET=1 ;;
+	0|no|false|'') TASKS_SET=0 ;;
+	*) echo "error: TASKS_SET must be 0 or 1" >&2; exit 1 ;;
+esac
+if [ "$TASKS_SET" = "0" ] && [ -f "$STATE_FILE" ]; then
+	TASKS="$(sed -n 's/^TASKS=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)"
+fi
+# This is a catalog, not a caller-supplied command description. Every value
+# behind the profile is compiled into the root-owned wrapper below.
+case "$TASKS" in
+	'') ;;
+	release-identity-backfill)
+		[ "$APP_NAME" = "termcade" ] || {
+			echo "error: task release-identity-backfill is defined only for app termcade" >&2
+			exit 1
+		}
+		;;
+	*) echo "error: TASKS names an unknown fixed task profile" >&2; exit 1 ;;
+esac
 
 # The names CI connects to this app by. Recorded per APP rather than per box:
 # known_hosts is matched on the exact string the client dialled, and each repo
@@ -527,6 +554,7 @@ APP_DIR=$APP_DIR
 CI_USER=$CI_USER
 CONFIG_IMAGE=$CONFIG_IMAGE
 KNOWN_AS=$KNOWN_AS
+TASKS=${TASKS:-}
 EOF
 if [ -n "$STOPPED_KEEP" ]; then
 	printf '%s\n' "$STOPPED_KEEP" >> "$STATE_TMP"
@@ -1437,7 +1465,107 @@ mv "$SECRET_BIN.tmp" "$SECRET_BIN"
 chown root:root "$SECRET_BIN"
 chmod 755 "$SECRET_BIN"
 
-log "Granting '$CI_USER' doas access to $DEPLOY_BIN and $SECRET_BIN only"
+# --- 3c. Named task path ---------------------------------------------------
+# Optional and app-specific. The deploy account gets no Docker membership and
+# no shell grant; it may ask this root-owned program to select one operation
+# from a literal catalog. The program supplies every privileged detail.
+if [ "$TASKS" = "release-identity-backfill" ]; then
+	log "Installing $TASK_BIN for the Termcade release-identity-backfill task"
+	cat > "$TASK_BIN.tmp" <<'KOMIZO_TASK_EOF'
+#!/bin/sh
+# Written by komizo. Edits are lost the next time the app is set up.
+set -eu
+set -f
+umask 077
+
+if [ "$#" -ne 2 ]; then
+	echo "task-termcade: expected exactly TASK MODE" >&2
+	exit 64
+fi
+task=$1
+mode=$2
+
+case "$task" in
+	release-identity-backfill) ;;
+	*) echo "task-termcade: task denied" >&2; exit 64 ;;
+esac
+case "$mode" in
+	dry-run|apply|constrain) ;;
+	*) echo "task-termcade: mode denied" >&2; exit 64 ;;
+esac
+
+app_dir=/srv/termcade
+compose_file=/srv/termcade/compose.yml
+project=termcade
+service=api
+executable=/usr/local/bin/termcade-backfill
+audit=/var/log/komizo/tasks.log
+lock=/run/komizo/task-termcade.lock
+container=termcade-komizo-task
+
+mkdir -p /var/log/komizo /run/komizo
+chown root:root /var/log/komizo /run/komizo
+chmod 700 /var/log/komizo /run/komizo
+touch "$audit"
+chown root:root "$audit"
+chmod 600 "$audit"
+
+actor=${DOAS_USER:-unknown}
+case "$actor" in
+	''|*[!A-Za-z0-9_-]*) actor=unknown ;;
+esac
+
+# mkdir is an atomic lock on BusyBox systems and needs no optional applet. A
+# stale lock after SIGKILL deliberately fails closed until root investigates.
+if ! mkdir "$lock" 2>/dev/null; then
+	echo "task-termcade: another task is active" >&2
+	exit 75
+fi
+# clamp-ok: this is date(1) format text, not awk/printf integer conversion.
+started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+image=$(docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" images -q "$service" 2>/dev/null | head -n 1)
+image=${image:-unknown}
+printf 'start=%s actor=%s app=termcade task=%s mode=%s image=%s\n' \
+	"$started" "$actor" "$task" "$mode" "$image" >> "$audit"
+
+finished=0
+# shellcheck disable=SC2329 # invoked by the EXIT trap below.
+cleanup() {
+	rc=$?
+	docker rm -f "$container" >/dev/null 2>&1 || true
+	rm -rf "$lock"
+	if [ "$finished" -eq 0 ]; then
+		# clamp-ok: this is date(1) format text, not integer conversion.
+		ended=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+		printf 'end=%s actor=%s app=termcade task=%s mode=%s image=%s result=%s\n' \
+			"$ended" "$actor" "$task" "$mode" "$image" "$rc" >> "$audit"
+		finished=1
+	fi
+}
+trap cleanup EXIT
+trap 'exit 129' HUP INT TERM PIPE
+
+rc=0
+# Every token except the already-literal mode is fixed. No eval, sh -c, caller
+# environment, path, image, service, executable or Docker option crosses this
+# boundary. timeout propagates the child status and returns 124 at 15 minutes.
+timeout -s TERM -k 30 900 \
+	docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" \
+	run --rm --no-deps -T --name "$container" "$service" "$executable" "$mode" || rc=$?
+exit "$rc"
+KOMIZO_TASK_EOF
+	if grep -q '__[A-Z_][A-Z_]*__' "$TASK_BIN.tmp"; then
+		rm -f "$TASK_BIN.tmp"
+		die "the generated task script still has placeholders in it -- this is a komizo bug"
+	fi
+	mv "$TASK_BIN.tmp" "$TASK_BIN"
+	chown root:root "$TASK_BIN"
+	chmod 755 "$TASK_BIN"
+else
+	rm -f "$TASK_BIN" "$TASK_BIN.tmp"
+fi
+
+log "Granting '$CI_USER' narrowly scoped doas access"
 # Written straight into doas.conf rather than a /etc/doas.d drop-in: doas has
 # no portable include directive, and a drop-in that is never read would fail
 # open-looking but silently do nothing.
@@ -1503,6 +1631,14 @@ cat >> /etc/doas.conf <<-EOF
 	# komizo: $CI_USER BEGIN
 	permit nopass $CI_USER as root cmd $DEPLOY_BIN
 	permit nopass $CI_USER as root cmd $SECRET_BIN
+EOF
+if [ -n "$TASKS" ]; then
+	# Exactly one extra rule, for the root-owned validator/executor. Dynamic
+	# task/mode matching lives in that wrapper because doas args cannot express
+	# this small OR-list without duplicating grants.
+	printf 'permit nopass %s as root cmd %s\n' "$CI_USER" "$TASK_BIN" >> /etc/doas.conf
+fi
+cat >> /etc/doas.conf <<-EOF
 	# komizo: $CI_USER END
 EOF
 chown root:root /etc/doas.conf
