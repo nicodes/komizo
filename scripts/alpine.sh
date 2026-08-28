@@ -1188,7 +1188,10 @@ else
 	printf 'APP_VERSION=%s\n' "$version" >> .env
 fi
 
-if ! docker compose pull; then
+# Pull profile-disabled operational images too. Profiles decide what `up`
+# starts, not whether a reviewed release is complete on the host; a later
+# allowlisted task must never need registry credentials of its own.
+if ! docker compose --profile '*' pull; then
 	mv -f .env.komizo.bak .env 2>/dev/null || rm -f .env.komizo.bak
 	# The whole config goes back, not just .env: compose.yml, the hostnames
 	# record and the generated route are all this version's and none of them
