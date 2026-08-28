@@ -67,7 +67,7 @@ exit 0
 	// The real section, lifted out of alpine.sh and pointed at the fake file.
 	// Everything between granting the rules and the sshd work that follows.
 	body := between(t, scripts.AlpineScript,
-		`log "Granting '$CI_USER' doas access to $DEPLOY_BIN and $SECRET_BIN only"`,
+		`log "Granting '$CI_USER' narrowly scoped doas access"`,
 		"# --- 4. sshd ---")
 	b.section = strings.NewReplacer(
 		"/etc/doas.conf", b.conf,
@@ -75,9 +75,10 @@ exit 0
 		"$CI_USER", "komizo-blog",
 		"$DEPLOY_BIN", "/usr/local/bin/deploy-blog",
 		"$SECRET_BIN", "/usr/local/bin/set-secret-blog",
+		"$TASK_BIN", "/usr/local/bin/task-blog",
 	).Replace(body)
 	// The section opens mid-script, so give it the two things it reads.
-	b.section = "set -eu\nOLD_CI_USER=\"\"\nlog() { :; }\ndie() { echo \"error: $*\" >&2; exit 1; }\n" +
+	b.section = "set -eu\nOLD_CI_USER=\"\"\nTASKS=\"\"\nlog() { :; }\ndie() { echo \"error: $*\" >&2; exit 1; }\n" +
 		b.section
 	return b
 }
@@ -210,5 +211,23 @@ func TestReRunningReplacesTheBlockRatherThanAppending(t *testing.T) {
 	}
 	if got := b.conf_(t); got != first {
 		t.Errorf("a second run changed the file.\nfirst:\n%s\nsecond:\n%s", first, got)
+	}
+}
+
+func TestTaskProfileAddsExactlyOneWrapperRuleAndNoBroadGrant(t *testing.T) {
+	b := newDoasBox(t, "permit nopass root\n")
+	b.section = strings.Replace(b.section, `TASKS=""`, `TASKS="release-identity-backfill"`, 1)
+	if out, err := b.run(t, false); err != nil {
+		t.Fatalf("valid task rule failed: %v\n%s", err, out)
+	}
+	got := b.conf_(t)
+	want := "permit nopass komizo-blog as root cmd /usr/local/bin/task-blog"
+	if n := strings.Count(got, want); n != 1 {
+		t.Fatalf("task wrapper rule count=%d, want exactly one:\n%s", n, got)
+	}
+	for _, forbidden := range []string{"cmd /bin/sh", "cmd /bin/docker", "keepenv", " setenv ", " task-blog args"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("doas config contains broad grant %q:\n%s", forbidden, got)
+		}
 	}
 }
