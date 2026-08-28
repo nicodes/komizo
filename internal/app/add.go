@@ -44,7 +44,7 @@ func (o *addOpts) bind(fs *flag.FlagSet) {
 	fs.StringVar(&o.appDir, "app-dir", "", "root-owned app directory (default /srv/<app>)")
 	fs.StringVar(&o.keyPath, "key", "", "also write the keypair here (default: not written, printed instead)")
 	fs.StringVar(&o.knownAs, "known-as", "", "other hostname(s) CI connects by, comma-separated (host keys are pinned per name)")
-	fs.StringVar(&o.task, "task", "", "fixed named task to expose; release-identity-backfill for app termcade (empty revokes)")
+	fs.StringVar(&o.task, "task", "", "fixed task profile; release-identity-backfill or termcade-operations (empty revokes)")
 	fs.IntVar(&o.port, "port", 22, "SSH port")
 	fs.BoolVar(&o.hardenSSHD, "harden-sshd", false, "also disable password auth and root password login for EVERY user")
 	fs.BoolVar(&o.acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
@@ -167,11 +167,11 @@ func RunAdd(args []string) error {
 		}
 	})
 	if o.taskSet {
-		if o.task != "" && o.task != "release-identity-backfill" {
-			return fmt.Errorf("--task must be release-identity-backfill or empty")
+		if o.task != "" && o.task != "release-identity-backfill" && o.task != "termcade-operations" {
+			return fmt.Errorf("--task must be release-identity-backfill, termcade-operations, or empty")
 		}
 		if o.task != "" && o.app != "termcade" {
-			return fmt.Errorf("--task release-identity-backfill is defined only for app termcade")
+			return fmt.Errorf("--task %s is defined only for app termcade", o.task)
 		}
 	}
 
