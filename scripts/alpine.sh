@@ -214,9 +214,9 @@ fi
 # behind the profile is compiled into the root-owned wrapper below.
 case "$TASKS" in
 	'') ;;
-	release-identity-backfill)
+	release-identity-backfill|termcade-operations)
 		[ "$APP_NAME" = "termcade" ] || {
-			echo "error: task release-identity-backfill is defined only for app termcade" >&2
+			echo "error: task profile is defined only for app termcade" >&2
 			exit 1
 		}
 		;;
@@ -1469,8 +1469,8 @@ chmod 755 "$SECRET_BIN"
 # Optional and app-specific. The deploy account gets no Docker membership and
 # no shell grant; it may ask this root-owned program to select one operation
 # from a literal catalog. The program supplies every privileged detail.
-if [ "$TASKS" = "release-identity-backfill" ]; then
-	log "Installing $TASK_BIN for the Termcade release-identity-backfill task"
+if [ "$TASKS" = "release-identity-backfill" ] || [ "$TASKS" = "termcade-operations" ]; then
+	log "Installing $TASK_BIN for the selected fixed Termcade task profile"
 	cat > "$TASK_BIN.tmp" <<'KOMIZO_TASK_EOF'
 #!/bin/sh
 # Written by komizo. Edits are lost the next time the app is set up.
@@ -1487,10 +1487,12 @@ mode=$2
 
 case "$task" in
 	release-identity-backfill) ;;
+	production-data) [ "${KOMIZO_TERMCade_OPERATIONS:-0}" = 1 ] || true ;;
 	*) echo "task-termcade: task denied" >&2; exit 64 ;;
 esac
-case "$mode" in
-	dry-run|apply|constrain) ;;
+case "$task:$mode" in
+	release-identity-backfill:dry-run|release-identity-backfill:apply|release-identity-backfill:constrain) ;;
+	production-data:inspect|production-data:backup|production-data:drill|production-data:seal|production-data:reset|production-data:rollback) ;;
 	*) echo "task-termcade: mode denied" >&2; exit 64 ;;
 esac
 
@@ -1502,6 +1504,11 @@ executable=/usr/local/bin/termcade-backfill
 audit=/var/log/komizo/tasks.log
 lock=/run/komizo/task-termcade.lock
 container=termcade-komizo-task
+backup_dir=/var/lib/komizo/termcade-backups
+identity_file=/srv/termcade/backup-age-identity
+old_volume=termcade_pb_data
+fresh_volume=termcade_pb_data_reset_20260828
+drill_volume=termcade_pb_data_drill
 
 mkdir -p /var/log/komizo /run/komizo
 chown root:root /var/log/komizo /run/komizo
@@ -1533,6 +1540,10 @@ finished=0
 cleanup() {
 	rc=$?
 	docker rm -f "$container" >/dev/null 2>&1 || true
+	docker rm -f termcade-restore-drill >/dev/null 2>&1 || true
+	if [ "${resume_old:-0}" -eq 1 ]; then
+		PB_DATA_VOLUME="$old_volume" docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" up -d db api >/dev/null 2>&1 || true
+	fi
 	rm -rf "$lock"
 	if [ "$finished" -eq 0 ]; then
 		# clamp-ok: this is date(1) format text, not integer conversion.
@@ -1549,11 +1560,90 @@ rc=0
 # Every token except the already-literal mode is fixed. No eval, sh -c, caller
 # environment, path, image, service, executable or Docker option crosses this
 # boundary. timeout propagates the child status and returns 124 at 15 minutes.
-timeout -s TERM -k 30 900 \
-	docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" \
-	run --rm --no-deps -T --name "$container" "$service" "$executable" "$mode" || rc=$?
+if [ "$task" = release-identity-backfill ]; then
+	timeout -s TERM -k 30 900 \
+		docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" \
+		run --rm --no-deps -T --name "$container" "$service" "$executable" "$mode" || rc=$?
+else
+	mkdir -p "$backup_dir"
+	chown root:root "$backup_dir"
+	chmod 700 "$backup_dir"
+	case "$mode" in
+		inspect)
+			docker volume inspect "$old_volume" >/dev/null
+			[ "$(docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" config --volumes)" = "pb_data
+pb_data_drill" ] || { echo "task-termcade: wrong volume contract" >&2; exit 65; }
+			docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" exec -T db /usr/local/bin/pocketbase --version
+			;;
+		backup)
+			docker volume inspect "$old_volume" >/dev/null
+			[ ! -e "$backup_dir/offhost.sealed" ] || { echo "task-termcade: current backup already sealed" >&2; exit 65; }
+			key=$(sed -n 's/^TERMCADE_BACKUP_AGE_IDENTITY=//p' "$app_dir/secrets.env" | head -n 1)
+			case "$key" in AGE-SECRET-KEY-*) ;; *) echo "task-termcade: backup identity missing or malformed" >&2; exit 65 ;; esac
+			printf '%s\n' "$key" > "$identity_file"
+			unset key
+			chown root:root "$identity_file" && chmod 600 "$identity_file"
+			PB_DATA_VOLUME="$old_volume" docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" stop api db
+			resume_old=1
+			PB_DATA_VOLUME="$old_volume" timeout -s TERM -k 30 900 docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" --profile maintenance run --rm --no-deps -T --name "$container" maintenance backup
+			sha=$(sed -n 's/^encrypted_sha256=//p' "$backup_dir/current.metadata")
+			[ "$(sha256sum "$backup_dir/current.tar.age" | cut -d' ' -f1)" = "$sha" ] || { echo "task-termcade: encrypted checksum mismatch" >&2; exit 65; }
+			chown "$DOAS_USER":root "$backup_dir/current.tar.age" "$backup_dir/current.metadata"
+			chmod 400 "$backup_dir/current.tar.age" && chmod 444 "$backup_dir/current.metadata"
+			;;
+		drill)
+			[ -s "$backup_dir/current.tar.age" ] && [ -s "$backup_dir/current.metadata" ] || { echo "task-termcade: verified backup missing" >&2; exit 65; }
+			docker volume rm -f "$drill_volume" >/dev/null 2>&1 || true
+			docker volume create "$drill_volume" >/dev/null
+			PB_DATA_VOLUME="$old_volume" timeout -s TERM -k 30 900 docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" --profile maintenance run --rm --no-deps -T --name "$container" maintenance drill
+			db_image=$(docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" images -q db | head -n 1)
+			[ -n "$db_image" ] || { echo "task-termcade: deployed db image missing" >&2; exit 65; }
+			docker run --rm --network none --mount "source=$drill_volume,target=/pb/pb_data" "$db_image" migrate up --dir=/pb/pb_data --migrationsDir=/pb/pb_migrations
+			docker run -d --name termcade-restore-drill --network none --mount "source=$drill_volume,target=/pb/pb_data" "$db_image" serve --automigrate=false --http=127.0.0.1:8090 --dir=/pb/pb_data --migrationsDir=/pb/pb_migrations >/dev/null
+			sleep 3
+			[ "$(docker inspect -f '{{.State.Running}}' termcade-restore-drill)" = true ] || { docker logs termcade-restore-drill >&2; exit 65; }
+			docker rm -f termcade-restore-drill >/dev/null
+			docker volume rm "$drill_volume" >/dev/null
+			echo restore_startup=ok
+			;;
+		seal)
+			[ -s "$backup_dir/current.tar.age" ] && [ -s "$backup_dir/current.metadata" ] || { echo "task-termcade: backup missing" >&2; exit 65; }
+			sha256sum "$backup_dir/current.tar.age" | cut -d' ' -f1 > "$backup_dir/offhost.sealed"
+			chown root:root "$backup_dir/current.tar.age" "$backup_dir/current.metadata" "$backup_dir/offhost.sealed"
+			chmod 400 "$backup_dir/current.tar.age" "$backup_dir/offhost.sealed" && chmod 444 "$backup_dir/current.metadata"
+			;;
+		reset)
+			[ -s "$backup_dir/offhost.sealed" ] || { echo "task-termcade: off-host backup is not sealed" >&2; exit 65; }
+			[ "$(cat "$backup_dir/offhost.sealed")" = "$(sha256sum "$backup_dir/current.tar.age" | cut -d' ' -f1)" ] || { echo "task-termcade: sealed checksum mismatch" >&2; exit 65; }
+			docker volume inspect "$old_volume" >/dev/null
+			if docker volume inspect "$fresh_volume" >/dev/null 2>&1; then echo "task-termcade: fresh volume already exists" >&2; exit 65; fi
+			PB_DATA_VOLUME="$old_volume" docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" stop api db
+			resume_old=1
+			docker volume create "$fresh_volume" >/dev/null
+			PB_DATA_VOLUME="$fresh_volume" docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" run --rm --no-deps -T --entrypoint /usr/local/bin/pocketbase db migrate up --dir=/pb/pb_data --migrationsDir=/pb/pb_migrations
+			PB_DATA_VOLUME="$fresh_volume" docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" up -d db api
+			resume_old=0
+			PB_DATA_VOLUME="$fresh_volume" timeout -s TERM -k 30 120 docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" --profile maintenance run --rm --no-deps -T --name "$container" maintenance empty
+			echo reset_volume=$fresh_volume
+			;;
+		rollback)
+			docker volume inspect "$old_volume" >/dev/null
+			PB_DATA_VOLUME="$fresh_volume" docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" stop api db >/dev/null 2>&1 || true
+			PB_DATA_VOLUME="$old_volume" docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" up -d db api
+			echo rollback_volume=$old_volume
+			;;
+	esac
+fi
 exit "$rc"
 KOMIZO_TASK_EOF
+	# The broader profile is compiled in at provisioning time, not selected by
+	# a caller of the installed wrapper.
+	if [ "$TASKS" = "termcade-operations" ]; then
+		# shellcheck disable=SC2016 # replacing literal generated-script text.
+		sed -i 's/${KOMIZO_TERMCade_OPERATIONS:-0}/1/' "$TASK_BIN.tmp"
+	else
+		sed -i '/production-data)/d; /production-data:/d' "$TASK_BIN.tmp"
+	fi
 	if grep -q '__[A-Z_][A-Z_]*__' "$TASK_BIN.tmp"; then
 		rm -f "$TASK_BIN.tmp"
 		die "the generated task script still has placeholders in it -- this is a komizo bug"

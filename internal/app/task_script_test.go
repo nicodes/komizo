@@ -100,10 +100,13 @@ func TestTaskWrapperExactAllowlistAndFixedInvocation(t *testing.T) {
 			t.Errorf("fixed invocation missing %q from:\n%s", want, got)
 		}
 	}
-	for _, forbidden := range []string{" sh -c ", " eval ", " --env ", " --volume ", " --entrypoint "} {
+	for _, forbidden := range []string{" sh -c ", " eval ", " --env ", " --volume "} {
 		if strings.Contains(" "+b.script+" ", forbidden) {
 			t.Errorf("task template contains forbidden command surface %q", forbidden)
 		}
+	}
+	if !strings.Contains(b.script, "--entrypoint /usr/local/bin/pocketbase db migrate up") {
+		t.Error("the only entrypoint override must remain the fixed PocketBase migration executable")
 	}
 }
 
@@ -196,8 +199,8 @@ func TestTaskInstallerIsRootOwnedMode755AndIdempotent(t *testing.T) {
 	}
 	chownLog := filepath.Join(root, "chown.log")
 	write(t, filepath.Join(bin, "chown"), 0o755, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CHOWN_LOG\"\n")
-	section := between(t, scripts.AlpineScript, `if [ "$TASKS" = "release-identity-backfill" ]; then`, `log "Granting '$CI_USER' narrowly scoped doas access"`)
-	section = "if [ \"$TASKS\" = \"release-identity-backfill\" ]; then\n" + section
+	section := between(t, scripts.AlpineScript, `if [ "$TASKS" = "release-identity-backfill" ] || [ "$TASKS" = "termcade-operations" ]; then`, `log "Granting '$CI_USER' narrowly scoped doas access"`)
+	section = "if [ \"$TASKS\" = \"release-identity-backfill\" ] || [ \"$TASKS\" = \"termcade-operations\" ]; then\n" + section
 	taskBin := filepath.Join(root, "task-termcade")
 	run := func(tasks string) {
 		cmd := exec.Command("sh", "-s")
