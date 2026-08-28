@@ -18,6 +18,8 @@ type addOpts struct {
 	appDir  string
 	keyPath string
 	knownAs string
+	task    string
+	taskSet bool
 	// keepKey leaves the deploy key alone, for an edit that is about settings.
 	keepKey bool
 	// clearKnownAs is whether --known-as was GIVEN, as opposed to what it was
@@ -42,6 +44,7 @@ func (o *addOpts) bind(fs *flag.FlagSet) {
 	fs.StringVar(&o.appDir, "app-dir", "", "root-owned app directory (default /srv/<app>)")
 	fs.StringVar(&o.keyPath, "key", "", "also write the keypair here (default: not written, printed instead)")
 	fs.StringVar(&o.knownAs, "known-as", "", "other hostname(s) CI connects by, comma-separated (host keys are pinned per name)")
+	fs.StringVar(&o.task, "task", "", "fixed named task to expose; release-identity-backfill for app termcade (empty revokes)")
 	fs.IntVar(&o.port, "port", 22, "SSH port")
 	fs.BoolVar(&o.hardenSSHD, "harden-sshd", false, "also disable password auth and root password login for EVERY user")
 	fs.BoolVar(&o.acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
@@ -159,7 +162,18 @@ func RunAdd(args []string) error {
 		if f.Name == "known-as" {
 			o.clearKnownAs = true
 		}
+		if f.Name == "task" {
+			o.taskSet = true
+		}
 	})
+	if o.taskSet {
+		if o.task != "" && o.task != "release-identity-backfill" {
+			return fmt.Errorf("--task must be release-identity-backfill or empty")
+		}
+		if o.task != "" && o.app != "termcade" {
+			return fmt.Errorf("--task release-identity-backfill is defined only for app termcade")
+		}
+	}
 
 	var knownAs []string
 	for _, a := range strings.Split(o.knownAs, ",") {
@@ -198,6 +212,8 @@ func RunAdd(args []string) error {
 		appDir:  o.appDir,
 		keyPath: o.keyPath,
 		knownAs: knownAs,
+		task:    o.task,
+		taskSet: o.taskSet,
 		// Only an answer when the flag was given AND resolved to nothing.
 		// Passing names and clearing are not the same request.
 		clearKnownAs: o.clearKnownAs && len(knownAs) == 0,
@@ -232,6 +248,10 @@ type addPlan struct {
 	// that repo pins should name that one, not every name every app on this
 	// box answers to. Empty leaves whatever the box already recorded.
 	knownAs []string
+	// task is a catalog key, never a path or command. taskSet distinguishes an
+	// explicit empty value (revoke) from omission (preserve recorded policy).
+	task    string
+	taskSet bool
 	// clearKnownAs says the empty knownAs above is an answer rather than a
 	// silence. The server keeps the recorded names when it is not told any,
 	// which is what a config-image change means by saying nothing -- so without
@@ -312,6 +332,8 @@ func performAdd(p addPlan, out progress, runner func(script string, env map[stri
 		"APP_NAME":     p.app,
 		"CONFIG_IMAGE": p.config,
 		"HARDEN_SSH":   boolEnv(p.harden),
+		"TASKS":        p.task,
+		"TASKS_SET":    boolEnv(p.taskSet),
 		// Only ever 1 when the caller means "none", never as a matter of course:
 		// the server reads an empty KNOWN_AS as "not mentioned" for every other
 		// operation, and that is the reading a config-image change needs.
