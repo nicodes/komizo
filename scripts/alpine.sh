@@ -1571,7 +1571,8 @@ else
 	case "$mode" in
 		inspect)
 			docker volume inspect "$old_volume" >/dev/null
-			[ "$(docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" config --volumes)" = "pb_data
+			volumes=$(docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" --profile maintenance config --volumes | sort)
+			[ "$volumes" = "pb_data
 pb_data_drill" ] || { echo "task-termcade: wrong volume contract" >&2; exit 65; }
 			docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" exec -T db /usr/local/bin/pocketbase --version
 			;;
