@@ -1595,7 +1595,7 @@ pb_data_drill" ] || { echo "task-termcade: wrong volume contract" >&2; exit 65; 
 			sha=$(sed -n 's/^encrypted_sha256=//p' "$backup_dir/current.metadata")
 			[ "$(sha256sum "$backup_dir/current.tar.age" | cut -d' ' -f1)" = "$sha" ] || { echo "task-termcade: encrypted checksum mismatch" >&2; exit 65; }
 			chown "$DOAS_USER":root "$backup_dir/current.tar.age" "$backup_dir/current.metadata"
-			chmod 400 "$backup_dir/current.tar.age" && chmod 444 "$backup_dir/current.metadata"
+			chmod 444 "$backup_dir/current.tar.age" "$backup_dir/current.metadata"
 			install -o "$DOAS_USER" -g "$DOAS_USER" -m 400 "$backup_dir/current.tar.age" "$export_archive"
 			install -o "$DOAS_USER" -g "$DOAS_USER" -m 400 "$backup_dir/current.metadata" "$export_metadata"
 			;;
