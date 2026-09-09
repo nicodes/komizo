@@ -702,6 +702,18 @@ then
 	fi
 fi
 
+# Never let the old Compose --remove-orphans path remove instances owned by the
+# journaled executor. Initial conversion must still serialize/disable the old CD
+# workflow explicitly; this guard protects subsequent accidental legacy deploys.
+if ! komizo_managed="$(docker ps -a --filter 'label=io.komizo.app=__APP_NAME__' --format '{{.ID}}')"; then
+	echo 'deploy: cannot establish application rollout ownership' >&2
+	exit 1
+fi
+if [ -n "$komizo_managed" ]; then
+	echo 'deploy: journaled rollout instances exist; legacy in-place deployment is disabled for this app' >&2
+	exit 1
+fi
+
 # Registry authentication happens HERE, as root, and not over the deploy user's
 # SSH session. It has to: this script pulls as root, so a 'docker login' run as
 # the deploy user would write to that user's home instead and the pull below
