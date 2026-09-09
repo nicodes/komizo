@@ -64,7 +64,14 @@ func newDeployBox(t *testing.T) *deployBox {
 case "$1" in
   cp)  cp -a "$STUB_CONFIG/." "$3"; exit 0 ;;
   create) echo stubcid; exit 0 ;;
-  ps)  echo komizo-proxy; exit 0 ;;
+  ps)
+    for a in "$@"; do
+      if [ "$a" = "label=io.komizo.app=blog" ]; then
+        [ -z "$STUB_NATIVE_INSTANCES" ] || echo native-instance
+        exit 0
+      fi
+    done
+    echo komizo-proxy; exit 0 ;;
   compose)
     # A pull that fails is the interesting one: it happens AFTER the route
     # file has been written and validated, so it is the only failure that can
@@ -91,6 +98,7 @@ exit 0
 	body := between(t, scripts.AlpineScript,
 		`cat > "$DEPLOY_BIN.tmp" <<'KOMIZO_DEPLOY_EOF'`, "KOMIZO_DEPLOY_EOF")
 	b.script = strings.NewReplacer(
+		"/run/komizo", filepath.Join(root, "run", "komizo"),
 		"__APP_NAME__", "blog",
 		"__APP_DIR__", b.appDir,
 		"__CONFIG_IMAGE__", "ghcr.io/you/blog-config",
@@ -99,6 +107,11 @@ exit 0
 		"__ROUTES_DIR__", b.routes,
 		"__STATE_DIR__", b.state,
 	).Replace(body)
+	// The replacement itself has that suffix, so remove the known private
+	// path before checking for an accidentally retained shared lock path.
+	if strings.Contains(strings.ReplaceAll(b.script, filepath.Join(root, "run", "komizo"), ""), "/run/komizo") {
+		t.Fatal("deploy fixture retains a shared host lock path")
+	}
 	if strings.Contains(b.script, "__APP") || strings.Contains(b.script, "__PROXY") ||
 		strings.Contains(b.script, "__CONFIG") || strings.Contains(b.script, "__ROUTES") ||
 		strings.Contains(b.script, "__STATE") {
@@ -204,6 +217,35 @@ func TestADeployWritesTheRouteBesideTheProxyAndNotBesideTheApp(t *testing.T) {
 	}
 	if got := b.dotenv(t); !strings.Contains(got, "APP_VERSION=abc123") {
 		t.Errorf("version not committed: %q", got)
+	}
+}
+
+func TestDeployLocksStayInsideFixture(t *testing.T) {
+	if _, err := exec.LookPath("flock"); err != nil {
+		t.Skip("flock is not installed")
+	}
+	b := newDeployBox(t)
+	b.publishes(t, "services:\n  web:\n    image: x\n", "blog.example.com\n")
+	if out, err := b.deploy(t, "fixture-release"); err != nil {
+		t.Fatalf("fixture deploy failed: %v\n%s", err, out)
+	}
+	lock := filepath.Join(b.root, "run", "komizo", "deploy-blog.lock")
+	if info, err := os.Stat(lock); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("fixture did not take its private deployment lock: %v", err)
+	}
+}
+
+func TestLegacyDeployRefusesJournaledInstances(t *testing.T) {
+	b := newDeployBox(t)
+	b.publishes(t, "services:\n  web:\n    image: x\n", "blog.example.com\n")
+	b.env = append(b.env, "STUB_NATIVE_INSTANCES=1")
+	before := b.read(t, filepath.Join(b.appDir, "compose.yml"))
+	out, err := b.deploy(t, "new-release")
+	if err == nil || !strings.Contains(out, "legacy in-place deployment is disabled") {
+		t.Fatalf("legacy path did not refuse owned instances: %v\n%s", err, out)
+	}
+	if after := b.read(t, filepath.Join(b.appDir, "compose.yml")); after != before {
+		t.Fatal("legacy deployment changed configuration before ownership refusal")
 	}
 }
 

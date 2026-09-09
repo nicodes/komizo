@@ -69,6 +69,10 @@ func main() {
 		err = runServe(os.Args[2:])
 	case "app":
 		err = runApp(os.Args[2:])
+	case "rollout":
+		err = runLocalRollout(os.Args[2:])
+	case "gateway":
+		err = runGateway(os.Args[2:])
 	case "enrol":
 		err = runEnrol(os.Args[2:])
 	case "unenrol":
@@ -99,6 +103,8 @@ func usage() {
 
   komizo-box app start|stop|restart --app NAME      as root
   komizo-box app logs --app NAME [--tail N] [--service S]
+  komizo-box rollout --help                        root operator only
+  komizo-box gateway --help                        private gateway process
 
   komizo-box enrol --api URL --token kmz_enr_...    as root
   komizo-box agent                                  as komizo_monitor
