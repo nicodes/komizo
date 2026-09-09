@@ -31,9 +31,26 @@ komizo init --host root@your-server
 
 From a checkout, `make build` compiles the agents first.
 
-Every operation is a command that takes the server as a flag; `komizo` on its
+Every server operation is a command that takes the server as a flag; `komizo` on its
 own prints the list. Watching a box — its apps, its charts, its logs — is what
 the app is for, and everything the app can do is a command here as well.
+
+## Local release analysis (refactor in progress)
+
+```sh
+komizo plan --before previous.normalized.json --after candidate.normalized.json --key-file identity.key
+```
+
+This is read-only change analysis of canonical Compose JSON carrying `x-komizo`
+metadata. Use `--initial` instead of `--before` for an explicitly empty starting
+inventory. It neither contacts a box nor starts/stops containers. It emits service
+names and change categories, not configuration values or secret identities.
+
+See [the input contract and checks](internal/release/README.md), the new
+[operator-only HTTP rollout path](internal/rollout/README.md), and
+[implementation status](UNINTERRUPTED-OPERATIONS-PLAN.md). Normal CI/deploy-account
+integration and application conversions are not complete. Do not run legacy
+in-place deployment alongside the new operator path on a converted application.
 
 ## What it is
 
