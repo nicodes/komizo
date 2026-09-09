@@ -33,6 +33,31 @@ runs:
       shell: bash
       run: go vet ./...
 
+    # Every gc target family, cross-compiled AND cross-vetted. The capability
+    # build tags (flock, O_NOFOLLOW|O_NONBLOCK, Mkfifo, signals) name exact
+    # platform sets; this proves those sets compile everywhere they are
+    # selected. vet type-checks the TESTS, which is where a unix-only syscall
+    # (Mkfifo, Stat_t, SIGPIPE) in a shared test file goes unnoticed until
+    # somebody builds for that target.
+    #
+    # Scope, stated: android is vet-only (linking needs cgo); ios needs cgo to
+    # type-check at all; hurd has no gc port. None is an operator or box
+    # platform for komizo.
+    - name: Cross-compiles for every claimed platform, tests included
+      shell: bash
+      run: |
+        set -euo pipefail
+        GOOS=darwin GOARCH=amd64 go build ./...
+        for t in windows/amd64 freebsd/amd64 netbsd/amd64 openbsd/amd64 dragonfly/amd64 \
+                 aix/ppc64 illumos/amd64 solaris/amd64 wasip1/wasm js/wasm plan9/amd64; do
+          os="${t%/*}"; arch="${t#*/}"
+          echo "  cross  $os/$arch"
+          GOOS="$os" GOARCH="$arch" go build ./...
+          GOOS="$os" GOARCH="$arch" go vet ./...
+        done
+        GOOS=android GOARCH=arm64 go vet ./...
+        echo "  cross  android/arm64 (vet only; linking needs cgo)"
+
     # Checked BEFORE the tests, because one of them is the shellcheck gate and it
     # skips itself when the tool is absent. A skip is what a contributor without
     # shellcheck should get; a skip in CI is the check quietly not happening,

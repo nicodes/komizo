@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 )
 
@@ -89,7 +88,7 @@ func Command(ctx context.Context, args []string, diagnostics io.Writer) error {
 			conn.Close()
 			return errors.New("gateway admin socket is already in use")
 		}
-		if !errors.Is(dialErr, syscall.ECONNREFUSED) {
+		if !connectionRefused(dialErr) {
 			return errors.New("cannot establish stale gateway socket ownership")
 		}
 		if err := os.Remove(*socketPath); err != nil {

@@ -60,7 +60,7 @@ jobs:
       # mise rather than setup-go, so every repository in the fleet installs its
       # toolchain the same way. The cost is that the Go version now lives in
       # .mise.toml as well as go.mod; the step below is what keeps them honest.
-      - uses: jdx/mise-action@7e36c90d9ab29c415a2384db3006f3ec8a8cc654 # v4.2.4
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         # Downloads a toolchain, so it depends on somebody else's mirror.
         timeout-minutes: 10
 

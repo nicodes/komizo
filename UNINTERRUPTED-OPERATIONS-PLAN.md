@@ -46,9 +46,22 @@ See `internal/release/README.md`, `internal/gateway/README.md` and
 
 ## Source and test qualification
 
+2026-09-09 integration update: the merge of `eefb5ea` was verified before commit with
+`make check` with Go 1.26.8 and ShellCheck 0.11.0, including the current-main
+cross-build/cross-vet matrix (Plan 9 included). The gateway's connection-refused
+check now lives behind its existing platform boundary; a focused test requires
+positive refusal evidence and rejects permission, missing-file and timeout errors.
+The uncached full race suite passed with `KOMIZO_TEST_ROLLOUT=1`,
+`KOMIZO_TEST_COMPOSE=1`, `KOMIZO_TEST_CADDY=1` and
+`KOMIZO_REQUIRE_SHELLCHECK=1`. The added test subsequently passed the race check
+and full gate. The gate emitted a `/dev/stderr` warning in its formatting pipeline;
+an independent repository-wide `test -z "$(gofmt -l .)"` passed.
+These results describe the local merged working tree, not a published merge
+commit, installed host, or production acceptance.
+
 The initial implementation was built on local commit `e40136e`. PR preparation
-found current main at `eefb5ea`, 29 commits ahead. The checkpoint must integrate
-and preserve those changes before becoming merge-ready. Earlier local tests do
+found current main at `eefb5ea`, 29 commits ahead. That snapshot is now integrated;
+the remaining completion gates below still apply. Earlier local tests do
 not establish compatibility with current main or installed host versions.
 
 Controls executed against the checkpoint included Go 1.26.8, ShellCheck 0.11.0,

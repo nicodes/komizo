@@ -575,7 +575,7 @@ func TestAStoppedAppStillGetsThePullAndTheVersion(t *testing.T) {
 	decision := strings.Index(body, startDecision(t, body))
 	end := decision + len(startDecision(t, body))
 	{
-		i := strings.Index(body, "if ! docker compose pull; then")
+		i := strings.Index(body, "if ! docker compose --profile '*' pull; then")
 		if i < 0 {
 			t.Fatal("could not find the image pull -- has the deploy script been reshaped?")
 		}

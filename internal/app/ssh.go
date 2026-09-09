@@ -184,6 +184,19 @@ func (t target) sshArgs(extra ...string) []string {
 		// reconnects, so it still works with this set; nothing else should.
 		"-o", "StrictHostKeyChecking=yes",
 
+		// No IMPLICIT known_hosts writes. OpenSSH's UpdateHostKeys lets a
+		// server we already trust teach the client its other keys after
+		// authentication, silently appending to ~/.ssh/known_hosts -- a local
+		// mutation komizo's docs (and reconcile's "inspection only" claim)
+		// would otherwise fail to account for. komizo manages known_hosts
+		// itself, deliberately: the operator's file is written only by the
+		// trust-on-first-use path (reach.go), and the value CI pins is read out
+		// of the box's /etc/ssh over an authenticated session (hostkeys.go).
+		// Neither relies on UpdateHostKeys: a rebuilt box's CHANGED key fails
+		// StrictHostKeyChecking and gets the explicit remedy, and a first
+		// meeting goes through the scan-and-accept flow.
+		"-o", "UpdateHostKeys=no",
+
 		// One connection, reused by everything that follows.
 		//
 		// The interface polls the box every five seconds and every operation
