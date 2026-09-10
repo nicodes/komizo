@@ -2,6 +2,7 @@ package rollout
 
 import (
 	"context"
+	"encoding/json"
 	"os/exec"
 	"testing"
 	"time"
@@ -25,5 +26,40 @@ func TestExecutorDoesNotInheritRemoteDockerContext(t *testing.T) {
 func TestExecutorRequiresBoundedContext(t *testing.T) {
 	if _, err := command(context.Background(), "must-not-be-executed"); err == nil {
 		t.Fatal("unbounded process accepted")
+	}
+}
+
+func TestPrivateApplicationNetworkPreservesNATControlWithoutPublicRouting(t *testing.T) {
+	for _, internal := range []bool{false, true} {
+		inspection := map[string]any{"Name": "sample-private", "Driver": "bridge", "Scope": "local", "Internal": internal,
+			"Labels": map[string]string{"io.komizo.app": "sample"}, "Options": map[string]string{}}
+		body, _ := json.Marshal([]any{inspection})
+		if err := validateApplicationNetwork(body, "sample", "sample-private"); err != nil {
+			t.Fatalf("owned bridge internal=%v was rejected: %v", internal, err)
+		}
+	}
+	for _, mutate := range []func(map[string]any){
+		func(v map[string]any) { delete(v, "Internal") },
+		func(v map[string]any) { v["Name"] = "another-network" },
+		func(v map[string]any) { v["Driver"] = "macvlan" },
+		func(v map[string]any) { v["Scope"] = "swarm" },
+		func(v map[string]any) { v["Labels"] = map[string]string{"io.komizo.app": "another-app"} },
+		func(v map[string]any) {
+			v["Options"] = map[string]string{"com.docker.network.bridge.gateway_mode_ipv4": "nat-unprotected"}
+		},
+		func(v map[string]any) {
+			v["Options"] = map[string]string{"com.docker.network.bridge.gateway_mode_ipv6": "routed"}
+		},
+		func(v map[string]any) {
+			v["Options"] = map[string]string{"com.docker.network.bridge.gateway_mode_ipv4": "isolated"}
+		},
+	} {
+		inspection := map[string]any{"Name": "sample-private", "Driver": "bridge", "Scope": "local", "Internal": false,
+			"Labels": map[string]string{"io.komizo.app": "sample"}}
+		mutate(inspection)
+		body, _ := json.Marshal([]any{inspection})
+		if err := validateApplicationNetwork(body, "sample", "sample-private"); err == nil {
+			t.Fatal("unscoped or directly routed application network was accepted")
+		}
 	}
 }
