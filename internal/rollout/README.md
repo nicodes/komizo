@@ -19,10 +19,18 @@ inputs, not approved user-visible latency defaults. `komizo-box rollout` exposes
 the same engine to root only. Neither signed operations nor deploy-user grants
 are expanded.
 
-Current execution supports HTTP candidates on one existing internal network labeled
+Current execution supports HTTP candidates on one existing local bridge labeled
 `io.komizo.app=APP`, canonical Compose JSON, immutable images and explicit
 `x-komizo.services.SERVICE.hosts`. Persistent/job changes, removals, shared writable
 state, implicit legacy adoption and unsupported Compose features fail closed.
+
+The app bridge retains ordinary Docker NAT egress, as the existing Compose
+control does, while candidates publish no ports and only the gateway joins the
+shared edge. Docker `internal: true` is also accepted for genuinely offline
+applications/tests; it is not imposed on services with outbound dependencies.
+Macvlan, swarm and directly routed/unprotected bridge modes are refused. Network
+ownership labels are required in both cases; "private" is not an egress-denial
+claim or authority for cross-application attachments.
 
 The engine validates candidate definitions, persists intent, creates unique
 instances, verifies readiness, atomically switches admission, observes health,
