@@ -74,7 +74,9 @@ func TestDockerRollout(t *testing.T) {
 	image := app + ":gateway"
 	must("build", "--network", "none", "--tag", image, buildDir)
 	cleanup("image", "rm", image)
-	must("network", "create", "--internal", "--label", "io.komizo.app="+app, network)
+	// Match the existing application bridge/NAT topology. Candidate isolation
+	// must not depend on disabling outbound authentication/provider connections.
+	must("network", "create", "--label", "io.komizo.app="+app, network)
 	cleanup("network", "rm", network)
 	edge := app + "-edge"
 	must("network", "create", "--label", "io.komizo.test="+app, edge)
