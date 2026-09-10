@@ -81,12 +81,34 @@ func (d *Docker) Preflight(ctx context.Context, app, network string) error {
 	if err != nil {
 		return err
 	}
+	return validateApplicationNetwork(body, app, network)
+}
+
+// App-private means a scoped user-defined bridge with no published candidate
+// ports, not necessarily Docker's no-egress Internal mode. The existing Compose
+// control uses bridge NAT for outbound service dependencies. Internal bridges
+// remain useful for isolated tests and applications that need no outbound access.
+func validateApplicationNetwork(body []byte, app, name string) error {
 	var networks []struct {
-		Internal bool
+		Name     string
+		Driver   string
+		Scope    string
+		Internal *bool
 		Labels   map[string]string
+		Options  map[string]string
 	}
-	if json.Unmarshal(body, &networks) != nil || len(networks) != 1 || !networks[0].Internal || networks[0].Labels["io.komizo.app"] != app {
-		return errors.New("network is not an owned internal application network")
+	if json.Unmarshal(body, &networks) != nil || len(networks) != 1 {
+		return errors.New("invalid application network inspection")
+	}
+	network := networks[0]
+	if network.Name != name || network.Driver != "bridge" || network.Scope != "local" || network.Internal == nil || network.Labels["io.komizo.app"] != app {
+		return errors.New("network is not an owned local application bridge")
+	}
+	for _, family := range []string{"ipv4", "ipv6"} {
+		mode := network.Options["com.docker.network.bridge.gateway_mode_"+family]
+		if mode != "" && mode != "nat" && !(mode == "isolated" && *network.Internal) {
+			return errors.New("application network must not expose unpublished ports through direct routing")
+		}
 	}
 	return nil
 }
