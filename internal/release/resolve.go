@@ -22,14 +22,34 @@ const MaxModelBytes = 8 << 20
 // Policy is the small x-komizo lifecycle declaration. It is not a proof that
 // application code is safe to overlap. Integration tests must establish that.
 type Policy struct {
-	Mode              string   `json:"mode"`
-	Port              int      `json:"port,omitempty"`
-	ReadyPath         string   `json:"ready_path,omitempty"`
-	ReadyHost         string   `json:"ready_host,omitempty"`
-	CandidateSafe     bool     `json:"candidate_safe,omitempty"`
-	RestartOn         []string `json:"restart_on,omitempty"`
-	Hosts             []string `json:"hosts,omitempty"`
-	ConcurrentVolumes []string `json:"concurrent_volumes,omitempty"`
+	Lifecycle         *Lifecycle `json:"lifecycle,omitempty"`
+	Mode              string     `json:"mode"`
+	Port              int        `json:"port,omitempty"`
+	ReadyPath         string     `json:"ready_path,omitempty"`
+	ReadyHost         string     `json:"ready_host,omitempty"`
+	CandidateSafe     bool       `json:"candidate_safe,omitempty"`
+	RestartOn         []string   `json:"restart_on,omitempty"`
+	Hosts             []string   `json:"hosts,omitempty"`
+	ConcurrentVolumes []string   `json:"concurrent_volumes,omitempty"`
+}
+
+// Lifecycle declares an in-container protocol adapter, not a host shell hook.
+// Its ordered argv is part of the immutable service identity.
+type Lifecycle struct {
+	Version int      `json:"version"`
+	Command []string `json:"command"`
+}
+
+func (l *Lifecycle) Validate() error {
+	if l == nil || l.Version != 1 || len(l.Command) == 0 || len(l.Command) > 32 || !strings.HasPrefix(l.Command[0], "/") {
+		return errors.New("lifecycle requires version 1 and absolute in-container command argv")
+	}
+	for _, arg := range l.Command {
+		if len(arg) > 4096 || strings.ContainsAny(arg, "\x00\r\n") {
+			return errors.New("invalid lifecycle command argument")
+		}
+	}
+	return nil
 }
 
 type extension struct {
@@ -143,6 +163,11 @@ func Resolve(data, key []byte) (*Model, error) {
 			digest = "image-config:" + image
 		}
 		policy := ext.Services[name]
+		if policy.Lifecycle != nil {
+			if err := policy.Lifecycle.Validate(); err != nil {
+				return fail(err.Error())
+			}
+		}
 		policy.RestartOn = slices.Sorted(slices.Values(policy.RestartOn))
 		policy.Hosts = slices.Sorted(slices.Values(policy.Hosts))
 		policy.ConcurrentVolumes = slices.Sorted(slices.Values(policy.ConcurrentVolumes))
@@ -272,6 +297,11 @@ func validatePolicy(p Policy, service map[string]any) error {
 			return errors.New("non-HTTP policy cannot declare HTTP candidate settings")
 		}
 	case "http":
+		if p.Lifecycle != nil {
+			if restart, exists := service["restart"]; exists && restart != "no" {
+				return errors.New("lifecycle execution requires restart: no; automatic restarts invalidate application drain proof")
+			}
+		}
 		if p.ReadyHost != "" && !validName(p.ReadyHost) {
 			return errors.New("invalid readiness host")
 		}

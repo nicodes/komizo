@@ -24,6 +24,30 @@ outside this work's scope. No arbitrary-container zero-interruption guarantee.
 
 ## Implemented locally
 
+### Approved retirement contract follow-up
+
+The owner approved requiring both gateway and application proof, with two phases:
+
+1. After gateway admission switches, ask the old application to stop new background
+   work and end resumable streams, while continuing to accept requests already
+   admitted by the gateway.
+2. After positive gateway drain, seal application admission and obtain positive
+   application drain evidence before graceful stop and removal.
+
+Timeout preserves the old instance and reports incomplete retirement. It must not
+force-remove the instance or report policy-compliant success. Keep the existing
+root-only permission boundary. This is design approval, not deployment authority.
+
+**Correction (application retirement implementation):** the prior checkpoint's
+old-instance-cleanup failure is now addressed by a declared application adapter,
+durable per-incarnation lifecycle checkpoints and TERM-only graceful stop before
+non-forced removal. The parent-owned refusal of unsafe container states is retained.
+The real Docker control now uses an application fixture with actual work accounting,
+not a Caddy response as application proof. Exact contract and integration limits:
+`internal/rollout/APPLICATION-LIFECYCLE.md`. Local synthetic verification does not
+establish consumer or production readiness. PR #113 remains draft; no merge or
+deployment is authorized by this follow-up.
+
 - `internal/release`: deterministic comparison of complete service identities;
   canonical Compose JSON resolution; immutable image identities; private keyed
   configuration identities; per-service secret versions and dependency invalidation.

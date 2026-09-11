@@ -33,8 +33,11 @@ ownership labels are required in both cases; "private" is not an egress-denial
 claim or authority for cross-application attachments.
 
 The engine validates candidate definitions, persists intent, creates unique
-instances, verifies readiness, atomically switches admission, observes health,
-establishes drain, removes only owned old instances, and commits. Image-declared
+instances, verifies readiness, atomically switches admission, quiesces application
+work, observes health, establishes gateway drain, seals application admission,
+obtains application drain proof, verifies graceful stop, removes owned old
+instances, and commits. The required generic adapter contract is documented in
+[APPLICATION-LIFECYCLE.md](APPLICATION-LIFECYCLE.md). Image-declared
 volumes require explicit mounts/tmpfs. Read-only data volumes must be explicitly
 external. Removal cleans anonymous volumes, never named volumes.
 
@@ -49,8 +52,9 @@ external. Removal cleans anonymous volumes, never named volumes.
   another release cannot displace an unfinished transaction.
 - Lost switch responses are reconciled against routes, parent, generation and epoch.
 - Retirement budget starts at persisted switch intent; retry does not renew it.
-- Over-budget live requests are not killed. The violation is recorded, and later
-  safe cleanup does not become policy-compliant success. Non-resumable indefinitely
+- **Correction (retirement follow-up):** an expired budget now retains the pending
+  transaction and refuses further cleanup, rather than eventually committing with
+  a violation. Over-budget work is not killed. Non-resumable indefinitely
   open sessions still require application work, not a forced-kill shortcut.
 
 `--abort` cancels pre-switch transactions only. Supply scope, state, key, gateway,
@@ -75,9 +79,12 @@ GOTOOLCHAIN=go1.26.8 KOMIZO_TEST_ROLLOUT=1 go test -race -count=1 -timeout 5m ./
 ```
 
 Uses the real CLI implementation, pinned standalone Compose, a compiled gateway
-container, isolated networks and synthetic HTTP services. Tests initial deploy,
+container, isolated networks and a compiled compliant application/adapter fixture.
+The fixture accounts for real HTTP, background work and resumable streams.
+Tests initial deploy,
 no-op, UI-only replacement, API identity preservation, failed readiness and owned
-old-container removal under concurrent requests. Test resources are uniquely scoped.
+old-container removal under concurrent requests, application refusal, TERM timeout,
+restart invalidation and lost stop/removal replies. Test resources are uniquely scoped.
 
 Before converting an app, disable/serialize legacy CD and lifecycle paths. The
 legacy deploy template now refuses journaled instance labels, but that guard is

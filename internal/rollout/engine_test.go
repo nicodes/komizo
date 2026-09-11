@@ -20,6 +20,30 @@ type memoryBackend struct {
 	failReady        bool
 	failRemoveOnce   bool
 	failPrepareOnce  bool
+	lifecycleCalls   []string
+	failLifecycle    string
+	lifecycleHook    func(context.Context, string) error
+}
+
+func (b *memoryBackend) Lifecycle(ctx context.Context, i Instance, action string, p Retirement) (Retirement, error) {
+	b.lifecycleCalls = append(b.lifecycleCalls, action+":"+i.Name)
+	if b.lifecycleHook != nil {
+		if err := b.lifecycleHook(ctx, action); err != nil {
+			return p, err
+		}
+	}
+	if action == b.failLifecycle {
+		return p, errors.New("application refused lifecycle")
+	}
+	if action == "remove" {
+		if err := b.Remove(ctx, i); err != nil {
+			return p, err
+		}
+	}
+	if action == "abort-quiesce" {
+		action = "quiesce"
+	}
+	return Retirement{ID: i.Name, StartedAt: "boot", Stage: action}, nil
 }
 
 func (b *memoryBackend) Preflight(context.Context, string, string) error { return nil }
@@ -101,6 +125,9 @@ func sourceModel(ui string) []byte {
 			"api": map[string]any{"mode": "http", "port": 8080, "ready_path": "/readyz", "candidate_safe": true, "hosts": []string{"api.test"}},
 			"ui":  map[string]any{"mode": "http", "port": 8080, "ready_path": "/readyz", "candidate_safe": true, "hosts": []string{"app.test"}},
 		}},
+	}
+	for _, policy := range model["x-komizo"].(map[string]any)["services"].(map[string]any) {
+		policy.(map[string]any)["lifecycle"] = map[string]any{"version": 1, "command": []string{"/fixture", "lifecycle"}}
 	}
 	data, _ := json.Marshal(model)
 	return data
@@ -225,7 +252,7 @@ func TestEngineDrainTimeoutDoesNotKillWorkAndRecordsViolation(t *testing.T) {
 	}
 	router.blocked = ""
 	result, err := runEngine(t, e, sourceModel("c"), key, limits)
-	if !errors.Is(err, ErrRetirementBudget) || !result.RetirementExceeded || len(backend.removed) != 1 {
+	if !errors.Is(err, ErrRetirementBudget) || !result.RetirementExceeded || len(backend.removed) != 0 {
 		t.Fatalf("late retirement: %+v, %v", result, err)
 	}
 }
