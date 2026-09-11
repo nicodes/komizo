@@ -74,6 +74,7 @@ exit 0
 		"$PROJECT_MARKER", "komizo",
 		"$CI_USER", "komizo-blog",
 		"$DEPLOY_BIN", "/usr/local/bin/deploy-blog",
+		"$ROLLOUT_DEPLOY_BIN", "/usr/local/bin/rollout-blog",
 		"$SECRET_BIN", "/usr/local/bin/set-secret-blog",
 		"$TASK_BIN", "/usr/local/bin/task-blog",
 	).Replace(body)

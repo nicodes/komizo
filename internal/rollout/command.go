@@ -15,6 +15,9 @@ import (
 // Command is an operator-only local Docker operation, not a signed box command
 // and not a new privilege grant for CI deploy accounts.
 func Command(parent context.Context, args []string, output, diagnostics io.Writer) error {
+	if len(args) != 0 && args[0] == "profile" {
+		return profileCommand(parent, args[1:], output, diagnostics)
+	}
 	if len(args) != 0 && args[0] == "status" {
 		return statusCommand(parent, args[1:], output, diagnostics)
 	}
@@ -96,6 +99,34 @@ func Command(parent context.Context, args []string, output, diagnostics io.Write
 	return json.NewEncoder(output).Encode(result)
 }
 
+func profileCommand(parent context.Context, args []string, output, diagnostics io.Writer) error {
+	flags := flag.NewFlagSet("rollout profile", flag.ContinueOnError)
+	flags.SetOutput(diagnostics)
+	profilePath := flags.String("profile", "", "root-owned application rollout profile")
+	modelPath := flags.String("model", "", "normalized model from the immutable config artifact")
+	resume := flags.Bool("resume", false, "resume the profile's pending journaled transaction")
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return errors.New("invalid rollout profile flags")
+	}
+	if flags.NArg() != 0 || *profilePath == "" || (*resume == (*modelPath != "")) {
+		return errors.New("profile rollout requires --profile and exactly one of --model or --resume")
+	}
+	var result Result
+	var err error
+	if *resume {
+		result, err = ResumeProfile(parent, *profilePath)
+	} else {
+		result, err = RunProfile(parent, *profilePath, *modelPath)
+	}
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(output).Encode(result)
+}
+
 func statusCommand(parent context.Context, args []string, output, diagnostics io.Writer) error {
 	flags := flag.NewFlagSet("rollout status", flag.ContinueOnError)
 	flags.SetOutput(diagnostics)
@@ -146,7 +177,7 @@ func statusCommand(parent context.Context, args []string, output, diagnostics io
 
 func readInput(path string, limit int64, private bool) ([]byte, error) {
 	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() > limit || private && (info.Size() != 32 || info.Mode().Perm()&0o077 != 0) {
+	if err != nil || !info.Mode().IsRegular() || info.Size() > limit || private && (info.Size() != 32 || info.Mode().Perm()&0o077 != 0 || !ownedByCurrent(info)) {
 		return nil, errors.New("invalid input file")
 	}
 	file, err := os.Open(path)

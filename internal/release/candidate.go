@@ -11,8 +11,10 @@ import (
 // The unique service key prevents Compose from installing the original service
 // DNS alias beside an active instance. Network provisioning remains separate.
 func (m *Model) CandidateCompose(service, instance, app, network string, labels map[string]string) ([]byte, error) {
-	if m.private == nil || !validName(instance) || !validName(app) || !validName(network) || m.Policies[service].Mode != "http" {
-		return nil, errors.New("candidate needs a resolved HTTP model and valid scope")
+	mode := m.Policies[service].Mode
+	if m.private == nil || !validName(instance) || !validName(app) || !validName(network) ||
+		(mode != "request" && mode != "static" && mode != "worker" && mode != "one-shot") {
+		return nil, errors.New("candidate needs a resolved replaceable model and valid scope")
 	}
 	services := m.private["services"].(map[string]any)
 	source, ok := services[service].(map[string]any)
@@ -23,7 +25,7 @@ func (m *Model) CandidateCompose(service, instance, app, network string, labels 
 		return nil, err
 	}
 	if networks, ok := source["networks"].(map[string]any); !ok || len(networks) != 1 {
-		return nil, errors.New("HTTP execution currently requires one explicit app-private network")
+		return nil, errors.New("candidate execution requires one explicit app-private network")
 	} else {
 		definitions, _ := m.private["networks"].(map[string]any)
 		for name, raw := range networks {
@@ -53,6 +55,17 @@ func (m *Model) CandidateCompose(service, instance, app, network string, labels 
 		mergedLabels[name] = value
 	}
 	copy["labels"] = mergedLabels
+	if mode == "worker" {
+		environment, _ := copy["environment"].(map[string]any)
+		if environment == nil {
+			environment = map[string]any{}
+		}
+		if _, exists := environment["KOMIZO_CANDIDATE"]; exists {
+			return nil, errors.New("worker candidate state is reserved for the rollout executor")
+		}
+		environment["KOMIZO_CANDIDATE"] = "standby"
+		copy["environment"] = environment
+	}
 	document := map[string]any{
 		"name":     app,
 		"services": map[string]any{instance: copy},

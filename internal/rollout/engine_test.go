@@ -65,6 +65,16 @@ func (b *memoryBackend) Ready(_ context.Context, i Instance) error {
 	if _, exists := b.instances[i.Name]; !exists {
 		return errors.New("missing instance")
 	}
+	if i.Mode == "worker" {
+		b.lifecycleCalls = append(b.lifecycleCalls, "ready:"+i.Name)
+	}
+	return nil
+}
+func (b *memoryBackend) Candidate(_ context.Context, i Instance, action string) error {
+	b.lifecycleCalls = append(b.lifecycleCalls, action+":"+i.Name)
+	if b.failLifecycle == action {
+		return errors.New("application refused candidate lifecycle")
+	}
 	return nil
 }
 func (b *memoryBackend) Remove(_ context.Context, i Instance) error {
@@ -122,12 +132,31 @@ func sourceModel(ui string) []byte {
 		},
 		"networks": map[string]any{"private": map[string]any{"internal": true, "name": "app-private"}},
 		"x-komizo": map[string]any{"version": 1, "services": map[string]any{
-			"api": map[string]any{"mode": "http", "port": 8080, "ready_path": "/readyz", "candidate_safe": true, "hosts": []string{"api.test"}},
-			"ui":  map[string]any{"mode": "http", "port": 8080, "ready_path": "/readyz", "candidate_safe": true, "hosts": []string{"app.test"}},
+			"api": map[string]any{"mode": "request", "port": 8080, "ready_path": "/readyz", "candidate_safe": true, "hosts": []string{"api.test"}},
+			"ui":  map[string]any{"mode": "static", "port": 8080, "ready_path": "/readyz", "candidate_safe": true, "hosts": []string{"app.test"}},
 		}},
 	}
 	for _, policy := range model["x-komizo"].(map[string]any)["services"].(map[string]any) {
 		policy.(map[string]any)["lifecycle"] = map[string]any{"version": 1, "command": []string{"/fixture", "lifecycle"}}
+	}
+	data, _ := json.Marshal(model)
+	return data
+}
+
+func nonRequestModel(mode, digest string) []byte {
+	policy := map[string]any{"mode": mode}
+	if mode == "worker" {
+		policy["candidate_safe"] = true
+		policy["lifecycle"] = map[string]any{"version": 1, "command": []string{"/fixture", "lifecycle"}}
+	}
+	if mode == "one-shot" {
+		policy["candidate_safe"] = true
+	}
+	model := map[string]any{
+		"name":     "app",
+		"services": map[string]any{"task": map[string]any{"image": "example/task@sha256:" + strings.Repeat(digest, 64), "networks": map[string]any{"private": nil}}},
+		"networks": map[string]any{"private": map[string]any{"internal": true, "name": "app-private"}},
+		"x-komizo": map[string]any{"version": 1, "services": map[string]any{"task": policy}},
 	}
 	data, _ := json.Marshal(model)
 	return data
@@ -329,4 +358,56 @@ func TestJournalExclusionPrivacyAndCorruption(t *testing.T) {
 		t.Fatal("lock did not release")
 	}
 	second.Close()
+}
+
+func TestWorkerStartsStandbyThenActivatesAfterSwitch(t *testing.T) {
+	engine, backend, _, key, limits := newEngine(t)
+	result, err := runEngine(t, engine, nonRequestModel("worker", "a"), key, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Changed != 1 {
+		t.Fatalf("changed=%d", result.Changed)
+	}
+	joined := strings.Join(backend.lifecycleCalls, "\n")
+	ready := strings.Index(joined, "ready:")
+	activate := strings.Index(joined, "activate:")
+	if ready < 0 || activate <= ready {
+		t.Fatalf("worker handoff order is not ready then activate: %s", joined)
+	}
+}
+
+func TestOneShotCompletesOnceAndIsNotAnActiveBinding(t *testing.T) {
+	engine, backend, _, key, limits := newEngine(t)
+	model := nonRequestModel("one-shot", "a")
+	if _, err := runEngine(t, engine, model, key, limits); err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.created) != 1 || len(backend.removed) != 1 {
+		t.Fatalf("one-shot create/remove = %v/%v", backend.created, backend.removed)
+	}
+	if _, err := runEngine(t, engine, model, key, limits); err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.created) != 1 {
+		t.Fatalf("no-op reran one-shot: %v", backend.created)
+	}
+	state, err := engine.Store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Bindings) != 0 {
+		t.Fatalf("completed one-shot became a serving binding: %#v", state.Bindings)
+	}
+}
+
+func TestPersistentBootstrapRefusesBeforeCandidateCreation(t *testing.T) {
+	engine, backend, _, key, limits := newEngine(t)
+	_, err := runEngine(t, engine, nonRequestModel("persistent", "a"), key, limits)
+	if err == nil || !strings.Contains(err.Error(), "explicit maintenance") {
+		t.Fatalf("persistent bootstrap was not refused: %v", err)
+	}
+	if len(backend.created) != 0 {
+		t.Fatalf("persistent refusal created candidates: %v", backend.created)
+	}
 }

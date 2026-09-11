@@ -168,7 +168,9 @@ func main() {
 		if !ok {
 			os.Exit(73)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		// Keep this below the rollout operation budget while allowing heavily
+		// loaded one-CPU CI hosts to finish Go's graceful HTTP shutdown.
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		if public.Shutdown(ctx) != nil {
 			cancel()
 			os.Exit(74)
