@@ -2,10 +2,13 @@ package rollout
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nicodes/komizo/internal/gateway"
 )
 
 func TestLifecycleInterruptionCheckpoints(t *testing.T) {
@@ -78,12 +81,14 @@ func TestApplicationTimeoutPreservesOldInstanceAndCannotBecomeLateSuccess(t *tes
 	for _, action := range []string{"quiesce", "drain", "stop"} {
 		t.Run(action, func(t *testing.T) {
 			e, b, _, key, limits := newEngine(t)
-			limits.Retire = 40 * time.Millisecond
+			limits.Retire = time.Second
 			if _, err := runEngine(t, e, sourceModel("b"), key, limits); err != nil {
 				t.Fatal(err)
 			}
+			reached := false
 			b.lifecycleHook = func(ctx context.Context, a string) error {
 				if a == action {
+					reached = true
 					<-ctx.Done()
 					return ctx.Err()
 				}
@@ -91,6 +96,9 @@ func TestApplicationTimeoutPreservesOldInstanceAndCannotBecomeLateSuccess(t *tes
 			}
 			if _, err := runEngine(t, e, sourceModel("c"), key, limits); err == nil {
 				t.Fatal("timeout hidden")
+			}
+			if !reached {
+				t.Fatal("timeout control did not reach the target lifecycle action")
 			}
 			state, err := e.Store.Load()
 			if err != nil {
@@ -150,5 +158,64 @@ func TestContainerIncarnationProofRefusesNameReuseAndRestart(t *testing.T) {
 	c.State.StartedAt = "boot2"
 	if sameIncarnation(c, p) == nil || sameIncarnation(nil, p) == nil {
 		t.Fatal("restart or absence accepted")
+	}
+}
+
+func TestLifecycleRechecksEpochAndGatewayProof(t *testing.T) {
+	for _, change := range []string{"epoch", "drain"} {
+		t.Run(change, func(t *testing.T) {
+			e, b, r, key, limits := newEngine(t)
+			if _, err := runEngine(t, e, sourceModel("b"), key, limits); err != nil {
+				t.Fatal(err)
+			}
+			b.lifecycleHook = func(_ context.Context, action string) error {
+				if action == "seal" {
+					if change == "epoch" {
+						current, _ := r.g.Current()
+						replacement, err := gateway.New(current, nil)
+						if err != nil {
+							t.Fatal(err)
+						}
+						r.g = replacement
+					} else {
+						r.unknownDrain = true
+					}
+				}
+				return nil
+			}
+			if _, err := runEngine(t, e, sourceModel("c"), key, limits); err == nil {
+				t.Fatal("changed gateway proof accepted")
+			}
+			state, _ := e.Store.Load()
+			if state.Pending == nil || len(b.removed) != 0 || state.Pending.Retirements[state.Bindings["ui"].Name].Stage != "seal" {
+				t.Fatal("retirement advanced past lost proof")
+			}
+		})
+	}
+}
+
+func TestMissingLifecycleRefusesBeforeCandidatePreparation(t *testing.T) {
+	e, b, _, key, limits := newEngine(t)
+	var source map[string]any
+	if err := json.Unmarshal(sourceModel("b"), &source); err != nil {
+		t.Fatal(err)
+	}
+	delete(source["x-komizo"].(map[string]any)["services"].(map[string]any)["ui"].(map[string]any), "lifecycle")
+	body, _ := json.Marshal(source)
+	if _, err := runEngine(t, e, body, key, limits); err == nil || len(b.created) != 0 {
+		t.Fatal("undeclared candidate started")
+	}
+	if _, err := runEngine(t, e, sourceModel("b"), key, limits); err != nil {
+		t.Fatal(err)
+	}
+	state, _ := e.Store.Load()
+	old := state.Bindings["ui"]
+	old.Lifecycle = nil
+	state.Bindings["ui"] = old
+	if err := e.Store.Save(state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runEngine(t, e, sourceModel("c"), key, limits); err == nil || len(b.created) != 2 {
+		t.Fatal("legacy application implicitly adopted")
 	}
 }
