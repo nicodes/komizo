@@ -94,8 +94,8 @@ func TestApplicationTimeoutPreservesOldInstanceAndCannotBecomeLateSuccess(t *tes
 				}
 				return nil
 			}
-			if _, err := runEngine(t, e, sourceModel("c"), key, limits); err == nil {
-				t.Fatal("timeout hidden")
+			if result, err := runEngine(t, e, sourceModel("c"), key, limits); !errors.Is(err, ErrRetirementBudget) || !result.RetirementExceeded {
+				t.Fatalf("first timeout lost budget identity: %+v %v", result, err)
 			}
 			if !reached {
 				t.Fatal("timeout control did not reach the target lifecycle action")
