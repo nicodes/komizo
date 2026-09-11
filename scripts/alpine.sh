@@ -74,6 +74,7 @@ case "$CI_USER" in
 	root) echo "error: CI_USER must not be root -- the deploy account is a separate, unprivileged user" >&2; exit 1 ;;
 esac
 DEPLOY_BIN="/usr/local/bin/deploy-$APP_NAME"
+ROLLOUT_DEPLOY_BIN="/usr/local/bin/rollout-$APP_NAME"
 SECRET_BIN="/usr/local/bin/set-secret-$APP_NAME"
 TASK_BIN="/usr/local/bin/task-$APP_NAME"
 
@@ -607,6 +608,15 @@ set -f
 CONFIG_IMAGE="__CONFIG_IMAGE__"
 PROXY_CONTAINER="__PROXY_CONTAINER__"
 PROXY_DIR="__PROXY_DIR__"
+ROLLOUT_BIN="__ROLLOUT_BIN__"
+ROLLOUT_PROFILE="__ROLLOUT_PROFILE__"
+
+broker="${0##*/}"
+if [ "${1:-}" = "--check" ]; then
+	case "$broker" in rollout-__APP_NAME__) echo "komizo-rollout-broker-v1 __APP_NAME__"; exit 0 ;; esac
+	echo "deploy: journaled capability check used the legacy command" >&2
+	exit 1
+fi
 
 # Baked in rather than derived. The app's name decides the upstream the shared
 # proxy is pointed at (<app>-gate), and its directory is where the hostnames
@@ -633,6 +643,7 @@ STATE_FILE="__STATE_DIR__/__APP_NAME__.env"
 version="${1:-}"
 registry="${2:-}"
 registry_user="${3:-}"
+config_digest="${4:-}"
 cd "$APP_DIR"
 
 # Clean up scratch however this exits. Several validation failures below exit
@@ -748,8 +759,20 @@ previous="$(sed -n 's/^APP_VERSION=//p' .env 2>/dev/null | head -n 1)"
 echo "deploy: previous-version=${previous:-}"
 
 ref="$CONFIG_IMAGE:$version"
+if [ -n "$config_digest" ]; then
+	case "$config_digest" in
+		sha256:????????????????????????????????????????????????????????????????) ;;
+		*) echo "deploy: refusing invalid config digest" >&2; exit 1 ;;
+	esac
+	case "${config_digest#sha256:}" in *[!0-9a-f]*) echo "deploy: refusing invalid config digest" >&2; exit 1 ;; esac
+	ref="$CONFIG_IMAGE@$config_digest"
+fi
 echo "deploy: fetching config from $ref"
-docker pull -q "$ref" >/dev/null
+if [ -n "$config_digest" ] && docker image inspect "$ref" >/dev/null 2>&1; then
+	echo "deploy: immutable config artifact is already present"
+else
+	docker pull -q "$ref" >/dev/null
+fi
 
 # 'docker create' + 'docker cp' rather than 'docker run': the config image
 # is FROM scratch and has no shell to run anything with.
@@ -777,6 +800,51 @@ if [ -L "$staging/compose.yml" ]; then
 fi
 if [ -L "$staging/hostnames" ]; then
 	echo "deploy: hostnames in $ref is a symlink, which is not allowed" >&2
+	exit 1
+fi
+
+# A model selects the journaled broker. CI can supply desired application state,
+# but every authority-bearing value (scope, network, key, state, gateway, tools
+# and budgets) comes from this app's private root-owned profile. The registry
+# digest is mandatory on this path so a mutable tag cannot change after CI
+# publishes and before root extracts it.
+if [ -e "$staging/model.json" ]; then
+	if [ "$broker" != "rollout-__APP_NAME__" ]; then
+		echo "deploy: journaled model must use the dedicated rollout-__APP_NAME__ broker" >&2
+		exit 1
+	fi
+	if [ -z "$config_digest" ]; then
+		echo "deploy: a journaled model requires the config artifact digest" >&2
+		exit 1
+	fi
+	if [ -L "$staging/model.json" ] || [ ! -f "$staging/model.json" ]; then
+		echo "deploy: model.json in $ref must be a regular non-symlink file" >&2
+		exit 1
+	fi
+	profile="$ROLLOUT_PROFILE"
+	if [ ! -f "$profile" ]; then
+		echo "deploy: journaled rollout is not provisioned for __APP_NAME__" >&2
+		exit 1
+	fi
+	"$ROLLOUT_BIN" rollout profile --profile "$profile" --model "$staging/model.json"
+	echo "deploy: started=yes"
+	exit 0
+fi
+
+if [ "$broker" = "rollout-__APP_NAME__" ]; then
+	echo "deploy: rollout-__APP_NAME__ requires a config artifact containing model.json" >&2
+	exit 1
+fi
+
+# Never let the old Compose --remove-orphans path remove instances owned by the
+# journaled executor. Initial conversion must still serialize/disable the old CD
+# workflow explicitly; this guard protects accidental fallback to legacy config.
+if ! komizo_managed="$(docker ps -a --filter 'label=io.komizo.app=__APP_NAME__' --format '{{.ID}}')"; then
+	echo 'deploy: cannot establish application rollout ownership' >&2
+	exit 1
+fi
+if [ -n "$komizo_managed" ]; then
+	echo 'deploy: journaled rollout instances exist; legacy in-place deployment is disabled for this app' >&2
 	exit 1
 fi
 
@@ -1398,6 +1466,8 @@ sed -i \
 	-e "s|__CONFIG_IMAGE__|$CONFIG_IMAGE|g" \
 	-e "s|__PROXY_CONTAINER__|$PROXY_CONTAINER|g" \
 	-e "s|__PROXY_DIR__|$PROXY_DIR|g" \
+	-e "s|__ROLLOUT_BIN__|/usr/local/bin/komizo-box|g" \
+	-e "s|__ROLLOUT_PROFILE__|/etc/komizo/rollouts/$APP_NAME.json|g" \
 	-e "s|__ROUTES_DIR__|$ROUTES_DIR|g" \
 	-e "s|__STATE_DIR__|$STATE_DIR|g" \
 	"$DEPLOY_BIN.tmp"
@@ -1408,6 +1478,9 @@ fi
 mv "$DEPLOY_BIN.tmp" "$DEPLOY_BIN"
 chown root:root "$DEPLOY_BIN"
 chmod 755 "$DEPLOY_BIN"
+cp "$DEPLOY_BIN" "$ROLLOUT_DEPLOY_BIN"
+chown root:root "$ROLLOUT_DEPLOY_BIN"
+chmod 755 "$ROLLOUT_DEPLOY_BIN"
 
 # --- 3b. Secret path -------------------------------------------------------
 # Write-only by construction: the value arrives on stdin and is never echoed,
@@ -1427,6 +1500,25 @@ set -eu
 
 name="${1:-}"
 cd "__APP_DIR__"
+
+# Serialize with both legacy/journaled activation and rootd journal resumption.
+# The lock order matches the deploy broker (deploy lock, then journal lock), so
+# secret bytes and their opaque version marker cannot change during a rollout.
+if command -v flock >/dev/null 2>&1 && mkdir -p /run/komizo 2>/dev/null && : >"/run/komizo/deploy-__APP_NAME__.lock" 2>/dev/null; then
+	exec 9>"/run/komizo/deploy-__APP_NAME__.lock"
+	if ! flock -w 300 9; then
+		echo "set-secret: deployment lock timed out" >&2
+		exit 1
+	fi
+fi
+if [ -d "/var/lib/komizo/rollouts/__APP_NAME__" ]; then
+	command -v flock >/dev/null 2>&1 || { echo "set-secret: journal locking is unavailable" >&2; exit 1; }
+	exec 8>"/var/lib/komizo/rollouts/__APP_NAME__/lock"
+	if ! flock -w 300 8; then
+		echo "set-secret: rollout journal lock timed out" >&2
+		exit 1
+	fi
+fi
 
 # Env-var charset. Also makes the name safe as a grep pattern below.
 case "$name" in
@@ -1452,14 +1544,22 @@ tmp="$(mktemp "__APP_DIR__/.secrets.XXXXXX")"
 # a temp file and mv makes the update atomic: a reader never sees the file
 # without the key, and a crash mid-write cannot truncate it.
 grep -v "^$name=" secrets.env > "$tmp" 2>/dev/null || true
+grep -v "^# komizo-secret-version-$name=" "$tmp" > "$tmp.filtered" 2>/dev/null || true
+mv -f "$tmp.filtered" "$tmp"
 printf '%s=%s\n' "$name" "$value" >> "$tmp"
+version="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+[ "${#version}" -eq 32 ] || { echo "set-secret: could not create opaque version" >&2; rm -f "$tmp"; exit 1; }
+printf '# komizo-secret-version-%s=%s\n' "$name" "$version" >> "$tmp"
 chown root:root "$tmp"
 chmod 600 "$tmp"
 mv -f "$tmp" secrets.env
 
 echo "set-secret: $name updated"
 KOMIZO_SECRET_EOF
-sed -i -e "s|__APP_DIR__|$APP_DIR|g" "$SECRET_BIN.tmp"
+sed -i \
+	-e "s|__APP_DIR__|$APP_DIR|g" \
+	-e "s|__APP_NAME__|$APP_NAME|g" \
+	"$SECRET_BIN.tmp"
 if grep -q '__[A-Z_][A-Z_]*__' "$SECRET_BIN.tmp"; then
 	rm -f "$SECRET_BIN.tmp"
 	die "the generated secret script still has placeholders in it -- this is a komizo bug"
@@ -1739,6 +1839,7 @@ sed -i -E "/^# $PROJECT_MARKER: $CI_USER BEGIN\$/,/^# $PROJECT_MARKER: $CI_USER 
 cat >> /etc/doas.conf <<-EOF
 	# komizo: $CI_USER BEGIN
 	permit nopass $CI_USER as root cmd $DEPLOY_BIN
+	permit nopass $CI_USER as root cmd $ROLLOUT_DEPLOY_BIN
 	permit nopass $CI_USER as root cmd $SECRET_BIN
 EOF
 if [ -n "$TASKS" ]; then

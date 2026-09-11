@@ -42,6 +42,7 @@ import (
 	"time"
 
 	"github.com/nicodes/komizo/box"
+	"github.com/nicodes/komizo/internal/rollout"
 )
 
 // version is stamped at build time by the release, and reported so the
@@ -69,6 +70,10 @@ func main() {
 		err = runServe(os.Args[2:])
 	case "app":
 		err = runApp(os.Args[2:])
+	case "rollout":
+		err = runLocalRollout(os.Args[2:])
+	case "gateway":
+		err = runGateway(os.Args[2:])
 	case "enrol":
 		err = runEnrol(os.Args[2:])
 	case "unenrol":
@@ -99,6 +104,8 @@ func usage() {
 
   komizo-box app start|stop|restart --app NAME      as root
   komizo-box app logs --app NAME [--tail N] [--service S]
+  komizo-box rollout --help                        root operator only
+  komizo-box gateway --help                        private gateway process
 
   komizo-box enrol --api URL --token kmz_enr_...    as root
   komizo-box agent                                  as komizo_monitor
@@ -160,6 +167,8 @@ func runRootdAt(root string, args []string) error {
 	reportPath := fs.String("report", box.ReportPath, "where to write the current report")
 	historyPath := fs.String("history", box.HistoryPath, "where to append readings")
 	metricsPath := fs.String("metrics", box.MetricsPath, "where to leave what the access log said")
+	rolloutProfiles := fs.String("rollout-profiles", "/etc/komizo/rollouts", "root-owned rollout profiles to reconcile")
+	rolloutsEvery := fs.Duration("rollouts-every", time.Minute, "how often to resume interrupted rollouts (0 disables)")
 	// FLAG-DERIVED LIKE EVERY OTHER PATH THIS WRITES, which the loop below says
 	// is the rule and this one line was breaking. PrepareStateDir took the
 	// CONSTANT, so a single tick called mkdir /var/lib/komizo and failed under
@@ -352,6 +361,25 @@ func runRootdAt(root string, args []string) error {
 	// half-second timer's justification is that a stat on tmpfs costs nothing;
 	// that is true of the poll and not of the work it dispatches.
 	go commandLoop(ctx, *confPath, *inboxDir, *resultsDir)
+
+	// Journaled app deployment is still authorized by each app's generated,
+	// narrow doas broker. rootd adds no remote command: it only resumes intent
+	// that broker already durably recorded in a root-owned profile/journal.
+	if *rolloutsEvery > 0 {
+		go func() {
+			rollout.ReconcileProfiles(ctx, *rolloutProfiles, os.Stderr)
+			ticker := time.NewTicker(*rolloutsEvery)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					rollout.ReconcileProfiles(ctx, *rolloutProfiles, os.Stderr)
+				}
+			}
+		}()
+	}
 
 	// Logs on their own timer too, and for the opposite reason to commands:
 	// this runs a docker command per app, where the command loop stats a
