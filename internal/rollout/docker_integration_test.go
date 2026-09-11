@@ -248,6 +248,10 @@ func TestDockerRollout(t *testing.T) {
 	close(stop)
 	wg.Wait()
 	if err != nil {
+		pending := load().Pending
+		state, stateErr := docker("inspect", "--format", "{{json .State}}", oldUI)
+		logs, logsErr := docker("logs", oldUI)
+		t.Logf("synthetic retirement diagnostic: checkpoints=%+v state=%s (%v) logs=%s (%v)", pending.Retirements, state, stateErr, logs, logsErr)
 		t.Fatalf("UI rollout: %v", err)
 	}
 	if second.Changed != 1 || failures.Load() != 0 || requests.Load() == 0 {
