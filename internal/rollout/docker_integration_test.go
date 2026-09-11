@@ -24,7 +24,6 @@ func TestDockerRollout(t *testing.T) {
 		t.Skip("set KOMIZO_TEST_ROLLOUT=1 for isolated real Docker/gateway execution")
 	}
 	const composeImage = "docker/compose-bin@sha256:023f617349e1791bc03b6d79ac7cc469b2e26c3aa8614c615389aa364a09c6aa"
-	const backendImage = "caddy@sha256:c3d7ee5d2b11f9dc54f947f68a734c84e9c9666c92c88a7f30b9cba5da182adb"
 	root := t.TempDir()
 	app := "kmzr-" + hash([]byte(root))[:12]
 	network := app + "-private"
@@ -74,6 +73,18 @@ func TestDockerRollout(t *testing.T) {
 	image := app + ":gateway"
 	must("build", "--network", "none", "--tag", image, buildDir)
 	cleanup("image", "rm", image)
+	fixtureBuild := exec.CommandContext(ctx, "go", "build", "-trimpath", "-o", filepath.Join(buildDir, "fixture"), "./testdata/lifecycle-fixture")
+	fixtureBuild.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+runtime.GOARCH, "CGO_ENABLED=0")
+	if out, err := fixtureBuild.CombinedOutput(); err != nil {
+		t.Fatalf("application fixture build: %v\n%s", err, out)
+	}
+	if err := os.WriteFile(filepath.Join(buildDir, "Dockerfile"), []byte("FROM scratch\nCOPY fixture /fixture\nENTRYPOINT [\"/fixture\"]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backendTag := app + ":application"
+	must("build", "--network", "none", "--tag", backendTag, buildDir)
+	cleanup("image", "rm", backendTag)
+	backendImage := must("image", "inspect", "--format", "{{.Id}}", backendTag)
 	// Match the existing application bridge/NAT topology. Candidate isolation
 	// must not depend on disabling outbound authentication/provider connections.
 	must("network", "create", "--label", "io.komizo.app="+app, network)
@@ -140,19 +151,19 @@ func TestDockerRollout(t *testing.T) {
 		model["name"] = app
 		model["networks"].(map[string]any)["private"] = map[string]any{"name": network, "internal": true}
 		for _, service := range []string{"api", "ui"} {
-			body, status := service, "200"
+			body, status := service, "true"
 			if service == "ui" {
 				body = version
 				if !ready {
-					status = "503"
+					status = "false"
 				}
 			}
 			model["services"].(map[string]any)[service] = map[string]any{
 				"image": backendImage, "networks": map[string]any{"private": nil},
 				"cap_drop": []string{"ALL"}, "cap_add": []string{"NET_BIND_SERVICE"}, "read_only": true,
-				"tmpfs":        []string{"/data", "/config"},
+				"tmpfs":        []string{"/run"},
 				"security_opt": []string{"no-new-privileges:true"},
-				"command":      []string{"caddy", "respond", "--listen", ":8080", "--body", body, "--status", status},
+				"command":      []string{"serve", body, status},
 			}
 		}
 		data, _ := json.Marshal(model)
@@ -165,7 +176,7 @@ func TestDockerRollout(t *testing.T) {
 		var out, diag bytes.Buffer
 		err := Command(ctx, []string{"--app", app, "--network", network, "--model", modelPath, "--key-file", keyPath,
 			"--state-dir", statePath, "--gateway-socket", socket, "--compose-bin", compose, "--compose-version", "2.39.2",
-			"--timeout", "45s", "--ready-timeout", "2s", "--operation-timeout", "15s", "--stabilize", "50ms", "--retire-timeout", "2s", "--poll", "10ms"}, &out, &diag)
+			"--timeout", "45s", "--ready-timeout", "2s", "--operation-timeout", "15s", "--stabilize", "50ms", "--retire-timeout", "10s", "--poll", "10ms"}, &out, &diag)
 		var result Result
 		if err == nil {
 			if decodeErr := json.Unmarshal(out.Bytes(), &result); decodeErr != nil {
@@ -300,5 +311,186 @@ func TestDockerRollout(t *testing.T) {
 	if body, err := get("app.test"); err != nil || body != "v2" {
 		t.Fatal("aborting preparation disturbed the serving release")
 	}
+	t.Run("NativeApplicationLifecycle", func(t *testing.T) {
+		s, err := OpenStore(ctx, statePath, time.Millisecond)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		d := &Docker{App: app, Network: network, Store: s}
+		create := func(mode string) Instance {
+			i := before.Bindings["ui"]
+			i.Name = "kmz-" + hash([]byte(t.Name() + mode))[:32]
+			args := []string{"run", "--detach", "--name", i.Name, "--network", network, "--read-only", "--tmpfs", "/run", "--cap-drop", "ALL", "--security-opt", "no-new-privileges"}
+			for k, v := range labels(i) {
+				args = append(args, "--label", k+"="+v)
+			}
+			args = append(args, backendImage, "serve", "control", "true", mode)
+			must(args...)
+			for deadline := time.Now().Add(5 * time.Second); ; {
+				if d.Ready(ctx, i) == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("native fixture readiness timeout")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			return i
+		}
+		advance := func(i Instance, action string, p Retirement) Retirement {
+			t.Helper()
+			op, end := context.WithTimeout(ctx, 3*time.Second)
+			defer end()
+			next, err := d.Lifecycle(op, i, action, p)
+			if err != nil {
+				t.Fatalf("%s: %v", action, err)
+			}
+			return next
+		}
+		t.Run("PositiveWorkAndStopProof", func(t *testing.T) {
+			i := create("positive")
+			current, err := d.inspect(ctx, i)
+			if err != nil {
+				t.Fatal(err)
+			}
+			url := "http://" + current.NetworkSettings.Networks[network].IPAddress + ":8080"
+			stream, err := client.Get(url + "/stream")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stream.Body.Close()
+			prefix := make([]byte, len("id: resume-1\ndata: work\n\n"))
+			if _, err := io.ReadFull(stream.Body, prefix); err != nil {
+				t.Fatal(err)
+			}
+			p := advance(i, "quiesce", Retirement{})
+			if _, err := io.ReadAll(stream.Body); err != nil {
+				t.Fatal("quiesce did not end resumable stream", err)
+			}
+			// Requests admitted at the gateway may reach the application after
+			// quiesce. This native request must still succeed before sealing.
+			response, err := client.Get(url + "/slow")
+			if err != nil {
+				t.Fatal(err)
+			}
+			slow := response
+			defer slow.Body.Close()
+			slowDone := make(chan error, 1)
+			go func() {
+				body, err := io.ReadAll(slow.Body)
+				if err == nil && string(body) != "control" {
+					err = fmt.Errorf("unexpected admitted response")
+				}
+				slowDone <- err
+			}()
+			if response.StatusCode != 200 {
+				t.Fatal("quiesce prematurely sealed admission")
+			}
+			p = advance(i, "seal", p)
+			response, err = client.Get(url)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response.Body.Close()
+			if response.StatusCode != 503 {
+				t.Fatal("seal did not refuse admission")
+			}
+			p = advance(i, "drain", p)
+			select {
+			case err := <-slowDone:
+				if err != nil {
+					t.Fatal("application drain lost admitted work", err)
+				}
+			case <-time.After(100 * time.Millisecond):
+				t.Fatal("application acknowledged drain with admitted work still running")
+			}
+			p = advance(i, "stop", p)
+			current, err = d.inspect(ctx, i)
+			if err != nil || current == nil || current.State.Status != "exited" || current.State.ExitCode != 0 {
+				t.Fatal("no native clean stop proof")
+			}
+			// Replay after a lost stop reply uses the recorded drained incarnation.
+			p.Stage = "drain"
+			p = advance(i, "stop", p)
+			p = advance(i, "remove", p)
+			p.Stage = "stop"
+			advance(i, "remove", p)
+		})
+		t.Run("NeverStartedCandidateAbort", func(t *testing.T) {
+			i := before.Bindings["ui"]
+			i.Name = "kmz-" + hash([]byte(app + "created-control"))[:32]
+			args := []string{"create", "--name", i.Name}
+			for k, v := range labels(i) {
+				args = append(args, "--label", k+"="+v)
+			}
+			args = append(args, backendImage, "serve", "created", "true")
+			must(args...)
+			p := advance(i, "abort-quiesce", Retirement{})
+			if !p.NotStarted {
+				t.Fatal("missing never-started proof")
+			}
+			for _, action := range []string{"seal", "drain", "stop", "remove"} {
+				p = advance(i, action, p)
+			}
+		})
+		t.Run("BackgroundWorkProof", func(t *testing.T) {
+			i := create("slow-job")
+			if !strings.Contains(must("logs", i.Name), "background-started") {
+				t.Fatal("control did not start background work")
+			}
+			p := advance(i, "quiesce", Retirement{})
+			p = advance(i, "seal", p)
+			started := time.Now()
+			p = advance(i, "drain", p)
+			if time.Since(started) < 500*time.Millisecond {
+				t.Fatal("drain did not wait for known background work")
+			}
+			p = advance(i, "stop", p)
+			advance(i, "remove", p)
+		})
+		t.Run("RefusedApplicationDrain", func(t *testing.T) {
+			i := create("refuse-drain")
+			p := advance(i, "quiesce", Retirement{})
+			p = advance(i, "seal", p)
+			if _, err := d.Lifecycle(ctx, i, "drain", p); err == nil {
+				t.Fatal("refusal accepted as proof")
+			}
+			if err := d.Remove(ctx, i); err == nil {
+				t.Fatal("live refused app removed")
+			}
+		})
+		t.Run("StopTimeoutHasNoDelayedKill", func(t *testing.T) {
+			i := create("ignore-term")
+			p := advance(i, "quiesce", Retirement{})
+			p = advance(i, "seal", p)
+			p = advance(i, "drain", p)
+			op, end := context.WithTimeout(ctx, 150*time.Millisecond)
+			_, err := d.Lifecycle(op, i, "stop", p)
+			end()
+			if err == nil {
+				t.Fatal("ignored TERM treated as stopped")
+			}
+			time.Sleep(200 * time.Millisecond)
+			if !strings.Contains(must("logs", i.Name), "ignored-term") {
+				t.Fatal("timeout control never reached the application's TERM handler")
+			}
+			current, err := d.inspect(ctx, i)
+			if err != nil || current == nil || !current.State.Running {
+				t.Fatal("timed out stop killed application")
+			}
+			if err := d.Remove(ctx, i); err == nil {
+				t.Fatal("timeout authorized removal")
+			}
+		})
+		t.Run("RestartInvalidatesApplicationProof", func(t *testing.T) {
+			i := create("restart")
+			p := advance(i, "quiesce", Retirement{})
+			must("restart", "--time", "0", i.Name) // destructive control: synthetic fixture only
+			if _, err := d.Lifecycle(ctx, i, "seal", p); err == nil {
+				t.Fatal("restart reused old proof")
+			}
+		})
+	})
 	t.Logf("real CLI rollout: %d HTTP requests during UI replacement, zero observed failures; API unchanged; no-op preserved IDs; failed readiness preserved v2; exactly 2 active service containers", requests.Load())
 }
