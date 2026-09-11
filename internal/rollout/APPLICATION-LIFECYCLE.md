@@ -87,7 +87,10 @@ socket and actual HTTP/background/stream accounting.
   removal replies are reconciled by inspection without reopening application work.
 - Pre-switch candidate abort uses the same lifecycle because candidates can run
   background work. Confirmed absent, never-prepared candidates need no application
-  proof. Unexpected disappearance after a positive acknowledgement fails closed.
+  proof. Unexpected disappearance after a positive acknowledgement but before
+  verified stop fails closed. At removal, confirmed absence after recorded stop
+  proof is already the desired outcome (including a lost removal reply); it permits
+  artifact cleanup and completion, not a new stop or forced removal.
   A created-but-never-started candidate has a distinct journal proof, rechecked at
   each step: no application process has run, so it needs no application handshake
   or TERM. It is never started just to clean it up. Appearance/start after either

@@ -285,7 +285,9 @@ func (e *Engine) Run(ctx context.Context, app, network string, source, key []byt
 					err := e.retireInstance(op, state, old, false, true)
 					cancel()
 					if err != nil {
-						_ = e.retirementBudget(state)
+						if budgetErr := e.retirementBudget(state); budgetErr != nil {
+							return result, budgetErr
+						}
 						return result, err
 					}
 				}
@@ -329,7 +331,7 @@ func (e *Engine) Run(ctx context.Context, app, network string, source, key []byt
 					if err := e.Store.Save(state); err != nil {
 						return result, err
 					}
-					return result, errors.New("retirement budget exceeded by live requests; app resumption or operator recovery required")
+					return result, ErrRetirementBudget
 				}
 				if err := pause(ctx, limits.Poll); err != nil {
 					return result, err
@@ -356,7 +358,9 @@ func (e *Engine) Run(ctx context.Context, app, network string, source, key []byt
 					err := e.retireInstance(op, state, old, false, false)
 					cancel()
 					if err != nil {
-						_ = e.retirementBudget(state)
+						if budgetErr := e.retirementBudget(state); budgetErr != nil {
+							return result, budgetErr
+						}
 						return result, errors.New("old instance cleanup failed; resume recorded retirement")
 					}
 				}
