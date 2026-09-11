@@ -3,6 +3,7 @@ package rollout
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Docker is a local-only executor. It never inherits DOCKER_HOST/CONTEXT, grants
@@ -25,11 +27,21 @@ type Docker struct {
 }
 
 type container struct {
-	Name   string
-	Config struct {
+	HostConfig struct{ RestartPolicy struct{ Name string } }
+	ID         string
+	Name       string
+	Config     struct {
 		Labels map[string]string
 	}
-	State           struct{ Running bool }
+	State struct {
+		StartedAt  string
+		Running    bool
+		Status     string
+		ExitCode   int
+		OOMKilled  bool
+		Dead       bool
+		Restarting bool
+	}
 	NetworkSettings struct {
 		Networks map[string]struct{ IPAddress string }
 	}
@@ -138,7 +150,150 @@ func (d *Docker) inspect(ctx context.Context, instance Instance) (*container, er
 			return nil, errors.New("container ownership or immutable identity does not match")
 		}
 	}
+	if entries[0].ID == "" || entries[0].State.StartedAt == "" {
+		return nil, errors.New("container incarnation is unknown")
+	}
 	return &entries[0], nil
+}
+
+// Lifecycle uses only the declared argv inside the owned container, at its
+// configured user. No host shell, added capabilities, or published admin port.
+func (d *Docker) Lifecycle(ctx context.Context, instance Instance, action string, proof Retirement) (Retirement, error) {
+	deadline, bounded := ctx.Deadline()
+	if !bounded || ctx.Err() != nil {
+		return proof, errors.New("lifecycle operation requires a live deadline")
+	}
+	if err := instance.Lifecycle.Validate(); err != nil {
+		return proof, err
+	}
+	stage := action
+	if action == "abort-quiesce" {
+		stage = "quiesce"
+	}
+	previous := map[string]string{"quiesce": "", "seal": "quiesce", "drain": "seal", "stop": "drain", "remove": "stop"}
+	want, known := previous[stage]
+	if !known || proof.Stage != want {
+		return proof, errors.New("invalid application lifecycle transition")
+	}
+	current, err := d.inspect(ctx, instance)
+	if err != nil {
+		return proof, err
+	}
+	if current == nil {
+		if action == "abort-quiesce" && proof.Stage == "" {
+			proof.Absent = true
+		}
+		if !proof.Absent && action != "remove" {
+			return proof, errors.New("retiring instance disappeared without stop proof")
+		}
+		if action == "remove" {
+			if err := d.removeArtifact(instance); err != nil {
+				return proof, err
+			}
+		}
+		proof.Stage = stage
+		return proof, nil
+	}
+	if proof.Absent {
+		return proof, errors.New("previously absent candidate appeared during abort")
+	}
+	if current.HostConfig.RestartPolicy.Name != "" && current.HostConfig.RestartPolicy.Name != "no" {
+		return proof, errors.New("automatic restart policy invalidates retirement proof")
+	}
+	if proof.Stage == "" {
+		proof.ID, proof.StartedAt = current.ID, current.State.StartedAt
+		proof.NotStarted = action == "abort-quiesce" && current.State.Status == "created"
+	}
+	if err := sameIncarnation(current, proof); err != nil {
+		return proof, err
+	}
+	if proof.NotStarted {
+		if current.State.Status != "created" {
+			return proof, errors.New("candidate started after never-started proof")
+		}
+		if _, err := removalArguments(instance, current); err != nil {
+			return proof, err
+		}
+		if action != "remove" {
+			proof.Stage = stage
+			return proof, nil
+		}
+	}
+	if action == "remove" {
+		args, err := removalArguments(instance, current)
+		if err != nil {
+			return proof, err
+		}
+		args[len(args)-1] = proof.ID // never resolve a mutable name at the destructive call
+		if _, err := d.docker(ctx, args...); err != nil {
+			return proof, err
+		}
+		if err := d.removeArtifact(instance); err != nil {
+			return proof, err
+		}
+	} else if action == "stop" {
+		if current.State.Running {
+			if current.State.Status != "running" || current.State.Restarting || current.State.Dead || current.State.OOMKilled {
+				return proof, errors.New("unsafe stop state")
+			}
+			// Unlike docker stop's finite timeout, TERM alone has no SIGKILL
+			// fallback. Cancelling the CLI cannot schedule a later forced kill.
+			if _, err := d.docker(ctx, "kill", "--signal", "SIGTERM", proof.ID); err != nil {
+				return proof, err
+			}
+		}
+		for {
+			current, err = d.inspect(ctx, instance)
+			if err != nil {
+				return proof, err
+			}
+			if err := sameIncarnation(current, proof); err != nil {
+				return proof, err
+			}
+			if !current.State.Running {
+				if current.State.Status != "exited" {
+					return proof, errors.New("graceful stop has no exit proof")
+				}
+				if _, err := removalArguments(instance, current); err != nil {
+					return proof, err
+				}
+				break
+			}
+			if err := pause(ctx, 20*time.Millisecond); err != nil {
+				return proof, err
+			}
+		}
+	} else {
+		if !current.State.Running || current.State.Status != "running" || current.State.Restarting || current.State.Dead || current.State.OOMKilled {
+			return proof, errors.New("application lifecycle requires a healthy running incarnation")
+		}
+		nonce := rand.Text()
+		args := append([]string{"exec", proof.ID}, instance.Lifecycle.Command...)
+		args = append(args, stage, nonce, instance.Generation, instance.Identity, strconv.FormatInt(deadline.UnixMilli(), 10))
+		body, err := d.docker(ctx, args...)
+		if err != nil || string(body) != "komizo-lifecycle-v1 "+stage+" "+nonce+"\n" {
+			return proof, errors.New("application did not positively acknowledge lifecycle request")
+		}
+		current, err = d.inspect(ctx, instance)
+		if err != nil {
+			return proof, err
+		}
+		if err := sameIncarnation(current, proof); err != nil {
+			return proof, err
+		}
+		if !current.State.Running {
+			return proof, errors.New("application exited during lifecycle proof")
+		}
+	}
+	proof.Stage = stage
+	return proof, nil
+}
+
+func sameIncarnation(current *container, proof Retirement) error {
+	if current == nil || proof.ID == "" || proof.StartedAt == "" || current.ID != proof.ID || current.State.StartedAt != proof.StartedAt {
+		return errors.New("container incarnation changed; retirement proof invalid")
+	}
+	return nil
 }
 
 func (d *Docker) Prepare(ctx context.Context, instance Instance, compose []byte) error {
@@ -212,16 +367,37 @@ func (d *Docker) Remove(ctx context.Context, instance Instance) error {
 	if err != nil {
 		return err
 	}
-	// Engine has persisted positive drain/abort evidence before this call.
+	// Gateway accounting alone does not authorize killing application work.
+	// Removal is a final cleanup operation, never a substitute for app drain and
+	// graceful stop. Non-forced removal also refuses a concurrent restart.
 	if current != nil {
-		if _, err := d.docker(ctx, "rm", "--force", "--volumes", instance.Name); err != nil {
+		args, err := removalArguments(instance, current)
+		if err != nil {
+			return err
+		}
+		args[len(args)-1] = current.ID
+		if _, err := d.docker(ctx, args...); err != nil {
 			return err
 		}
 	}
+	return d.removeArtifact(instance)
+}
+
+func (d *Docker) removeArtifact(instance Instance) error {
 	if err := d.Store.root.Remove(instance.Name + ".json"); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return errors.New("cannot remove retired private candidate artifact")
 	}
 	return nil
+}
+
+func removalArguments(instance Instance, current *container) ([]string, error) {
+	if current == nil || current.State.Running || current.State.Restarting || current.State.Dead || current.State.OOMKilled {
+		return nil, errors.New("instance has not stopped cleanly; refusing removal")
+	}
+	if current.State.Status != "created" && (current.State.Status != "exited" || current.State.ExitCode != 0) {
+		return nil, errors.New("instance exit cannot authorize cleanup; operator recovery required")
+	}
+	return []string{"rm", "--volumes", instance.Name}, nil
 }
 
 var _ Backend = (*Docker)(nil)

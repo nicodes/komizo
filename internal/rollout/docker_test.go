@@ -4,9 +4,38 @@ import (
 	"context"
 	"encoding/json"
 	"os/exec"
+	"slices"
 	"testing"
 	"time"
 )
+
+func TestRemovalNeverSubstitutesForcedKillForApplicationRetirement(t *testing.T) {
+	instance := Instance{Name: "kmz-fixture"}
+	for _, status := range []string{"created", "exited"} {
+		current := &container{}
+		current.State.Status = status
+		args, err := removalArguments(instance, current)
+		if err != nil || !slices.Equal(args, []string{"rm", "--volumes", instance.Name}) {
+			t.Fatalf("clean cleanup=%v %v", args, err)
+		}
+	}
+	for _, mutate := range []func(*container){
+		func(c *container) { c.State.Running = true },
+		func(c *container) { c.State.Restarting = true },
+		func(c *container) { c.State.Dead = true },
+		func(c *container) { c.State.OOMKilled = true },
+		func(c *container) { c.State.ExitCode = 1 },
+		func(c *container) { c.State.Status = "" },
+		func(c *container) { c.State.Status = "paused" },
+	} {
+		current := &container{}
+		current.State.Status = "exited"
+		mutate(current)
+		if args, err := removalArguments(instance, current); err == nil || len(args) != 0 {
+			t.Fatal("unproved retirement authorized removal")
+		}
+	}
+}
 
 func TestExecutorDoesNotInheritRemoteDockerContext(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {

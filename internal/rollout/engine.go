@@ -27,14 +27,15 @@ type Limits struct {
 }
 
 type Instance struct {
-	Name       string `json:"name"`
-	App        string `json:"app"`
-	Service    string `json:"service"`
-	Generation string `json:"generation"`
-	Identity   string `json:"identity"`
-	Port       int    `json:"port"`
-	ReadyPath  string `json:"ready_path"`
-	ReadyHost  string `json:"ready_host,omitempty"`
+	Lifecycle  *release.Lifecycle `json:"lifecycle,omitempty"`
+	Name       string             `json:"name"`
+	App        string             `json:"app"`
+	Service    string             `json:"service"`
+	Generation string             `json:"generation"`
+	Identity   string             `json:"identity"`
+	Port       int                `json:"port"`
+	ReadyPath  string             `json:"ready_path"`
+	ReadyHost  string             `json:"ready_host,omitempty"`
 }
 
 type State struct {
@@ -49,20 +50,21 @@ type State struct {
 }
 
 type Transaction struct {
-	ID                 string              `json:"id"`
-	Goal               string              `json:"goal"`
-	Source             json.RawMessage     `json:"source"`
-	Phase              string              `json:"phase"`
-	Limits             Limits              `json:"limits"`
-	Network            string              `json:"network"`
-	Epoch              string              `json:"epoch"`
-	Before             gateway.Config      `json:"before"`
-	After              gateway.Config      `json:"after"`
-	Candidates         map[string]Instance `json:"candidates"`
-	Next               map[string]Instance `json:"next"`
-	SwitchedAt         time.Time           `json:"switched_at,omitempty"`
-	SwitchStartedAt    time.Time           `json:"switch_started_at,omitempty"`
-	RetirementExceeded bool                `json:"retirement_exceeded,omitempty"`
+	Retirements        map[string]Retirement `json:"retirements,omitempty"`
+	ID                 string                `json:"id"`
+	Goal               string                `json:"goal"`
+	Source             json.RawMessage       `json:"source"`
+	Phase              string                `json:"phase"`
+	Limits             Limits                `json:"limits"`
+	Network            string                `json:"network"`
+	Epoch              string                `json:"epoch"`
+	Before             gateway.Config        `json:"before"`
+	After              gateway.Config        `json:"after"`
+	Candidates         map[string]Instance   `json:"candidates"`
+	Next               map[string]Instance   `json:"next"`
+	SwitchedAt         time.Time             `json:"switched_at,omitempty"`
+	SwitchStartedAt    time.Time             `json:"switch_started_at,omitempty"`
+	RetirementExceeded bool                  `json:"retirement_exceeded,omitempty"`
 }
 
 // Backend methods must be idempotent and verify instance ownership before any
@@ -72,6 +74,7 @@ type Backend interface {
 	Prepare(context.Context, Instance, []byte) error
 	Ready(context.Context, Instance) error
 	Remove(context.Context, Instance) error
+	Lifecycle(context.Context, Instance, string, Retirement) (Retirement, error)
 }
 
 type RouteController interface {
@@ -95,7 +98,7 @@ type Result struct {
 	Aborted            bool   `json:"aborted,omitempty"`
 }
 
-var ErrRetirementBudget = errors.New("rollout committed but exceeded its retirement budget")
+var ErrRetirementBudget = errors.New("retirement budget exceeded; transaction incomplete and instances preserved")
 
 // Abort cancels only a transaction that has never attempted a route switch.
 // Post-switch recovery must resume; it must not rewind data or delete a possibly
@@ -129,7 +132,7 @@ func (e *Engine) Abort(ctx context.Context, app string, key []byte, operation ti
 	}
 	for _, name := range slices.Sorted(maps.Keys(tx.Candidates)) {
 		op, cancel := context.WithTimeout(ctx, operation)
-		err := e.Backend.Remove(op, tx.Candidates[name])
+		err := e.retireInstance(op, state, tx.Candidates[name], true, false)
 		cancel()
 		if err != nil {
 			return Result{}, errors.New("abort cleanup interrupted; repeat abort")
@@ -145,7 +148,7 @@ func (e *Engine) Abort(ctx context.Context, app string, key []byte, operation ti
 
 // Run requires an already acquired private Store and an overall deadline.
 // It never falls back to in-place deployment or restores a database snapshot.
-func (e *Engine) Run(ctx context.Context, app, network string, source, key []byte, limits Limits) (Result, error) {
+func (e *Engine) Run(ctx context.Context, app, network string, source, key []byte, limits Limits) (result Result, runErr error) {
 	if _, bounded := ctx.Deadline(); !bounded || limits.Ready <= 0 || limits.Stabilize <= 0 || limits.Retire <= limits.Stabilize || limits.Operation <= 0 || limits.Poll <= 0 {
 		return Result{}, errors.New("rollout requires an overall deadline and explicit positive operation budgets")
 	}
@@ -203,7 +206,8 @@ func (e *Engine) Run(ctx context.Context, app, network string, source, key []byt
 		}
 	}
 	tx := state.Pending
-	result := Result{Generation: tx.ID, Changed: len(tx.Candidates), RetirementExceeded: tx.RetirementExceeded}
+	result = Result{Generation: tx.ID, Changed: len(tx.Candidates), RetirementExceeded: tx.RetirementExceeded}
+	defer func() { result.RetirementExceeded = tx.RetirementExceeded }()
 	for {
 		if err := ctx.Err(); err != nil {
 			return result, errors.New("rollout interrupted; resume the recorded transaction")
@@ -265,6 +269,27 @@ func (e *Engine) Run(ctx context.Context, app, network string, source, key []byt
 				return result, errors.New("gateway switch outcome is unconfirmed; no containers were retired")
 			}
 			tx.SwitchedAt = time.Now().UTC()
+			if err := e.phase(state, "quiesce"); err != nil {
+				return result, err
+			}
+		case "quiesce":
+			if err := e.retirementBudget(state); err != nil {
+				return result, err
+			}
+			if err := e.confirmRoutes(ctx, tx); err != nil {
+				return result, err
+			}
+			for _, service := range slices.Sorted(maps.Keys(tx.Candidates)) {
+				if old, exists := state.Bindings[service]; exists {
+					op, cancel := context.WithDeadline(ctx, tx.SwitchStartedAt.Add(limits.Retire))
+					err := e.retireInstance(op, state, old, false, true)
+					cancel()
+					if err != nil {
+						_ = e.retirementBudget(state)
+						return result, err
+					}
+				}
+			}
 			if err := e.phase(state, "stabilize"); err != nil {
 				return result, err
 			}
@@ -285,6 +310,9 @@ func (e *Engine) Run(ctx context.Context, app, network string, source, key []byt
 				return result, err
 			}
 		case "drain":
+			if err := e.retirementBudget(state); err != nil {
+				return result, err
+			}
 			deadline := tx.SwitchStartedAt.Add(limits.Retire)
 			for {
 				op, cancel := context.WithTimeout(ctx, limits.Operation)
@@ -311,26 +339,24 @@ func (e *Engine) Run(ctx context.Context, app, network string, source, key []byt
 				return result, err
 			}
 		case "retire":
+			if err := e.retirementBudget(state); err != nil {
+				return result, err
+			}
 			op, cancel := context.WithTimeout(ctx, limits.Operation)
 			current, epoch, err := e.Router.Current(op)
 			cancel()
 			if err != nil || epoch != tx.Epoch || !reflect.DeepEqual(current, tx.After) {
 				return result, errors.New("routing changed before retirement; no containers were removed")
 			}
-			if time.Now().After(tx.SwitchStartedAt.Add(limits.Retire)) {
-				tx.RetirementExceeded, result.RetirementExceeded = true, true
-				if err := e.Store.Save(state); err != nil {
-					return result, err
-				}
-			}
 			// This checkpoint records positive drain evidence. An interruption
 			// midway through removals resumes idempotently, never reopens old routes.
 			for _, service := range slices.Sorted(maps.Keys(tx.Candidates)) {
 				if old, exists := state.Bindings[service]; exists {
-					op, cancel := context.WithTimeout(ctx, limits.Operation)
-					err := e.Backend.Remove(op, old)
+					op, cancel := context.WithDeadline(ctx, tx.SwitchStartedAt.Add(limits.Retire))
+					err := e.retireInstance(op, state, old, false, false)
 					cancel()
 					if err != nil {
+						_ = e.retirementBudget(state)
 						return result, errors.New("old instance cleanup failed; resume recorded retirement")
 					}
 				}
@@ -339,8 +365,8 @@ func (e *Engine) Run(ctx context.Context, app, network string, source, key []byt
 				return result, err
 			}
 		case "commit":
-			if time.Now().After(tx.SwitchStartedAt.Add(limits.Retire)) {
-				result.RetirementExceeded = true
+			if err := e.retirementBudget(state); err != nil {
+				return result, err
 			}
 			oldGeneration := tx.Before.Generation
 			state.Active, state.Bindings, state.Routes, state.Pending = tx.Source, tx.Next, tx.After, nil
@@ -356,11 +382,10 @@ func (e *Engine) Run(ctx context.Context, app, network string, source, key []byt
 			}
 			return result, nil
 		case "abort":
-			// This phase is entered only before any switch attempt. Candidates
-			// have never received gateway traffic and can be removed safely.
+			// Candidates never received gateway traffic, but may have background work.
 			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), limits.Operation)
 			for _, service := range slices.Sorted(maps.Keys(tx.Candidates)) {
-				if err := e.Backend.Remove(cleanup, tx.Candidates[service]); err != nil {
+				if err := e.retireInstance(cleanup, state, tx.Candidates[service], true, false); err != nil {
 					cancel()
 					return result, errors.New("failed candidate cleanup incomplete; resume abort")
 				}
@@ -423,12 +448,20 @@ func (e *Engine) begin(ctx context.Context, state *State, app, network, keyID, g
 			return nil, fmt.Errorf("service %q removal requires a separate lifecycle operation", change.Service)
 		}
 		policy := model.Policies[change.Service]
+		if err := policy.Lifecycle.Validate(); err != nil {
+			return nil, err
+		}
+		if previous, exists := state.Bindings[change.Service]; exists {
+			if err := previous.Lifecycle.Validate(); err != nil {
+				return nil, errors.New("active instance lacks lifecycle capability; explicit operator conversion required")
+			}
+		}
 		if policy.Mode != "http" || (change.Kind == release.Changed && old.Policies[change.Service].Mode != "http") {
 			return nil, fmt.Errorf("service %q requires its persistent/job lifecycle integration", change.Service)
 		}
 		fingerprint, _ := json.Marshal(model.Inventory[change.Service])
 		instance := Instance{Name: "kmz-" + hash([]byte(app + "\x00" + change.Service + "\x00" + tx.ID))[:40],
-			App: app, Service: change.Service, Generation: tx.ID, Identity: hash(fingerprint), Port: policy.Port, ReadyPath: policy.ReadyPath, ReadyHost: policy.ReadyHost}
+			App: app, Service: change.Service, Generation: tx.ID, Identity: hash(fingerprint), Port: policy.Port, ReadyPath: policy.ReadyPath, ReadyHost: policy.ReadyHost, Lifecycle: policy.Lifecycle}
 		// Validate every candidate document before persisting intent or starting
 		// any container; a later unsupported service must not leave earlier ones.
 		if _, err := model.CandidateCompose(change.Service, instance.Name, app, network, labels(instance)); err != nil {
