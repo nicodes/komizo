@@ -243,8 +243,8 @@ func TestEngineDrainTimeoutDoesNotKillWorkAndRecordsViolation(t *testing.T) {
 		t.Fatal(err)
 	}
 	router.blocked = first.Generation
-	if _, err := runEngine(t, e, sourceModel("c"), key, limits); err == nil {
-		t.Fatal("live request was treated as drained")
+	if result, err := runEngine(t, e, sourceModel("c"), key, limits); !errors.Is(err, ErrRetirementBudget) || !result.RetirementExceeded {
+		t.Fatalf("first gateway timeout lost budget identity: %+v %v", result, err)
 	}
 	state, _ := e.Store.Load()
 	if state.Pending.Phase != "drain" || !state.Pending.RetirementExceeded || len(backend.removed) != 0 {
