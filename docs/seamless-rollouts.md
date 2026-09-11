@@ -40,11 +40,12 @@ The full nonce/incarnation-bound protocol is in
 ## Host profile and boundaries
 
 Profiles live as private, root-owned regular JSON files in
-`/etc/komizo/rollouts`. CI cannot choose any profile value. The initial defaults
-below were approved from an isolated constrained-host control where 3-second
-operations safely stalled and resumed. These are safety budgets/capacity floors,
-not a user-visible latency SLO; tune them from app-specific evidence when
-required.
+`/etc/komizo/rollouts`. CI cannot choose any profile value. The values below are
+an experimental fixture profile, not approved application defaults or a
+user-visible latency SLO. A constrained-host control showed that 3-second
+operations could safely stall and resume; it did not establish production
+limits. Operators must select every value from application- and host-specific
+evidence.
 
 ```json
 {
@@ -73,8 +74,9 @@ required.
 
 Both capacity values are required. Deployment refuses if Linux `MemAvailable`
 or filesystem available bytes are below them, or if either measurement is
-unknown. They are conservative initial floors, not a guarantee that every image
-or application can safely overlap within the remaining capacity.
+unknown. The displayed 128 MiB/1 GiB values were used only by the fixture; they
+are neither approved floors nor a guarantee that an image or application can
+safely overlap within the remaining capacity.
 
 The identity key is 32 random bytes, mode `0600`. The profile directory must
 not be group/other writable. The app-private local bridge is explicitly labeled
