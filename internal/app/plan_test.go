@@ -17,7 +17,7 @@ func planFixture(t *testing.T) (string, string) {
 	write(t, key, 0o600, strings.Repeat("k", 32))
 	write(t, model, 0o600, `{
   "services":{"api":{"image":"example/api@sha256:`+strings.Repeat("a", 64)+`","environment":{"PRIVATE":"synthetic-password"}}},
-  "x-komizo":{"version":1,"services":{"api":{"mode":"http","port":8080,"ready_path":"/readyz","candidate_safe":true}}}
+  "x-komizo":{"version":1,"services":{"api":{"mode":"request","port":8080,"ready_path":"/readyz","candidate_safe":true}}}
 }`)
 	return key, model
 }
@@ -43,7 +43,7 @@ func TestPlanLocalAnalysis(t *testing.T) {
 		if before[0] == "--initial" {
 			want = "added"
 		}
-		if !result.AnalysisOnly || len(result.Services) != 1 || result.Services[0].Change != want || result.Services[0].Service != "api" || result.Services[0].Mode != "http" {
+		if !result.AnalysisOnly || len(result.Services) != 1 || result.Services[0].Change != want || result.Services[0].Service != "api" || result.Services[0].Mode != "request" {
 			t.Fatalf("unexpected analysis: %s", out.String())
 		}
 		for _, sensitive := range []string{"synthetic-password", "PRIVATE", strings.Repeat("k", 32), "sha256:"} {

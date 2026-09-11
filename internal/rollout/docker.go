@@ -23,7 +23,9 @@ import (
 type Docker struct {
 	App, Network                  string
 	ComposeBinary, ComposeVersion string
+	EnvFile                       string
 	Store                         *Store
+	MinFreeMemory, MinFreeDisk    uint64
 }
 
 type container struct {
@@ -88,6 +90,15 @@ func (d *Docker) Preflight(ctx context.Context, app, network string) error {
 	version, err := command(ctx, d.ComposeBinary, "version", "--short")
 	if err != nil || strings.TrimSpace(string(version)) != d.ComposeVersion {
 		return errors.New("Compose version does not match the explicit pin")
+	}
+	if d.MinFreeMemory != 0 || d.MinFreeDisk != 0 {
+		memory, disk, err := availableCapacity(d.Store.root.Name())
+		if err != nil {
+			return errors.New("host capacity cannot be established")
+		}
+		if memory < d.MinFreeMemory || disk < d.MinFreeDisk {
+			return errors.New("host capacity is below the profile's approved floor")
+		}
 	}
 	body, err := d.docker(ctx, "network", "inspect", network)
 	if err != nil {
@@ -305,6 +316,9 @@ func (d *Docker) Prepare(ctx context.Context, instance Instance, compose []byte)
 		if existing.State.Running {
 			return nil
 		}
+		if instance.Mode == "one-shot" && existing.State.Status == "exited" && existing.State.ExitCode == 0 && !existing.State.OOMKilled && !existing.State.Dead {
+			return nil
+		}
 		_, err := d.docker(ctx, "start", instance.Name)
 		return err
 	}
@@ -315,20 +329,34 @@ func (d *Docker) Prepare(ctx context.Context, instance Instance, compose []byte)
 	if err := d.Store.WritePrivate(file, compose); err != nil {
 		return err
 	}
-	_, err = command(ctx, d.ComposeBinary, "--host", "unix:///var/run/docker.sock", "--project-name", d.App,
-		"--project-directory", d.Store.root.Name(), "--file", d.Store.Path(file),
-		"up", "--detach", "--no-deps", "--no-recreate", "--pull", "missing", instance.Name)
+	args := []string{"--host", "unix:///var/run/docker.sock", "--project-name", d.App, "--project-directory", d.Store.root.Name()}
+	if d.EnvFile != "" {
+		args = append(args, "--env-file", d.EnvFile)
+	}
+	args = append(args, "--file", d.Store.Path(file), "up", "--detach", "--no-deps", "--no-recreate", "--pull", "missing", instance.Name)
+	_, err = command(ctx, d.ComposeBinary, args...)
 	if err != nil {
 		return err
 	}
 	created, err := d.inspect(ctx, instance)
-	if err != nil || created == nil || !created.State.Running {
+	completedOneShot := instance.Mode == "one-shot" && created != nil && created.State.Status == "exited" && created.State.ExitCode == 0 && !created.State.OOMKilled && !created.State.Dead
+	if err != nil || created == nil || (!created.State.Running && !completedOneShot) {
 		return errors.New("candidate did not start with expected ownership")
 	}
 	return nil
 }
 
 func (d *Docker) Ready(ctx context.Context, instance Instance) error {
+	if instance.Mode == "worker" {
+		return d.Candidate(ctx, instance, "ready")
+	}
+	if instance.Mode == "one-shot" {
+		current, err := d.inspect(ctx, instance)
+		if err != nil || current == nil || current.State.Running || current.State.Status != "exited" || current.State.ExitCode != 0 || current.State.OOMKilled || current.State.Dead || current.State.Restarting {
+			return errors.New("one-shot completion is not positively established")
+		}
+		return nil
+	}
 	if instance.Port < 1 || instance.Port > 65535 || !strings.HasPrefix(instance.ReadyPath, "/") || strings.HasPrefix(instance.ReadyPath, "//") || strings.ContainsAny(instance.ReadyPath, "\r\n?#") {
 		return errors.New("invalid persisted readiness declaration")
 	}
@@ -358,6 +386,35 @@ func (d *Docker) Ready(ctx context.Context, instance Instance) error {
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		return errors.New("candidate is not ready")
+	}
+	return nil
+}
+
+// Candidate performs non-retirement lifecycle operations. Worker images start
+// with KOMIZO_CANDIDATE=standby; ready must prove that state and activate is a
+// monotonic, idempotent handoff after the old worker has quiesced.
+func (d *Docker) Candidate(ctx context.Context, instance Instance, action string) error {
+	deadline, bounded := ctx.Deadline()
+	if !bounded || instance.Mode != "worker" || (action != "ready" && action != "activate") {
+		return errors.New("invalid worker candidate lifecycle request")
+	}
+	if err := instance.Lifecycle.Validate(); err != nil {
+		return err
+	}
+	current, err := d.inspect(ctx, instance)
+	if err != nil || current == nil || !current.State.Running || current.State.Status != "running" || current.State.Restarting || current.State.Dead || current.State.OOMKilled {
+		return errors.New("worker candidate incarnation is not healthy")
+	}
+	nonce := rand.Text()
+	args := append([]string{"exec", current.ID}, instance.Lifecycle.Command...)
+	args = append(args, action, nonce, instance.Generation, instance.Identity, strconv.FormatInt(deadline.UnixMilli(), 10))
+	body, err := d.docker(ctx, args...)
+	if err != nil || string(body) != "komizo-lifecycle-v1 "+action+" "+nonce+"\n" {
+		return errors.New("worker did not positively acknowledge candidate lifecycle request")
+	}
+	after, err := d.inspect(ctx, instance)
+	if err != nil || after == nil || after.ID != current.ID || after.State.StartedAt != current.State.StartedAt || !after.State.Running {
+		return errors.New("worker candidate incarnation changed during lifecycle proof")
 	}
 	return nil
 }

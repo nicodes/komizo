@@ -33,6 +33,7 @@ type Instance struct {
 	Service    string             `json:"service"`
 	Generation string             `json:"generation"`
 	Identity   string             `json:"identity"`
+	Mode       string             `json:"mode"`
 	Port       int                `json:"port"`
 	ReadyPath  string             `json:"ready_path"`
 	ReadyHost  string             `json:"ready_host,omitempty"`
@@ -73,6 +74,7 @@ type Backend interface {
 	Preflight(context.Context, string, string) error
 	Prepare(context.Context, Instance, []byte) error
 	Ready(context.Context, Instance) error
+	Candidate(context.Context, Instance, string) error
 	Remove(context.Context, Instance) error
 	Lifecycle(context.Context, Instance, string, Retirement) (Retirement, error)
 }
@@ -235,10 +237,31 @@ func (e *Engine) Run(ctx context.Context, app, network string, source, key []byt
 			err := e.waitReady(ready, tx.Candidates, limits.Poll)
 			cancel()
 			if err != nil {
+				for _, instance := range tx.Candidates {
+					if instance.Mode == "one-shot" {
+						return result, errors.New("one-shot completion failed or is unknown; transaction retained for operator reconciliation")
+					}
+				}
 				if err := e.phase(state, "abort"); err != nil {
 					return result, err
 				}
 				continue
+			}
+			if err := e.phase(state, "one-shot-cleanup"); err != nil {
+				return result, err
+			}
+		case "one-shot-cleanup":
+			for _, service := range slices.Sorted(maps.Keys(tx.Candidates)) {
+				instance := tx.Candidates[service]
+				if instance.Mode != "one-shot" {
+					continue
+				}
+				op, cancel := context.WithTimeout(ctx, limits.Operation)
+				err := e.Backend.Remove(op, instance)
+				cancel()
+				if err != nil {
+					return result, errors.New("completed one-shot cleanup interrupted; resume recorded transaction")
+				}
 			}
 			if err := e.phase(state, "switch"); err != nil {
 				return result, err
@@ -290,6 +313,22 @@ func (e *Engine) Run(ctx context.Context, app, network string, source, key []byt
 						}
 						return result, err
 					}
+				}
+			}
+			if err := e.phase(state, "activate"); err != nil {
+				return result, err
+			}
+		case "activate":
+			for _, service := range slices.Sorted(maps.Keys(tx.Candidates)) {
+				instance := tx.Candidates[service]
+				if instance.Mode != "worker" {
+					continue
+				}
+				op, cancel := context.WithTimeout(ctx, limits.Operation)
+				err := e.Backend.Candidate(op, instance, "activate")
+				cancel()
+				if err != nil {
+					return result, errors.New("worker activation is unconfirmed; transaction retained")
 				}
 			}
 			if err := e.phase(state, "stabilize"); err != nil {
@@ -452,26 +491,31 @@ func (e *Engine) begin(ctx context.Context, state *State, app, network, keyID, g
 			return nil, fmt.Errorf("service %q removal requires a separate lifecycle operation", change.Service)
 		}
 		policy := model.Policies[change.Service]
-		if err := policy.Lifecycle.Validate(); err != nil {
-			return nil, err
+		if policy.Mode == "persistent" || (change.Kind == release.Changed && old.Policies[change.Service].Mode == "persistent") {
+			return nil, fmt.Errorf("service %q is persistent and requires explicit maintenance/bootstrap", change.Service)
+		}
+		if policy.Mode != "one-shot" {
+			if err := policy.Lifecycle.Validate(); err != nil {
+				return nil, err
+			}
 		}
 		if previous, exists := state.Bindings[change.Service]; exists {
 			if err := previous.Lifecycle.Validate(); err != nil {
 				return nil, errors.New("active instance lacks lifecycle capability; explicit operator conversion required")
 			}
 		}
-		if policy.Mode != "http" || (change.Kind == release.Changed && old.Policies[change.Service].Mode != "http") {
-			return nil, fmt.Errorf("service %q requires its persistent/job lifecycle integration", change.Service)
-		}
 		fingerprint, _ := json.Marshal(model.Inventory[change.Service])
 		instance := Instance{Name: "kmz-" + hash([]byte(app + "\x00" + change.Service + "\x00" + tx.ID))[:40],
-			App: app, Service: change.Service, Generation: tx.ID, Identity: hash(fingerprint), Port: policy.Port, ReadyPath: policy.ReadyPath, ReadyHost: policy.ReadyHost, Lifecycle: policy.Lifecycle}
+			App: app, Service: change.Service, Generation: tx.ID, Identity: hash(fingerprint), Mode: policy.Mode, Port: policy.Port, ReadyPath: policy.ReadyPath, ReadyHost: policy.ReadyHost, Lifecycle: policy.Lifecycle}
 		// Validate every candidate document before persisting intent or starting
 		// any container; a later unsupported service must not leave earlier ones.
 		if _, err := model.CandidateCompose(change.Service, instance.Name, app, network, labels(instance)); err != nil {
 			return nil, err
 		}
-		tx.Candidates[change.Service], tx.Next[change.Service] = instance, instance
+		tx.Candidates[change.Service] = instance
+		if policy.Mode != "one-shot" {
+			tx.Next[change.Service] = instance
+		}
 	}
 	if len(tx.Candidates) == 0 {
 		op, cancel := context.WithTimeout(ctx, limits.Operation)
@@ -489,7 +533,7 @@ func (e *Engine) begin(ctx context.Context, state *State, app, network, keyID, g
 	after := gateway.Config{App: app, Generation: tx.ID, Parent: current.Generation, Routes: []gateway.Route{}, TrustedProxies: slices.Clone(current.TrustedProxies)}
 	for _, service := range slices.Sorted(maps.Keys(model.Policies)) {
 		policy := model.Policies[service]
-		if policy.Mode != "http" {
+		if policy.Mode != "request" && policy.Mode != "static" {
 			continue
 		}
 		instance, exists := tx.Next[service]

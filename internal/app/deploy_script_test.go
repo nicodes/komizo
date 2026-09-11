@@ -104,6 +104,8 @@ exit 0
 		"__CONFIG_IMAGE__", "ghcr.io/you/blog-config",
 		"__PROXY_CONTAINER__", "komizo-proxy",
 		"__PROXY_DIR__", b.proxyDir,
+		"__ROLLOUT_BIN__", filepath.Join(b.bin, "komizo-box"),
+		"__ROLLOUT_PROFILE__", filepath.Join(b.root, "etc", "komizo", "rollouts", "blog.json"),
 		"__ROUTES_DIR__", b.routes,
 		"__STATE_DIR__", b.state,
 	).Replace(body)
@@ -112,7 +114,7 @@ exit 0
 	if strings.Contains(strings.ReplaceAll(b.script, filepath.Join(root, "run", "komizo"), ""), "/run/komizo") {
 		t.Fatal("deploy fixture retains a shared host lock path")
 	}
-	if strings.Contains(b.script, "__APP") || strings.Contains(b.script, "__PROXY") ||
+	if strings.Contains(b.script, "__APP") || strings.Contains(b.script, "__PROXY") || strings.Contains(b.script, "__ROLLOUT") ||
 		strings.Contains(b.script, "__CONFIG") || strings.Contains(b.script, "__ROUTES") ||
 		strings.Contains(b.script, "__STATE") {
 		t.Fatal("the deploy template has a placeholder this test does not substitute")
@@ -153,6 +155,16 @@ func (b *deployBox) deploy(t *testing.T, version string) (string, error) {
 		"STUB_CONFIG="+b.config,
 		"PATH="+b.bin+":/usr/bin:/bin",
 	), b.env...)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func (b *deployBox) deployDigest(t *testing.T, version, digest string) (string, error) {
+	t.Helper()
+	path := filepath.Join(b.bin, "rollout-blog")
+	write(t, path, 0o700, b.script)
+	cmd := exec.Command("sh", path, version, "", "", digest)
+	cmd.Env = append(append(os.Environ(), "STUB_CONFIG="+b.config, "PATH="+b.bin+":/usr/bin:/bin"), b.env...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -246,6 +258,85 @@ func TestLegacyDeployRefusesJournaledInstances(t *testing.T) {
 	}
 	if after := b.read(t, filepath.Join(b.appDir, "compose.yml")); after != before {
 		t.Fatal("legacy deployment changed configuration before ownership refusal")
+	}
+}
+
+func TestJournaledConfigUsesOnlyTheFixedProfileAndDigest(t *testing.T) {
+	b := newDeployBox(t)
+	b.publishes(t, "services: {}\n", "")
+	write(t, filepath.Join(b.config, "model.json"), 0o644, `{"services":{},"x-komizo":{"version":1,"services":{}}}`)
+	profile := filepath.Join(b.root, "etc", "komizo", "rollouts", "blog.json")
+	if err := os.MkdirAll(filepath.Dir(profile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, profile, 0o600, "{}")
+	write(t, filepath.Join(b.bin, "komizo-box"), 0o755, `#!/bin/sh
+printf '%s\n' "$*" > "$STUB_CONFIG/broker-args"
+printf '{"generation":"fixture","changed":1}\n'
+`)
+	broker := filepath.Join(b.bin, "rollout-blog")
+	write(t, broker, 0o700, b.script)
+	check := exec.Command("sh", broker, "--check")
+	check.Env = append(os.Environ(), "PATH="+b.bin+":/usr/bin:/bin")
+	capability, err := check.CombinedOutput()
+	if err != nil || string(capability) != "komizo-rollout-broker-v1 blog\n" {
+		t.Fatalf("broker capability check failed: %v %q", err, capability)
+	}
+
+	if out, err := b.deploy(t, "v1"); err == nil || !strings.Contains(out, "dedicated rollout-blog broker") {
+		t.Fatalf("legacy command accepted a journaled model: %v\n%s", err, out)
+	}
+	if out, err := b.deployDigest(t, "v1", ""); err == nil || !strings.Contains(out, "requires the config artifact digest") {
+		t.Fatalf("broker accepted model without immutable artifact digest: %v\n%s", err, out)
+	}
+	digest := "sha256:" + strings.Repeat("a", 64)
+	out, err := b.deployDigest(t, "v1", digest)
+	if err != nil {
+		t.Fatalf("journaled broker failed: %v\n%s", err, out)
+	}
+	args := b.read(t, filepath.Join(b.config, "broker-args"))
+	for _, want := range []string{"rollout profile", "--profile " + profile, "--model "} {
+		if !strings.Contains(args, want) {
+			t.Errorf("broker args missing %q: %s", want, args)
+		}
+	}
+	if strings.Contains(b.dotenv(t), "APP_VERSION") {
+		t.Fatal("journaled path fell through to legacy activation")
+	}
+}
+
+func TestSecretUpdateAtomicallyRecordsAnOpaqueVersion(t *testing.T) {
+	b := newDeployBox(t)
+	body := between(t, scripts.AlpineScript,
+		`cat > "$SECRET_BIN.tmp" <<'KOMIZO_SECRET_EOF'`, "KOMIZO_SECRET_EOF")
+	for _, want := range []string{"deploy-__APP_NAME__.lock", "rollouts/__APP_NAME__/lock", "flock -w 300"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("set-secret does not serialize with rollout via %q", want)
+		}
+	}
+	body = strings.ReplaceAll(body, "__APP_DIR__", b.appDir)
+	run := func(value string) string {
+		// Execute the extracted script from a private file so stdin remains the
+		// secret value exactly as production supplies it.
+		path := filepath.Join(b.root, "set-secret")
+		write(t, path, 0o700, body)
+		cmd := exec.Command("sh", path, "TOKEN")
+		cmd.Stdin = strings.NewReader(value)
+		cmd.Env = append(os.Environ(), "PATH="+b.bin+":/usr/bin:/bin")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("set-secret failed: %v %s", err, out)
+		}
+		return b.read(t, filepath.Join(b.appDir, "secrets.env"))
+	}
+	first := run("first-value")
+	second := run("second-value")
+	if strings.Contains(second, "first-value") || !strings.Contains(second, "TOKEN=second-value") {
+		t.Fatalf("secret replacement failed: %q", second)
+	}
+	marker := "# komizo-secret-version-TOKEN="
+	if strings.Count(second, marker) != 1 || first == second {
+		t.Fatalf("opaque version was not rotated atomically: %q", second)
 	}
 }
 

@@ -26,7 +26,8 @@ The local root-only Docker executor invokes, as the container's configured user:
 docker exec CONTAINER_ID /app lifecycle ACTION NONCE GENERATION IDENTITY DEADLINE_UNIX_MS
 ```
 
-`ACTION` is `quiesce`, `seal`, or `drain`. `NONCE` is a fresh opaque token per
+`ACTION` is `ready`/`activate` for worker candidate handoff, or `quiesce`,
+`seal`, or `drain` for retirement. `NONCE` is a fresh opaque token per
 attempt, not a secret. Generation and identity are the instance's journaled
 values, not the replacement's. The deadline is an absolute Unix timestamp in
 milliseconds, bounded by the caller, operation budget and (after switch) original
@@ -51,6 +52,10 @@ All actions are monotonic, idempotent and safe to repeat after a lost response.
 The nonce correlates a response; it is not an idempotency key and must not cause
 repeated actions to re-open admission. Multiple outstanding attempts must be safe.
 
+0. A **worker** candidate starts only in standby because the executor injects
+   `KOMIZO_CANDIDATE=standby`. **Ready** proves it is healthy and admits no work.
+   **Activate** occurs only after the old worker has positively quiesced. It is
+   monotonic and idempotent; a lost reply is retried and must not duplicate work.
 1. **Quiesce**, immediately after confirmed gateway admission flip and before
    stabilization/drain: stop admitting new scheduled/background work and initiate
    ending resumable streams with valid application-specific resumption state.

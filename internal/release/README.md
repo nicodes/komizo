@@ -40,26 +40,31 @@ do not treat it as the pinned compatibility control.
 `x-komizo` has these fields:
 
 - `version: 1`.
-- `services`: exactly the active service names, each with `mode` (`http`,
-  `persistent`, or `job`). HTTP requires `port`, a local `ready_path` without a
-  query, and `candidate_safe: true`. The declaration is not behavioral proof.
-- HTTP execution additionally requires explicit `hosts` for private gateway
+- `services`: exactly the active service names, each with `mode` (`request`,
+  `static`, `worker`, `one-shot`, or `persistent`). Request/static services
+  require `port`, a local `ready_path` without a query, and
+  `candidate_safe: true`. The declaration is not behavioral proof.
+- Request/static execution additionally requires explicit `hosts` for private gateway
   routing. Analysis alone does not require a public route for every service.
   Candidate generation uses unique service/container names and only that service's
   resource grants; it does not reuse its original DNS alias beside an old instance.
 - Optional per-service `restart_on`: explicit dependency invalidations, acyclic.
   Ordinary dependency image changes do not implicitly restart all consumers.
-- Optional `secret_versions`: opaque operator-supplied versions for exactly the
-  service-granted Compose secrets. No secret bytes or public secret hashes.
+- Optional `secret_versions`: opaque operator-supplied versions for exact
+  same-name `${NAME}` environment references (or operator-only analysis of
+  service-granted Compose secrets). Profile execution replaces artifact claims
+  with host materialization evidence. No secret bytes or public secret hashes.
 
-HTTP overlap constraints reject fixed container/network identities, published
-ports, privileged mode and unsupported writable mounts. Persistent/job services
-are classified, not automatically executed. Referenced network/volume/config
+Request/static overlap constraints reject fixed container/network identities,
+published ports, privileged mode and unsupported writable mounts. Persistent
+services require explicit maintenance; workers and one-shots have separate
+positive lifecycle/completion contracts. Referenced network/volume/config
 definitions affect identity; unused definitions do not. Named volume content is
 mutable application state, not an automatically versioned deployment artifact.
 
-Unresolved tags, interpolation (including dollar-bearing expressions), environment
-files/inherited null environment values, build instructions, profiles, external
+Unresolved tags, interpolation other than version-bound exact `${NAME}` secret
+environment references, environment files/inherited null environment values,
+build instructions, profiles, external
 config contents and bind mounts fail closed. Inline resolved config contents are
 supported. Secret file contents are not read: trusted operator version metadata
 must agree with the files actually materialized by a future executor. Unknown

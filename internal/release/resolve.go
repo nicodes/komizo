@@ -71,8 +71,9 @@ func (m *Model) GoString() string { return m.String() }
 
 // Resolve accepts canonical Compose JSON with immutable image references and
 // x-komizo metadata. It intentionally does not read files or use environment
-// variables. Unresolved interpolation, env files, file-backed configs and build
-// instructions fail closed instead of producing an incomplete no-op decision.
+// variables. Exact ${NAME} environment references are accepted only with opaque
+// host-authoritative version metadata; all other unresolved interpolation, env
+// files, file-backed configs and build instructions fail closed.
 //
 // The key must be 32 random bytes, private to the operator. Keyed identities avoid
 // publishing guessable hashes of environment/config values that may be sensitive.
@@ -151,7 +152,7 @@ func Resolve(data, key []byte) (*Model, error) {
 				}
 			}
 		}
-		if unresolved(service) {
+		if unresolvedService(service, ext.SecretVersions) {
 			return fail("unresolved interpolation or null environment value")
 		}
 		image, ok := service["image"].(string)
@@ -188,7 +189,7 @@ func Resolve(data, key []byte) (*Model, error) {
 			}
 			resources[kind] = selected
 		}
-		secrets, err := secretVersions(service["secrets"], root["secrets"], ext.SecretVersions, usedSecrets)
+		secrets, err := secretVersions(service["secrets"], service["environment"], root["secrets"], ext.SecretVersions, usedSecrets)
 		if err != nil {
 			return fail(err.Error())
 		}
@@ -292,11 +293,22 @@ func unresolved(v any) bool {
 
 func validatePolicy(p Policy, service map[string]any) error {
 	switch p.Mode {
-	case "persistent", "job":
+	case "persistent":
 		if p.CandidateSafe || p.Port != 0 || p.ReadyPath != "" || p.ReadyHost != "" || len(p.Hosts) != 0 || len(p.ConcurrentVolumes) != 0 {
-			return errors.New("non-HTTP policy cannot declare HTTP candidate settings")
+			return errors.New("persistent policy cannot declare replaceable candidate settings")
 		}
-	case "http":
+		if p.Lifecycle != nil {
+			return errors.New("persistent services use explicit maintenance, not replacement lifecycle")
+		}
+	case "worker":
+		if !p.CandidateSafe || p.Port != 0 || p.ReadyPath != "" || p.ReadyHost != "" || len(p.Hosts) != 0 || len(p.ConcurrentVolumes) != 0 || p.Lifecycle == nil {
+			return errors.New("worker needs candidate_safe and lifecycle, without HTTP settings")
+		}
+	case "one-shot":
+		if !p.CandidateSafe || p.Port != 0 || p.ReadyPath != "" || p.ReadyHost != "" || len(p.Hosts) != 0 || len(p.ConcurrentVolumes) != 0 || p.Lifecycle != nil {
+			return errors.New("one-shot needs candidate_safe and no HTTP or long-running lifecycle settings")
+		}
+	case "request", "static":
 		if p.Lifecycle != nil {
 			if restart, exists := service["restart"]; exists && restart != "no" {
 				return errors.New("lifecycle execution requires restart: no; automatic restarts invalidate application drain proof")
@@ -309,15 +321,15 @@ func validatePolicy(p Policy, service map[string]any) error {
 		if !p.CandidateSafe || p.Port < 1 || p.Port > 65535 || err != nil ||
 			!strings.HasPrefix(p.ReadyPath, "/") || strings.HasPrefix(p.ReadyPath, "//") ||
 			u.Host != "" || u.Scheme != "" || u.RawQuery != "" || u.Fragment != "" || strings.ContainsAny(p.ReadyPath, "\r\n") {
-			return errors.New("HTTP candidate needs a port, local readiness path and candidate_safe declaration")
+			return errors.New("request/static candidate needs a port, local readiness path and candidate_safe declaration")
 		}
 		for _, field := range []string{"ports", "container_name", "network_mode", "mac_address", "pid", "ipc", "devices", "volumes_from", "links", "external_links", "deploy"} {
 			if _, exists := service[field]; exists {
-				return errors.New("HTTP candidate has unsupported overlap setting: " + field)
+				return errors.New("request/static candidate has unsupported overlap setting: " + field)
 			}
 		}
 		if service["privileged"] == true {
-			return errors.New("privileged HTTP candidates are not supported")
+			return errors.New("privileged request/static candidates are not supported")
 		}
 		if networks, ok := service["networks"].(map[string]any); ok {
 			for _, raw := range networks {
@@ -420,39 +432,79 @@ func referencedResources(kind string, value, definitions any) (map[string]any, e
 	return selected, nil
 }
 
-func secretVersions(value, definitions any, versions map[string]string, used map[string]bool) (map[string]any, error) {
+func secretVersions(value, environment, definitions any, versions map[string]string, used map[string]bool) (map[string]any, error) {
 	selected := map[string]any{}
-	if value == nil {
-		return selected, nil
-	}
-	refs, ok := value.([]any)
-	if !ok {
-		return nil, errors.New("secret grants must use canonical long syntax")
-	}
-	defs, _ := definitions.(map[string]any)
-	for _, raw := range refs {
-		ref, ok := raw.(map[string]any)
+	if value != nil {
+		refs, ok := value.([]any)
 		if !ok {
 			return nil, errors.New("secret grants must use canonical long syntax")
 		}
-		name, ok := ref["source"].(string)
-		definition, defined := defs[name].(map[string]any)
-		if !ok || !validName(name) || !defined || strings.TrimSpace(versions[name]) == "" {
-			return nil, errors.New("secret grant needs a definition and opaque version")
+		defs, _ := definitions.(map[string]any)
+		for _, raw := range refs {
+			ref, ok := raw.(map[string]any)
+			if !ok {
+				return nil, errors.New("secret grants must use canonical long syntax")
+			}
+			name, ok := ref["source"].(string)
+			definition, defined := defs[name].(map[string]any)
+			if !ok || !validName(name) || !defined || strings.TrimSpace(versions[name]) == "" {
+				return nil, errors.New("secret grant needs a definition and opaque version")
+			}
+			// Source descriptors affect identity, but secret contents never enter it.
+			if definition["content"] != nil || unresolved(definition) {
+				return nil, errors.New("inline secret content is not supported")
+			}
+			if _, duplicate := selected["compose:"+name]; duplicate {
+				return nil, errors.New("duplicate secret grant")
+			}
+			selected["compose:"+name] = map[string]any{"version": versions[name], "source": definition}
+			used[name] = true
 		}
-		// Source descriptors affect identity, but secret contents never enter it.
-		// File-backed definitions point to operator-managed versioned material;
-		// validation here does not read it or attest the supplied version mapping.
-		if definition["content"] != nil || unresolved(definition) {
-			return nil, errors.New("inline secret content is not supported")
+	}
+	if values, ok := environment.(map[string]any); ok {
+		for variable, raw := range values {
+			value, _ := raw.(string)
+			name, exact := environmentSecretReference(value)
+			if !exact {
+				continue
+			}
+			if variable != name || strings.TrimSpace(versions[name]) == "" {
+				return nil, errors.New("secret environment reference needs a same-name opaque version")
+			}
+			selected["environment:"+name] = versions[name]
+			used[name] = true
 		}
-		if _, duplicate := selected[name]; duplicate {
-			return nil, errors.New("duplicate secret grant")
-		}
-		selected[name] = map[string]any{"version": versions[name], "source": definition}
-		used[name] = true
 	}
 	return selected, nil
+}
+
+func unresolvedService(service map[string]any, versions map[string]string) bool {
+	for field, value := range service {
+		if field != "environment" {
+			if unresolved(value) {
+				return true
+			}
+			continue
+		}
+		environment, ok := value.(map[string]any)
+		if !ok {
+			return true
+		}
+		for variable, raw := range environment {
+			text, isText := raw.(string)
+			if isText && strings.Contains(text, "$") {
+				name, exact := environmentSecretReference(text)
+				if !exact || variable != name || strings.TrimSpace(versions[name]) == "" {
+					return true
+				}
+				continue
+			}
+			if unresolved(raw) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // decodeValue rejects duplicate keys at every depth. encoding/json's ordinary

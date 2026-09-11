@@ -18,7 +18,7 @@ func modelFixture() map[string]any {
 		}
 		policies[name] = map[string]any{"mode": "persistent"}
 		if name != "db" {
-			policies[name] = map[string]any{"mode": "http", "port": 8080, "ready_path": "/readyz", "candidate_safe": true}
+			policies[name] = map[string]any{"mode": "request", "port": 8080, "ready_path": "/readyz", "candidate_safe": true}
 		}
 	}
 	return map[string]any{

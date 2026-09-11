@@ -1,7 +1,9 @@
 # Rollout execution
 
-The operator-only HTTP engine now uses the private Komizo gateway. Caddy below
-remains a separately controlled shared-edge primitive, not the drain authority.
+The journaled engine uses the private Komizo gateway. Caddy below remains a
+separately controlled shared-edge primitive, not the drain authority. The
+normal per-app broker and rootd recovery path are described in
+[`docs/seamless-rollouts.md`](../../docs/seamless-rollouts.md).
 
 ## Operator path
 
@@ -19,9 +21,10 @@ inputs, not approved user-visible latency defaults. `komizo-box rollout` exposes
 the same engine to root only. Neither signed operations nor deploy-user grants
 are expanded.
 
-Current execution supports HTTP candidates on one existing local bridge labeled
+Current execution supports request/static candidates, standby workers and
+overlap-compatible one-shots on one existing local bridge labeled
 `io.komizo.app=APP`, canonical Compose JSON, immutable images and explicit
-`x-komizo.services.SERVICE.hosts`. Persistent/job changes, removals, shared writable
+`x-komizo.services.SERVICE.hosts`. Persistent changes, removals, shared writable
 state, implicit legacy adoption and unsupported Compose features fail closed.
 
 The app bridge retains ordinary Docker NAT egress, as the existing Compose
@@ -68,9 +71,11 @@ komizo rollout status --app APP --state-dir /private/rollout-state \
   --timeout DURATION --poll DURATION
 ```
 
-Controller interruption is resumable. Automatic rootd reconciliation, recovery
-after gateway process restart, capacity policy and production conversion remain
-unfinished. Time elapsed or unknown accounting never authorizes killing work.
+Controller interruption is resumable by rootd from private profiles. Recovery
+after gateway process restart and production conversion remain explicit
+operations. Capacity is bounded by inbox/profile counts and per-app lock; host
+resource preflight remains conservative application adoption work. Time elapsed
+or unknown accounting never authorizes killing work.
 
 ## Real local control
 
