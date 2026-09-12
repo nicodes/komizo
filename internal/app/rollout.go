@@ -120,8 +120,8 @@ func performRolloutProvision(record appRecord, profile []byte, snapshot func() (
 	if err != nil {
 		return errors.New("cannot prove existing application ownership/state before broker preparation")
 	}
-	if !strings.Contains(before, "app-dir\t0:0:750") {
-		return errors.New("application directory is not already root-owned mode 0750; refusing to normalize ownership during rollout preparation")
+	if !safeRolloutProvisionOwnership(before) {
+		return errors.New("application directory/files are not already root-owned with modes 0750/0600; refusing to normalize ownership during rollout preparation")
 	}
 	if err := runner(scripts.AlpineScript, appRefreshEnv(record)); err != nil {
 		return errors.New("app-scoped broker refresh failed; live application activation was not requested")
@@ -136,6 +136,18 @@ func performRolloutProvision(record appRecord, profile []byte, snapshot func() (
 		}
 	}
 	return nil
+}
+
+func safeRolloutProvisionOwnership(snapshot string) bool {
+	if !strings.HasPrefix(snapshot, "app-dir\t0:0:750\n") {
+		return false
+	}
+	for _, file := range []string{"compose.yml", ".env", "secrets.env"} {
+		if !strings.Contains(snapshot, "\n"+file+"\t0:0:600\n") {
+			return false
+		}
+	}
+	return true
 }
 
 func RunGateway(args []string) error {
