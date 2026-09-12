@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +18,9 @@ import (
 type memoryBackend struct {
 	instances        map[string]Instance
 	created, removed []string
+	events           []string
 	failReady        bool
+	failCapacity     bool
 	failRemoveOnce   bool
 	failPrepareOnce  bool
 	lifecycleCalls   []string
@@ -47,11 +50,23 @@ func (b *memoryBackend) Lifecycle(ctx context.Context, i Instance, action string
 }
 
 func (b *memoryBackend) Preflight(context.Context, string, string) error { return nil }
-func (b *memoryBackend) Prepare(_ context.Context, i Instance, _ []byte) error {
+func (b *memoryBackend) Stage(_ context.Context, i Instance, _ []byte) error {
+	b.events = append(b.events, "stage:"+i.Service)
 	if b.failPrepareOnce {
 		b.failPrepareOnce = false
 		return errors.New("simulated preparation interruption")
 	}
+	return nil
+}
+func (b *memoryBackend) Capacity(context.Context) error {
+	b.events = append(b.events, "capacity")
+	if b.failCapacity {
+		return errors.New("simulated post-pull floor refusal")
+	}
+	return nil
+}
+func (b *memoryBackend) Prepare(_ context.Context, i Instance, _ []byte) error {
+	b.events = append(b.events, "start:"+i.Service)
 	if _, exists := b.instances[i.Name]; !exists {
 		b.created = append(b.created, i.Name)
 		b.instances[i.Name] = i
@@ -220,6 +235,47 @@ func TestEngineInitialNoOpAndSelectiveRetirement(t *testing.T) {
 	info, err := os.Stat(e.Store.Path("state.json"))
 	if err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatal("journal is not private")
+	}
+}
+
+func TestEngineStagesEveryImageAndRechecksCapacityBeforeAnyCandidate(t *testing.T) {
+	e, backend, _, key, limits := newEngine(t)
+	first, err := runEngine(t, e, sourceModel("b"), key, limits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantInitial := []string{"stage:api", "stage:ui", "capacity", "start:api", "start:ui"}
+	if !slices.Equal(backend.events, wantInitial) {
+		t.Fatalf("initial ordering = %v, want %v", backend.events, wantInitial)
+	}
+	before, err := e.Store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldUI := before.Bindings["ui"].Name
+	backend.events = nil
+	backend.failCapacity = true
+	if _, err := runEngine(t, e, sourceModel("c"), key, limits); err == nil || !strings.Contains(err.Error(), "post-pull host capacity") {
+		t.Fatalf("post-pull capacity refusal hidden: %v", err)
+	}
+	state, err := e.Store.Load()
+	if err != nil || state.Pending == nil || state.Pending.Phase != "prepare" || state.Routes.Generation != first.Generation || state.Bindings["ui"].Name != oldUI || len(backend.instances) != 2 || len(backend.created) != 2 {
+		t.Fatalf("capacity refusal created a candidate or lost intent: state=%+v created=%v err=%v", state, backend.created, err)
+	}
+	wantRefusal := []string{"stage:ui", "capacity"}
+	if !slices.Equal(backend.events, wantRefusal) {
+		t.Fatalf("capacity was not checked after every stage and before starts: %v", backend.events)
+	}
+
+	backend.failCapacity = false
+	backend.events = nil
+	result, err := runEngine(t, e, sourceModel("c"), key, limits)
+	if err != nil || result.Changed != 1 {
+		t.Fatalf("restored capacity did not resume: %+v %v", result, err)
+	}
+	wantResume := []string{"stage:ui", "capacity", "start:ui"}
+	if !slices.Equal(backend.events, wantResume) {
+		t.Fatalf("resume ordering = %v, want %v", backend.events, wantResume)
 	}
 }
 

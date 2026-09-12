@@ -58,6 +58,14 @@ func TestExecutorRequiresBoundedContext(t *testing.T) {
 	}
 }
 
+func TestCandidateStartCannotPullAfterCapacityGate(t *testing.T) {
+	args := composeStartArguments("/private/candidate.json", "kmz-fixture")
+	want := []string{"--file", "/private/candidate.json", "up", "--detach", "--no-deps", "--no-recreate", "--pull", "never", "kmz-fixture"}
+	if !slices.Equal(args, want) {
+		t.Fatalf("candidate start arguments = %v, want %v", args, want)
+	}
+}
+
 func TestPrivateApplicationNetworkPreservesNATControlWithoutPublicRouting(t *testing.T) {
 	for _, internal := range []bool{false, true} {
 		inspection := map[string]any{"Name": "sample-private", "Driver": "bridge", "Scope": "local", "Internal": internal,
