@@ -89,8 +89,11 @@ the app bridge, and `CAP_NET_BIND_SERVICE` when retaining the conventional
 
 ### Scoped operator provisioning
 
-Install a current immutable Komizo release on the host first. Then prepare only
-the existing app's broker, without selecting policy or changing application
+Run a current checksum/provenance-verified immutable Komizo CLI release. It
+carries the matching `komizo-box` and installs that runtime only under
+`/usr/local/libexec/komizo/rollouts/APP`; it does not replace the host-wide
+agent, restart shared services or require a global `komizo update`. Then it
+prepares only the existing app's broker, without selecting policy or changing application
 containers, routes, Compose files, environment contents, ownership or traffic:
 
 ```sh
@@ -98,8 +101,10 @@ komizo rollout provision --host root@HOST --app APP
 ```
 
 The command reads the app's existing Komizo record, refuses unless its directory
-is already root-owned mode `0750`, snapshots file ownership/content and Compose
-container identities, refreshes only that app's generated broker/rules, and
+is already root-owned mode `0750` and `compose.yml`, `.env`, and `secrets.env`
+are already root-owned mode `0600`, snapshots file ownership/content and Compose
+container identities, authenticates and atomically installs the app-scoped
+runtime, refreshes only that app's generated broker/rules, and
 requires an identical post-refresh snapshot. Omitting `--profile` is deliberate:
 it installs no timing/capacity policy, key, state or gateway.
 

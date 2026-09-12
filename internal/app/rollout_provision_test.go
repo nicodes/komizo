@@ -15,6 +15,7 @@ func TestRolloutProvisionBrokerOnlyPreservesMeasuredApplicationState(t *testing.
 	const unchanged = safeProvisionSnapshot + "container\tid\trunning\timage\n"
 	var runs []string
 	err := performRolloutProvision(record, nil, func() (string, error) { return unchanged, nil },
+		func() error { return nil },
 		func(script string, env map[string]string) error {
 			runs = append(runs, script)
 			if env["APP_NAME"] != "cazper" {
@@ -40,6 +41,7 @@ func TestRolloutProvisionRefusesOwnershipDriftBeforeRefreshing(t *testing.T) {
 		"app-dir\t0:0:750\ncompose.yml\t0:0:600\n.env\t0:0:600\nsecrets.env\t1000:1000:600\n",
 	} {
 		err := performRolloutProvision(record, nil, func() (string, error) { return unsafe, nil },
+			func() error { runs++; return nil },
 			func(string, map[string]string) error { runs++; return nil })
 		if err == nil || !strings.Contains(err.Error(), "refusing to normalize ownership") || runs != 0 {
 			t.Fatalf("unsafe ownership reached broker refresh: runs=%d err=%v", runs, err)
@@ -58,7 +60,7 @@ func TestRolloutProvisionDetectsAnyLiveStateChangeBeforeInstallingProfile(t *tes
 		value := snapshots[0]
 		snapshots = snapshots[1:]
 		return value, nil
-	}, func(string, map[string]string) error { runs++; return nil })
+	}, func() error { return nil }, func(string, map[string]string) error { runs++; return nil })
 	if err == nil || !strings.Contains(err.Error(), "remained unchanged") || runs != 1 {
 		t.Fatalf("changed live state did not block profile install: runs=%d err=%v", runs, err)
 	}
@@ -70,6 +72,7 @@ func TestRolloutProvisionInstallsProfileOnlyAfterStableBrokerRefresh(t *testing.
 	profile := []byte(`{"app":"cazper"}`)
 	var runs []string
 	err := performRolloutProvision(record, profile, func() (string, error) { return unchanged, nil },
+		func() error { return nil },
 		func(script string, env map[string]string) error {
 			runs = append(runs, script)
 			return nil
@@ -79,5 +82,30 @@ func TestRolloutProvisionInstallsProfileOnlyAfterStableBrokerRefresh(t *testing.
 	}
 	if len(runs) != 2 || runs[0] != scripts.AlpineScript || !strings.Contains(runs[1], "rollout profile --provision") || strings.Contains(runs[1], string(profile)) {
 		t.Fatalf("profile provisioning order/transport is unsafe: runs=%d", len(runs))
+	}
+}
+
+func TestRolloutProvisionRefusesRuntimeFailureBeforeBrokerMutation(t *testing.T) {
+	record := appRecord{name: "cazper", user: "komizo-cazper", config: "ghcr.io/nicodes/cazper-config", dir: "/srv/cazper"}
+	runs := 0
+	err := performRolloutProvision(record, nil, func() (string, error) { return safeProvisionSnapshot, nil },
+		func() error { return errors.New("checksum mismatch") },
+		func(string, map[string]string) error { runs++; return nil })
+	if err == nil || !strings.Contains(err.Error(), "runtime installation failed") || runs != 0 {
+		t.Fatalf("runtime failure reached broker mutation: runs=%d err=%v", runs, err)
+	}
+}
+
+func TestRolloutRuntimePathIsApplicationScoped(t *testing.T) {
+	want := "/usr/local/libexec/komizo/rollouts/cazper/komizo-box"
+	if got := rolloutRuntimePath("cazper"); got != want {
+		t.Fatalf("rollout runtime path = %q, want %q", got, want)
+	}
+	if !strings.Contains(scripts.AlpineScript, "ROLLOUT_RUNTIME") {
+		t.Fatal("app broker cannot select its scoped rollout runtime")
+	}
+	rendered := scripts.RolloutProvisionScript([]byte(`{"app":"cazper"}`), want)
+	if !strings.Contains(rendered, want) || strings.Contains(rendered, "/usr/local/bin/komizo-box rollout") {
+		t.Fatal("profile provisioner did not use the app-scoped rollout runtime")
 	}
 }
