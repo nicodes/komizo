@@ -54,6 +54,12 @@ case "$APP_NAME" in
 	*[!A-Za-z0-9_-]*) echo "error: APP_NAME must be letters, digits, underscore or hyphen" >&2; exit 1 ;;
 esac
 
+ROLLOUT_RUNTIME="${ROLLOUT_RUNTIME:-/usr/local/bin/komizo-box}"
+case "$ROLLOUT_RUNTIME" in
+	/usr/local/bin/komizo-box|/usr/local/libexec/komizo/rollouts/"$APP_NAME"/komizo-box) ;;
+	*) echo "error: ROLLOUT_RUNTIME is outside this application's fixed authority" >&2; exit 1 ;;
+esac
+
 # Every app is named, always -- there is no unsuffixed "the app" special case.
 # A box set up for one app can host a second later without renaming anything
 # that already exists, which is not true if the first one owns the bare paths.
@@ -1472,7 +1478,7 @@ sed -i \
 	-e "s|__CONFIG_IMAGE__|$CONFIG_IMAGE|g" \
 	-e "s|__PROXY_CONTAINER__|$PROXY_CONTAINER|g" \
 	-e "s|__PROXY_DIR__|$PROXY_DIR|g" \
-	-e "s|__ROLLOUT_BIN__|/usr/local/bin/komizo-box|g" \
+	-e "s|__ROLLOUT_BIN__|$ROLLOUT_RUNTIME|g" \
 	-e "s|__ROLLOUT_PROFILE__|/etc/komizo/rollouts/$APP_NAME.json|g" \
 	-e "s|__ROUTES_DIR__|$ROUTES_DIR|g" \
 	-e "s|__STATE_DIR__|$STATE_DIR|g" \
