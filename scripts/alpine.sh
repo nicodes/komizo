@@ -613,7 +613,13 @@ ROLLOUT_PROFILE="__ROLLOUT_PROFILE__"
 
 broker="${0##*/}"
 if [ "${1:-}" = "--check" ]; then
-	case "$broker" in rollout-__APP_NAME__) echo "komizo-rollout-broker-v1 __APP_NAME__"; exit 0 ;; esac
+	case "$broker" in
+		rollout-__APP_NAME__)
+			"$ROLLOUT_BIN" rollout profile --check --profile "$ROLLOUT_PROFILE" --app __APP_NAME__
+			echo "komizo-rollout-broker-v1 __APP_NAME__"
+			exit 0
+			;;
+	esac
 	echo "deploy: journaled capability check used the legacy command" >&2
 	exit 1
 fi

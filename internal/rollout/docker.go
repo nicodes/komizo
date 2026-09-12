@@ -97,7 +97,7 @@ func (d *Docker) Preflight(ctx context.Context, app, network string) error {
 			return errors.New("host capacity cannot be established")
 		}
 		if memory < d.MinFreeMemory || disk < d.MinFreeDisk {
-			return errors.New("host capacity is below the profile's approved floor")
+			return errors.New("host capacity is below the profile's configured floor")
 		}
 	}
 	body, err := d.docker(ctx, "network", "inspect", network)

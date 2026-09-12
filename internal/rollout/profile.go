@@ -3,6 +3,7 @@ package rollout
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nicodes/komizo/internal/gateway"
 	"github.com/nicodes/komizo/internal/release"
 )
 
@@ -54,6 +56,20 @@ type profileWire struct {
 	Limits         struct {
 		Ready, Stabilize, Retire, Operation, Poll string
 	} `json:"limits"`
+}
+
+type provisionRoots struct {
+	Profiles string
+	Keys     string
+	States   string
+	Gateways string
+}
+
+var systemProvisionRoots = provisionRoots{
+	Profiles: "/etc/komizo/rollouts",
+	Keys:     "/etc/komizo/rollout-keys",
+	States:   "/var/lib/komizo/rollouts",
+	Gateways: "/run/komizo/gateways",
 }
 
 func (p *Profile) UnmarshalJSON(data []byte) error {
@@ -154,6 +170,199 @@ func (p Profile) Validate() error {
 	}
 	if filepath.Clean(p.GatewayConfig) != filepath.Join(filepath.Clean(p.StateDir), "gateway", "config.json") {
 		return errors.New("gateway config must be the rollout journal's isolated gateway/config.json")
+	}
+	return nil
+}
+
+func (p Profile) validateProvisionScope(app string, roots provisionRoots) error {
+	if p.App != app || p.KeyFile != filepath.Join(roots.Keys, app+".key") ||
+		p.StateDir != filepath.Join(roots.States, app) ||
+		p.GatewaySocket != filepath.Join(roots.Gateways, app, "admin.sock") ||
+		p.GatewayConfig != filepath.Join(roots.States, app, "gateway", "config.json") {
+		return errors.New("rollout profile authority paths are not scoped to this application")
+	}
+	return nil
+}
+
+func ensureProvisionDir(path string, private bool) error {
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return errors.New("cannot create rollout authority directory")
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.IsDir() || !ownedByCurrent(info) || info.Mode()&os.ModeSymlink != 0 ||
+		(private && info.Mode().Perm()&0o077 != 0) || (!private && info.Mode().Perm()&0o022 != 0) {
+		return errors.New("rollout authority directory is not safely owned")
+	}
+	return nil
+}
+
+func installPrivateFile(path string, data []byte) error {
+	temporary := filepath.Join(filepath.Dir(path), ".next-"+filepath.Base(path)+"-"+rand.Text())
+	file, err := os.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return errors.New("cannot create private rollout authority file")
+	}
+	ok := false
+	defer func() {
+		_ = file.Close()
+		if !ok {
+			_ = os.Remove(temporary)
+		}
+	}()
+	if _, err := file.Write(data); err != nil {
+		return errors.New("cannot write private rollout authority file")
+	}
+	if err := file.Sync(); err != nil {
+		return errors.New("cannot synchronize private rollout authority file")
+	}
+	if err := file.Close(); err != nil {
+		return errors.New("cannot close private rollout authority file")
+	}
+	if err := os.Link(temporary, path); err != nil {
+		return err
+	}
+	if err := os.Remove(temporary); err != nil {
+		return errors.New("cannot remove rollout authority staging file")
+	}
+	ok = true
+	directory, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return errors.New("cannot open rollout authority directory")
+	}
+	defer directory.Close()
+	if err := directory.Sync(); err != nil {
+		return errors.New("cannot synchronize rollout authority directory")
+	}
+	return nil
+}
+
+// ProvisionProfile installs only new app-scoped rollout authority. It does not
+// start a gateway, alter application files, inspect containers or cut traffic.
+// Existing policy is accepted only when semantically identical after strict
+// profile decoding; changing any budget/path is a separate owner decision.
+func ProvisionProfile(source, app string) error {
+	return provisionProfile(source, app, systemProvisionRoots)
+}
+
+func provisionProfile(source, app string, roots provisionRoots) error {
+	p, err := LoadProfile(source)
+	if err != nil {
+		return err
+	}
+	if err := p.validateProvisionScope(app, roots); err != nil {
+		return err
+	}
+	profilePath := filepath.Join(roots.Profiles, app+".json")
+	if _, statErr := os.Lstat(profilePath); statErr == nil {
+		existing, err := LoadProfile(profilePath)
+		if err != nil {
+			return errors.New("installed rollout profile is unsafe; refusing replacement")
+		}
+		if existing != p {
+			return errors.New("installed rollout profile differs; refusing to replace owner policy")
+		}
+		return nil
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return errors.New("cannot inspect installed rollout profile")
+	}
+	for _, item := range []struct {
+		path    string
+		private bool
+	}{
+		{roots.Profiles, true}, {roots.Keys, true}, {roots.States, false},
+		{p.StateDir, true}, {filepath.Dir(p.GatewayConfig), true},
+		{roots.Gateways, false}, {filepath.Dir(p.GatewaySocket), true},
+	} {
+		if err := ensureProvisionDir(item.path, item.private); err != nil {
+			return err
+		}
+	}
+	if _, err := readInput(p.KeyFile, 32, true); err != nil {
+		if _, statErr := os.Lstat(p.KeyFile); statErr == nil {
+			return errors.New("existing rollout identity key is unsafe")
+		}
+		key := make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			return errors.New("cannot generate rollout identity key")
+		}
+		defer clear(key)
+		if err := installPrivateFile(p.KeyFile, key); err != nil {
+			return errors.New("cannot install rollout identity key")
+		}
+	}
+	if _, err := os.Lstat(p.GatewayConfig); errors.Is(err, os.ErrNotExist) {
+		body := []byte(`{"app":"` + app + `","generation":"bootstrap","routes":[]}`)
+		if err := installPrivateFile(p.GatewayConfig, body); err != nil {
+			return errors.New("cannot initialize rollout gateway configuration")
+		}
+	} else if err != nil {
+		return errors.New("cannot inspect rollout gateway configuration")
+	} else {
+		info, statErr := os.Lstat(p.GatewayConfig)
+		if statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || !ownedByCurrent(info) {
+			return errors.New("existing rollout gateway configuration is unsafe")
+		}
+		file, openErr := os.Open(p.GatewayConfig)
+		if openErr != nil {
+			return errors.New("cannot open rollout gateway configuration")
+		}
+		opened, openedErr := file.Stat()
+		if openedErr != nil || !os.SameFile(info, opened) {
+			file.Close()
+			return errors.New("rollout gateway configuration changed while opening")
+		}
+		config, decodeErr := gateway.Decode(io.LimitReader(file, gateway.MaxConfigBytes+1))
+		file.Close()
+		if decodeErr != nil || config.App != app {
+			return errors.New("existing rollout gateway configuration is invalid")
+		}
+	}
+	body, err := json.Marshal(p)
+	if err != nil {
+		return errors.New("cannot encode rollout profile")
+	}
+	body = append(body, '\n')
+	if err := installPrivateFile(profilePath, body); err != nil {
+		return errors.New("cannot install rollout profile")
+	}
+	return nil
+}
+
+// CheckProfile proves the complete host-side capability before CI publishes an
+// artifact or rotates a secret. It deliberately applies the profile's current
+// capacity floor; a low-capacity host refuses before any deployment mutation.
+func CheckProfile(parent context.Context, profilePath, app string) error {
+	p, err := LoadProfile(profilePath)
+	if err != nil || p.App != app {
+		return errors.New("rollout profile is unavailable or belongs to another application")
+	}
+	if err := p.validateProvisionScope(app, systemProvisionRoots); err != nil {
+		return err
+	}
+	key, err := readInput(p.KeyFile, 32, true)
+	if err != nil {
+		return errors.New("rollout identity key is unavailable or unsafe")
+	}
+	clear(key)
+	ctx, cancel := context.WithTimeout(parent, p.Limits.Operation)
+	defer cancel()
+	store, err := OpenStore(ctx, p.StateDir, p.Limits.Poll)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	backend := &Docker{App: p.App, Network: p.Network, ComposeBinary: p.ComposeBinary, ComposeVersion: p.ComposeVersion,
+		Store: store, MinFreeMemory: p.MinFreeMemory, MinFreeDisk: p.MinFreeDisk}
+	if err := backend.Preflight(ctx, p.App, p.Network); err != nil {
+		return err
+	}
+	router, err := NewGatewayClient(p.GatewaySocket)
+	if err != nil {
+		return err
+	}
+	config, _, err := router.Current(ctx)
+	if err != nil || config.App != app {
+		return errors.New("application rollout gateway is not ready")
 	}
 	return nil
 }

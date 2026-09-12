@@ -105,14 +105,29 @@ func profileCommand(parent context.Context, args []string, output, diagnostics i
 	profilePath := flags.String("profile", "", "root-owned application rollout profile")
 	modelPath := flags.String("model", "", "normalized model from the immutable config artifact")
 	resume := flags.Bool("resume", false, "resume the profile's pending journaled transaction")
+	check := flags.Bool("check", false, "verify complete host capability without changing application state")
+	provision := flags.Bool("provision", false, "install new app-scoped authority without starting a gateway")
+	app := flags.String("app", "", "fixed application scope for check/provision")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
 		return errors.New("invalid rollout profile flags")
 	}
-	if flags.NArg() != 0 || *profilePath == "" || (*resume == (*modelPath != "")) {
-		return errors.New("profile rollout requires --profile and exactly one of --model or --resume")
+	modes := 0
+	for _, selected := range []bool{*resume, *modelPath != "", *check, *provision} {
+		if selected {
+			modes++
+		}
+	}
+	if flags.NArg() != 0 || *profilePath == "" || modes != 1 || ((*check || *provision) && !scopeName(*app)) {
+		return errors.New("profile rollout requires --profile and exactly one operation; check/provision also require app")
+	}
+	if *provision {
+		return ProvisionProfile(*profilePath, *app)
+	}
+	if *check {
+		return CheckProfile(parent, *profilePath, *app)
 	}
 	var result Result
 	var err error
