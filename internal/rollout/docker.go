@@ -91,20 +91,33 @@ func (d *Docker) Preflight(ctx context.Context, app, network string) error {
 	if err != nil || strings.TrimSpace(string(version)) != d.ComposeVersion {
 		return errors.New("Compose version does not match the explicit pin")
 	}
-	if d.MinFreeMemory != 0 || d.MinFreeDisk != 0 {
-		memory, disk, err := availableCapacity(d.Store.root.Name())
-		if err != nil {
-			return errors.New("host capacity cannot be established")
-		}
-		if memory < d.MinFreeMemory || disk < d.MinFreeDisk {
-			return errors.New("host capacity is below the profile's configured floor")
-		}
+	if err := d.Capacity(ctx); err != nil {
+		return err
 	}
 	body, err := d.docker(ctx, "network", "inspect", network)
 	if err != nil {
 		return err
 	}
 	return validateApplicationNetwork(body, app, network)
+}
+
+// Capacity is a measurement, not a reservation. It is called both before any
+// staging and after all declared immutable images have been pulled/unpacked.
+func (d *Docker) Capacity(ctx context.Context) error {
+	if ctx.Err() != nil || d.Store == nil {
+		return errors.New("host capacity cannot be established")
+	}
+	if d.MinFreeMemory == 0 && d.MinFreeDisk == 0 {
+		return nil
+	}
+	memory, disk, err := availableCapacity(d.Store.root.Name())
+	if err != nil {
+		return errors.New("host capacity cannot be established")
+	}
+	if memory < d.MinFreeMemory || disk < d.MinFreeDisk {
+		return errors.New("host capacity is below the profile's configured floor")
+	}
+	return nil
 }
 
 // App-private means a scoped user-defined bridge with no published candidate
@@ -307,6 +320,18 @@ func sameIncarnation(current *container, proof Retirement) error {
 	return nil
 }
 
+// Stage authenticates and pulls/unpacks the declared immutable image and writes
+// only the private journal artifact. It never creates or starts a candidate.
+func (d *Docker) Stage(ctx context.Context, instance Instance, compose []byte) error {
+	if _, err := d.inspect(ctx, instance); err != nil {
+		return err
+	}
+	if err := d.checkImageVolumes(ctx, instance, compose, true); err != nil {
+		return err
+	}
+	return d.Store.WritePrivate(instance.Name+".json", compose)
+}
+
 func (d *Docker) Prepare(ctx context.Context, instance Instance, compose []byte) error {
 	existing, err := d.inspect(ctx, instance)
 	if err != nil {
@@ -322,18 +347,17 @@ func (d *Docker) Prepare(ctx context.Context, instance Instance, compose []byte)
 		_, err := d.docker(ctx, "start", instance.Name)
 		return err
 	}
-	if err := d.checkImageVolumes(ctx, instance, compose); err != nil {
+	if err := d.checkImageVolumes(ctx, instance, compose, false); err != nil {
 		return err
 	}
 	file := instance.Name + ".json"
-	if err := d.Store.WritePrivate(file, compose); err != nil {
-		return err
-	}
+	// Stage wrote the generation-unique private artifact before the post-pull
+	// capacity gate. Candidate start performs no further journal or image write.
 	args := []string{"--host", "unix:///var/run/docker.sock", "--project-name", d.App, "--project-directory", d.Store.root.Name()}
 	if d.EnvFile != "" {
 		args = append(args, "--env-file", d.EnvFile)
 	}
-	args = append(args, "--file", d.Store.Path(file), "up", "--detach", "--no-deps", "--no-recreate", "--pull", "missing", instance.Name)
+	args = append(args, composeStartArguments(d.Store.Path(file), instance.Name)...)
 	_, err = command(ctx, d.ComposeBinary, args...)
 	if err != nil {
 		return err
@@ -344,6 +368,10 @@ func (d *Docker) Prepare(ctx context.Context, instance Instance, compose []byte)
 		return errors.New("candidate did not start with expected ownership")
 	}
 	return nil
+}
+
+func composeStartArguments(file, instance string) []string {
+	return []string{"--file", file, "up", "--detach", "--no-deps", "--no-recreate", "--pull", "never", instance}
 }
 
 func (d *Docker) Ready(ctx context.Context, instance Instance) error {
@@ -461,7 +489,7 @@ var _ Backend = (*Docker)(nil)
 
 // Image-declared VOLUMEs are otherwise absent from Compose input and can
 // silently introduce writable state. Require explicit mounts or tmpfs targets.
-func (d *Docker) checkImageVolumes(ctx context.Context, instance Instance, compose []byte) error {
+func (d *Docker) checkImageVolumes(ctx context.Context, instance Instance, compose []byte, allowPull bool) error {
 	var document struct {
 		Services map[string]struct {
 			Image   string   `json:"image"`
@@ -480,6 +508,9 @@ func (d *Docker) checkImageVolumes(ctx context.Context, instance Instance, compo
 	}
 	body, err := d.docker(ctx, "image", "inspect", service.Image)
 	if err != nil {
+		if !allowPull {
+			return errors.New("candidate image is absent after the post-pull capacity gate")
+		}
 		if _, err := d.docker(ctx, "pull", "--quiet", service.Image); err != nil {
 			return err
 		}

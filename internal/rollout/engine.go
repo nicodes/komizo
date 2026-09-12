@@ -72,6 +72,8 @@ type Transaction struct {
 // destructive operation. They may not infer permission from a container name.
 type Backend interface {
 	Preflight(context.Context, string, string) error
+	Stage(context.Context, Instance, []byte) error
+	Capacity(context.Context) error
 	Prepare(context.Context, Instance, []byte) error
 	Ready(context.Context, Instance) error
 	Candidate(context.Context, Instance, string) error
@@ -120,7 +122,7 @@ func (e *Engine) Abort(ctx context.Context, app string, key []byte, operation ti
 		return Result{Generation: state.Routes.Generation, NoOp: true}, nil
 	}
 	tx := state.Pending
-	if tx.Phase != "prepare" && tx.Phase != "ready" && tx.Phase != "abort" {
+	if tx.Phase != "prepare" && tx.Phase != "start" && tx.Phase != "ready" && tx.Phase != "abort" {
 		return Result{}, errors.New("route switch may have occurred; resume instead of aborting")
 	}
 	op, cancel := context.WithTimeout(ctx, operation)
@@ -223,10 +225,33 @@ func (e *Engine) Run(ctx context.Context, app, network string, source, key []byt
 					return result, err
 				}
 				op, cancel := context.WithTimeout(ctx, limits.Operation)
+				err = e.Backend.Stage(op, instance, body)
+				cancel()
+				if err != nil {
+					return result, errors.New("candidate image staging failed; transaction retained for resume")
+				}
+			}
+			op, cancel := context.WithTimeout(ctx, limits.Operation)
+			err := e.Backend.Capacity(op)
+			cancel()
+			if err != nil {
+				return result, errors.New("post-pull host capacity is below the configured floor; transaction retained before candidate creation")
+			}
+			if err := e.phase(state, "start"); err != nil {
+				return result, err
+			}
+		case "start":
+			for _, service := range slices.Sorted(maps.Keys(tx.Candidates)) {
+				instance := tx.Candidates[service]
+				body, err := model.CandidateCompose(service, instance.Name, app, network, labels(instance))
+				if err != nil {
+					return result, err
+				}
+				op, cancel := context.WithTimeout(ctx, limits.Operation)
 				err = e.Backend.Prepare(op, instance, body)
 				cancel()
 				if err != nil {
-					return result, errors.New("candidate preparation failed; transaction retained for resume")
+					return result, errors.New("candidate start failed; transaction retained for resume")
 				}
 			}
 			if err := e.phase(state, "ready"); err != nil {
