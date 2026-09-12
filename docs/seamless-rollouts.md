@@ -87,6 +87,45 @@ socket. Its container needs only the mounted static `komizo-box` binary/state,
 the app bridge, and `CAP_NET_BIND_SERVICE` when retaining the conventional
 `APP-gate:80` endpoint; it needs no Docker socket or app secrets.
 
+### Scoped operator provisioning
+
+Install a current immutable Komizo release on the host first. Then prepare only
+the existing app's broker, without selecting policy or changing application
+containers, routes, Compose files, environment contents, ownership or traffic:
+
+```sh
+komizo rollout provision --host root@HOST --app APP
+```
+
+The command reads the app's existing Komizo record, refuses unless its directory
+is already root-owned mode `0750`, snapshots file ownership/content and Compose
+container identities, refreshes only that app's generated broker/rules, and
+requires an identical post-refresh snapshot. Omitting `--profile` is deliberate:
+it installs no timing/capacity policy, key, state or gateway.
+
+After target-host and application measurements, the application owner supplies a
+private mode-`0600` profile with every field in the schema above and separately
+authorizes its numeric values. The operator may then run:
+
+```sh
+komizo rollout provision --host root@HOST --app APP --profile ./APP-rollout.json
+```
+
+This creates only fixed app-scoped authority paths: the profile under
+`/etc/komizo/rollouts`, a random 32-byte identity key under
+`/etc/komizo/rollout-keys`, private journal/gateway configuration under
+`/var/lib/komizo/rollouts/APP`, and a private socket directory under
+`/run/komizo/gateways/APP`. It refuses to replace a differing installed profile;
+changing policy requires a separate explicit owner decision. It does not start a
+gateway or cut traffic. The app owner must configure/supervise the gateway,
+verify the broker's full readiness check, serialize legacy CD, and authorize the
+first cutover.
+
+The Actions capability probe validates the complete profile, key, configured
+capacity floor, exact Compose version, app-labeled private network and live
+gateway socket before artifact publication or secret rotation. A broker filename
+alone is not readiness.
+
 The model may use only exact, same-name environment indirection such as
 `TOKEN: ${TOKEN}` for host secrets. Model-selected secret file paths and partial
 interpolation are refused. `set-secret-APP` atomically writes each value together
@@ -112,6 +151,14 @@ digest to the fixed broker, which refuses a model delivered only by mutable tag.
 Legacy config remains supported for applications not converted, but once native
 instances exist an artifact without `model.json` is refused rather than allowing
 Compose `--remove-orphans` to become a second writer.
+
+Long-lived browser compatibility is application-owned. For the currently
+required 24-hour supersession window, the application release must make all
+needed content-hashed assets available from the active static service and keep
+its active API backward compatible for at least 24 hours. The platform does not
+guess unlimited retention or treat request drain as proof that an old tab is
+gone; the app must measure the retained artifact set and refuse deployment when
+the owner-authorized capacity floor cannot hold it.
 
 ## Recovery and refusal
 

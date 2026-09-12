@@ -237,9 +237,10 @@ hand.
 
   komizo login
   komizo logout
-  komizo plan --before PREVIOUS.json --after CANDIDATE.json --key-file PRIVATE_KEY
-  komizo rollout --help                             local operator rollout
-  komizo gateway --help                             private HTTP gateway
+	  komizo plan --before PREVIOUS.json --after CANDIDATE.json --key-file PRIVATE_KEY
+	  komizo rollout --help                             local operator rollout
+	  komizo rollout provision --host root@HOST --app NAME [--profile PRIVATE.json]
+	  komizo gateway --help                             private HTTP gateway
   komizo init    --host root@HOST
   komizo update  --host root@HOST
   komizo add     --host root@HOST --app NAME --config REF
