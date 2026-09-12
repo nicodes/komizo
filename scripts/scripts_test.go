@@ -27,6 +27,7 @@ func all(t *testing.T) map[string]string {
 		"alpine-proxy":       AlpineProxyScript,
 		"alpine-remove":      AlpineRemoveScript,
 		"alpine-reload-sshd": AlpineReloadSSHDScript,
+		"rollout-provision":  RolloutProvisionScript([]byte(`{"app":"fixture"}`)),
 		"agent-install":      AgentInstall("94d5dbd1333d", "0.0.11"),
 		// The two OPTIONAL ones. They run as root like the rest, and until
 		// komizo#59 they were the only scripts this package can produce that no
