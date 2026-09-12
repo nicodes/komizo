@@ -72,11 +72,17 @@ evidence.
 }
 ```
 
-Both capacity values are required. Deployment refuses if Linux `MemAvailable`
-or filesystem available bytes are below them, or if either measurement is
-unknown. The displayed 128 MiB/1 GiB values were used only by the fixture; they
-are neither approved floors nor a guarantee that an image or application can
-safely overlap within the remaining capacity.
+Both capacity values are required. Deployment measures Linux `MemAvailable`
+and filesystem available bytes before staging, journals and pulls/unpacks every
+declared immutable candidate image without creating a candidate, then measures
+both floors again. A failed/unknown post-pull measurement retains the transaction
+before candidate creation; resume repeats staging idempotently and rechecks.
+Candidate creation uses Compose `--pull never`, so it cannot consume an
+unstaged image after the gate. This is a postfactum refusal, not continuously
+reserved headroom: pull/unpack may transiently cross a floor, and no filesystem
+quota or memory reservation is implied. The displayed 128 MiB/1 GiB values were
+used only by the fixture; they are neither approved floors nor a guarantee that
+an image or application can safely overlap within the remaining capacity.
 
 The identity key is 32 random bytes, mode `0600`. The profile directory must
 not be group/other writable. The app-private local bridge is explicitly labeled
