@@ -62,6 +62,76 @@ func TestLoadProfileRejectsUnknownFieldsAndTrailingDocuments(t *testing.T) {
 	}
 }
 
+func TestProvisionProfileCreatesOnlyScopedAuthorityAndRefusesPolicyReplacement(t *testing.T) {
+	root := t.TempDir()
+	roots := provisionRoots{
+		Profiles: filepath.Join(root, "etc", "komizo", "rollouts"),
+		Keys:     filepath.Join(root, "etc", "komizo", "rollout-keys"),
+		States:   filepath.Join(root, "var", "lib", "komizo", "rollouts"),
+		Gateways: filepath.Join(root, "run", "komizo", "gateways"),
+	}
+	_, p := testProfile(t)
+	p.App = "cazper"
+	p.KeyFile = filepath.Join(roots.Keys, "cazper.key")
+	p.StateDir = filepath.Join(roots.States, "cazper")
+	p.GatewaySocket = filepath.Join(roots.Gateways, "cazper", "admin.sock")
+	p.GatewayConfig = filepath.Join(p.StateDir, "gateway", "config.json")
+	source := filepath.Join(root, "candidate.json")
+	body, _ := json.Marshal(p)
+	if err := os.WriteFile(source, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := provisionProfile(source, "cazper", roots); err != nil {
+		t.Fatal(err)
+	}
+	key, err := os.ReadFile(p.KeyFile)
+	if err != nil || len(key) != 32 {
+		t.Fatalf("identity key was not generated privately: len=%d err=%v", len(key), err)
+	}
+	for _, path := range []string{p.KeyFile, filepath.Join(roots.Profiles, "cazper.json"), p.GatewayConfig} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Errorf("%s is missing: %v", path, err)
+			continue
+		}
+		if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+			t.Errorf("%s is not a private regular authority file: %#o", path, info.Mode().Perm())
+		}
+	}
+	if _, err := LoadProfile(filepath.Join(roots.Profiles, "cazper.json")); err != nil {
+		t.Fatalf("installed profile does not load: %v", err)
+	}
+	if err := provisionProfile(source, "cazper", roots); err != nil {
+		t.Fatalf("identical reprovision was not idempotent: %v", err)
+	}
+	p.Overall++
+	body, _ = json.Marshal(p)
+	if err := os.WriteFile(source, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := provisionProfile(source, "cazper", roots); err == nil || !strings.Contains(err.Error(), "policy") {
+		t.Fatalf("changed policy replaced without explicit authorization: %v", err)
+	}
+}
+
+func TestProvisionProfileRefusesPathsOutsideTheAppScope(t *testing.T) {
+	root := t.TempDir()
+	roots := provisionRoots{filepath.Join(root, "profiles"), filepath.Join(root, "keys"), filepath.Join(root, "states"), filepath.Join(root, "gateways")}
+	path, p := testProfile(t)
+	p.App = "cazper"
+	p.KeyFile = filepath.Join(roots.Keys, "other.key")
+	p.StateDir = filepath.Join(roots.States, "cazper")
+	p.GatewaySocket = filepath.Join(roots.Gateways, "cazper", "admin.sock")
+	p.GatewayConfig = filepath.Join(p.StateDir, "gateway", "config.json")
+	body, _ := json.Marshal(p)
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := provisionProfile(path, "cazper", roots); err == nil || !strings.Contains(err.Error(), "scoped") {
+		t.Fatalf("unscoped authority paths accepted: %v", err)
+	}
+}
+
 func TestReconcileProfilesIgnoresCompletedProfiles(t *testing.T) {
 	dir := t.TempDir()
 	path, _ := testProfile(t)

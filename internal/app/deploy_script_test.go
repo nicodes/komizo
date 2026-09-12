@@ -272,15 +272,22 @@ func TestJournaledConfigUsesOnlyTheFixedProfileAndDigest(t *testing.T) {
 	write(t, profile, 0o600, "{}")
 	write(t, filepath.Join(b.bin, "komizo-box"), 0o755, `#!/bin/sh
 printf '%s\n' "$*" > "$STUB_CONFIG/broker-args"
+case " $* " in *" --check "*) exit 0 ;; esac
 printf '{"generation":"fixture","changed":1}\n'
 `)
 	broker := filepath.Join(b.bin, "rollout-blog")
 	write(t, broker, 0o700, b.script)
 	check := exec.Command("sh", broker, "--check")
-	check.Env = append(os.Environ(), "PATH="+b.bin+":/usr/bin:/bin")
+	check.Env = append(os.Environ(), "PATH="+b.bin+":/usr/bin:/bin", "STUB_CONFIG="+b.config)
 	capability, err := check.CombinedOutput()
 	if err != nil || string(capability) != "komizo-rollout-broker-v1 blog\n" {
 		t.Fatalf("broker capability check failed: %v %q", err, capability)
+	}
+	checkArgs := b.read(t, filepath.Join(b.config, "broker-args"))
+	for _, want := range []string{"rollout profile", "--check", "--profile " + profile, "--app blog"} {
+		if !strings.Contains(checkArgs, want) {
+			t.Errorf("broker capability did not verify %q: %s", want, checkArgs)
+		}
 	}
 
 	if out, err := b.deploy(t, "v1"); err == nil || !strings.Contains(out, "dedicated rollout-blog broker") {
