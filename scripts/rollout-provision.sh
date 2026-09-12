@@ -24,5 +24,5 @@ trap 'cleanup; exit 129' HUP INT TERM PIPE
 printf '%s' '__PROFILE_BASE64__' | base64 -d > "$tmp"
 chown root:root "$tmp"
 chmod 600 "$tmp"
-/usr/local/bin/komizo-box rollout profile --provision --profile "$tmp" --app "$APP_NAME"
+__ROLLOUT_BIN__ rollout profile --provision --profile "$tmp" --app "$APP_NAME"
 echo "rollout provision: installed inactive authority for $APP_NAME"
