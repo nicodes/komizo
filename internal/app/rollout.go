@@ -65,9 +65,6 @@ func runRolloutProvision(args []string) error {
 	if err := ensureReachable(tgt, acceptHostKey); err != nil {
 		return err
 	}
-	if _, err := tgt.quiet("/usr/local/bin/komizo-box rollout profile --help >/dev/null 2>&1"); err != nil {
-		return errors.New("host Komizo runtime predates scoped rollout provisioning; install the current released platform before preparing an app")
-	}
 	records, err := tgt.appRecords()
 	if err != nil {
 		return err
@@ -89,7 +86,19 @@ func runRolloutProvision(args []string) error {
 	}
 	snapshot := func() (string, error) { return tgt.runCapture(rolloutProvisionSnapshot(*record)) }
 	step("Refreshing only %s's app-scoped rollout broker", appName)
-	if err := performRolloutProvision(*record, profile, snapshot, tgt.runScript); err != nil {
+	var runtime string
+	install := func() error {
+		var err error
+		runtime, err = installRolloutRuntime(tgt, appName)
+		return err
+	}
+	if err := performRolloutProvision(*record, profile, snapshot, install, func(script string, env map[string]string) error {
+		if env == nil {
+			env = map[string]string{}
+		}
+		env["ROLLOUT_RUNTIME"] = runtime
+		return tgt.runScript(script, env)
+	}); err != nil {
 		return err
 	}
 	if len(profile) == 0 {
@@ -115,13 +124,16 @@ done
 docker ps -a --filter ` + shQuote("label=com.docker.compose.project="+record.name) + ` --format 'container\t{{.ID}}\t{{.State}}\t{{.Image}}' | sort`
 }
 
-func performRolloutProvision(record appRecord, profile []byte, snapshot func() (string, error), runner func(string, map[string]string) error) error {
+func performRolloutProvision(record appRecord, profile []byte, snapshot func() (string, error), install func() error, runner func(string, map[string]string) error) error {
 	before, err := snapshot()
 	if err != nil {
 		return errors.New("cannot prove existing application ownership/state before broker preparation")
 	}
 	if !safeRolloutProvisionOwnership(before) {
 		return errors.New("application directory/files are not already root-owned with modes 0750/0600; refusing to normalize ownership during rollout preparation")
+	}
+	if err := install(); err != nil {
+		return errors.New("app-scoped rollout runtime installation failed before broker preparation")
 	}
 	if err := runner(scripts.AlpineScript, appRefreshEnv(record)); err != nil {
 		return errors.New("app-scoped broker refresh failed; live application activation was not requested")
@@ -131,7 +143,7 @@ func performRolloutProvision(record appRecord, profile []byte, snapshot func() (
 		return errors.New("broker preparation could not prove application containers and ownership remained unchanged")
 	}
 	if len(profile) != 0 {
-		if err := runner(scripts.RolloutProvisionScript(profile), map[string]string{"APP_NAME": record.name}); err != nil {
+		if err := runner(scripts.RolloutProvisionScript(profile, rolloutRuntimePath(record.name)), map[string]string{"APP_NAME": record.name}); err != nil {
 			return errors.New("rollout profile authority installation failed; no gateway or cutover was started")
 		}
 	}

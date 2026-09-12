@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -77,6 +79,16 @@ func boxArch(t target) (string, error) {
 // at worst.
 func stageAgent(t target, bin []byte) error {
 	c := exec.Command("ssh", t.sshArgs("cat > "+scripts.ShQuote(scripts.StagedAgent))...)
+	return runAgentTransfer(c, bin)
+}
+
+func stageAgentAt(t target, bin []byte, destination string) error {
+	command := "set -euC; umask 077; cat > " + scripts.ShQuote(destination)
+	c := exec.Command("ssh", t.sshArgs(command)...)
+	return runAgentTransfer(c, bin)
+}
+
+func runAgentTransfer(c *exec.Cmd, bin []byte) error {
 	c.Stdin = bytes.NewReader(bin)
 	var errb bytes.Buffer
 	c.Stderr = &errb
@@ -87,4 +99,32 @@ func stageAgent(t target, bin []byte) error {
 		return err
 	}
 	return nil
+}
+
+func rolloutRuntimePath(app string) string {
+	return "/usr/local/libexec/komizo/rollouts/" + app + "/komizo-box"
+}
+
+// installRolloutRuntime carries the agent embedded in this verified CLI to one
+// application's private broker path. It never replaces the host-wide agent.
+func installRolloutRuntime(t target, app string) (string, error) {
+	arch, err := boxArch(t)
+	if err != nil {
+		return "", err
+	}
+	path, version := moduleRef()
+	bin, _, err := agent.Get(context.Background(), path, version, arch)
+	if err != nil {
+		return "", err
+	}
+	staged := "/tmp/.komizo-rollout-" + app + "-" + rand.Text()
+	if err := stageAgentAt(t, bin, staged); err != nil {
+		return "", fmt.Errorf("could not stage app-scoped rollout runtime: %w", err)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(bin))
+	destination := rolloutRuntimePath(app)
+	if err := t.runScript(scripts.RolloutRuntimeInstall(staged, destination, digest), nil); err != nil {
+		return "", fmt.Errorf("could not install app-scoped rollout runtime: %w", err)
+	}
+	return destination, nil
 }
