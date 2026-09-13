@@ -3,11 +3,87 @@ package rollout
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"testing"
 	"time"
 )
+
+func TestAbsentCandidateCleanupDoesNotRequireApplicationLifecycle(t *testing.T) {
+	directory := t.TempDir()
+	docker := filepath.Join(directory, "docker")
+	fake := `#!/bin/sh
+if [ "${FAKE_PRESENT:-}" = 1 ]; then
+	case "$*" in
+		*"container ls"*) printf '%s\n' container-id ;;
+		*"container inspect"*) /bin/cat "$FAKE_INSPECTION" ;;
+		*) exit 2 ;;
+	esac
+fi
+`
+	if err := os.WriteFile(docker, []byte(fake), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", directory)
+
+	store, err := OpenStore(context.Background(), filepath.Join(directory, "state"), time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	instance := Instance{
+		Name:       "kmz-0123456789abcdef0123456789abcdef01234567",
+		App:        "fixture",
+		Service:    "assets",
+		Generation: "generation",
+		Identity:   "identity",
+		Mode:       "one-shot",
+	}
+	artifact := instance.Name + ".json"
+	if err := store.WritePrivate(artifact, []byte("{}")); err != nil {
+		t.Fatal(err)
+	}
+
+	proof := Retirement{}
+	for _, action := range []string{"abort-quiesce", "seal", "drain", "stop", "remove"} {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		proof, err = (&Docker{App: instance.App, Store: store}).Lifecycle(ctx, instance, action, proof)
+		cancel()
+		if err != nil {
+			t.Fatalf("%s absent one-shot candidate: %v", action, err)
+		}
+	}
+	if !proof.Absent || proof.Stage != "remove" {
+		t.Fatalf("absence cleanup proof = %+v", proof)
+	}
+	if _, err := os.Stat(store.Path(artifact)); !os.IsNotExist(err) {
+		t.Fatalf("private candidate artifact remains: %v", err)
+	}
+
+	present := container{ID: "container-id"}
+	present.Config.Labels = labels(instance)
+	present.State.StartedAt = "2026-09-13T00:00:00Z"
+	present.State.Running = true
+	present.State.Status = "running"
+	body, err := json.Marshal([]container{present})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inspection := filepath.Join(directory, "inspection.json")
+	if err := os.WriteFile(inspection, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FAKE_PRESENT", "1")
+	t.Setenv("FAKE_INSPECTION", inspection)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	_, err = (&Docker{App: instance.App, Store: store}).Lifecycle(ctx, instance, "abort-quiesce", Retirement{})
+	cancel()
+	if err == nil {
+		t.Fatal("present candidate without an application lifecycle was accepted")
+	}
+}
 
 func TestRemovalNeverSubstitutesForcedKillForApplicationRetirement(t *testing.T) {
 	instance := Instance{Name: "kmz-fixture"}

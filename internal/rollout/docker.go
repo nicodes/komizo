@@ -187,9 +187,6 @@ func (d *Docker) Lifecycle(ctx context.Context, instance Instance, action string
 	if !bounded || ctx.Err() != nil {
 		return proof, errors.New("lifecycle operation requires a live deadline")
 	}
-	if err := instance.Lifecycle.Validate(); err != nil {
-		return proof, err
-	}
 	stage := action
 	if action == "abort-quiesce" {
 		stage = "quiesce"
@@ -217,6 +214,9 @@ func (d *Docker) Lifecycle(ctx context.Context, instance Instance, action string
 		}
 		proof.Stage = stage
 		return proof, nil
+	}
+	if err := instance.Lifecycle.Validate(); err != nil {
+		return proof, err
 	}
 	if proof.Absent {
 		return proof, errors.New("previously absent candidate appeared during abort")
