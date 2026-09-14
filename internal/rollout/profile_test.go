@@ -166,6 +166,22 @@ func TestResumeProfileNoPendingIsDistinct(t *testing.T) {
 	}
 }
 
+func TestScopedResumeRejectsAnotherAppAndAbsentJournal(t *testing.T) {
+	path, profile := testProfile(t)
+	if _, err := ResumeProfileForApp(t.Context(), path, "another"); err == nil || !strings.Contains(err.Error(), "broker application scope") {
+		t.Fatalf("another app used the fixed profile: %v", err)
+	}
+	if _, err := ResumeProfileForApp(t.Context(), path, "../fixture"); err == nil || !strings.Contains(err.Error(), "invalid rollout broker scope") {
+		t.Fatalf("invalid broker app accepted: %v", err)
+	}
+	if err := os.WriteFile(profile.KeyFile, make([]byte, 32), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResumeProfileForApp(t.Context(), path, "fixture"); !errors.Is(err, ErrNoPending) {
+		t.Fatalf("absent journal did not fail distinctly: %v", err)
+	}
+}
+
 func TestReadSecretVersionsAcceptsOnlyPrivateGeneratedMarkers(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "secrets.env")
 	body := "TOKEN=value\n# komizo-secret-version-TOKEN=0123456789abcdef0123456789abcdef\n"
