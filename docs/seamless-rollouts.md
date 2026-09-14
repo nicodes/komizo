@@ -137,6 +137,21 @@ capacity floor, exact Compose version, app-labeled private network and live
 gateway socket before artifact publication or secret rotation. A broker filename
 alone is not readiness.
 
+If a journaled transaction is pending, the existing app deploy identity may
+request only its authoritative continuation:
+
+```sh
+ssh DEPLOY_USER@HOST doas /usr/local/bin/rollout-APP --resume
+```
+
+The generated broker accepts exactly that one argument, verifies its own fixed
+`rollout-APP` filename, takes the normal app deployment lock, and invokes the
+app-scoped runtime with only its baked-in root-owned profile and app name. It
+accepts no release, digest, model, path, profile, budget or alternate app from
+CI. The runtime then takes the private journal lock and reads the pending source;
+an absent/mismatched journal or scope fails closed. This is continuation of
+recorded intent, not submission of an old artifact as a new goal.
+
 The model may use only exact, same-name environment indirection such as
 `TOKEN: ${TOKEN}` for host secrets. Model-selected secret file paths and partial
 interpolation are refused. `set-secret-APP` atomically writes each value together
