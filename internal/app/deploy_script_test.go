@@ -323,6 +323,7 @@ func TestRolloutBrokerResumeAcceptsNoCallerAuthority(t *testing.T) {
 	argsPath := filepath.Join(b.config, "broker-args")
 	write(t, filepath.Join(b.bin, "komizo-box"), 0o755, `#!/bin/sh
 printf '%s\n' "$*" > "$STUB_CONFIG/broker-args"
+cat > "$STUB_CONFIG/broker-stdin"
 printf '{"generation":"pending","changed":1}\n'
 `)
 	broker := filepath.Join(b.bin, "rollout-blog")
@@ -331,6 +332,7 @@ printf '{"generation":"pending","changed":1}\n'
 		t.Helper()
 		cmd := exec.Command("sh", append([]string{path}, args...)...)
 		cmd.Env = append(os.Environ(), "PATH="+b.bin+":/usr/bin:/bin", "STUB_CONFIG="+b.config)
+		cmd.Stdin = strings.NewReader("workflow-actor\nworkflow-token\n")
 		out, err := cmd.CombinedOutput()
 		return string(out), err
 	}
@@ -342,6 +344,9 @@ printf '{"generation":"pending","changed":1}\n'
 	want := "rollout profile --resume --profile " + profile + " --app blog\n"
 	if got := b.read(t, argsPath); got != want {
 		t.Fatalf("resume authority = %q, want %q", got, want)
+	}
+	if got := b.read(t, filepath.Join(b.config, "broker-stdin")); got != "workflow-actor\nworkflow-token\n" {
+		t.Fatalf("resume credentials were not forwarded only on stdin: %q", got)
 	}
 	if _, err := os.Stat(filepath.Join(b.root, "run", "komizo", "deploy-blog.lock")); err != nil {
 		t.Fatalf("resume did not take the normal app deployment lock: %v", err)

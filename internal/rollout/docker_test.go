@@ -222,6 +222,47 @@ esac
 	}
 }
 
+func TestRegistryAuthenticationUsesOnlyPrivateConfigAndStdin(t *testing.T) {
+	directory := t.TempDir()
+	docker := filepath.Join(directory, "docker")
+	argsPath := filepath.Join(directory, "args")
+	stdinPath := filepath.Join(directory, "stdin")
+	configPath := filepath.Join(directory, "config-path")
+	fake := `#!/bin/sh
+printf '%s\n' "$*" > "$FAKE_ARGS"
+printf '%s' "$DOCKER_CONFIG" > "$FAKE_CONFIG_PATH"
+/bin/cat > "$FAKE_STDIN"
+`
+	if err := os.WriteFile(docker, []byte(fake), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", directory)
+	t.Setenv("FAKE_ARGS", argsPath)
+	t.Setenv("FAKE_STDIN", stdinPath)
+	t.Setenv("FAKE_CONFIG_PATH", configPath)
+	t.Setenv("DOCKER_CONFIG", filepath.Join(directory, "ambient-must-not-be-used"))
+	privateConfig := filepath.Join(directory, "private-config")
+	if err := os.Mkdir(privateConfig, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	token := []byte("workflow-token")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	err := (&Docker{DockerConfig: privateConfig}).authenticate(ctx, "registry.example", "workflow-actor", token)
+	cancel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ := os.ReadFile(argsPath)
+	stdin, _ := os.ReadFile(stdinPath)
+	config, _ := os.ReadFile(configPath)
+	if strings.Contains(string(args), string(token)) || string(stdin) != "workflow-token\n" || string(config) != privateConfig {
+		t.Fatalf("registry credential placement args=%q stdin=%q config=%q", args, stdin, config)
+	}
+	if string(args) != "--host unix:///var/run/docker.sock login registry.example --username workflow-actor --password-stdin\n" {
+		t.Fatalf("registry login authority = %q", args)
+	}
+}
+
 func TestPrivateApplicationNetworkPreservesNATControlWithoutPublicRouting(t *testing.T) {
 	for _, internal := range []bool{false, true} {
 		inspection := map[string]any{"Name": "sample-private", "Driver": "bridge", "Scope": "local", "Internal": internal,

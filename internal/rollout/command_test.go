@@ -29,7 +29,7 @@ func TestRolloutStatusDoesNotExposePrivateSource(t *testing.T) {
 	}
 	store.Close()
 	var out, diag bytes.Buffer
-	err = Command(ctx, []string{"status", "--app", "app", "--state-dir", path, "--timeout", "500ms", "--poll", "1ms"}, &out, &diag)
+	err = Command(ctx, []string{"status", "--app", "app", "--state-dir", path, "--timeout", "500ms", "--poll", "1ms"}, strings.NewReader(""), &out, &diag)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestRolloutCommandRejectsBeforeCreatingState(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "not-created")
 	for _, args := range [][]string{{}, {"--app", "app", "--state-dir", state}, {"status", "--app", "app", "--state-dir", state, "--timeout", "1s", "--poll", "1ms"}} {
 		var out, diag bytes.Buffer
-		if err := Command(context.Background(), args, &out, &diag); err == nil {
+		if err := Command(context.Background(), args, strings.NewReader(""), &out, &diag); err == nil {
 			t.Fatal("incomplete command accepted")
 		}
 	}

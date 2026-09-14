@@ -22,7 +22,7 @@ func RunRollout(args []string) error {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	return rollout.Command(ctx, args, os.Stdout, os.Stderr)
+	return rollout.Command(ctx, args, os.Stdin, os.Stdout, os.Stderr)
 }
 
 func runRolloutProvision(args []string) error {
