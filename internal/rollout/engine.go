@@ -228,7 +228,7 @@ func (e *Engine) Run(ctx context.Context, app, network string, source, key []byt
 				err = e.Backend.Stage(op, instance, body)
 				cancel()
 				if err != nil {
-					return result, errors.New("candidate image staging failed; transaction retained for resume")
+					return result, stagingFailure(err)
 				}
 			}
 			op, cancel := context.WithTimeout(ctx, limits.Operation)
@@ -468,6 +468,15 @@ func (e *Engine) Run(ctx context.Context, app, network string, source, key []byt
 			return result, errors.New("unknown rollout journal phase")
 		}
 	}
+}
+
+func stagingFailure(err error) error {
+	for _, diagnostic := range []error{errImagePullDeadline, errImageRegistryAccess, errImageRegistryNetwork, errImageDigestUnavailable, errImagePullUnknown} {
+		if errors.Is(err, diagnostic) {
+			return fmt.Errorf("%s; transaction retained for resume", diagnostic)
+		}
+	}
+	return errors.New("candidate image staging failed; transaction retained for resume")
 }
 
 func (e *Engine) begin(ctx context.Context, state *State, app, network, keyID, goal string, source, key []byte, model *release.Model, limits Limits) (*State, error) {

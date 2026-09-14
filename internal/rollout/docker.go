@@ -50,6 +50,19 @@ type container struct {
 }
 
 func command(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd, err := executorCommand(ctx, name, args...)
+	if err != nil {
+		return nil, err
+	}
+	var output cappedBuffer
+	cmd.Stdout, cmd.Stderr = &output, io.Discard
+	if err := cmd.Run(); err != nil {
+		return nil, errors.New("local executor command failed")
+	}
+	return output.Bytes(), nil
+}
+
+func executorCommand(ctx context.Context, name string, args ...string) (*exec.Cmd, error) {
 	if _, bounded := ctx.Deadline(); !bounded {
 		return nil, errors.New("executor operation requires a deadline")
 	}
@@ -62,12 +75,7 @@ func command(ctx context.Context, name string, args ...string) ([]byte, error) {
 		}
 		cmd.Env = append(cmd.Env, entry)
 	}
-	var output cappedBuffer
-	cmd.Stdout, cmd.Stderr = &output, io.Discard
-	if err := cmd.Run(); err != nil {
-		return nil, errors.New("local executor command failed")
-	}
-	return output.Bytes(), nil
+	return cmd, nil
 }
 
 type cappedBuffer struct{ bytes.Buffer }
@@ -77,6 +85,67 @@ func (b *cappedBuffer) Write(data []byte) (int, error) {
 		return 0, errors.New("executor output limit")
 	}
 	return b.Buffer.Write(data)
+}
+
+// diagnosticBuffer retains only enough private daemon output to select a fixed
+// safe category. Its bytes are never returned or persisted.
+type diagnosticBuffer struct{ bytes.Buffer }
+
+func (b *diagnosticBuffer) Write(data []byte) (int, error) {
+	written := len(data)
+	if remaining := (64 << 10) - b.Len(); remaining > 0 {
+		if len(data) > remaining {
+			data = data[:remaining]
+		}
+		_, _ = b.Buffer.Write(data)
+	}
+	return written, nil
+}
+
+var (
+	errImagePullDeadline      = errors.New("candidate image pull exceeded the configured operation deadline")
+	errImageRegistryAccess    = errors.New("candidate image registry authentication or access was refused")
+	errImageRegistryNetwork   = errors.New("candidate image registry network request failed")
+	errImageDigestUnavailable = errors.New("candidate image digest or platform is unavailable")
+	errImagePullUnknown       = errors.New("candidate image pull failed without a recognized safe diagnostic")
+)
+
+func (d *Docker) pullImage(ctx context.Context, image string) error {
+	cmd, err := executorCommand(ctx, "docker", "--host", "unix:///var/run/docker.sock", "pull", "--quiet", image)
+	if err != nil {
+		return errImagePullUnknown
+	}
+	var diagnostic diagnosticBuffer
+	cmd.Stdout, cmd.Stderr = io.Discard, &diagnostic
+	if err := cmd.Run(); err == nil {
+		return nil
+	}
+	return classifyImagePullFailure(ctx, diagnostic.Bytes())
+}
+
+// classifyImagePullFailure deliberately returns only fixed strings. Docker's
+// raw response can contain a private registry path or credential-bearing URL.
+func classifyImagePullFailure(ctx context.Context, diagnostic []byte) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return errImagePullDeadline
+	}
+	message := strings.ToLower(string(diagnostic))
+	for _, marker := range []string{"unauthorized", "authentication required", "no basic auth credentials", "failed to authorize", "access denied", "pull access denied", "requested access", "forbidden", "insufficient_scope", "denied: denied", "status code: 401", "status code: 403"} {
+		if strings.Contains(message, marker) {
+			return errImageRegistryAccess
+		}
+	}
+	for _, marker := range []string{"manifest unknown", "manifest invalid", "unknown blob", "digest invalid", "no matching manifest", "not found"} {
+		if strings.Contains(message, marker) {
+			return errImageDigestUnavailable
+		}
+	}
+	for _, marker := range []string{"dial tcp", "i/o timeout", "tls handshake timeout", "connection reset", "connection refused", "temporary failure in name resolution", "no such host", "network is unreachable", "context deadline exceeded", "failed to do request", "unexpected eof"} {
+		if strings.Contains(message, marker) {
+			return errImageRegistryNetwork
+		}
+	}
+	return errImagePullUnknown
 }
 
 func (d *Docker) docker(ctx context.Context, args ...string) ([]byte, error) {
@@ -511,7 +580,7 @@ func (d *Docker) checkImageVolumes(ctx context.Context, instance Instance, compo
 		if !allowPull {
 			return errors.New("candidate image is absent after the post-pull capacity gate")
 		}
-		if _, err := d.docker(ctx, "pull", "--quiet", service.Image); err != nil {
+		if err := d.pullImage(ctx, service.Image); err != nil {
 			return err
 		}
 		body, err = d.docker(ctx, "image", "inspect", service.Image)

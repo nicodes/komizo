@@ -1,12 +1,15 @@
 package rollout
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -139,6 +142,83 @@ func TestCandidateStartCannotPullAfterCapacityGate(t *testing.T) {
 	want := []string{"--file", "/private/candidate.json", "up", "--detach", "--no-deps", "--no-recreate", "--pull", "never", "kmz-fixture"}
 	if !slices.Equal(args, want) {
 		t.Fatalf("candidate start arguments = %v, want %v", args, want)
+	}
+}
+
+func TestImagePullDiagnosticsAreBoundedFixedAndRedacted(t *testing.T) {
+	secret := "private.example/owner/unpublished@sha256:" + strings.Repeat("a", 64)
+	token := "ghp_secret-material"
+	tests := []struct {
+		name       string
+		diagnostic string
+		want       error
+	}{
+		{"access", `Error response from daemon: Head "https://` + secret + `?token=` + token + `": unauthorized: authentication required`, errImageRegistryAccess},
+		{"network", `Get "https://` + secret + `": dial tcp: no such host`, errImageRegistryNetwork},
+		{"digest", `manifest unknown: ` + secret + ` not found`, errImageDigestUnavailable},
+		{"unknown", `daemon rejected ` + secret + ` with ` + token, errImagePullUnknown},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := classifyImagePullFailure(context.Background(), []byte(test.diagnostic))
+			if !errors.Is(err, test.want) {
+				t.Fatalf("diagnostic = %v, want %v", err, test.want)
+			}
+			if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), token) {
+				t.Fatalf("sensitive diagnostic escaped: %v", err)
+			}
+		})
+	}
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if err := classifyImagePullFailure(ctx, []byte("unauthorized")); !errors.Is(err, errImagePullDeadline) {
+		t.Fatalf("operation deadline was not authoritative: %v", err)
+	}
+
+	var bounded diagnosticBuffer
+	payload := bytes.Repeat([]byte("x"), 128<<10)
+	if n, err := bounded.Write(payload); err != nil || n != len(payload) || bounded.Len() != 64<<10 {
+		t.Fatalf("bounded diagnostic accepted=%d retained=%d err=%v", n, bounded.Len(), err)
+	}
+}
+
+func TestStagePublishesSafePullCategoryWithoutRawDaemonOutput(t *testing.T) {
+	directory := t.TempDir()
+	docker := filepath.Join(directory, "docker")
+	private := "private.example/owner/unpublished@sha256:" + strings.Repeat("b", 64)
+	token := "ghp_must-not-escape"
+	fake := `#!/bin/sh
+case "$*" in
+  *"container ls"*) exit 0 ;;
+  *"image inspect"*) exit 1 ;;
+  *" pull --quiet "*) printf '%s\n' 'Error response from daemon: Head "https://PRIVATE?token=SECRET": denied: denied' >&2; exit 1 ;;
+  *) exit 2 ;;
+esac
+`
+	fake = strings.ReplaceAll(strings.ReplaceAll(fake, "PRIVATE", private), "SECRET", token)
+	if err := os.WriteFile(docker, []byte(fake), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", directory)
+	store, err := OpenStore(context.Background(), filepath.Join(directory, "state"), time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	instance := Instance{Name: "kmz-0123456789abcdef0123456789abcdef01234567", App: "fixture", Service: "gate", Generation: "generation", Identity: "identity", Mode: "request"}
+	compose, _ := json.Marshal(map[string]any{"services": map[string]any{instance.Name: map[string]any{"image": private}}})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	err = (&Docker{App: instance.App, Store: store}).Stage(ctx, instance, compose)
+	cancel()
+	if !errors.Is(err, errImageRegistryAccess) {
+		t.Fatalf("stage category = %v", err)
+	}
+	if strings.Contains(err.Error(), private) || strings.Contains(err.Error(), token) {
+		t.Fatalf("private pull details escaped: %v", err)
+	}
+	if _, statErr := os.Stat(store.Path(instance.Name + ".json")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("failed stage wrote candidate artifact: %v", statErr)
 	}
 }
 
