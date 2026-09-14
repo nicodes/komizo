@@ -424,9 +424,26 @@ func RunProfile(parent context.Context, profilePath, modelPath string) (Result, 
 // ResumeProfile resumes only a recorded transaction. It never starts a new
 // release from a mutable model path; the journaled source remains authoritative.
 func ResumeProfile(parent context.Context, profilePath string) (Result, error) {
+	return resumeProfile(parent, profilePath, "")
+}
+
+// ResumeProfileForApp adds the broker's fixed application scope to the
+// root-owned profile and journal checks. No caller-supplied model or policy is
+// accepted; direct root reconciliation may continue to use ResumeProfile.
+func ResumeProfileForApp(parent context.Context, profilePath, app string) (Result, error) {
+	if !scopeName(app) {
+		return Result{}, errors.New("invalid rollout broker scope")
+	}
+	return resumeProfile(parent, profilePath, app)
+}
+
+func resumeProfile(parent context.Context, profilePath, expectedApp string) (Result, error) {
 	profile, err := LoadProfile(profilePath)
 	if err != nil {
 		return Result{}, err
+	}
+	if expectedApp != "" && profile.App != expectedApp {
+		return Result{}, errors.New("rollout profile does not match the broker application scope")
 	}
 	key, err := readInput(profile.KeyFile, 32, true)
 	if err != nil {

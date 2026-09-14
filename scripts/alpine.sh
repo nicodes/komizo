@@ -619,6 +619,7 @@ ROLLOUT_PROFILE="__ROLLOUT_PROFILE__"
 
 broker="${0##*/}"
 if [ "${1:-}" = "--check" ]; then
+	[ "$#" -eq 1 ] || { echo "deploy: --check accepts no other arguments" >&2; exit 1; }
 	case "$broker" in
 		rollout-__APP_NAME__)
 			"$ROLLOUT_BIN" rollout profile --check --profile "$ROLLOUT_PROFILE" --app __APP_NAME__
@@ -628,6 +629,15 @@ if [ "${1:-}" = "--check" ]; then
 	esac
 	echo "deploy: journaled capability check used the legacy command" >&2
 	exit 1
+fi
+
+resume=false
+if [ "${1:-}" = "--resume" ]; then
+	[ "$#" -eq 1 ] || { echo "deploy: --resume accepts no other arguments" >&2; exit 1; }
+	case "$broker" in
+		rollout-__APP_NAME__) resume=true ;;
+		*) echo "deploy: journal resume must use the dedicated rollout-__APP_NAME__ broker" >&2; exit 1 ;;
+	esac
 fi
 
 # Baked in rather than derived. The app's name decides the upstream the shared
@@ -723,6 +733,15 @@ then
 		echo "deploy: another deploy of __APP_NAME__ has been running for over 5 minutes" >&2
 		exit 1
 	fi
+fi
+
+# Resume accepts no model, release, digest, path, profile, app or budget from
+# CI. The broker fixes all authority-bearing inputs and the runtime reads only
+# the source already authenticated in the pending private journal.
+if [ "$resume" = true ]; then
+	"$ROLLOUT_BIN" rollout profile --resume --profile "$ROLLOUT_PROFILE" --app __APP_NAME__
+	echo "deploy: resumed=yes"
+	exit 0
 fi
 
 # Registry authentication happens HERE, as root, and not over the deploy user's
