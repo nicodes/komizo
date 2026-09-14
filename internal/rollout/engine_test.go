@@ -24,6 +24,7 @@ type memoryBackend struct {
 	failRemoveOnce   bool
 	failPrepareOnce  bool
 	stageErr         error
+	prepareErr       error
 	lifecycleCalls   []string
 	failLifecycle    string
 	lifecycleHook    func(context.Context, string) error
@@ -71,6 +72,9 @@ func (b *memoryBackend) Capacity(context.Context) error {
 }
 func (b *memoryBackend) Prepare(_ context.Context, i Instance, _ []byte) error {
 	b.events = append(b.events, "start:"+i.Service)
+	if b.prepareErr != nil {
+		return b.prepareErr
+	}
 	if _, exists := b.instances[i.Name]; !exists {
 		b.created = append(b.created, i.Name)
 		b.instances[i.Name] = i
@@ -295,6 +299,28 @@ func TestEnginePublishesOnlyFixedImageStagingDiagnostics(t *testing.T) {
 		if loadErr != nil || state == nil || state.Pending == nil || state.Pending.Phase != "prepare" || !state.Pending.SwitchedAt.IsZero() || !state.Pending.SwitchStartedAt.IsZero() {
 			t.Fatalf("failed staging did not preserve pre-switch journal: state=%+v err=%v", state, loadErr)
 		}
+	}
+}
+
+func TestEnginePublishesOnlyFixedCandidateStartDiagnostics(t *testing.T) {
+	for _, diagnostic := range []error{errCandidateStartDeadline, errCandidateStartDaemon, errCandidateStartImage, errCandidateStartDefinition, errCandidateStartResource, errCandidateStartProcess, errCandidateStartUnknown} {
+		e, backend, _, key, limits := newEngine(t)
+		backend.prepareErr = diagnostic
+		_, err := runEngine(t, e, sourceModel("b"), key, limits)
+		if err == nil || err.Error() != diagnostic.Error()+"; transaction retained for resume" {
+			t.Fatalf("published start diagnostic = %v, want fixed %q", err, diagnostic)
+		}
+		state, loadErr := e.Store.Load()
+		if loadErr != nil || state == nil || state.Pending == nil || state.Pending.Phase != "start" || !state.Pending.SwitchedAt.IsZero() || !state.Pending.SwitchStartedAt.IsZero() {
+			t.Fatalf("failed start did not preserve pre-switch journal: state=%+v err=%v", state, loadErr)
+		}
+	}
+	e, backend, _, key, limits := newEngine(t)
+	private := "private.example/owner/unpublished@sha256:" + strings.Repeat("e", 64)
+	backend.prepareErr = errors.New("raw daemon failure for " + private)
+	_, err := runEngine(t, e, sourceModel("b"), key, limits)
+	if err == nil || err.Error() != errCandidateStartUnknown.Error()+"; transaction retained for resume" || strings.Contains(err.Error(), private) {
+		t.Fatalf("unrecognized private start failure escaped fixed fallback: %v", err)
 	}
 }
 

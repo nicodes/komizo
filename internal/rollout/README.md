@@ -51,6 +51,9 @@ external. Removal cleans anonymous volumes, never named volumes.
 - Atomic same-directory replacement with file and directory fsync.
 - Source/config in the private journal, never in CLI status output.
 - Persisted transition checkpoints and deterministic instance names on resume.
+- Image-pull and candidate-start failures expose only bounded fixed categories;
+  raw registry, Compose, daemon, path, image and container diagnostics are never
+  returned or persisted.
 - Key/app scope must match. Re-run the same command/model/budgets to resume;
   another release cannot displace an unfinished transaction.
 - Lost switch responses are reconciled against routes, parent, generation and epoch.
