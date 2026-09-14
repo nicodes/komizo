@@ -104,11 +104,18 @@ func (b *diagnosticBuffer) Write(data []byte) (int, error) {
 }
 
 var (
-	errImagePullDeadline      = errors.New("candidate image pull exceeded the configured operation deadline")
-	errImageRegistryAccess    = errors.New("candidate image registry authentication or access was refused")
-	errImageRegistryNetwork   = errors.New("candidate image registry network request failed")
-	errImageDigestUnavailable = errors.New("candidate image digest or platform is unavailable")
-	errImagePullUnknown       = errors.New("candidate image pull failed without a recognized safe diagnostic")
+	errImagePullDeadline        = errors.New("candidate image pull exceeded the configured operation deadline")
+	errImageRegistryAccess      = errors.New("candidate image registry authentication or access was refused")
+	errImageRegistryNetwork     = errors.New("candidate image registry network request failed")
+	errImageDigestUnavailable   = errors.New("candidate image digest or platform is unavailable")
+	errImagePullUnknown         = errors.New("candidate image pull failed without a recognized safe diagnostic")
+	errCandidateStartDeadline   = errors.New("candidate start exceeded the configured operation deadline")
+	errCandidateStartDaemon     = errors.New("candidate start could not reach the local container runtime")
+	errCandidateStartImage      = errors.New("candidate start could not use the staged image")
+	errCandidateStartDefinition = errors.New("candidate start definition was refused")
+	errCandidateStartResource   = errors.New("candidate start was refused by local resource or network allocation")
+	errCandidateStartProcess    = errors.New("candidate process exited during startup")
+	errCandidateStartUnknown    = errors.New("candidate start failed without a recognized safe diagnostic")
 )
 
 func (d *Docker) pullImage(ctx context.Context, image string) error {
@@ -208,6 +215,56 @@ func classifyImagePullFailure(ctx context.Context, diagnostic []byte) error {
 		}
 	}
 	return errImagePullUnknown
+}
+
+// candidateStartCommand retains a bounded diagnostic only long enough to pick
+// a fixed category. Raw Compose or daemon output can contain private paths,
+// image identities, container names, environment values, or credential-bearing
+// URLs, so it is never returned or persisted.
+func candidateStartCommand(ctx context.Context, name string, args ...string) error {
+	cmd, err := executorCommand(ctx, name, args...)
+	if err != nil {
+		return errCandidateStartUnknown
+	}
+	var diagnostic diagnosticBuffer
+	cmd.Stdout, cmd.Stderr = &diagnostic, &diagnostic
+	if err := cmd.Run(); err == nil {
+		return nil
+	}
+	return classifyCandidateStartFailure(ctx, diagnostic.Bytes())
+}
+
+func classifyCandidateStartFailure(ctx context.Context, diagnostic []byte) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return errCandidateStartDeadline
+	}
+	message := strings.ToLower(string(diagnostic))
+	for _, marker := range []string{"cannot connect to the docker daemon", "error during connect", "is the docker daemon running", "permission denied while trying to connect", "connection refused"} {
+		if strings.Contains(message, marker) {
+			return errCandidateStartDaemon
+		}
+	}
+	for _, marker := range []string{"no such image", "image is missing", "unable to find image", "image not known"} {
+		if strings.Contains(message, marker) {
+			return errCandidateStartImage
+		}
+	}
+	for _, marker := range []string{"validating ", "invalid compose project", "invalid project", "no such service", "additional properties are not allowed", "service must be a mapping"} {
+		if strings.Contains(message, marker) {
+			return errCandidateStartDefinition
+		}
+	}
+	for _, marker := range []string{"no space left on device", "cannot allocate memory", "resource temporarily unavailable", "failed to create endpoint", "failed to set up container networking", "address already in use", "network ", "is already in use by container"} {
+		if strings.Contains(message, marker) {
+			return errCandidateStartResource
+		}
+	}
+	for _, marker := range []string{"dependency failed to start", "exited (", "failed to start: container", "did not complete successfully"} {
+		if strings.Contains(message, marker) {
+			return errCandidateStartProcess
+		}
+	}
+	return errCandidateStartUnknown
 }
 
 func (d *Docker) docker(ctx context.Context, args ...string) ([]byte, error) {
@@ -475,8 +532,7 @@ func (d *Docker) Prepare(ctx context.Context, instance Instance, compose []byte)
 		if instance.Mode == "one-shot" && existing.State.Status == "exited" && existing.State.ExitCode == 0 && !existing.State.OOMKilled && !existing.State.Dead {
 			return nil
 		}
-		_, err := d.docker(ctx, "start", instance.Name)
-		return err
+		return candidateStartCommand(ctx, "docker", "--host", "unix:///var/run/docker.sock", "start", instance.Name)
 	}
 	if err := d.checkImageVolumes(ctx, instance, compose, false); err != nil {
 		return err
@@ -489,14 +545,13 @@ func (d *Docker) Prepare(ctx context.Context, instance Instance, compose []byte)
 		args = append(args, "--env-file", d.EnvFile)
 	}
 	args = append(args, composeStartArguments(d.Store.Path(file), instance.Name)...)
-	_, err = command(ctx, d.ComposeBinary, args...)
-	if err != nil {
+	if err := candidateStartCommand(ctx, d.ComposeBinary, args...); err != nil {
 		return err
 	}
 	created, err := d.inspect(ctx, instance)
 	completedOneShot := instance.Mode == "one-shot" && created != nil && created.State.Status == "exited" && created.State.ExitCode == 0 && !created.State.OOMKilled && !created.State.Dead
 	if err != nil || created == nil || (!created.State.Running && !completedOneShot) {
-		return errors.New("candidate did not start with expected ownership")
+		return errCandidateStartProcess
 	}
 	return nil
 }

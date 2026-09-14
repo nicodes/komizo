@@ -183,6 +183,64 @@ func TestImagePullDiagnosticsAreBoundedFixedAndRedacted(t *testing.T) {
 	}
 }
 
+func TestCandidateStartDiagnosticsAreBoundedFixedAndRedacted(t *testing.T) {
+	private := "private.example/owner/unpublished@sha256:" + strings.Repeat("c", 64)
+	token := "ghp_candidate-start-secret"
+	tests := []struct {
+		name       string
+		diagnostic string
+		want       error
+	}{
+		{"daemon", `Cannot connect to the Docker daemon at unix:///var/run/docker.sock: ` + private, errCandidateStartDaemon},
+		{"image", `Error response from daemon: No such image: ` + private, errCandidateStartImage},
+		{"definition", `validating /private/candidate.json: services.invalid additional properties are not allowed ` + token, errCandidateStartDefinition},
+		{"resource", `failed to create endpoint: no space left on device ` + private, errCandidateStartResource},
+		{"process", `dependency failed to start: container ` + private + ` exited (1)`, errCandidateStartProcess},
+		{"unknown", `daemon rejected ` + private + ` with ` + token, errCandidateStartUnknown},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := classifyCandidateStartFailure(context.Background(), []byte(test.diagnostic))
+			if !errors.Is(err, test.want) {
+				t.Fatalf("diagnostic = %v, want %v", err, test.want)
+			}
+			if strings.Contains(err.Error(), private) || strings.Contains(err.Error(), token) {
+				t.Fatalf("sensitive diagnostic escaped: %v", err)
+			}
+		})
+	}
+
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if err := classifyCandidateStartFailure(ctx, []byte("no such image")); !errors.Is(err, errCandidateStartDeadline) {
+		t.Fatalf("operation deadline was not authoritative: %v", err)
+	}
+	var bounded diagnosticBuffer
+	_, _ = bounded.Write(append(bytes.Repeat([]byte("x"), 64<<10), []byte("no such image")...))
+	if err := classifyCandidateStartFailure(context.Background(), bounded.Bytes()); !errors.Is(err, errCandidateStartUnknown) {
+		t.Fatalf("diagnostic beyond the retained bound affected classification: %v", err)
+	}
+}
+
+func TestCandidateStartCommandPublishesOnlyFixedCategory(t *testing.T) {
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh unavailable")
+	}
+	private := "private.example/owner/unpublished@sha256:" + strings.Repeat("d", 64)
+	token := "ghp_start-command-secret"
+	t.Setenv("PRIVATE", private)
+	t.Setenv("TOKEN", token)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	err := candidateStartCommand(ctx, "sh", "-c", `printf '%s' "$PRIVATE $TOKEN no such image"; printf '%s' "$PRIVATE $TOKEN" >&2; exit 1`)
+	if !errors.Is(err, errCandidateStartImage) {
+		t.Fatalf("start category = %v", err)
+	}
+	if strings.Contains(err.Error(), private) || strings.Contains(err.Error(), token) {
+		t.Fatalf("private start details escaped: %v", err)
+	}
+}
+
 func TestStagePublishesSafePullCategoryWithoutRawDaemonOutput(t *testing.T) {
 	directory := t.TempDir()
 	docker := filepath.Join(directory, "docker")
