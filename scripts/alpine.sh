@@ -739,6 +739,9 @@ fi
 # CI. The broker fixes all authority-bearing inputs and the runtime reads only
 # the source already authenticated in the pending private journal.
 if [ "$resume" = true ]; then
+	# The existing workflow identity is sent on stdin, never argv. The scoped
+	# runtime derives registry authority from the signed pending source and keeps
+	# its Docker credential in an operation-private temporary directory.
 	"$ROLLOUT_BIN" rollout profile --resume --profile "$ROLLOUT_PROFILE" --app __APP_NAME__
 	echo "deploy: resumed=yes"
 	exit 0

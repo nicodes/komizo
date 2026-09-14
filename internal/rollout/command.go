@@ -14,9 +14,9 @@ import (
 
 // Command is an operator-only local Docker operation, not a signed box command
 // and not a new privilege grant for CI deploy accounts.
-func Command(parent context.Context, args []string, output, diagnostics io.Writer) error {
+func Command(parent context.Context, args []string, input io.Reader, output, diagnostics io.Writer) error {
 	if len(args) != 0 && args[0] == "profile" {
-		return profileCommand(parent, args[1:], output, diagnostics)
+		return profileCommand(parent, args[1:], input, output, diagnostics)
 	}
 	if len(args) != 0 && args[0] == "status" {
 		return statusCommand(parent, args[1:], output, diagnostics)
@@ -99,7 +99,7 @@ func Command(parent context.Context, args []string, output, diagnostics io.Write
 	return json.NewEncoder(output).Encode(result)
 }
 
-func profileCommand(parent context.Context, args []string, output, diagnostics io.Writer) error {
+func profileCommand(parent context.Context, args []string, input io.Reader, output, diagnostics io.Writer) error {
 	flags := flag.NewFlagSet("rollout profile", flag.ContinueOnError)
 	flags.SetOutput(diagnostics)
 	profilePath := flags.String("profile", "", "root-owned application rollout profile")
@@ -135,7 +135,7 @@ func profileCommand(parent context.Context, args []string, output, diagnostics i
 		if *app == "" {
 			result, err = ResumeProfile(parent, *profilePath)
 		} else {
-			result, err = ResumeProfileForApp(parent, *profilePath, *app)
+			result, err = ResumeProfileForApp(parent, *profilePath, *app, input)
 		}
 	} else {
 		result, err = RunProfile(parent, *profilePath, *modelPath)
