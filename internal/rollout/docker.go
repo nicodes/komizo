@@ -24,6 +24,7 @@ type Docker struct {
 	App, Network                  string
 	ComposeBinary, ComposeVersion string
 	EnvFile                       string
+	DockerConfig                  string
 	Store                         *Store
 	MinFreeMemory, MinFreeDisk    uint64
 }
@@ -115,12 +116,73 @@ func (d *Docker) pullImage(ctx context.Context, image string) error {
 	if err != nil {
 		return errImagePullUnknown
 	}
+	overrideCommandEnv(cmd, "DOCKER_CONFIG", d.DockerConfig)
 	var diagnostic diagnosticBuffer
 	cmd.Stdout, cmd.Stderr = io.Discard, &diagnostic
 	if err := cmd.Run(); err == nil {
 		return nil
 	}
 	return classifyImagePullFailure(ctx, diagnostic.Bytes())
+}
+
+func overrideCommandEnv(cmd *exec.Cmd, key, value string) {
+	if value == "" {
+		return
+	}
+	environment := cmd.Env[:0]
+	for _, entry := range cmd.Env {
+		name, _, _ := strings.Cut(entry, "=")
+		if name != key {
+			environment = append(environment, entry)
+		}
+	}
+	cmd.Env = append(environment, key+"="+value)
+}
+
+func (d *Docker) authenticate(ctx context.Context, registry, username string, token []byte) error {
+	if d.DockerConfig == "" || !registryHost(registry) || !registryUsername(username) || len(token) == 0 || len(token) > 16<<10 || bytes.ContainsAny(token, "\x00\r\n") {
+		return errors.New("invalid bounded registry authentication input")
+	}
+	cmd, err := executorCommand(ctx, "docker", "--host", "unix:///var/run/docker.sock", "login", registry, "--username", username, "--password-stdin")
+	if err != nil {
+		return errImagePullUnknown
+	}
+	overrideCommandEnv(cmd, "DOCKER_CONFIG", d.DockerConfig)
+	password := make([]byte, len(token)+1)
+	copy(password, token)
+	password[len(token)] = '\n'
+	defer clear(password)
+	cmd.Stdin = bytes.NewReader(password)
+	var diagnostic diagnosticBuffer
+	cmd.Stdout, cmd.Stderr = io.Discard, &diagnostic
+	if err := cmd.Run(); err == nil {
+		return nil
+	}
+	return classifyImagePullFailure(ctx, diagnostic.Bytes())
+}
+
+func registryHost(value string) bool {
+	if value == "" || len(value) > 253 || strings.ContainsAny(value, "\x00\r\n/@") {
+		return false
+	}
+	for _, c := range value {
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '.' || c == ':' || c == '-' || c == '_') {
+			return false
+		}
+	}
+	return true
+}
+
+func registryUsername(value string) bool {
+	if value == "" || len(value) > 255 {
+		return false
+	}
+	for _, c := range value {
+		if !(c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '.' || c == '_' || c == '@' || c == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // classifyImagePullFailure deliberately returns only fixed strings. Docker's

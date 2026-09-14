@@ -144,6 +144,14 @@ request only its authoritative continuation:
 ssh DEPLOY_USER@HOST doas /usr/local/bin/rollout-APP --resume
 ```
 
+The existing workflow writes exactly two newline-terminated fields to that
+remote command's stdin: its registry username and existing registry token. The
+remote argv remains exactly the command above. The scoped runtime bounds and
+validates both fields, derives one registry host from the signed pending
+candidate set, authenticates through an operation-private Docker configuration,
+and removes it before returning. No registry host, image, model, policy, path or
+permission is accepted from CI.
+
 The generated broker accepts exactly that one argument, verifies its own fixed
 `rollout-APP` filename, takes the normal app deployment lock, and invokes the
 app-scoped runtime with only its baked-in root-owned profile and app name. It

@@ -14,7 +14,7 @@ func runLocalRollout(args []string) error {
 	}
 	ctx, cancel := signalContext()
 	defer cancel()
-	return rollout.Command(ctx, args, os.Stdout, os.Stderr)
+	return rollout.Command(ctx, args, os.Stdin, os.Stdout, os.Stderr)
 }
 
 func runGateway(args []string) error {

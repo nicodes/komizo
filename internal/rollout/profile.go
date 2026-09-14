@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -373,10 +374,10 @@ func (p Profile) run(ctx context.Context, source, key []byte) (Result, error) {
 		return Result{}, err
 	}
 	defer store.Close()
-	return p.runWithStore(ctx, store, source, key)
+	return p.runWithStore(ctx, store, source, key, "")
 }
 
-func (p Profile) runWithStore(ctx context.Context, store *Store, source, key []byte) (Result, error) {
+func (p Profile) runWithStore(ctx context.Context, store *Store, source, key []byte, dockerConfig string) (Result, error) {
 	versions := map[string]string{}
 	if p.SecretFile != "" {
 		var err error
@@ -394,7 +395,7 @@ func (p Profile) runWithStore(ctx context.Context, store *Store, source, key []b
 	if err != nil {
 		return Result{}, err
 	}
-	backend := &Docker{App: p.App, Network: p.Network, ComposeBinary: p.ComposeBinary, ComposeVersion: p.ComposeVersion, EnvFile: p.SecretFile, Store: store, MinFreeMemory: p.MinFreeMemory, MinFreeDisk: p.MinFreeDisk}
+	backend := &Docker{App: p.App, Network: p.Network, ComposeBinary: p.ComposeBinary, ComposeVersion: p.ComposeVersion, EnvFile: p.SecretFile, DockerConfig: dockerConfig, Store: store, MinFreeMemory: p.MinFreeMemory, MinFreeDisk: p.MinFreeDisk}
 	return (&Engine{Store: store, Backend: backend, Router: router}).Run(ctx, p.App, p.Network, bound, key, p.Limits)
 }
 
@@ -424,20 +425,20 @@ func RunProfile(parent context.Context, profilePath, modelPath string) (Result, 
 // ResumeProfile resumes only a recorded transaction. It never starts a new
 // release from a mutable model path; the journaled source remains authoritative.
 func ResumeProfile(parent context.Context, profilePath string) (Result, error) {
-	return resumeProfile(parent, profilePath, "")
+	return resumeProfile(parent, profilePath, "", nil)
 }
 
 // ResumeProfileForApp adds the broker's fixed application scope to the
 // root-owned profile and journal checks. No caller-supplied model or policy is
 // accepted; direct root reconciliation may continue to use ResumeProfile.
-func ResumeProfileForApp(parent context.Context, profilePath, app string) (Result, error) {
+func ResumeProfileForApp(parent context.Context, profilePath, app string, input io.Reader) (Result, error) {
 	if !scopeName(app) {
 		return Result{}, errors.New("invalid rollout broker scope")
 	}
-	return resumeProfile(parent, profilePath, app)
+	return resumeProfile(parent, profilePath, app, input)
 }
 
-func resumeProfile(parent context.Context, profilePath, expectedApp string) (Result, error) {
+func resumeProfile(parent context.Context, profilePath, expectedApp string, credentialInput io.Reader) (Result, error) {
 	profile, err := LoadProfile(profilePath)
 	if err != nil {
 		return Result{}, err
@@ -461,7 +462,95 @@ func resumeProfile(parent context.Context, profilePath, expectedApp string) (Res
 	if err != nil || state == nil || state.Pending == nil || state.App != profile.App {
 		return Result{}, ErrNoPending
 	}
-	return profile.runWithStore(ctx, store, slices.Clone(state.Pending.Source), key)
+	if expectedApp == "" {
+		return profile.runWithStore(ctx, store, slices.Clone(state.Pending.Source), key, "")
+	}
+	if credentialInput == nil {
+		return Result{}, errors.New("scoped resume requires bounded registry credentials on stdin")
+	}
+	username, token, err := readRegistryCredentials(credentialInput)
+	if err != nil {
+		return Result{}, err
+	}
+	defer clear(token)
+	registry, err := pendingRegistry(state.Pending, key)
+	if err != nil {
+		return Result{}, err
+	}
+	dockerConfig, err := os.MkdirTemp("", ".komizo-registry-")
+	if err != nil {
+		return Result{}, errors.New("cannot create private registry authentication directory")
+	}
+	defer os.RemoveAll(dockerConfig)
+	backend := &Docker{DockerConfig: dockerConfig}
+	op, cancel := context.WithTimeout(ctx, profile.Limits.Operation)
+	err = backend.authenticate(op, registry, username, token)
+	cancel()
+	clear(token)
+	if err != nil {
+		return Result{}, stagingFailure(err)
+	}
+	return profile.runWithStore(ctx, store, slices.Clone(state.Pending.Source), key, dockerConfig)
+}
+
+func readRegistryCredentials(input io.Reader) (string, []byte, error) {
+	data, err := io.ReadAll(io.LimitReader(input, 64<<10+1))
+	if err != nil || len(data) > 64<<10 {
+		clear(data)
+		return "", nil, errors.New("invalid bounded registry credentials")
+	}
+	defer clear(data)
+	lines := bytes.Split(data, []byte{'\n'})
+	if len(lines) != 3 || len(lines[2]) != 0 || !registryUsername(string(lines[0])) || len(lines[1]) == 0 || len(lines[1]) > 16<<10 || bytes.ContainsAny(lines[1], "\x00\r\n") {
+		return "", nil, errors.New("invalid bounded registry credentials")
+	}
+	token := slices.Clone(lines[1])
+	return string(lines[0]), token, nil
+}
+
+func pendingRegistry(tx *Transaction, key []byte) (string, error) {
+	if tx == nil || len(tx.Candidates) == 0 {
+		return "", errors.New("pending source has no candidate registry scope")
+	}
+	model, err := release.Resolve(tx.Source, key)
+	if err != nil {
+		return "", errors.New("pending rollout source is invalid")
+	}
+	registry := ""
+	for _, service := range slices.Sorted(maps.Keys(tx.Candidates)) {
+		instance := tx.Candidates[service]
+		compose, err := model.CandidateCompose(service, instance.Name, instance.App, tx.Network, labels(instance))
+		if err != nil {
+			return "", errors.New("pending candidate registry scope is invalid")
+		}
+		var document struct {
+			Services map[string]struct {
+				Image string `json:"image"`
+			} `json:"services"`
+		}
+		if json.Unmarshal(compose, &document) != nil {
+			return "", errors.New("pending candidate registry scope is invalid")
+		}
+		image := document.Services[instance.Name].Image
+		host, ok := imageRegistryHost(image)
+		if !ok || registry != "" && registry != host {
+			return "", errors.New("pending candidates do not have one fixed registry scope")
+		}
+		registry = host
+	}
+	return registry, nil
+}
+
+func imageRegistryHost(image string) (string, bool) {
+	name, digest, ok := strings.Cut(image, "@sha256:")
+	if !ok || name == "" || !strings.Contains(name, "/") || len(digest) != 64 || strings.ContainsFunc(digest, func(c rune) bool { return !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') }) {
+		return "", false
+	}
+	first, _, _ := strings.Cut(name, "/")
+	if !strings.ContainsAny(first, ".:") && first != "localhost" {
+		first = "docker.io"
+	}
+	return first, registryHost(first)
 }
 
 // ReconcileProfiles gives rootd a bounded, fail-closed recovery pass. Profile
