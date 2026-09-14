@@ -120,7 +120,7 @@ func profileCommand(parent context.Context, args []string, output, diagnostics i
 			modes++
 		}
 	}
-	if flags.NArg() != 0 || *profilePath == "" || modes != 1 || ((*check || *provision) && !scopeName(*app)) {
+	if flags.NArg() != 0 || *profilePath == "" || modes != 1 || ((*check || *provision) && !scopeName(*app)) || (*resume && *app != "" && !scopeName(*app)) {
 		return errors.New("profile rollout requires --profile and exactly one operation; check/provision also require app")
 	}
 	if *provision {
@@ -132,7 +132,11 @@ func profileCommand(parent context.Context, args []string, output, diagnostics i
 	var result Result
 	var err error
 	if *resume {
-		result, err = ResumeProfile(parent, *profilePath)
+		if *app == "" {
+			result, err = ResumeProfile(parent, *profilePath)
+		} else {
+			result, err = ResumeProfileForApp(parent, *profilePath, *app)
+		}
 	} else {
 		result, err = RunProfile(parent, *profilePath, *modelPath)
 	}

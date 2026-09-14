@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -309,6 +310,67 @@ printf '{"generation":"fixture","changed":1}\n'
 	}
 	if strings.Contains(b.dotenv(t), "APP_VERSION") {
 		t.Fatal("journaled path fell through to legacy activation")
+	}
+}
+
+func TestRolloutBrokerResumeAcceptsNoCallerAuthority(t *testing.T) {
+	b := newDeployBox(t)
+	profile := filepath.Join(b.root, "etc", "komizo", "rollouts", "blog.json")
+	if err := os.MkdirAll(filepath.Dir(profile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, profile, 0o600, "{}")
+	argsPath := filepath.Join(b.config, "broker-args")
+	write(t, filepath.Join(b.bin, "komizo-box"), 0o755, `#!/bin/sh
+printf '%s\n' "$*" > "$STUB_CONFIG/broker-args"
+printf '{"generation":"pending","changed":1}\n'
+`)
+	broker := filepath.Join(b.bin, "rollout-blog")
+	write(t, broker, 0o700, b.script)
+	run := func(path string, args ...string) (string, error) {
+		t.Helper()
+		cmd := exec.Command("sh", append([]string{path}, args...)...)
+		cmd.Env = append(os.Environ(), "PATH="+b.bin+":/usr/bin:/bin", "STUB_CONFIG="+b.config)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+
+	out, err := run(broker, "--resume")
+	if err != nil || out != "{\"generation\":\"pending\",\"changed\":1}\ndeploy: resumed=yes\n" {
+		t.Fatalf("scoped resume failed: %v %q", err, out)
+	}
+	want := "rollout profile --resume --profile " + profile + " --app blog\n"
+	if got := b.read(t, argsPath); got != want {
+		t.Fatalf("resume authority = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(filepath.Join(b.root, "run", "komizo", "deploy-blog.lock")); err != nil {
+		t.Fatalf("resume did not take the normal app deployment lock: %v", err)
+	}
+
+	for _, control := range []struct {
+		name string
+		path string
+		args []string
+		want string
+	}{
+		{"resume extra app", broker, []string{"--resume", "--app", "other"}, "accepts no other arguments"},
+		{"resume extra profile", broker, []string{"--resume", "--profile", "/tmp/other"}, "accepts no other arguments"},
+		{"check extra", broker, []string{"--check", "extra"}, "accepts no other arguments"},
+		{"legacy command", filepath.Join(b.bin, "deploy-blog"), []string{"--resume"}, "dedicated rollout-blog broker"},
+	} {
+		t.Run(control.name, func(t *testing.T) {
+			_ = os.Remove(argsPath)
+			if control.path != broker {
+				write(t, control.path, 0o700, b.script)
+			}
+			out, err := run(control.path, control.args...)
+			if err == nil || !strings.Contains(out, control.want) {
+				t.Fatalf("unscoped resume accepted: %v %q", err, out)
+			}
+			if _, err := os.Stat(argsPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("refused input reached the privileged runtime")
+			}
+		})
 	}
 }
 
