@@ -23,6 +23,7 @@ type memoryBackend struct {
 	failCapacity     bool
 	failRemoveOnce   bool
 	failPrepareOnce  bool
+	stageErr         error
 	lifecycleCalls   []string
 	failLifecycle    string
 	lifecycleHook    func(context.Context, string) error
@@ -52,6 +53,9 @@ func (b *memoryBackend) Lifecycle(ctx context.Context, i Instance, action string
 func (b *memoryBackend) Preflight(context.Context, string, string) error { return nil }
 func (b *memoryBackend) Stage(_ context.Context, i Instance, _ []byte) error {
 	b.events = append(b.events, "stage:"+i.Service)
+	if b.stageErr != nil {
+		return b.stageErr
+	}
 	if b.failPrepareOnce {
 		b.failPrepareOnce = false
 		return errors.New("simulated preparation interruption")
@@ -276,6 +280,21 @@ func TestEngineStagesEveryImageAndRechecksCapacityBeforeAnyCandidate(t *testing.
 	wantResume := []string{"stage:ui", "capacity", "start:ui"}
 	if !slices.Equal(backend.events, wantResume) {
 		t.Fatalf("resume ordering = %v, want %v", backend.events, wantResume)
+	}
+}
+
+func TestEnginePublishesOnlyFixedImageStagingDiagnostics(t *testing.T) {
+	for _, diagnostic := range []error{errImagePullDeadline, errImageRegistryAccess, errImageRegistryNetwork, errImageDigestUnavailable, errImagePullUnknown} {
+		e, backend, _, key, limits := newEngine(t)
+		backend.stageErr = diagnostic
+		_, err := runEngine(t, e, sourceModel("b"), key, limits)
+		if err == nil || err.Error() != diagnostic.Error()+"; transaction retained for resume" {
+			t.Fatalf("published staging diagnostic = %v, want fixed %q", err, diagnostic)
+		}
+		state, loadErr := e.Store.Load()
+		if loadErr != nil || state == nil || state.Pending == nil || state.Pending.Phase != "prepare" || !state.Pending.SwitchedAt.IsZero() || !state.Pending.SwitchStartedAt.IsZero() {
+			t.Fatalf("failed staging did not preserve pre-switch journal: state=%+v err=%v", state, loadErr)
+		}
 	}
 }
 

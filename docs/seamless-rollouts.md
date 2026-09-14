@@ -152,6 +152,13 @@ CI. The runtime then takes the private journal lock and reads the pending source
 an absent/mismatched journal or scope fails closed. This is continuation of
 recorded intent, not submission of an old artifact as a new goal.
 
+Image-pull failures expose only one bounded, fixed diagnostic category:
+configured operation deadline, registry authentication/access, registry
+network, digest/platform availability, or unrecognized safe diagnostic. Raw
+Docker output is never printed because it may contain private image paths or
+credential-bearing URLs. The category does not mutate the journal, add a
+pre-stage operation, or relax the exact app-scoped resume interface.
+
 The model may use only exact, same-name environment indirection such as
 `TOKEN: ${TOKEN}` for host secrets. Model-selected secret file paths and partial
 interpolation are refused. `set-secret-APP` atomically writes each value together
