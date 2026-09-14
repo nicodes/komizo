@@ -1,6 +1,7 @@
 package rollout
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"os"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nicodes/komizo/internal/release"
 )
 
 func testProfile(t *testing.T) (string, Profile) {
@@ -168,17 +171,57 @@ func TestResumeProfileNoPendingIsDistinct(t *testing.T) {
 
 func TestScopedResumeRejectsAnotherAppAndAbsentJournal(t *testing.T) {
 	path, profile := testProfile(t)
-	if _, err := ResumeProfileForApp(t.Context(), path, "another"); err == nil || !strings.Contains(err.Error(), "broker application scope") {
+	if _, err := ResumeProfileForApp(t.Context(), path, "another", strings.NewReader("")); err == nil || !strings.Contains(err.Error(), "broker application scope") {
 		t.Fatalf("another app used the fixed profile: %v", err)
 	}
-	if _, err := ResumeProfileForApp(t.Context(), path, "../fixture"); err == nil || !strings.Contains(err.Error(), "invalid rollout broker scope") {
+	if _, err := ResumeProfileForApp(t.Context(), path, "../fixture", strings.NewReader("")); err == nil || !strings.Contains(err.Error(), "invalid rollout broker scope") {
 		t.Fatalf("invalid broker app accepted: %v", err)
 	}
 	if err := os.WriteFile(profile.KeyFile, make([]byte, 32), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ResumeProfileForApp(t.Context(), path, "fixture"); !errors.Is(err, ErrNoPending) {
+	if _, err := ResumeProfileForApp(t.Context(), path, "fixture", strings.NewReader("")); !errors.Is(err, ErrNoPending) {
 		t.Fatalf("absent journal did not fail distinctly: %v", err)
+	}
+}
+
+func TestRegistryCredentialProtocolIsExactBoundedAndClearable(t *testing.T) {
+	username, token, err := readRegistryCredentials(strings.NewReader("workflow-actor\nworkflow-token\n"))
+	if err != nil || username != "workflow-actor" || string(token) != "workflow-token" {
+		t.Fatalf("valid credential protocol: user=%q token=%q err=%v", username, token, err)
+	}
+	clear(token)
+	if strings.Trim(string(token), "\x00") != "" {
+		t.Fatal("token copy could not be cleared")
+	}
+	for _, input := range []string{
+		"", "actor\ntoken", "actor\ntoken\nextra\n", "../actor\ntoken\n", "actor\ntok\nen\n",
+		"actor\n" + strings.Repeat("x", 16<<10+1) + "\n", strings.Repeat("x", 64<<10+1),
+	} {
+		if _, token, err := readRegistryCredentials(strings.NewReader(input)); err == nil || token != nil {
+			t.Fatalf("invalid credential protocol accepted: length=%d", len(input))
+		}
+	}
+}
+
+func TestPendingRegistryScopeComesOnlyFromAllSignedCandidates(t *testing.T) {
+	key := bytes.Repeat([]byte{1}, 32)
+	source := sourceModel("b")
+	tx := &Transaction{Network: "app-private", Source: source, Candidates: map[string]Instance{
+		"api": {Name: "kmz-0123456789abcdef0123456789abcdef01234567", App: "app", Service: "api", Generation: "generation", Identity: "identity", Mode: "request", Port: 8080, ReadyPath: "/readyz", Lifecycle: &release.Lifecycle{Version: 1, Command: []string{"/fixture", "lifecycle"}}},
+		"ui":  {Name: "kmz-1123456789abcdef0123456789abcdef01234567", App: "app", Service: "ui", Generation: "generation", Identity: "identity", Mode: "static", Port: 8080, ReadyPath: "/readyz", Lifecycle: &release.Lifecycle{Version: 1, Command: []string{"/fixture", "lifecycle"}}},
+	}}
+	if registry, err := pendingRegistry(tx, key); err != nil || registry != "docker.io" {
+		t.Fatalf("derived registry=%q err=%v", registry, err)
+	}
+	tx.Source = bytes.Replace(source, []byte("example/ui@"), []byte("ghcr.io/owner/ui@"), 1)
+	if _, err := pendingRegistry(tx, key); err == nil || !strings.Contains(err.Error(), "one fixed registry") {
+		t.Fatalf("multiple registry authority accepted: %v", err)
+	}
+	for _, image := range []string{"", "private.example/repo:tag", "private.example@sha256:" + strings.Repeat("a", 64), "private.example/owner/repo@sha256:" + strings.Repeat("a", 63)} {
+		if _, ok := imageRegistryHost(image); ok {
+			t.Fatalf("invalid immutable image scope accepted: %q", image)
+		}
 	}
 }
 

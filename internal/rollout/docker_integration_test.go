@@ -176,7 +176,7 @@ func TestDockerRollout(t *testing.T) {
 		var out, diag bytes.Buffer
 		err := Command(ctx, []string{"--app", app, "--network", network, "--model", modelPath, "--key-file", keyPath,
 			"--state-dir", statePath, "--gateway-socket", socket, "--compose-bin", compose, "--compose-version", "2.39.2",
-			"--timeout", "45s", "--ready-timeout", "2s", "--operation-timeout", "15s", "--stabilize", "50ms", "--retire-timeout", "10s", "--poll", "10ms"}, &out, &diag)
+			"--timeout", "45s", "--ready-timeout", "2s", "--operation-timeout", "15s", "--stabilize", "50ms", "--retire-timeout", "10s", "--poll", "10ms"}, strings.NewReader(""), &out, &diag)
 		var result Result
 		if err == nil {
 			if decodeErr := json.Unmarshal(out.Bytes(), &result); decodeErr != nil {
@@ -306,7 +306,7 @@ func TestDockerRollout(t *testing.T) {
 	var abortOut, abortDiag bytes.Buffer
 	if err := Command(ctx, []string{"--abort", "--app", app, "--network", network,
 		"--key-file", keyPath, "--state-dir", statePath, "--gateway-socket", socket,
-		"--timeout", "5s", "--operation-timeout", "2s", "--poll", "10ms"}, &abortOut, &abortDiag); err != nil {
+		"--timeout", "5s", "--operation-timeout", "2s", "--poll", "10ms"}, strings.NewReader(""), &abortOut, &abortDiag); err != nil {
 		t.Fatal(err)
 	}
 	if state := load(); state.Pending != nil {
