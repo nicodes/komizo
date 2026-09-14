@@ -251,7 +251,7 @@ func (e *Engine) Run(ctx context.Context, app, network string, source, key []byt
 				err = e.Backend.Prepare(op, instance, body)
 				cancel()
 				if err != nil {
-					return result, errors.New("candidate start failed; transaction retained for resume")
+					return result, candidateStartFailure(err)
 				}
 			}
 			if err := e.phase(state, "ready"); err != nil {
@@ -477,6 +477,15 @@ func stagingFailure(err error) error {
 		}
 	}
 	return errors.New("candidate image staging failed; transaction retained for resume")
+}
+
+func candidateStartFailure(err error) error {
+	for _, diagnostic := range []error{errCandidateStartDeadline, errCandidateStartDaemon, errCandidateStartImage, errCandidateStartDefinition, errCandidateStartResource, errCandidateStartProcess, errCandidateStartUnknown} {
+		if errors.Is(err, diagnostic) {
+			return fmt.Errorf("%s; transaction retained for resume", diagnostic)
+		}
+	}
+	return fmt.Errorf("%s; transaction retained for resume", errCandidateStartUnknown)
 }
 
 func (e *Engine) begin(ctx context.Context, state *State, app, network, keyID, goal string, source, key []byte, model *release.Model, limits Limits) (*State, error) {
