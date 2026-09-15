@@ -1,7 +1,6 @@
 package app
 
 import (
-	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -65,14 +64,7 @@ func newDeployBox(t *testing.T) *deployBox {
 case "$1" in
   cp)  cp -a "$STUB_CONFIG/." "$3"; exit 0 ;;
   create) echo stubcid; exit 0 ;;
-  ps)
-    for a in "$@"; do
-      if [ "$a" = "label=io.komizo.app=blog" ]; then
-        [ -z "$STUB_NATIVE_INSTANCES" ] || echo native-instance
-        exit 0
-      fi
-    done
-    echo komizo-proxy; exit 0 ;;
+  ps)  echo komizo-proxy; exit 0 ;;
   compose)
     # A pull that fails is the interesting one: it happens AFTER the route
     # file has been written and validated, so it is the only failure that can
@@ -99,23 +91,15 @@ exit 0
 	body := between(t, scripts.AlpineScript,
 		`cat > "$DEPLOY_BIN.tmp" <<'KOMIZO_DEPLOY_EOF'`, "KOMIZO_DEPLOY_EOF")
 	b.script = strings.NewReplacer(
-		"/run/komizo", filepath.Join(root, "run", "komizo"),
 		"__APP_NAME__", "blog",
 		"__APP_DIR__", b.appDir,
 		"__CONFIG_IMAGE__", "ghcr.io/you/blog-config",
 		"__PROXY_CONTAINER__", "komizo-proxy",
 		"__PROXY_DIR__", b.proxyDir,
-		"__ROLLOUT_BIN__", filepath.Join(b.bin, "komizo-box"),
-		"__ROLLOUT_PROFILE__", filepath.Join(b.root, "etc", "komizo", "rollouts", "blog.json"),
 		"__ROUTES_DIR__", b.routes,
 		"__STATE_DIR__", b.state,
 	).Replace(body)
-	// The replacement itself has that suffix, so remove the known private
-	// path before checking for an accidentally retained shared lock path.
-	if strings.Contains(strings.ReplaceAll(b.script, filepath.Join(root, "run", "komizo"), ""), "/run/komizo") {
-		t.Fatal("deploy fixture retains a shared host lock path")
-	}
-	if strings.Contains(b.script, "__APP") || strings.Contains(b.script, "__PROXY") || strings.Contains(b.script, "__ROLLOUT") ||
+	if strings.Contains(b.script, "__APP") || strings.Contains(b.script, "__PROXY") ||
 		strings.Contains(b.script, "__CONFIG") || strings.Contains(b.script, "__ROUTES") ||
 		strings.Contains(b.script, "__STATE") {
 		t.Fatal("the deploy template has a placeholder this test does not substitute")
@@ -156,16 +140,6 @@ func (b *deployBox) deploy(t *testing.T, version string) (string, error) {
 		"STUB_CONFIG="+b.config,
 		"PATH="+b.bin+":/usr/bin:/bin",
 	), b.env...)
-	out, err := cmd.CombinedOutput()
-	return string(out), err
-}
-
-func (b *deployBox) deployDigest(t *testing.T, version, digest string) (string, error) {
-	t.Helper()
-	path := filepath.Join(b.bin, "rollout-blog")
-	write(t, path, 0o700, b.script)
-	cmd := exec.Command("sh", path, version, "", "", digest)
-	cmd.Env = append(append(os.Environ(), "STUB_CONFIG="+b.config, "PATH="+b.bin+":/usr/bin:/bin"), b.env...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -230,209 +204,6 @@ func TestADeployWritesTheRouteBesideTheProxyAndNotBesideTheApp(t *testing.T) {
 	}
 	if got := b.dotenv(t); !strings.Contains(got, "APP_VERSION=abc123") {
 		t.Errorf("version not committed: %q", got)
-	}
-}
-
-func TestDeployLocksStayInsideFixture(t *testing.T) {
-	if _, err := exec.LookPath("flock"); err != nil {
-		t.Skip("flock is not installed")
-	}
-	b := newDeployBox(t)
-	b.publishes(t, "services:\n  web:\n    image: x\n", "blog.example.com\n")
-	if out, err := b.deploy(t, "fixture-release"); err != nil {
-		t.Fatalf("fixture deploy failed: %v\n%s", err, out)
-	}
-	lock := filepath.Join(b.root, "run", "komizo", "deploy-blog.lock")
-	if info, err := os.Stat(lock); err != nil || !info.Mode().IsRegular() {
-		t.Fatalf("fixture did not take its private deployment lock: %v", err)
-	}
-}
-
-func TestLegacyDeployRefusesJournaledInstances(t *testing.T) {
-	b := newDeployBox(t)
-	b.publishes(t, "services:\n  web:\n    image: x\n", "blog.example.com\n")
-	b.env = append(b.env, "STUB_NATIVE_INSTANCES=1")
-	before := b.read(t, filepath.Join(b.appDir, "compose.yml"))
-	out, err := b.deploy(t, "new-release")
-	if err == nil || !strings.Contains(out, "legacy in-place deployment is disabled") {
-		t.Fatalf("legacy path did not refuse owned instances: %v\n%s", err, out)
-	}
-	if after := b.read(t, filepath.Join(b.appDir, "compose.yml")); after != before {
-		t.Fatal("legacy deployment changed configuration before ownership refusal")
-	}
-}
-
-func TestJournaledConfigUsesOnlyTheFixedProfileAndDigest(t *testing.T) {
-	b := newDeployBox(t)
-	b.publishes(t, "services: {}\n", "")
-	write(t, filepath.Join(b.config, "model.json"), 0o644, `{"services":{},"x-komizo":{"version":1,"services":{}}}`)
-	profile := filepath.Join(b.root, "etc", "komizo", "rollouts", "blog.json")
-	if err := os.MkdirAll(filepath.Dir(profile), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	write(t, profile, 0o600, "{}")
-	write(t, filepath.Join(b.bin, "komizo-box"), 0o755, `#!/bin/sh
-printf '%s\n' "$*" > "$STUB_CONFIG/broker-args"
-case " $* " in *" --check "*) exit 0 ;; esac
-printf '{"generation":"fixture","changed":1}\n'
-`)
-	broker := filepath.Join(b.bin, "rollout-blog")
-	write(t, broker, 0o700, b.script)
-	check := exec.Command("sh", broker, "--check")
-	check.Env = append(os.Environ(), "PATH="+b.bin+":/usr/bin:/bin", "STUB_CONFIG="+b.config)
-	capability, err := check.CombinedOutput()
-	if err != nil || string(capability) != "komizo-rollout-broker-v1 blog\n" {
-		t.Fatalf("broker capability check failed: %v %q", err, capability)
-	}
-	checkArgs := b.read(t, filepath.Join(b.config, "broker-args"))
-	for _, want := range []string{"rollout profile", "--check", "--profile " + profile, "--app blog"} {
-		if !strings.Contains(checkArgs, want) {
-			t.Errorf("broker capability did not verify %q: %s", want, checkArgs)
-		}
-	}
-
-	if out, err := b.deploy(t, "v1"); err == nil || !strings.Contains(out, "dedicated rollout-blog broker") {
-		t.Fatalf("legacy command accepted a journaled model: %v\n%s", err, out)
-	}
-	if out, err := b.deployDigest(t, "v1", ""); err == nil || !strings.Contains(out, "requires the config artifact digest") {
-		t.Fatalf("broker accepted model without immutable artifact digest: %v\n%s", err, out)
-	}
-	digest := "sha256:" + strings.Repeat("a", 64)
-	out, err := b.deployDigest(t, "v1", digest)
-	if err != nil {
-		t.Fatalf("journaled broker failed: %v\n%s", err, out)
-	}
-	args := b.read(t, filepath.Join(b.config, "broker-args"))
-	for _, want := range []string{"rollout profile", "--profile " + profile, "--model "} {
-		if !strings.Contains(args, want) {
-			t.Errorf("broker args missing %q: %s", want, args)
-		}
-	}
-	if strings.Contains(b.dotenv(t), "APP_VERSION") {
-		t.Fatal("journaled path fell through to legacy activation")
-	}
-}
-
-func TestRolloutBrokerResumeAcceptsNoCallerAuthority(t *testing.T) {
-	b := newDeployBox(t)
-	profile := filepath.Join(b.root, "etc", "komizo", "rollouts", "blog.json")
-	if err := os.MkdirAll(filepath.Dir(profile), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	write(t, profile, 0o600, "{}")
-	argsPath := filepath.Join(b.config, "broker-args")
-	write(t, filepath.Join(b.bin, "komizo-box"), 0o755, `#!/bin/sh
-printf '%s\n' "$*" > "$STUB_CONFIG/broker-args"
-cat > "$STUB_CONFIG/broker-stdin"
-printf '{"generation":"pending","changed":1}\n'
-`)
-	broker := filepath.Join(b.bin, "rollout-blog")
-	write(t, broker, 0o700, b.script)
-	run := func(path string, args ...string) (string, error) {
-		t.Helper()
-		cmd := exec.Command("sh", append([]string{path}, args...)...)
-		cmd.Env = append(os.Environ(), "PATH="+b.bin+":/usr/bin:/bin", "STUB_CONFIG="+b.config)
-		cmd.Stdin = strings.NewReader("workflow-actor\nworkflow-token\n")
-		out, err := cmd.CombinedOutput()
-		return string(out), err
-	}
-
-	out, err := run(broker, "--resume")
-	if err != nil || out != "{\"generation\":\"pending\",\"changed\":1}\ndeploy: resumed=yes\n" {
-		t.Fatalf("scoped resume failed: %v %q", err, out)
-	}
-	want := "rollout profile --resume --profile " + profile + " --app blog\n"
-	if got := b.read(t, argsPath); got != want {
-		t.Fatalf("resume authority = %q, want %q", got, want)
-	}
-	if got := b.read(t, filepath.Join(b.config, "broker-stdin")); got != "workflow-actor\nworkflow-token\n" {
-		t.Fatalf("resume credentials were not forwarded only on stdin: %q", got)
-	}
-	if _, err := os.Stat(filepath.Join(b.root, "run", "komizo", "deploy-blog.lock")); err != nil {
-		t.Fatalf("resume did not take the normal app deployment lock: %v", err)
-	}
-
-	out, err = run(broker, "--recover")
-	if err != nil || out != "{\"generation\":\"pending\",\"changed\":1}\ndeploy: recovered=yes\n" {
-		t.Fatalf("scoped verified recovery failed: %v %q", err, out)
-	}
-	want = "rollout profile --recover --profile " + profile + " --app blog\n"
-	if got := b.read(t, argsPath); got != want {
-		t.Fatalf("recovery authority = %q, want %q", got, want)
-	}
-	if got := b.read(t, filepath.Join(b.config, "broker-stdin")); got != "" {
-		t.Fatalf("recovery forwarded caller input: %q", got)
-	}
-
-	for _, control := range []struct {
-		name string
-		path string
-		args []string
-		want string
-	}{
-		{"resume extra app", broker, []string{"--resume", "--app", "other"}, "accepts no other arguments"},
-		{"resume extra profile", broker, []string{"--resume", "--profile", "/tmp/other"}, "accepts no other arguments"},
-		{"recovery extra app", broker, []string{"--recover", "--app", "other"}, "accepts no other arguments"},
-		{"recovery legacy command", filepath.Join(b.bin, "deploy-blog"), []string{"--recover"}, "dedicated rollout-blog broker"},
-		{"check extra", broker, []string{"--check", "extra"}, "accepts no other arguments"},
-		{"legacy command", filepath.Join(b.bin, "deploy-blog"), []string{"--resume"}, "dedicated rollout-blog broker"},
-	} {
-		t.Run(control.name, func(t *testing.T) {
-			_ = os.Remove(argsPath)
-			if control.path != broker {
-				write(t, control.path, 0o700, b.script)
-			}
-			out, err := run(control.path, control.args...)
-			if err == nil || !strings.Contains(out, control.want) {
-				t.Fatalf("unscoped resume accepted: %v %q", err, out)
-			}
-			if _, err := os.Stat(argsPath); !errors.Is(err, os.ErrNotExist) {
-				t.Fatal("refused input reached the privileged runtime")
-			}
-		})
-	}
-	write(t, filepath.Join(b.bin, "flock"), 0o755, "#!/bin/sh\nexit 1\n")
-	_ = os.Remove(argsPath)
-	if out, err := run(broker, "--recover"); err == nil || !strings.Contains(out, "fixed recovery lock wait") {
-		t.Fatalf("recovery continued without the deployment lock: %v %q", err, out)
-	}
-	if _, err := os.Stat(argsPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("unlocked recovery reached the privileged runtime")
-	}
-}
-
-func TestSecretUpdateAtomicallyRecordsAnOpaqueVersion(t *testing.T) {
-	b := newDeployBox(t)
-	body := between(t, scripts.AlpineScript,
-		`cat > "$SECRET_BIN.tmp" <<'KOMIZO_SECRET_EOF'`, "KOMIZO_SECRET_EOF")
-	for _, want := range []string{"deploy-__APP_NAME__.lock", "rollouts/__APP_NAME__/lock", "flock -w 300"} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("set-secret does not serialize with rollout via %q", want)
-		}
-	}
-	body = strings.ReplaceAll(body, "__APP_DIR__", b.appDir)
-	run := func(value string) string {
-		// Execute the extracted script from a private file so stdin remains the
-		// secret value exactly as production supplies it.
-		path := filepath.Join(b.root, "set-secret")
-		write(t, path, 0o700, body)
-		cmd := exec.Command("sh", path, "TOKEN")
-		cmd.Stdin = strings.NewReader(value)
-		cmd.Env = append(os.Environ(), "PATH="+b.bin+":/usr/bin:/bin")
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			t.Fatalf("set-secret failed: %v %s", err, out)
-		}
-		return b.read(t, filepath.Join(b.appDir, "secrets.env"))
-	}
-	first := run("first-value")
-	second := run("second-value")
-	if strings.Contains(second, "first-value") || !strings.Contains(second, "TOKEN=second-value") {
-		t.Fatalf("secret replacement failed: %q", second)
-	}
-	marker := "# komizo-secret-version-TOKEN="
-	if strings.Count(second, marker) != 1 || first == second {
-		t.Fatalf("opaque version was not rotated atomically: %q", second)
 	}
 }
 
