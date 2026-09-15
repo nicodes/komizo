@@ -352,6 +352,18 @@ printf '{"generation":"pending","changed":1}\n'
 		t.Fatalf("resume did not take the normal app deployment lock: %v", err)
 	}
 
+	out, err = run(broker, "--recover")
+	if err != nil || out != "{\"generation\":\"pending\",\"changed\":1}\ndeploy: recovered=yes\n" {
+		t.Fatalf("scoped verified recovery failed: %v %q", err, out)
+	}
+	want = "rollout profile --recover --profile " + profile + " --app blog\n"
+	if got := b.read(t, argsPath); got != want {
+		t.Fatalf("recovery authority = %q, want %q", got, want)
+	}
+	if got := b.read(t, filepath.Join(b.config, "broker-stdin")); got != "" {
+		t.Fatalf("recovery forwarded caller input: %q", got)
+	}
+
 	for _, control := range []struct {
 		name string
 		path string
@@ -360,6 +372,8 @@ printf '{"generation":"pending","changed":1}\n'
 	}{
 		{"resume extra app", broker, []string{"--resume", "--app", "other"}, "accepts no other arguments"},
 		{"resume extra profile", broker, []string{"--resume", "--profile", "/tmp/other"}, "accepts no other arguments"},
+		{"recovery extra app", broker, []string{"--recover", "--app", "other"}, "accepts no other arguments"},
+		{"recovery legacy command", filepath.Join(b.bin, "deploy-blog"), []string{"--recover"}, "dedicated rollout-blog broker"},
 		{"check extra", broker, []string{"--check", "extra"}, "accepts no other arguments"},
 		{"legacy command", filepath.Join(b.bin, "deploy-blog"), []string{"--resume"}, "dedicated rollout-blog broker"},
 	} {
@@ -376,6 +390,14 @@ printf '{"generation":"pending","changed":1}\n'
 				t.Fatal("refused input reached the privileged runtime")
 			}
 		})
+	}
+	write(t, filepath.Join(b.bin, "flock"), 0o755, "#!/bin/sh\nexit 1\n")
+	_ = os.Remove(argsPath)
+	if out, err := run(broker, "--recover"); err == nil || !strings.Contains(out, "fixed recovery lock wait") {
+		t.Fatalf("recovery continued without the deployment lock: %v %q", err, out)
+	}
+	if _, err := os.Stat(argsPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("unlocked recovery reached the privileged runtime")
 	}
 }
 
