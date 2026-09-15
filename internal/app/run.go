@@ -156,12 +156,6 @@ func Main(args []string) error {
 		err = RunLogin(args[1:])
 	case "logout":
 		err = RunLogout(args[1:])
-	case "plan":
-		err = RunPlan(args[1:])
-	case "rollout":
-		err = RunRollout(args[1:])
-	case "gateway":
-		err = RunGateway(args[1:])
 	case "init", "update", "add", "list", "report", "enrol", "remove", "proxy",
 		"start", "stop", "restart", "logs", "reconcile":
 		// No gate. An account is needed to REGISTER a box, and the two places
@@ -237,10 +231,6 @@ hand.
 
   komizo login
   komizo logout
-	  komizo plan --before PREVIOUS.json --after CANDIDATE.json --key-file PRIVATE_KEY
-	  komizo rollout --help                             local operator rollout
-	  komizo rollout provision --host root@HOST --app NAME [--profile PRIVATE.json]
-	  komizo gateway --help                             private HTTP gateway
   komizo init    --host root@HOST
   komizo update  --host root@HOST
   komizo add     --host root@HOST --app NAME --config REF
