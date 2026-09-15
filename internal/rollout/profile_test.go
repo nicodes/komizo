@@ -185,6 +185,16 @@ func TestScopedResumeRejectsAnotherAppAndAbsentJournal(t *testing.T) {
 	}
 }
 
+func TestScopedVerifiedRecoveryAcceptsNoCallerAuthority(t *testing.T) {
+	path, _ := testProfile(t)
+	if _, err := RecoverProfileForApp(t.Context(), path, "fixture", strings.NewReader("proof\n")); err == nil || !strings.Contains(err.Error(), "no caller input") {
+		t.Fatalf("caller-supplied recovery proof reached authority loading: %v", err)
+	}
+	if _, err := RecoverProfileForApp(t.Context(), path, "../fixture", strings.NewReader("")); err == nil || !strings.Contains(err.Error(), "scope") {
+		t.Fatalf("unscoped recovery app accepted: %v", err)
+	}
+}
+
 func TestRegistryCredentialProtocolIsExactBoundedAndClearable(t *testing.T) {
 	username, token, err := readRegistryCredentials(strings.NewReader("workflow-actor\nworkflow-token\n"))
 	if err != nil || username != "workflow-actor" || string(token) != "workflow-token" {

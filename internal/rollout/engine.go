@@ -66,6 +66,7 @@ type Transaction struct {
 	SwitchedAt         time.Time             `json:"switched_at,omitempty"`
 	SwitchStartedAt    time.Time             `json:"switch_started_at,omitempty"`
 	RetirementExceeded bool                  `json:"retirement_exceeded,omitempty"`
+	Recovery           *VerifiedRecovery     `json:"verified_recovery,omitempty"`
 }
 
 // Backend methods must be idempotent and verify instance ownership before any
@@ -100,6 +101,7 @@ type Result struct {
 	NoOp               bool   `json:"no_op"`
 	RetirementExceeded bool   `json:"retirement_exceeded,omitempty"`
 	Aborted            bool   `json:"aborted,omitempty"`
+	Recovered          bool   `json:"recovered,omitempty"`
 }
 
 var ErrRetirementBudget = errors.New("retirement budget exceeded; transaction incomplete and instances preserved")
@@ -465,6 +467,9 @@ func (e *Engine) Run(ctx context.Context, app, network string, source, key []byt
 			}
 			return result, errors.New("candidate readiness failed; previous release kept active")
 		default:
+			if tx.Phase == recoveryPhase {
+				return result, errors.New("pending transaction requires its fixed verified recovery operation")
+			}
 			return result, errors.New("unknown rollout journal phase")
 		}
 	}

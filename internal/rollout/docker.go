@@ -30,14 +30,18 @@ type Docker struct {
 }
 
 type container struct {
-	HostConfig struct{ RestartPolicy struct{ Name string } }
-	ID         string
-	Name       string
-	Config     struct {
+	HostConfig   struct{ RestartPolicy struct{ Name string } }
+	ID           string
+	Name         string
+	Created      string
+	RestartCount int
+	Config       struct {
 		Labels map[string]string
+		Env    []string
 	}
 	State struct {
 		StartedAt  string
+		FinishedAt string
 		Running    bool
 		Status     string
 		ExitCode   int
@@ -48,6 +52,78 @@ type container struct {
 	NetworkSettings struct {
 		Networks map[string]struct{ IPAddress string }
 	}
+}
+
+func (d *Docker) InspectRecovery(ctx context.Context, old, candidate Instance) (RecoverySnapshot, error) {
+	failed, err := d.inspect(ctx, old)
+	if err != nil || failed == nil {
+		return RecoverySnapshot{}, errors.New("failed recovery incarnation is absent or unconfirmed")
+	}
+	standby, err := d.inspect(ctx, candidate)
+	if err != nil || standby == nil {
+		return RecoverySnapshot{}, errors.New("standby recovery incarnation is absent or unconfirmed")
+	}
+	if failed.HostConfig.RestartPolicy.Name != "no" || failed.RestartCount != 0 || failed.State.Running || failed.State.Status != "exited" || failed.State.ExitCode == 0 ||
+		failed.State.Restarting || failed.State.Dead || failed.State.OOMKilled || failed.State.FinishedAt == "" {
+		return RecoverySnapshot{}, errors.New("failed recovery incarnation has ambiguous exit or restart state")
+	}
+	created, createdErr := time.Parse(time.RFC3339Nano, failed.Created)
+	started, startedErr := time.Parse(time.RFC3339Nano, failed.State.StartedAt)
+	finished, finishedErr := time.Parse(time.RFC3339Nano, failed.State.FinishedAt)
+	if createdErr != nil || startedErr != nil || finishedErr != nil || started.Before(created) || !finished.After(started) {
+		return RecoverySnapshot{}, errors.New("failed recovery incarnation chronology is invalid")
+	}
+	if standby.HostConfig.RestartPolicy.Name != "no" || standby.RestartCount != 0 || !standby.State.Running || standby.State.Status != "running" ||
+		standby.State.Restarting || standby.State.Dead || standby.State.OOMKilled || !exactEnvironment(standby.Config.Env, "KOMIZO_CANDIDATE", "standby") {
+		return RecoverySnapshot{}, errors.New("recovery candidate is not the healthy declared standby incarnation")
+	}
+	candidateCreated, candidateCreatedErr := time.Parse(time.RFC3339Nano, standby.Created)
+	candidateStarted, candidateStartedErr := time.Parse(time.RFC3339Nano, standby.State.StartedAt)
+	if candidateCreatedErr != nil || candidateStartedErr != nil || candidateStarted.Before(candidateCreated) {
+		return RecoverySnapshot{}, errors.New("recovery candidate chronology is invalid")
+	}
+	return RecoverySnapshot{
+		Old:       RecoveryIncarnation{ID: failed.ID, StartedAt: failed.State.StartedAt, FinishedAt: failed.State.FinishedAt, ExitCode: failed.State.ExitCode},
+		Candidate: RecoveryIncarnation{ID: standby.ID, StartedAt: standby.State.StartedAt, Running: true},
+	}, nil
+}
+
+func exactEnvironment(environment []string, name, value string) bool {
+	want, found := name+"="+value, 0
+	for _, entry := range environment {
+		key, _, _ := strings.Cut(entry, "=")
+		if key == name {
+			found++
+			if entry != want {
+				return false
+			}
+		}
+	}
+	return found == 1
+}
+
+func (d *Docker) RemoveRecovered(ctx context.Context, old, candidate Instance, proof VerifiedRecovery) error {
+	if proof.ProvedAt.IsZero() || proof.ActivatedAt.IsZero() || proof.ReleasedAt.IsZero() || proof.Old.ID == "" || proof.Old.StartedAt == "" || proof.Old.FinishedAt == "" || proof.Old.ExitCode == 0 {
+		return errors.New("distinct verified recovery proof is incomplete")
+	}
+	standby, err := d.inspect(ctx, candidate)
+	if err != nil || standby == nil || standby.ID != proof.Candidate.ID || standby.State.StartedAt != proof.Candidate.StartedAt || standby.RestartCount != 0 || standby.HostConfig.RestartPolicy.Name != "no" || !standby.State.Running || standby.State.Status != "running" || standby.State.Restarting || standby.State.Dead || standby.State.OOMKilled {
+		return errors.New("activated recovery candidate identity or health changed")
+	}
+	failed, err := d.inspect(ctx, old)
+	if err != nil {
+		return err
+	}
+	if failed != nil {
+		if failed.ID != proof.Old.ID || failed.State.StartedAt != proof.Old.StartedAt || failed.State.FinishedAt != proof.Old.FinishedAt || failed.State.ExitCode != proof.Old.ExitCode ||
+			failed.RestartCount != 0 || failed.HostConfig.RestartPolicy.Name != "no" || failed.State.Running || failed.State.Status != "exited" || failed.State.Restarting || failed.State.Dead || failed.State.OOMKilled {
+			return errors.New("failed incarnation changed before non-forced recovery cleanup")
+		}
+		if _, err := d.docker(ctx, "rm", "--volumes", proof.Old.ID); err != nil {
+			return err
+		}
+	}
+	return d.removeArtifact(old)
 }
 
 func command(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -672,6 +748,7 @@ func removalArguments(instance Instance, current *container) ([]string, error) {
 }
 
 var _ Backend = (*Docker)(nil)
+var _ RecoveryBackend = (*Docker)(nil)
 
 // Image-declared VOLUMEs are otherwise absent from Compose input and can
 // silently introduce writable state. Require explicit mounts or tmpfs targets.
