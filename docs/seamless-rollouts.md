@@ -216,6 +216,16 @@ the owner-authorized capacity floor cannot hold it.
 - Persistent changes, service removal and legacy adoption require a separate
   explicit operation; seamless mode does not improvise maintenance.
 
+An explicitly authorized failed-incarnation recovery uses a separate
+transaction-pinned verifier and journal proof. It is not ordinary resume and
+does not infer drain or graceful exit from a stopped container. The verifier
+must durably fence application producers and prove empty queue/provider/file
+state while the platform rechecks exact incarnations and gateway drain. Its
+complete root authorization and bounded session contract is versioned in
+[`internal/rollout/RECOVERY-VERIFIER.md`](../internal/rollout/RECOVERY-VERIFIER.md).
+The app broker exposes only `rollout-APP --recover`, with no arguments or stdin,
+and only when root has separately installed the exact one-time authorization.
+
 Shared releases are immutable and opt-in. `komizo` release publication and
 `komizo-actions` release publication are manual workflow dispatches; neither
 updates hosts or consumer pins. `komizo update` is also operator-invoked. A

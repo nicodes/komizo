@@ -123,3 +123,9 @@ These constraints are not deployment authority or cross-application readiness.
 Each consumer must test real transactions, background jobs, delayed admitted
 requests, resumable streams, aborts and shutdown under its own workload and approved
 timing policy before adoption.
+
+An old incarnation that exited before it could acknowledge this protocol is not
+covered by normal retirement. The separately authorized, distinct-proof
+[pinned recovery verifier protocol](RECOVERY-VERIFIER.md) exists for a narrowly
+verified empty/fenced application state; it never converts abnormal exit into a
+lifecycle acknowledgement.
