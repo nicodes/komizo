@@ -3,6 +3,11 @@
 The `komizo` command: set up a server, add apps to it, and watch what they are
 doing.
 
+The supported deployment path is the app-scoped `deploy-APP` Compose operation.
+The journaled rollout/gateway experiment published in v0.0.30 through v0.0.39
+was abandoned and is superseded by v0.0.40 and later; those experimental
+versions remain available only as historical artifacts.
+
 One command, nothing to install first:
 
 ```sh
