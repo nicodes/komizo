@@ -70,7 +70,6 @@ case "$KEEP_DATA" in
 	*) echo "error: KEEP_DATA must be 0 or 1" >&2; exit 1 ;;
 esac
 DEPLOY_BIN="/usr/local/bin/deploy-$APP_NAME"
-ROLLOUT_DEPLOY_BIN="/usr/local/bin/rollout-$APP_NAME"
 SECRET_BIN="/usr/local/bin/set-secret-$APP_NAME"
 TASK_BIN="/usr/local/bin/task-$APP_NAME"
 PROJECT_MARKER=komizo
@@ -227,7 +226,7 @@ if [ -f /etc/doas.conf ]; then
 fi
 
 log "Removing $DEPLOY_BIN, $SECRET_BIN and $TASK_BIN"
-rm -f "$DEPLOY_BIN" "$ROLLOUT_DEPLOY_BIN" "$SECRET_BIN" "$TASK_BIN"
+rm -f "$DEPLOY_BIN" "$SECRET_BIN" "$TASK_BIN"
 
 # --- 3. sshd ---------------------------------------------------------------
 

@@ -2,7 +2,6 @@ package scripts
 
 import (
 	_ "embed"
-	"encoding/base64"
 	"fmt"
 	"regexp"
 	"strings"
@@ -50,32 +49,6 @@ var AlpineInitScript string
 
 //go:embed alpine-proxy.sh
 var AlpineProxyScript string
-
-//go:embed rollout-provision.sh
-var rolloutProvisionScript string
-
-//go:embed rollout-runtime-install.sh
-var rolloutRuntimeInstallScript string
-
-// RolloutProvisionScript carries a locally validated canonical profile inside
-// the root-only streamed script. Base64 keeps profile bytes out of the remote
-// process arguments and has no shell metacharacters.
-func RolloutProvisionScript(profile []byte, runtime string) string {
-	return render(rolloutProvisionScript,
-		"__PROFILE_BASE64__", base64.StdEncoding.EncodeToString(profile),
-		"__ROLLOUT_BIN__", ShQuote(runtime),
-	)
-}
-
-// RolloutRuntimeInstall atomically installs a separately transferred runtime
-// at one fixed app-scoped destination after authenticating its bytes.
-func RolloutRuntimeInstall(staged, destination, sha256 string) string {
-	return render(rolloutRuntimeInstallScript,
-		"__STAGED__", ShQuote(staged),
-		"__DESTINATION__", ShQuote(destination),
-		"__SHA256__", ShQuote(sha256),
-	)
-}
 
 // agent-install.sh puts komizo-box on the box and starts it.
 //
