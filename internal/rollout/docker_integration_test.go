@@ -495,6 +495,64 @@ func TestDockerRollout(t *testing.T) {
 				t.Fatal("restart reused old proof")
 			}
 		})
+		t.Run("FailedBeforeSwitchRecoveryInspectionAndNonForcedRemoval", func(t *testing.T) {
+			old := before.Bindings["ui"]
+			old.Name = "kmz-" + hash([]byte(app + "recovery-old"))[:32]
+			old.Service, old.Mode = "worker", "worker"
+			old.Generation, old.Identity = "oldgeneration", strings.Repeat("a", 64)
+			candidate := old
+			candidate.Name = "kmz-" + hash([]byte(app + "recovery-new"))[:32]
+			candidate.Generation, candidate.Identity = "newgeneration", strings.Repeat("b", 64)
+			runArgs := func(i Instance) []string {
+				args := []string{"--name", i.Name, "--network", network, "--restart", "no", "--read-only", "--tmpfs", "/run"}
+				for key, value := range labels(i) {
+					args = append(args, "--label", key+"="+value)
+				}
+				return args
+			}
+			if _, err := docker(append([]string{"run"}, append(runArgs(old), backendImage)...)...); err == nil {
+				t.Fatal("failed-incarnation control exited cleanly")
+			}
+			badCandidateArgs := append([]string{"run", "--detach"}, runArgs(candidate)...)
+			badCandidateArgs = append(badCandidateArgs, backendImage, "serve", "candidate", "true")
+			must(badCandidateArgs...)
+			if _, err := d.InspectRecovery(ctx, old, candidate); err == nil {
+				t.Fatal("candidate without exact standby environment was accepted")
+			}
+			must("rm", "--force", candidate.Name)
+			candidateArgs := append([]string{"run", "--detach", "--env", "KOMIZO_CANDIDATE=standby"}, runArgs(candidate)...)
+			candidateArgs = append(candidateArgs, backendImage, "serve", "candidate", "true")
+			must(candidateArgs...)
+			snapshot, err := d.InspectRecovery(ctx, old, candidate)
+			if err != nil || snapshot.Old.ExitCode == 0 || !snapshot.Candidate.Running {
+				t.Fatalf("positive recovery inspection failed: %+v %v", snapshot, err)
+			}
+			changed := old
+			changed.Identity = strings.Repeat("c", 64)
+			if _, err := d.InspectRecovery(ctx, changed, candidate); err == nil {
+				t.Fatal("changed failed-container identity was accepted")
+			}
+			must("update", "--restart", "always", old.Name)
+			if _, err := d.InspectRecovery(ctx, old, candidate); err == nil {
+				t.Fatal("restart-policy ambiguity was accepted")
+			}
+			must("update", "--restart", "no", old.Name)
+			proof := VerifiedRecovery{Old: snapshot.Old, Candidate: snapshot.Candidate, ProvedAt: time.Now(), ActivatedAt: time.Now(), ReleasedAt: time.Now()}
+			if err := d.RemoveRecovered(ctx, old, candidate, VerifiedRecovery{}); err == nil {
+				t.Fatal("failed worker removed without distinct recovery proof")
+			}
+			if err := d.RemoveRecovered(ctx, old, candidate, proof); err != nil {
+				t.Fatal(err)
+			}
+			if current, err := d.inspect(ctx, old); err != nil || current != nil {
+				t.Fatal("non-forced recovery removal did not establish absence")
+			}
+			// Lost removal reply is safe only because the exact distinct proof was
+			// already durable; replay never turns exit 1 into normal exit zero.
+			if err := d.RemoveRecovered(ctx, old, candidate, proof); err != nil {
+				t.Fatal(err)
+			}
+		})
 	})
 	t.Logf("real CLI rollout: %d HTTP requests during UI replacement, zero observed failures; API unchanged; no-op preserved IDs; failed readiness preserved v2; exactly 2 active service containers", requests.Load())
 }
