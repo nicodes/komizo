@@ -493,6 +493,51 @@ func resumeProfile(parent context.Context, profilePath, expectedApp string, cred
 	return profile.runWithStore(ctx, store, slices.Clone(state.Pending.Source), key, dockerConfig)
 }
 
+// RecoverProfileForApp executes only a root-installed, transaction-pinned
+// recovery authorization. The broker caller supplies no model, path, identity,
+// proof, budget, credentials, or application data.
+func RecoverProfileForApp(parent context.Context, profilePath, app string, input io.Reader) (Result, error) {
+	if !scopeName(app) || input == nil {
+		return Result{}, errors.New("invalid verified recovery broker scope")
+	}
+	unexpected, inputErr := io.ReadAll(io.LimitReader(input, 1))
+	if inputErr != nil || len(unexpected) != 0 {
+		return Result{}, errors.New("verified recovery accepts no caller input")
+	}
+	profile, err := LoadProfile(profilePath)
+	if err != nil || profile.App != app {
+		return Result{}, errors.New("rollout profile does not match the recovery broker application scope")
+	}
+	key, err := readInput(profile.KeyFile, 32, true)
+	if err != nil {
+		return Result{}, errors.New("profile identity key is unavailable or unsafe")
+	}
+	defer clear(key)
+	lockContext, cancel := context.WithTimeout(parent, profile.Limits.Operation)
+	store, err := OpenStore(lockContext, profile.StateDir, profile.Limits.Poll)
+	cancel()
+	if err != nil {
+		return Result{}, err
+	}
+	defer store.Close()
+	authorization, err := LoadRecoveryAuthorization(recoveryAuthorizationPath(app))
+	if err != nil || authorization.App != app || authorization.Overall != profile.Overall || authorization.Retire != profile.Limits.Retire {
+		return Result{}, errors.New("fixed recovery authorization is unavailable or does not match the installed profile budgets")
+	}
+	state, err := store.Load()
+	if err != nil || state == nil || state.Pending == nil || state.Pending.ID != authorization.Transaction || state.Pending.Network != profile.Network || state.Pending.Limits != profile.Limits {
+		return Result{}, errors.New("pending recovery transaction does not match the installed profile policy")
+	}
+	router, err := NewGatewayClient(profile.GatewaySocket)
+	if err != nil {
+		return Result{}, err
+	}
+	backend := &Docker{App: profile.App, Network: profile.Network, ComposeBinary: profile.ComposeBinary, ComposeVersion: profile.ComposeVersion,
+		EnvFile: profile.SecretFile, Store: store, MinFreeMemory: profile.MinFreeMemory, MinFreeDisk: profile.MinFreeDisk}
+	verifier := &ProcessRecoveryVerifier{Authorization: authorization}
+	return (&Engine{Store: store, Backend: backend, Router: router}).Recover(parent, app, key, authorization, verifier)
+}
+
 func readRegistryCredentials(input io.Reader) (string, []byte, error) {
 	data, err := io.ReadAll(io.LimitReader(input, 64<<10+1))
 	if err != nil || len(data) > 64<<10 {

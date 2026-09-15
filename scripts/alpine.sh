@@ -632,11 +632,19 @@ if [ "${1:-}" = "--check" ]; then
 fi
 
 resume=false
+recovery=false
 if [ "${1:-}" = "--resume" ]; then
 	[ "$#" -eq 1 ] || { echo "deploy: --resume accepts no other arguments" >&2; exit 1; }
 	case "$broker" in
 		rollout-__APP_NAME__) resume=true ;;
 		*) echo "deploy: journal resume must use the dedicated rollout-__APP_NAME__ broker" >&2; exit 1 ;;
+	esac
+fi
+if [ "${1:-}" = "--recover" ]; then
+	[ "$#" -eq 1 ] || { echo "deploy: --recover accepts no other arguments" >&2; exit 1; }
+	case "$broker" in
+		rollout-__APP_NAME__) recovery=true ;;
+		*) echo "deploy: verified recovery must use the dedicated rollout-__APP_NAME__ broker" >&2; exit 1 ;;
 	esac
 fi
 
@@ -724,15 +732,23 @@ esac
 # Every step is proved before the redirection, because `exec 9>` on a path that
 # cannot be opened takes the whole shell down with it under set -e.
 komizo_lock="/run/komizo/deploy-__APP_NAME__.lock"
+deploy_locked=false
+lock_wait=300
+[ "$recovery" = false ] || lock_wait=20
 if command -v flock >/dev/null 2>&1 &&
 	mkdir -p /run/komizo 2>/dev/null &&
 	: > "$komizo_lock" 2>/dev/null
 then
 	exec 9>"$komizo_lock"
-	if ! flock -w 300 9; then
-		echo "deploy: another deploy of __APP_NAME__ has been running for over 5 minutes" >&2
+	if ! flock -w "$lock_wait" 9; then
+		if [ "$recovery" = true ]; then
+			echo "deploy: another operation of __APP_NAME__ exceeded the fixed recovery lock wait" >&2
+		else
+			echo "deploy: another deploy of __APP_NAME__ has been running for over 5 minutes" >&2
+		fi
 		exit 1
 	fi
+	deploy_locked=true
 fi
 
 # Resume accepts no model, release, digest, path, profile, app or budget from
@@ -744,6 +760,18 @@ if [ "$resume" = true ]; then
 	# its Docker credential in an operation-private temporary directory.
 	"$ROLLOUT_BIN" rollout profile --resume --profile "$ROLLOUT_PROFILE" --app __APP_NAME__
 	echo "deploy: resumed=yes"
+	exit 0
+fi
+
+# Exceptional recovery accepts no proof or authority from CI. It is enabled
+# only by the root-owned transaction-pinned authorization and verifier already
+# installed for this app. Unlike legacy deployment, recovery refuses unless the
+# app deployment lock was positively acquired; the runtime then takes the
+# private rollout journal lock.
+if [ "$recovery" = true ]; then
+	[ "$deploy_locked" = true ] || { echo "deploy: verified recovery requires the application deployment lock" >&2; exit 1; }
+	"$ROLLOUT_BIN" rollout profile --recover --profile "$ROLLOUT_PROFILE" --app __APP_NAME__ </dev/null
+	echo "deploy: recovered=yes"
 	exit 0
 fi
 

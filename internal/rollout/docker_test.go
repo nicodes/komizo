@@ -116,6 +116,23 @@ func TestRemovalNeverSubstitutesForcedKillForApplicationRetirement(t *testing.T)
 	}
 }
 
+func TestRecoveryStandbyEnvironmentMustBeExact(t *testing.T) {
+	for _, test := range []struct {
+		environment []string
+		want        bool
+	}{
+		{[]string{"KOMIZO_CANDIDATE=standby"}, true},
+		{[]string{"OTHER=x", "KOMIZO_CANDIDATE=standby"}, true},
+		{nil, false},
+		{[]string{"KOMIZO_CANDIDATE=active"}, false},
+		{[]string{"KOMIZO_CANDIDATE=standby", "KOMIZO_CANDIDATE=standby"}, false},
+	} {
+		if got := exactEnvironment(test.environment, "KOMIZO_CANDIDATE", "standby"); got != test.want {
+			t.Fatalf("exact environment %v = %t, want %t", test.environment, got, test.want)
+		}
+	}
+}
+
 func TestExecutorDoesNotInheritRemoteDockerContext(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh unavailable")

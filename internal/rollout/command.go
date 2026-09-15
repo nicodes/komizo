@@ -105,6 +105,7 @@ func profileCommand(parent context.Context, args []string, input io.Reader, outp
 	profilePath := flags.String("profile", "", "root-owned application rollout profile")
 	modelPath := flags.String("model", "", "normalized model from the immutable config artifact")
 	resume := flags.Bool("resume", false, "resume the profile's pending journaled transaction")
+	recoverOperation := flags.Bool("recover", false, "run one fixed transaction-pinned verified recovery")
 	check := flags.Bool("check", false, "verify complete host capability without changing application state")
 	provision := flags.Bool("provision", false, "install new app-scoped authority without starting a gateway")
 	app := flags.String("app", "", "fixed application scope for check/provision")
@@ -115,19 +116,26 @@ func profileCommand(parent context.Context, args []string, input io.Reader, outp
 		return errors.New("invalid rollout profile flags")
 	}
 	modes := 0
-	for _, selected := range []bool{*resume, *modelPath != "", *check, *provision} {
+	for _, selected := range []bool{*resume, *recoverOperation, *modelPath != "", *check, *provision} {
 		if selected {
 			modes++
 		}
 	}
-	if flags.NArg() != 0 || *profilePath == "" || modes != 1 || ((*check || *provision) && !scopeName(*app)) || (*resume && *app != "" && !scopeName(*app)) {
-		return errors.New("profile rollout requires --profile and exactly one operation; check/provision also require app")
+	if flags.NArg() != 0 || *profilePath == "" || modes != 1 || ((*check || *provision || *recoverOperation) && !scopeName(*app)) || (*resume && *app != "" && !scopeName(*app)) {
+		return errors.New("profile rollout requires --profile and exactly one operation; check/provision/recover also require app")
 	}
 	if *provision {
 		return ProvisionProfile(*profilePath, *app)
 	}
 	if *check {
 		return CheckProfile(parent, *profilePath, *app)
+	}
+	if *recoverOperation {
+		result, err := RecoverProfileForApp(parent, *profilePath, *app, input)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(output).Encode(result)
 	}
 	var result Result
 	var err error

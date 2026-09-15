@@ -28,6 +28,7 @@ type memoryBackend struct {
 	lifecycleCalls   []string
 	failLifecycle    string
 	lifecycleHook    func(context.Context, string) error
+	candidateHook    func(string) error
 }
 
 func (b *memoryBackend) Lifecycle(ctx context.Context, i Instance, action string, p Retirement) (Retirement, error) {
@@ -95,6 +96,11 @@ func (b *memoryBackend) Ready(_ context.Context, i Instance) error {
 }
 func (b *memoryBackend) Candidate(_ context.Context, i Instance, action string) error {
 	b.lifecycleCalls = append(b.lifecycleCalls, action+":"+i.Name)
+	if b.candidateHook != nil {
+		if err := b.candidateHook(action); err != nil {
+			return err
+		}
+	}
 	if b.failLifecycle == action {
 		return errors.New("application refused candidate lifecycle")
 	}
@@ -117,10 +123,19 @@ type memoryRouter struct {
 	lostReply    bool
 	blocked      string
 	unknownDrain bool
+	wrongCurrent bool
+	wrongEpoch   bool
+	blockAll     bool
 }
 
 func (r *memoryRouter) Current(context.Context) (gateway.Config, string, error) {
 	c, epoch := r.g.Current()
+	if r.wrongCurrent {
+		c.Generation = "changed"
+	}
+	if r.wrongEpoch {
+		epoch = "changed"
+	}
 	return c, epoch, nil
 }
 func (r *memoryRouter) Apply(_ context.Context, c gateway.Config) (string, error) {
@@ -139,7 +154,7 @@ func (r *memoryRouter) Status(_ context.Context, id string) (gateway.Status, err
 		return gateway.Status{}, errors.New("lost gateway state")
 	}
 	status, err := r.g.Status(id)
-	if id == r.blocked {
+	if id == r.blocked || r.blockAll {
 		status.Requests = 1
 	}
 	return status, err
