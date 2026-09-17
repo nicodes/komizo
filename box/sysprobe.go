@@ -61,8 +61,8 @@ func (p *Probe) cores() int {
 // spare on cache and hands it back on demand -- so reporting free as used is
 // the classic way to make every server on earth look seconds from death.
 func (p *Probe) mem() *Mem {
-	var total, avail uint64
-	var haveAvail bool
+	var total, avail, swapTotal, swapFree uint64
+	var haveAvail, haveSwapTotal, haveSwapFree bool
 	for _, ln := range readLines(p.path("/proc/meminfo")) {
 		k, v, ok := strings.Cut(ln, ":")
 		if !ok {
@@ -81,12 +81,20 @@ func (p *Probe) mem() *Mem {
 			total = n * 1024
 		case "MemAvailable":
 			avail, haveAvail = n*1024, true
+		case "SwapTotal":
+			swapTotal, haveSwapTotal = n*1024, true
+		case "SwapFree":
+			swapFree, haveSwapFree = n*1024, true
 		}
 	}
 	if total == 0 || !haveAvail {
 		return nil
 	}
-	return &Mem{Total: total, Used: total - avail}
+	m := &Mem{Total: total, Used: total - avail, Available: avail}
+	if haveSwapTotal && haveSwapFree && swapTotal > 0 {
+		m.Swap = &Swap{Total: swapTotal, Used: saturatingSub(swapTotal, swapFree)}
+	}
+	return m
 }
 
 // uptime is how long the box has been up, in seconds.

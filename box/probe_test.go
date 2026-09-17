@@ -95,7 +95,7 @@ func readyBox(t *testing.T) *fakeBox {
 	f.write("/srv/blog/hostnames", "blog.example.com -> web\n# a comment\nwww.example.com\n")
 	f.write("/proc/stat", "cpu  100 0 50 800 20 0 0 0 0 0\ncpu0 1 2 3 4 5\n")
 	f.write("/proc/cpuinfo", "processor\t: 0\nprocessor\t: 1\n")
-	f.write("/proc/meminfo", "MemTotal:       1000 kB\nMemAvailable:    400 kB\n")
+	f.write("/proc/meminfo", "MemTotal:       1000 kB\nMemFree:          50 kB\nMemAvailable:    400 kB\nSwapTotal:       200 kB\nSwapFree:         80 kB\n")
 	f.write("/proc/uptime", "91238.15 700000.00\n")
 	f.write("/etc/ssh/ssh_host_ed25519_key.pub", "ssh-ed25519 AAAAC3Nz root@box\n")
 
@@ -198,6 +198,9 @@ func TestReportReadsTheBox(t *testing.T) {
 	// Used is total minus AVAILABLE, never minus free.
 	if r.System.Mem == nil || r.System.Mem.Used != 600*1024 {
 		t.Errorf("mem = %+v, want used %d", r.System.Mem, 600*1024)
+	}
+	if r.System.Mem.Available != 400*1024 {
+		t.Errorf("mem available = %d, want MemAvailable %d not MemFree", r.System.Mem.Available, 400*1024)
 	}
 }
 
@@ -439,6 +442,9 @@ func TestOneFilesystemUnderTwoMounts(t *testing.T) {
 		}
 		if d.Used > d.Size {
 			t.Errorf("used exceeds size: %+v", d)
+		}
+		if d.Available != d.Size-d.Used {
+			t.Errorf("available %d != size-used %d: %+v", d.Available, d.Size-d.Used, d)
 		}
 	}
 	// / is always there and is always first, so the row order is stable.

@@ -630,6 +630,89 @@ ROUTE_FILE="__ROUTES_DIR__/__APP_NAME__.caddy"
 # that fails when the service is down.
 STATE_FILE="__STATE_DIR__/__APP_NAME__.env"
 
+
+# Operator-written host-wide floors. Komizo never creates this file. Empty or
+# missing keys mean no floor: deploys fail-open with a warning rather than
+# inventing a production SLO here. CI only reaches deploy-APP, so the operator
+# writes this on the box as root.
+FLOORS_FILE="/etc/komizo/deploy-floors"
+REPORT_JSON="/run/komizo/report.json"
+
+# Numbers from compact encoding/json output. No jq on the box. Brace-matched so
+# a nested swap object inside mem does not clip available. BusyBox awk %d is
+# 32-bit, so large byte counts are printed with %.0f (exact to 2^53).
+json_mem_available() {
+	awk '
+	{
+		buf = buf $0
+	}
+	END {
+		gsub(/[ \t\n\r]/, "", buf)
+		pat = "\"mem\":{"
+		i = index(buf, pat)
+		if (i == 0) exit
+		rest = substr(buf, i + length(pat) - 1)
+		depth = 0
+		obj = ""
+		n = length(rest)
+		for (k = 1; k <= n; k++) {
+			c = substr(rest, k, 1)
+			obj = obj c
+			if (c == "{") depth++
+			if (c == "}") {
+				depth--
+				if (depth == 0) break
+			}
+		}
+		i = index(obj, "\"available\":")
+		if (i == 0) exit
+		rest = substr(obj, i + 12)
+		if (match(rest, /^[0-9]+/)) printf "%.0f\n", substr(rest, RSTART, RLENGTH) + 0
+	}' "$1" 2>/dev/null || true
+}
+
+json_disk_available() {
+	awk '
+	{
+		buf = buf $0
+	}
+	END {
+		gsub(/[ \t\n\r]/, "", buf)
+		i = index(buf, "\"disks\":[")
+		if (i == 0) exit
+		rest = substr(buf, i + 9)
+		depth = 0
+		arr = ""
+		n = length(rest)
+		for (k = 1; k <= n; k++) {
+			c = substr(rest, k, 1)
+			arr = arr c
+			if (c == "[") depth++
+			if (c == "]") {
+				depth--
+				if (depth == 0) break
+			}
+		}
+		have = 0
+		minv = 0
+		s = arr
+		while ((j = index(s, "\"available\":")) > 0) {
+			s = substr(s, j + 12)
+			if (!match(s, /^[0-9]+/)) break
+			v = substr(s, RSTART, RLENGTH) + 0
+			if (!have || v < minv) minv = v
+			have = 1
+			s = substr(s, RLENGTH + 1)
+		}
+		if (have) printf "%.0f\n", minv
+	}' "$1" 2>/dev/null || true
+}
+
+# True when A < B. BusyBox [ ] is 32-bit signed; disk bytes are not.
+below_bytes() {
+	awk -v a="$1" -v b="$2" 'BEGIN { exit (a + 0 < b + 0) ? 0 : 1 }'
+}
+
 version="${1:-}"
 registry="${2:-}"
 registry_user="${3:-}"
@@ -700,6 +783,69 @@ then
 		echo "deploy: another deploy of __APP_NAME__ has been running for over 5 minutes" >&2
 		exit 1
 	fi
+fi
+
+# Resource floors, if the operator set any. Until they do, fail-open with a
+# loud warning that prints the reported available bytes. No sample sizes are
+# encoded as defaults. If floors exist and report.json is missing, unreadable,
+# or lacks the available fields those floors need, refuse-closed -- before
+# pulling images or composing up.
+disk_floor=""
+mem_floor=""
+if [ -e "$FLOORS_FILE" ]; then
+	if [ ! -f "$FLOORS_FILE" ] || [ ! -r "$FLOORS_FILE" ]; then
+		echo "deploy: refusing: cannot read $FLOORS_FILE" >&2
+		exit 1
+	fi
+	disk_floor="$(sed -n 's/^DISK_AVAILABLE_FLOOR_BYTES=//p' "$FLOORS_FILE" | tr -d '\r \t' | head -n 1)"
+	mem_floor="$(sed -n 's/^MEM_AVAILABLE_FLOOR_BYTES=//p' "$FLOORS_FILE" | tr -d '\r \t' | head -n 1)"
+	case "$disk_floor" in
+		''|*[!0-9]*)
+			if [ -n "$disk_floor" ]; then
+				echo "deploy: refusing: $FLOORS_FILE has a non-numeric DISK_AVAILABLE_FLOOR_BYTES" >&2
+				exit 1
+			fi
+			;;
+	esac
+	case "$mem_floor" in
+		''|*[!0-9]*)
+			if [ -n "$mem_floor" ]; then
+				echo "deploy: refusing: $FLOORS_FILE has a non-numeric MEM_AVAILABLE_FLOOR_BYTES" >&2
+				exit 1
+			fi
+			;;
+	esac
+fi
+mem_avail=""
+disk_avail=""
+if [ -f "$REPORT_JSON" ] && [ -r "$REPORT_JSON" ]; then
+	mem_avail="$(json_mem_available "$REPORT_JSON")"
+	disk_avail="$(json_disk_available "$REPORT_JSON")"
+fi
+if [ -n "$disk_floor" ] || [ -n "$mem_floor" ]; then
+	if [ ! -f "$REPORT_JSON" ] || [ ! -r "$REPORT_JSON" ]; then
+		echo "deploy: refusing: $FLOORS_FILE sets floors but $REPORT_JSON is missing or unreadable" >&2
+		exit 1
+	fi
+	if [ -n "$mem_floor" ] && [ -z "$mem_avail" ]; then
+		echo "deploy: refusing: $FLOORS_FILE sets floors but $REPORT_JSON lacks available fields" >&2
+		exit 1
+	fi
+	if [ -n "$disk_floor" ] && [ -z "$disk_avail" ]; then
+		echo "deploy: refusing: $FLOORS_FILE sets floors but $REPORT_JSON lacks available fields" >&2
+		exit 1
+	fi
+	if [ -n "$mem_floor" ] && below_bytes "$mem_avail" "$mem_floor"; then
+		echo "deploy: refusing: mem available ${mem_avail} bytes is below floor ${mem_floor} bytes" >&2
+		exit 1
+	fi
+	if [ -n "$disk_floor" ] && below_bytes "$disk_avail" "$disk_floor"; then
+		echo "deploy: refusing: disk available ${disk_avail} bytes is below floor ${disk_floor} bytes" >&2
+		exit 1
+	fi
+else
+	echo "deploy: WARNING -- no operator resource floors configured ($FLOORS_FILE absent or keys empty); deploying anyway" >&2
+	echo "deploy: WARNING -- reported available bytes: mem=${mem_avail:-unknown} disk=${disk_avail:-unknown}" >&2
 fi
 
 # Registry authentication happens HERE, as root, and not over the deploy user's
