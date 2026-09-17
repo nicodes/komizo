@@ -28,11 +28,15 @@ func statfs(path string) (Disk, bool) {
 	if bs == 0 {
 		return Disk{}, false
 	}
-	used := (st.Blocks - st.Bfree) * bs
-	avail := st.Bavail * bs
-	return Disk{
-		Dev:  fmt.Sprintf("%x-%x", uint32(st.Fsid.X__val[0]), uint32(st.Fsid.X__val[1])),
-		Used: used,
-		Size: used + avail,
-	}, true
+	used, size, avail := diskAccounting(bs, uint64(st.Blocks), uint64(st.Bfree), uint64(st.Bavail))
+	d := Disk{
+		Dev:       fmt.Sprintf("%x-%x", uint32(st.Fsid.X__val[0]), uint32(st.Fsid.X__val[1])),
+		Used:      used,
+		Size:      size,
+		Available: avail,
+	}
+	if iu, ifr, ok := inodeAccounting(uint64(st.Files), uint64(st.Ffree)); ok {
+		d.Inodes = &Inodes{Used: iu, Free: ifr}
+	}
+	return d, true
 }
