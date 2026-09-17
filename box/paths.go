@@ -34,6 +34,11 @@ const (
 	// outlives the boot it describes is a lie waiting to be read.
 	RunDir     = "/run/komizo"
 	ReportPath = RunDir + "/report.json"
+	// DeployFloorsPath is operator-written host-wide byte floors that
+	// deploy-APP reads as root. Komizo never creates this file. Empty or
+	// missing keys mean no floor: deploys fail-open with a warning rather
+	// than inventing a production SLO in code.
+	DeployFloorsPath = "/etc/komizo/deploy-floors"
 	// ServedDir is what root writes for somebody else to read.
 	//
 	// Its own directory, and for the reason APISocketDir got one. StateDir is

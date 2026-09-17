@@ -57,6 +57,17 @@ type CPU struct {
 type Mem struct {
 	Total uint64 `json:"total"`
 	Used  uint64 `json:"used"`
+	// Available is MemAvailable, never MemFree. Used is Total minus this.
+	Available uint64 `json:"available"`
+	// Swap is present only when the box has swap. Nested so total and used
+	// travel together; a zero used with a non-zero total is a measurement.
+	Swap *Swap `json:"swap,omitempty"`
+}
+
+// Swap is swap as of now, in bytes.
+type Swap struct {
+	Total uint64 `json:"total"`
+	Used  uint64 `json:"used"`
 }
 
 // Disk is one filesystem's used and total bytes.
@@ -70,6 +81,17 @@ type Disk struct {
 	Dev   string `json:"dev,omitempty"`
 	Used  uint64 `json:"used"`
 	Size  uint64 `json:"size"`
+	// Available is Bavail * Bsize, what an ordinary process may still write.
+	// Not Blocks-Used and not Bfree: those include space reserved for root.
+	Available uint64 `json:"available"`
+	// Inodes is present when the filesystem reports a non-zero inode table.
+	Inodes *Inodes `json:"inodes,omitempty"`
+}
+
+// Inodes is one filesystem's inode used and free counts.
+type Inodes struct {
+	Used uint64 `json:"used"`
+	Free uint64 `json:"free"`
 }
 
 // ContainerStat is one container's cumulative processor time and memory now.
