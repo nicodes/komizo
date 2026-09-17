@@ -24,6 +24,7 @@ import (
 // state files, and a PATH where docker does as it is told.
 type deployBox struct {
 	root, appDir, routes, proxyDir, state, bin, config string
+	floors, report                                     string
 	script                                             string
 	// env is extra environment for the docker stub, so a test can choose which
 	// docker call fails.
@@ -44,6 +45,8 @@ func newDeployBox(t *testing.T) *deployBox {
 		state:    filepath.Join(root, "state"),
 		bin:      filepath.Join(root, "bin"),
 		config:   filepath.Join(root, "config"),
+		floors:   filepath.Join(root, "etc", "komizo", "deploy-floors"),
+		report:   filepath.Join(root, "run", "komizo", "report.json"),
 	}
 	for _, d := range []string{b.appDir, b.routes, b.state, b.bin, b.config} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -104,7 +107,33 @@ exit 0
 		strings.Contains(b.script, "__STATE") {
 		t.Fatal("the deploy template has a placeholder this test does not substitute")
 	}
+	b.script = strings.ReplaceAll(b.script,
+		`FLOORS_FILE="/etc/komizo/deploy-floors"`,
+		`FLOORS_FILE="`+b.floors+`"`)
+	b.script = strings.ReplaceAll(b.script,
+		`REPORT_JSON="/run/komizo/report.json"`,
+		`REPORT_JSON="`+b.report+`"`)
+	if strings.Contains(b.script, `FLOORS_FILE="/etc/komizo/deploy-floors"`) ||
+		strings.Contains(b.script, `REPORT_JSON="/run/komizo/report.json"`) {
+		t.Fatal("the deploy template has no FLOORS_FILE/REPORT_JSON assignment this test can retarget")
+	}
 	return b
+}
+
+func (b *deployBox) writeFloors(t *testing.T, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(b.floors), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, b.floors, 0o644, body)
+}
+
+func (b *deployBox) writeReportJSON(t *testing.T, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(b.report), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, b.report, 0o644, body)
 }
 
 // ungateProxy models a box whose proxy has no on-demand-TLS gate configured --
@@ -502,5 +531,96 @@ func TestTheHostnameClaimIsTakenUnderALock(t *testing.T) {
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("the second deploy blocked -- the first did not release the lock")
+	}
+}
+
+func TestDeployWithoutFloorsWarnsAndContinues(t *testing.T) {
+	b := newDeployBox(t)
+	b.publishes(t, "services:\n  web:\n    image: x\n", "blog.example.com\n")
+	out, err := b.deploy(t, "abc123")
+	if err != nil {
+		t.Fatalf("deploy failed: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "WARNING -- no operator resource floors configured") {
+		t.Errorf("expected a loud no-floors warning:\n%s", out)
+	}
+	if !strings.Contains(out, "deploying anyway") {
+		t.Errorf("expected fail-open:\n%s", out)
+	}
+	if !strings.Contains(out, "WARNING -- reported available bytes:") {
+		t.Errorf("expected reported available bytes in the warning:\n%s", out)
+	}
+	if got := b.dotenv(t); !strings.Contains(got, "APP_VERSION=abc123") {
+		t.Errorf("did not continue: %q\n%s", got, out)
+	}
+}
+
+func TestDeployFloorsBelowRefuseWithoutComposeUp(t *testing.T) {
+	b := newDeployBox(t)
+	b.writeFloors(t, "DISK_AVAILABLE_FLOOR_BYTES=1000\nMEM_AVAILABLE_FLOOR_BYTES=1000\n")
+	b.writeReportJSON(t, `{"system":{"mem":{"total":2000,"used":1500,"available":500},"disks":[{"mount":"/","used":100,"size":600,"available":500}]}}`)
+	b.publishes(t, "services:\n  web:\n    image: x\n", "blog.example.com\n")
+	out, err := b.deploy(t, "abc123")
+	if err == nil {
+		t.Fatalf("deploy should have been refused:\n%s", out)
+	}
+	if !strings.Contains(out, "deploy: refusing:") {
+		t.Errorf("expected refuse-closed:\n%s", out)
+	}
+	if strings.Contains(out, "fetching config") {
+		t.Errorf("pulled config despite refuse:\n%s", out)
+	}
+	if got := b.dotenv(t); strings.Contains(got, "APP_VERSION=abc123") {
+		t.Errorf("version was committed despite refuse: %q", got)
+	}
+}
+
+func TestDeployFloorsAboveProceeds(t *testing.T) {
+	b := newDeployBox(t)
+	b.writeFloors(t, "DISK_AVAILABLE_FLOOR_BYTES=100\nMEM_AVAILABLE_FLOOR_BYTES=100\n")
+	b.writeReportJSON(t, `{"system":{"mem":{"total":2000,"used":500,"available":1500},"disks":[{"mount":"/","used":100,"size":1600,"available":1500}]}}`)
+	b.publishes(t, "services:\n  web:\n    image: x\n", "blog.example.com\n")
+	out, err := b.deploy(t, "abc123")
+	if err != nil {
+		t.Fatalf("deploy failed: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "deploy: refusing:") {
+		t.Errorf("refused despite available above floor:\n%s", out)
+	}
+	if got := b.dotenv(t); !strings.Contains(got, "APP_VERSION=abc123") {
+		t.Errorf("did not proceed: %q\n%s", got, out)
+	}
+}
+
+func TestDeployFloorsSetButReportMissingRefuses(t *testing.T) {
+	b := newDeployBox(t)
+	b.writeFloors(t, "MEM_AVAILABLE_FLOOR_BYTES=100\n")
+	b.publishes(t, "services:\n  web:\n    image: x\n", "blog.example.com\n")
+	out, err := b.deploy(t, "abc123")
+	if err == nil {
+		t.Fatalf("deploy should have been refused:\n%s", out)
+	}
+	if !strings.Contains(out, "sets floors but") || !strings.Contains(out, "missing or unreadable") {
+		t.Errorf("expected missing-report refusal:\n%s", out)
+	}
+	if strings.Contains(out, "fetching config") {
+		t.Errorf("pulled config despite refuse:\n%s", out)
+	}
+}
+
+func TestDeployFloorsSetButReportLacksAvailableRefuses(t *testing.T) {
+	b := newDeployBox(t)
+	b.writeFloors(t, "DISK_AVAILABLE_FLOOR_BYTES=100\nMEM_AVAILABLE_FLOOR_BYTES=100\n")
+	b.writeReportJSON(t, `{"system":{"mem":{"total":2000,"used":500},"disks":[{"mount":"/","used":100,"size":1600}]}}`)
+	b.publishes(t, "services:\n  web:\n    image: x\n", "blog.example.com\n")
+	out, err := b.deploy(t, "abc123")
+	if err == nil {
+		t.Fatalf("deploy should have been refused:\n%s", out)
+	}
+	if !strings.Contains(out, "lacks available fields") {
+		t.Errorf("expected lacks-available refusal:\n%s", out)
+	}
+	if strings.Contains(out, "fetching config") {
+		t.Errorf("pulled config despite refuse:\n%s", out)
 	}
 }
