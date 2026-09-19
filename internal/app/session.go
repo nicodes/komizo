@@ -34,12 +34,12 @@ type Session struct {
 
 func (s Session) valid() bool { return s.API != "" && s.Token != "" }
 
-// sessionPath is where it lives.
+// configDir is where komizo keeps what it holds on this machine.
 //
 // Under XDG_CONFIG_HOME when that is set, because a machine that has said where
 // configuration goes has said it for everything. ~/.config otherwise, which is
 // the same place on the machines that have not.
-func sessionPath() (string, error) {
+func configDir() (string, error) {
 	dir := os.Getenv("XDG_CONFIG_HOME")
 	if dir == "" {
 		home, err := os.UserHomeDir()
@@ -48,7 +48,16 @@ func sessionPath() (string, error) {
 		}
 		dir = filepath.Join(home, ".config")
 	}
-	return filepath.Join(dir, "komizo", "session.json"), nil
+	return filepath.Join(dir, "komizo"), nil
+}
+
+// sessionPath is where it lives.
+func sessionPath() (string, error) {
+	dir, err := configDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "session.json"), nil
 }
 
 // readSession loads it, or returns the zero value.
