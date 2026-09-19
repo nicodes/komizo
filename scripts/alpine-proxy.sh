@@ -80,6 +80,29 @@ case "$TLS_ASK" in
 esac
 command -v docker >/dev/null 2>&1 || die "this server is not set up yet -- run 'komizo init' first"
 
+# Fail CLOSED on the one rewrite that can take every site on the box down.
+#
+# A route with `tls { on_demand }` only loads while the global block below
+# permits on-demand issuance. Re-running with no TLS_ASK would write a
+# Caddyfile WITHOUT that block while the route still needs it, `caddy
+# validate` would refuse the whole config ("on-demand TLS cannot be enabled
+# without a permission module"), and the next restart would serve nothing --
+# for every app on the box, not only the one with the wildcard. That rewrite
+# happened once, and the box was restored by hand. So an existing on-demand
+# route with no gate is not a configuration change, it is a refusal: nothing
+# is written and the running proxy keeps the config it has.
+#
+# A textual check, not `caddy validate`: there is no caddy binary on the host
+# to ask, and the only producer of on-demand routes is komizo's own deploy.
+if [ -z "$TLS_ASK" ]; then
+	for route in "$ROUTES_DIR"/*.caddy; do
+		[ -e "$route" ] || continue
+		if grep -q 'on_demand' "$route"; then
+			die "$route uses on-demand TLS, but no TLS_ASK was given -- writing the Caddyfile without the gate would take every site on this box down. Re-run with it: komizo proxy --tls-ask https://your-gate/ask"
+		fi
+	done
+fi
+
 # --- 1. the shared network -------------------------------------------------
 # Created here rather than by compose so it outlives any single project, and so
 # an app can join it as `external: true` before the proxy is ever started.
