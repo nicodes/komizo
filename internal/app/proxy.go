@@ -41,7 +41,7 @@ func RunProxy(args []string) error {
 	fs.StringVar(&o.host, "host", "", "server, [user@]HOST (user defaults to root)")
 	fs.StringVar(&o.network, "network", defaultNetwork, "docker network apps join to be reachable")
 	fs.StringVar(&o.image, "image", defaultProxy, "caddy image to run")
-	fs.StringVar(&o.tlsAsk, "tls-ask", "", "URL asked before issuing an on-demand certificate (remembered per server; --tls-ask= clears it)")
+	fs.StringVar(&o.tlsAsk, "tls-ask", "", "URL asked before issuing an on-demand certificate (for wildcard hostnames)")
 	fs.IntVar(&o.port, "port", 22, "SSH port")
 	fs.BoolVar(&o.acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
 	if err := fs.Parse(args); err != nil {
@@ -56,24 +56,14 @@ func RunProxy(args []string) error {
 	if !onlyChars(o.image, imageChars) {
 		return fmt.Errorf("--image contains characters that are not valid in an image reference: %q", o.image)
 	}
+	if err := validateTLSAsk(o.tlsAsk); err != nil {
+		return err
+	}
 
 	tgt, err := resolveTarget(fs, o.host, o.port)
 	if err != nil {
 		return err
 	}
-
-	// The gate is the box's, not this invocation's. Passing the flag sets it
-	// (and is remembered); passing --tls-ask= clears it; saying nothing keeps
-	// what the box was given before, so a re-run to update Caddy cannot drop
-	// the gate a wildcard route still needs. See resolveTLSAsk.
-	tlsAsk, err := resolveTLSAsk(fs, tgt.hostDisplay(), o.tlsAsk)
-	if err != nil {
-		return err
-	}
-	if tlsAsk != "" && !tlsAskWasSet(fs) {
-		note("keeping the on-demand gate this box was given before (%s)", tlsAsk)
-	}
-	o.tlsAsk = tlsAsk
 
 	step("Checking %s:%d", tgt.addr(), tgt.port)
 	if err := ensureReachable(tgt, o.acceptHostKey); err != nil {
@@ -145,10 +135,10 @@ and needs one issued per name on demand. --tls-ask is the endpoint asked whether
 a name is real, without which anyone pointing DNS at this box could make it
 request certificates on their behalf.
 
-The gate is remembered per server on this machine: once given, a re-run keeps
-it, because the wildcard routes it permits are still on the box. Pass
---tls-ask= (empty) to clear it. A re-run that would leave an on-demand route
-with no gate is refused before anything is written.
+On-demand TLS is OFF by default and is not carried in any box state: it is on
+for exactly the runs that pass --tls-ask. A re-run that would leave an
+on-demand route with no gate is refused before anything is written, so the
+box stays safe in between.
 
 Safe to re-run -- that is how you update Caddy, move it to another network, or
 change the on-demand gate.
