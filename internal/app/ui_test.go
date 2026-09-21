@@ -286,11 +286,12 @@ func TestUIBindContract(t *testing.T) {
 	}
 }
 
-// The web tree carries no remnant of the decommissioned stack: no Clerk
-// import, no PocketBase package, no env URL for either. Source-level, because
-// what is pinned is an absence -- a reintroduced dependency fails here,
-// wherever it lands.
-func TestTheWebTreeHasNoClerkOrPocketBaseRemnants(t *testing.T) {
+// The web tree carries no remnant of the stacks it replaced: no Clerk import,
+// no PocketBase package, no env URL for either (the decommissioned backend),
+// and no Expo / react-native / react-native-web import or package (the
+// superseded RN-web export). Source-level, because what is pinned is an
+// absence -- a reintroduced dependency fails here, wherever it lands.
+func TestTheWebTreeHasNoRemnantsOfTheOldStacks(t *testing.T) {
 	root := filepath.Join("..", "..", "ui")
 	var files []string
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -317,7 +318,11 @@ func TestTheWebTreeHasNoClerkOrPocketBaseRemnants(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, banned := range []string{"@clerk/", `"pocketbase"`, "EXPO_PUBLIC_PB_URL", "EXPO_PUBLIC_CLERK"} {
+		for _, banned := range []string{
+			"@clerk/", `"pocketbase"`, "EXPO_PUBLIC_PB_URL", "EXPO_PUBLIC_CLERK",
+			"@expo/", `"expo"`, `"expo-`, `"react"`, `"react-dom"`, `"react-native`,
+			`from "react`, `from 'react`, `from "expo`, `from 'expo`,
+		} {
 			if strings.Contains(string(b), banned) {
 				t.Errorf("%s mentions %q -- a remnant of the decommissioned stack", f, banned)
 			}

@@ -18,7 +18,7 @@ all: build
 # build dependency. CI rebuilds it and diffs, which is what keeps the
 # committed bytes the ones this tree produces.
 ui:
-	cd ui && npm ci && npm run export
+	cd ui && npm ci && npm run build
 
 # CGO_ENABLED=0 because the box is Alpine: a binary linked against glibc will
 # not run there, and the failure is the kernel saying "not found" about a file
