@@ -159,7 +159,7 @@ func Main(args []string) error {
 	case "logout":
 		err = RunLogout(args[1:])
 	case "init", "update", "add", "list", "report", "enrol", "remove", "proxy",
-		"start", "stop", "restart", "logs", "reconcile":
+		"start", "stop", "restart", "logs", "ui", "reconcile":
 		// No gate. An account is needed to REGISTER a box, and the two places
 		// that do it ask for one where they do it.
 		//
