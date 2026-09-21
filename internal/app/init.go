@@ -108,16 +108,6 @@ func RunInit(args []string) error {
 		return fmt.Errorf("Docker is installed, but the proxy failed -- see the output above.\n" +
 			"    Re-run 'komizo proxy' once you have fixed it; the server itself is ready.")
 	}
-
-	step("Filing this server under your account")
-	if err := registerAndEnrol(tgt, o.name, o.apiHost, o.deviceKeys, o.forgetDevices); err != nil {
-		// NOT fatal. The box is set up and works; what failed is the half that
-		// needs the service, and komizo enrol does exactly this later. Failing
-		// the whole command would make a service outage look like a broken
-		// server.
-		note("could not register this server: %v", err)
-		note("the box is set up. %s", enrolAdvice(err, tgt.host))
-	}
 	return nil
 }
 
@@ -136,6 +126,11 @@ for whatever hostnames your apps publish.
 The proxy is always installed. On a box that serves no HTTP, stop it afterwards
 -- 't' on the server screen -- rather than deciding here, on a machine with
 nothing on it yet.
+
+	The komizo service is decommissioned, so init no longer files the box under
+	an account: the box is yours and the CLI manages it directly. --name,
+	--api-host, --device-key and --forget-devices are accepted and ignored --
+	they only ever fed that registration.
 
 Safe to re-run. Then add apps with 'komizo add', or just 'komizo root@myhost'.
 
@@ -158,6 +153,11 @@ func enrolAdvice(err error, host string) string {
 }
 
 // registerAndEnrol files a box under whoever is signed in, and enrols it.
+//
+// RETAINED BUT UNREACHED: the komizo service is decommissioned, `komizo init`
+// no longer registers, and the tokenless `komizo enrol` that also called this
+// refuses at its gate. Kept -- gated, not ripped out -- until the command
+// surface itself is reduced.
 //
 // The point of the CLI having an account. The enrolment token is minted and
 // spent inside this one command, so nothing is carried between two surfaces --
