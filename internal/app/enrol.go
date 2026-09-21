@@ -28,8 +28,8 @@ func RunEnrol(args []string) error {
 	var port int
 	var acceptHostKey, undo bool
 	fs.StringVar(&host, "host", "", "server to enrol, [user@]HOST -- must be root")
-	fs.StringVar(&api, "api", "https://api.komizo.dev", "the komizo service")
-	fs.StringVar(&token, "token", "", "the single-use enrolment token from the dashboard")
+	fs.StringVar(&api, "api", "", "the service to enrol against (required with --token; there is no default -- the komizo service is decommissioned)")
+	fs.StringVar(&token, "token", "", "the single-use enrolment token issued by that service")
 	fs.StringVar(&apiHost, "api-host", "", "hostname the app reads this box on (default: the host you connect to, if it is a name)")
 	fs.StringVar(&name, "name", "", "what to call this server in the app (default: the host you connect to)")
 	fs.IntVar(&port, "port", 22, "SSH port")
@@ -45,18 +45,14 @@ func RunEnrol(args []string) error {
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))
 	}
-	// ASKED FIRST, and before anything is parsed or reached for.
+	// REFUSED FIRST, and before a target is resolved or a box is reached.
 	//
-	// Without a token this command mints one itself, which needs an account --
-	// and that is knowable from a file on this machine, instantly, where
-	// resolving a target is argument parsing and reaching a box is a network
-	// round trip that can take half a minute to fail. The outer gate used to
-	// catch it; now that operating a box needs no session, the check belongs
-	// where the session is actually required, and it belongs at the front.
+	// Without a token this command minted one itself, from the komizo service,
+	// which is decommissioned -- so that path is gone, gated rather than ripped
+	// out, and it refuses without touching the network. --token and --remove
+	// are service-free by design and stay: the exchange happens on the BOX.
 	if !undo && token == "" {
-		if _, serr := requireSession(); serr != nil {
-			return serr
-		}
+		return errServiceDecommissioned
 	}
 
 	tgt, err := resolveTarget(fs, host, port)
@@ -64,20 +60,13 @@ func RunEnrol(args []string) error {
 		return err
 	}
 	if !undo {
-		// No token needed when you are signed in: this creates the server and
-		// spends the token inside one command, which is the same thing `komizo
-		// init` does at the end of setting a box up. Passing one explicitly
-		// still works, for a box being enrolled against a service this machine
-		// is not signed in to.
-		if token == "" {
-			if err := ensureReachable(tgt, acceptHostKey); err != nil {
-				return err
-			}
-			step("Filing %s under your account", tgt.host)
-			if err := registerAndEnrol(tgt, name, apiHost, keys, forgetDevices); err != nil {
-				return err
-			}
-			return nil
+		// A token enrolment points the box's agent at a service, and with the
+		// komizo service decommissioned there is no default to point at --
+		// so the address is required, and must name one the operator runs.
+		if api == "" {
+			return fmt.Errorf("--api is required with --token: the komizo service is decommissioned, " +
+				"so there is no default to enrol against. Point it at a service you run, " +
+				"or manage the box from the CLI -- enrolment is optional and always was.")
 		}
 		// Checked HERE as well as on the box, so a typo fails before anything
 		// connects rather than after.
@@ -139,16 +128,19 @@ func usageEnrol(fs *flag.FlagSet) {
 	fmt.Fprint(os.Stderr, strings.TrimLeft(`
 komizo enrol -- point a server at a komizo service
 
-  komizo enrol --host root@server --token kmz_enr_...
+  komizo enrol --host root@server --token kmz_enr_... --api https://service-you-run
   komizo enrol --host root@server --remove
 
 Optional, and reversible. A server that is not enrolled works exactly as it
 does otherwise; enrolling adds a dashboard, not a dependency -- deploys never
 consult the service.
 
-The token is issued by the dashboard, is single-use, and expires in fifteen
-minutes. The long-lived credential it becomes is written by root on the server
-and never touches this machine.
+The komizo service is decommissioned (board decision), so the tokenless form of
+this command is gone: it refuses without touching the network, and there is no
+default --api any more. The two forms that remain are service-free by design --
+the exchange happens on the box, so they work against a service you run. The
+token is single-use and expires in fifteen minutes; the long-lived credential
+it becomes is written by root on the server and never touches this machine.
 
 Flags:
 `, "\n"))

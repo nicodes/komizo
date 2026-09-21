@@ -130,7 +130,12 @@ func TestSigningOutForgetsButDoesNotClaimToRevoke(t *testing.T) {
 	}
 }
 
-// REGISTERING A BOX IS WHAT NEEDS AN ACCOUNT.
+// OPERATING A BOX NEEDS NO ACCOUNT -- and registering one is gone entirely.
+//
+// The komizo service is decommissioned, so the one command that ever asked
+// for a session -- `komizo enrol` when it had to mint the token itself -- now
+// refuses with the decommission error instead. Everything else never asked,
+// and still does not.
 //
 // This used to assert the opposite, and asserting it is how the old rule was
 // kept: every command in the dispatch had to be behind the gate, "which would
@@ -146,17 +151,17 @@ func TestSigningOutForgetsButDoesNotClaimToRevoke(t *testing.T) {
 // A host that fails VALIDATION, so nothing here opens a connection: what is
 // under test is which commands ask, and the alternative spent thirty seconds
 // waiting for DNS to refuse a name.
-func TestRegisteringNeedsAnAccountAndOperatingDoesNot(t *testing.T) {
+func TestOperatingNeedsNoAccountAndTokenlessEnrolRefuses(t *testing.T) {
 	withConfigHome(t)
 	const unreachable = "root@not a host"
 
-	// enrol asks only when it has to mint the token itself, and that is the
-	// only command in the whole dispatch that asks at all.
+	// enrol with no token is the decommissioned path: it refuses from its own
+	// gate, before a target is resolved or anything is dialled.
 	//
-	// errors.Is rather than a substring: matching on "komizo login" keeps
+	// errors.Is rather than a substring: matching on the wording keeps
 	// passing if the message is reworded, which is a test about prose.
-	if err := Main([]string{"enrol", "--host", unreachable}); !errors.Is(err, errNotSignedIn) {
-		t.Errorf("enrol with no token = %v, want it to ask for an account", err)
+	if err := Main([]string{"enrol", "--host", unreachable}); !errors.Is(err, errServiceDecommissioned) {
+		t.Errorf("enrol with no token = %v, want the decommission refusal", err)
 	}
 
 	for _, name := range []string{"init", "update", "add", "list", "report", "remove", "proxy",

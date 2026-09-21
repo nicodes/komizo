@@ -229,14 +229,14 @@ Every operation is a command, and each takes the server as a flag. komizo runs
 on your machine and connects to the box itself; you never run anything on it by
 hand.
 
-  komizo login
-  komizo logout
+  komizo login                   (decommissioned with the service)
+  komizo logout                  (forgets this machine's old session file)
   komizo init    --host root@HOST
   komizo update  --host root@HOST
   komizo add     --host root@HOST --app NAME --config REF
   komizo list    --host root@HOST
   komizo report  --host root@HOST
-  komizo enrol   --host root@HOST --token kmz_enr_...
+  komizo enrol   --host root@HOST --token kmz_enr_... --api https://service-you-run
   komizo remove  --host root@HOST --app NAME --yes
   komizo start   --host root@HOST --app NAME
   komizo stop    --host root@HOST --app NAME
@@ -246,20 +246,16 @@ hand.
   komizo reconcile --host root@HOST --inventory expected-apps.json
   komizo script [init|add|remove|proxy]
 
-"komizo login" signs this machine in. It shows a code to approve from a device
-you are already signed in on -- a phone will do -- so a machine with no browser
-can still be signed in.
+THE SERVICE IS DECOMMISSIONED. komizo-be is gone (board decision) and this CLI
+is the whole product: you manage your servers from it directly, over SSH, with
+nothing to sign in to. "komizo login" and "komizo enrol" without a token talked
+to that service, so they now refuse -- plainly, and without touching the
+network. "komizo enrol --token" and "komizo enrol --remove" stay: the exchange
+happens on the box, so they work against a service you run yourself.
 
-AN ACCOUNT IS TO REGISTER A BOX, NOT TO OPERATE ONE. Nothing here refuses to run
-without one. Filing a server under your account needs one -- that is what "komizo
-init" does at the end, and what "komizo enrol" does when you do not pass a token
--- and a box set up without it works exactly as it always did; it simply does not
-appear in the app until you enrol it.
-
-Everything else -- adding an app, starting or stopping one, reading a report,
-repairing the proxy -- is you and your server over SSH, and needs nothing from
-komizo at all. The session is read from disk rather than checked over the
-network, so an outage costs registration and nothing else.
+Nothing else ever needed the service. Adding an app, starting or stopping one,
+reading a report, setting up or repairing a box -- that is you and your server,
+and needs nothing from komizo at all.
 
 "komizo init" prepares a fresh server: Docker, the shared network, and the one
 Caddy that terminates TLS for every app on the box. It is a separate step from

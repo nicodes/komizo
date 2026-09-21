@@ -3,6 +3,17 @@
 The `komizo` command: set up a server, add apps to it, and watch what they are
 doing.
 
+**The komizo service is decommissioned.** Board decision: komizo-be is gone,
+and this CLI is the whole product. You manage your servers purely from here,
+over SSH, with nothing to sign in to — which is how the CLI always worked
+between service calls. The three commands that talked to the service now
+refuse, plainly and without touching the network: `komizo login`, and
+`komizo enrol` without `--token` (`komizo init` simply no longer files the box
+anywhere). `komizo enrol --token` and `komizo enrol --remove` stay — the
+exchange happens on the box, so they work against a service you run yourself;
+there is no default `--api` any more, because a default that points at a dead
+domain is a silent network call to nothing.
+
 The supported deployment path is the app-scoped `deploy-APP` Compose operation.
 The journaled rollout/gateway experiment published in v0.0.30 through v0.0.39
 was abandoned and is superseded by v0.0.40 and later; those experimental
@@ -37,8 +48,8 @@ komizo init --host root@your-server
 From a checkout, `make build` compiles the agents first.
 
 Every operation is a command that takes the server as a flag; `komizo` on its
-own prints the list. Watching a box — its apps, its charts, its logs — is what
-the app is for, and everything the app can do is a command here as well.
+own prints the list. Watching a box — its apps, its charts, its logs — is
+`komizo list`, `komizo report` and `komizo logs`.
 
 ## What it is
 
@@ -46,8 +57,8 @@ komizo deploys to your own server from GitHub Actions. This repository is both
 halves of the tool: the CLI that runs on **your machine**, and `komizo-box`, the
 small agent it installs on **the server**.
 
-- [**komizo-be**](https://github.com/nicodes/komizo-be) — the docs, and how the
-  whole thing fits together
+- [**komizo-be**](https://github.com/nicodes/komizo-be) — decommissioned; the
+  docs, and how the whole thing fitted together (historical)
 - [**komizo-actions**](https://github.com/nicodes/komizo-actions) — the GitHub
   Actions a deploying repository uses
 
