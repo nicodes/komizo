@@ -1,12 +1,11 @@
 // The shapes the box serves, mirrored from box/report.go, box/system.go and
 // box/result.go by hand. TYPES ONLY: this module compiles to nothing, which is
-// the whole point -- the reference tree kept these beside a PocketBase client
-// that threw without its env URL, and here there is no client and no
-// env URL at all. A value in this file would be a mistake; keep it type-only.
+// the point -- a value here would be a mistake.
 //
 // The JSON field names are the contract and must match the Go structs tag for
-// tag. ui_test.go pins the served documents against the Go types, so a drift
-// fails in Go, not in a browser.
+// tag. The serve test in internal/app/ui_test.go pins the documents against
+// the Go types, so a drift fails in Go, not in a browser.
+
 export type Report = {
   v: number;
   at: string;
@@ -119,5 +118,5 @@ export type BackupsResponse = { v: number; backups: string[]; note: string };
 
 // The action allowlist, server-side in the CLI: these three verbs and no
 // others, whatever the UI sends.
-export type ActionRequest = { app: string; action: 'start' | 'stop' | 'restart' };
+export type ActionRequest = { app: string; action: "start" | "stop" | "restart" };
 export type ActionResponse = { v: number; ok: boolean; output: string };

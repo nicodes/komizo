@@ -24,10 +24,11 @@ import (
 // `komizo ui` -- the local web app, served by the box for whoever can reach
 // the machine it runs on.
 //
-// THE CLI IS THE WHOLE PRODUCT, and this is its screen: the reference Expo
-// app, ported read-mostly, embedded as a static export and served here. It
-// runs ON the box, as root, when the operator starts it -- it is not the box
-// daemon, which stays deploy-path API only, and nothing here touches it.
+// THE CLI IS THE WHOLE PRODUCT, and this is its screen: a SolidJS + Tailwind
+// app (the RN-port screens from the archived reference are the design), built
+// to a static export, embedded, and served here. It runs ON the box, as root,
+// when the operator starts it -- it is not the box daemon, which stays
+// deploy-path API only, and nothing here touches it.
 //
 // Why not the daemon's socket: every route on it requires a read token signed
 // by the registry and an envelope signed by a planted device key (box/api.go,

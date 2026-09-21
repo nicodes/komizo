@@ -17,8 +17,7 @@ bin/
 /internal/agent/bin/*
 !/internal/agent/bin/.keep
 
-# The web app's dependencies -- installed by `make ui` / CI, never committed.
+# The web app's dependencies and local build state -- installed by `make ui`
+# or CI, never committed.
 /ui/node_modules/
-
-# The web app's local build state -- caches and logs, never source.
-/ui/.expo/
+/ui/dist/

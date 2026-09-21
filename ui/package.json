@@ -1,29 +1,22 @@
 {
   "name": "komizo-ui",
-  "main": "expo-router/entry",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "dependencies": {
-    "expo": "~57.0.21",
-    "expo-constants": "~57.0.17",
-    "expo-linking": "~57.0.9",
-    "expo-router": "~57.0.20",
-    "expo-status-bar": "~57.0.1",
-    "react": "19.2.3",
-    "react-dom": "19.2.3",
-    "react-native": "0.86.3",
-    "react-native-web": "~0.21.2",
-    "react-native-safe-area-context": "~5.7.0",
-    "react-native-screens": "~4.26.2"
+    "@solidjs/router": "1.0.0",
+    "solid-js": "1.9.15"
   },
   "devDependencies": {
-    "@types/react": "~19.2.18",
-    "babel-preset-expo": "^57.0.10",
-    "typescript": "~6.0.3"
+    "@tailwindcss/vite": "4.3.3",
+    "tailwindcss": "4.3.3",
+    "typescript": "7.0.2",
+    "vite": "8.3.0",
+    "vite-plugin-solid": "2.11.14"
   },
   "scripts": {
-    "start": "expo start --web",
-    "export": "expo export --platform web --max-workers 1 --output-dir ../internal/ui/dist",
+    "dev": "vite",
+    "build": "vite build",
     "typecheck": "tsc --noEmit"
   }
 }
