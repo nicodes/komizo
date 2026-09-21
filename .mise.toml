@@ -26,3 +26,9 @@ go = "1.26"
 # Makefile reads it out of here for its docker fallback and CI asserts against
 # it, so there is one number and everything else derives from it.
 shellcheck = "0.11.0"
+
+# Node, for the web export under ui/. Pinned like the other two tools, and for
+# the same reason: `expo export` under two Node majors is two different sets of
+# bytes, and internal/ui/dist is byte-verified against the committed export in
+# CI -- an unpinned toolchain would make that check mean "whatever apt had".
+node = "26.7.0"

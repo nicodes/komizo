@@ -6,11 +6,19 @@ bin/
 # Machine-local Claude Code settings.
 .claude/settings.local.json
 
-# Release artefacts, built by .github/actions/build.
-dist/
+# Release artefacts, built by .github/actions/build. Anchored at the root:
+# internal/ui/dist is a COMMITTED export (see internal/ui/embed.go), and an
+# unanchored "dist/" would ignore it.
+/dist/
 
 # Compiled agents, embedded into the CLI by internal/agent. Built by
 # `make agents` and by the release workflow -- never committed, because a
 # binary in git is a binary nobody can review.
 /internal/agent/bin/*
 !/internal/agent/bin/.keep
+
+# The web app's dependencies -- installed by `make ui` / CI, never committed.
+/ui/node_modules/
+
+# The web app's local build state -- caches and logs, never source.
+/ui/.expo/
