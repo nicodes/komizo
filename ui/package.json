@@ -23,7 +23,7 @@
   },
   "scripts": {
     "start": "expo start --web",
-    "export": "expo export --platform web --output-dir ../internal/ui/dist",
+    "export": "expo export --platform web --max-workers 1 --output-dir ../internal/ui/dist",
     "typecheck": "tsc --noEmit"
   }
 }
