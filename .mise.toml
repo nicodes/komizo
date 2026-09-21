@@ -10,7 +10,12 @@
 #
 # The "Toolchain pins agree" step in ci.yml is what stops that happening again.
 # If you bump go.mod, bump this too; CI will tell you if you forget.
-go = "1.26"
+go = "1.27.0"
+
+# govulncheck, the fleet baseline's vulnerability scanner. Pinned like the
+# other tools: a scan run by whatever version apt had is not the scan anybody
+# reviewed. `make vuln` runs it; CI installs it through mise like the rest.
+"go:golang.org/x/vuln/cmd/govulncheck" = "1.7.0"
 
 # ONE shellcheck, so "shellcheck clean" means one thing -- komizo#59.
 #

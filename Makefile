@@ -94,6 +94,10 @@ check: agents
 	shellcheck -s sh scripts/*.sh
 	gofmt -l . | tee /dev/stderr | (! read)
 	go vet ./...
+	# The Go dependency tree, against the vulnerability database. Pinned in
+	# .mise.toml like every other tool here: a scan run by whatever version
+	# happened to be installed is not the scan anybody reviewed.
+	govulncheck ./...
 	KOMIZO_REQUIRE_SHELLCHECK=1 go test ./...
 	# Every gc target family, cross-compiled AND cross-vetted. The capability
 	# build tags (flock, O_NOFOLLOW|O_NONBLOCK, Mkfifo, signals) name exact
