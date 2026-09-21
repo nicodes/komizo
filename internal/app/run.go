@@ -107,6 +107,8 @@ func runCommand(name string, args []string) error {
 		return RunRestart(args)
 	case "logs":
 		return RunLogs(args)
+	case "ui":
+		return RunUI(args)
 	case "proxy":
 		return RunProxy(args)
 	case "reconcile":
@@ -243,6 +245,7 @@ hand.
   komizo restart --host root@HOST --app NAME
   komizo logs    --host root@HOST --app NAME [--tail N] [--service S]
   komizo proxy   --host root@HOST
+  komizo ui      (runs ON the box: the local web app, loopback or tailnet)
   komizo reconcile --host root@HOST --inventory expected-apps.json
   komizo script [init|add|remove|proxy]
 

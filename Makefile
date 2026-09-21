@@ -12,6 +12,14 @@ VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo d
 
 all: build
 
+# The web app `komizo ui` serves. internal/ui/dist is COMMITTED (see
+# internal/ui/embed.go -- a bare `go test` and `go install module@version`
+# must both work with no Node on the machine), so this is a refresh, not a
+# build dependency. CI rebuilds it and diffs, which is what keeps the
+# committed bytes the ones this tree produces.
+ui:
+	cd ui && npm ci && npm run export
+
 # CGO_ENABLED=0 because the box is Alpine: a binary linked against glibc will
 # not run there, and the failure is the kernel saying "not found" about a file
 # that plainly exists.

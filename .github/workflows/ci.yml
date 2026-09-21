@@ -93,6 +93,30 @@ jobs:
           restore-keys: |
             go-${{ runner.os }}-
 
+      # The web export is COMMITTED (internal/ui/embed.go says why: a bare
+      # `go test` and `go install module@version` must work with no Node), so
+      # this step is the drift check, not the build: rebuild it from ui/ and
+      # diff. If the bytes differ, what the binary serves is not what the
+      # source produces, and that is a failure -- not something to push from
+      # here, because a CI job editing committed bytes is a check nobody read.
+      - name: The committed web export matches its source
+        timeout-minutes: 12
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v node >/dev/null 2>&1; then
+            echo "::error::node is not on PATH -- mise did not install the pin, and the export check would silently not happen"
+            exit 1
+          fi
+          cd ui
+          npm ci --no-audit --no-fund
+          npm run export
+          cd ..
+          if ! git diff --exit-code --stat internal/ui/dist; then
+            echo "::error::internal/ui/dist is not what ui/ produces. Run \`make ui\` and commit the result."
+            exit 1
+          fi
+
       # Built first: a compile error should fail before a test suite spends
       # five minutes reaching the same conclusion more slowly.
       - name: Test
