@@ -10,8 +10,14 @@ import (
 	"github.com/nicodes/komizo/scripts"
 )
 
-// The proxy is installed BEFORE the box enrols, and swapping them back has to
-// fail here.
+// The proxy is installed, and the box is NOT enrolled. The order of those two
+// used to be the property under test here; the enrolment half is gone with the
+// service (decommissioned, board decision), so what remains to pin is that the
+// proxy install survived the removal and that no registration statement came
+// back.
+//
+// The original property, kept for the record: the proxy was installed BEFORE
+// the box enrolled, and swapping them had to fail here.
 //
 // It was the other way round, and the consequence was not a rare race: on every
 // fresh box, every time, `komizo init` published no route for the box's own
@@ -29,7 +35,7 @@ import (
 // So this reads the ORDER OF THE STATEMENTS, from the source as it ships, which
 // is the one place the fact actually lives. Parsed rather than grepped, so a
 // comment naming either step cannot satisfy it -- this whole comment names both.
-func TestInitInstallsTheProxyBeforeItEnrols(t *testing.T) {
+func TestInitInstallsTheProxyAndDoesNotRegister(t *testing.T) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "init.go", nil, 0)
 	if err != nil {
@@ -74,14 +80,10 @@ func TestInitInstallsTheProxyBeforeItEnrols(t *testing.T) {
 	if proxy < 0 {
 		t.Fatal("RunInit no longer installs the proxy")
 	}
-	if enrol < 0 {
-		t.Fatal("RunInit no longer enrols the box")
-	}
-	if proxy > enrol {
-		t.Errorf("RunInit enrols at statement %d and installs the proxy at %d.\n"+
-			"agent-enrol.sh publishes this box's route only if /srv/_proxy/routes exists,\n"+
-			"and the proxy script is what creates it -- so in this order the route is\n"+
-			"skipped on every fresh box and the app cannot reach it by name.", enrol, proxy)
+	if enrol >= 0 {
+		t.Errorf("RunInit registers the box at statement %d -- the service is decommissioned,\n"+
+			"so that statement is a network request to nothing on every init. The\n"+
+			"registration tail was removed deliberately; do not put it back.", enrol)
 	}
 }
 

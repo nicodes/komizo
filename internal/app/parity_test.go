@@ -544,15 +544,17 @@ func TestOnlyRegisteringABoxNeedsAnAccount(t *testing.T) {
 	}
 
 	// enrol is the conditional one: with a token it needs nobody, because the
-	// token IS the authority and registerAndEnrol is what asks otherwise.
+	// token IS the authority. Without one it used to ask for an account; the
+	// service that account belonged to is decommissioned, so it now refuses
+	// with the decommission error instead -- still from its own check, still
+	// before anything is reached for.
 	err := Main([]string{"enrol", "--host", unreachable, "--token", "kmz_enr_x"})
 	if errors.Is(err, errNotSignedIn) {
 		t.Error("komizo enrol --token asked for an account it does not need")
 	}
-	// Without one it does, and from its own check rather than an outer gate.
 	err = Main([]string{"enrol", "--host", unreachable})
-	if err == nil || !errors.Is(err, errNotSignedIn) {
-		t.Errorf("komizo enrol with no token = %v, want it to ask for an account", err)
+	if !errors.Is(err, errServiceDecommissioned) {
+		t.Errorf("komizo enrol with no token = %v, want the decommission refusal", err)
 	}
 
 	// AND `--remove` NEVER DOES. It is what somebody runs when they are leaving
