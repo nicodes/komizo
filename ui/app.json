@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "komizo",
+    "slug": "komizo",
+    "version": "1.0.0",
+    "scheme": "komizo",
+    "userInterfaceStyle": "dark",
+    "web": {
+      "bundler": "metro",
+      "output": "static"
+    },
+    "plugins": [
+      "expo-router"
+    ]
+  }
+}

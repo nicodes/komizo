@@ -77,6 +77,31 @@ komizo add    --host root@box ...  # a deploy account and its two privileged com
 once and thrown away. It is the half that CHANGES a machine, and it runs as root
 exactly as long as it takes.
 
+## The local web app
+
+`komizo ui`, run ON the box as root, serves the local web app: the reference
+Expo app ported read-mostly, embedded in the binary as a static export
+(`ui/` is the source, `internal/ui/dist` is the committed export CI
+byte-verifies). It shows this server — status, problems, system facts and
+usage, apps and their services, routes, proxy and network, and the events the
+box was told (the daemon's command results). The only actions are `start`,
+`stop` and `restart` for an app, enforced server-side in the CLI: the
+allowlist is the boundary, not the page.
+
+There is no sign-in. The listener is the boundary: it binds loopback by
+default, and `--bind` widens it to the tailnet interface address, where the
+network is the identity. It never listens on every interface by accident —
+`0.0.0.0` only arrives when typed, and it says so when it does.
+
+The data is the box's own files, read with the same `box` package the daemon
+reads them with. The daemon's unix socket is NOT used: every route on it
+requires a read token signed by the decommissioned registry and an envelope
+signed by a planted device key, and extending the daemon is out of bounds —
+the files are the store, so the UI reads them directly. v1 defers two things,
+for the same reason: backups visibility and run-backup. No box-local backup
+state exists and there is no clean box-local trigger, so the screen shows the
+absence honestly rather than inventing a shape nothing writes.
+
 **Reading** is not. The inventory, the request counts and the cgroup reads come
 from `komizo-box` — a 2.6MB Go binary that `init` installs and runs on a timer
 as root, writing `/run/komizo/report.json` and nothing else.
