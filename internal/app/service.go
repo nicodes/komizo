@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,15 +13,30 @@ import (
 	"github.com/nicodes/komizo/box"
 )
 
-// Talking to the komizo service.
+// Talking to the komizo service -- which is DECOMMISSIONED.
+//
+// Board decision: komizo-be is gone, and this CLI is the whole product. A
+// server is managed from the CLI directly, over SSH, exactly as it always was
+// between service calls. The calls below are kept -- the paths that made them
+// are gated, not ripped out -- but nothing may add a new caller without
+// answering for why a dead service is being talked to.
+
+// errServiceDecommissioned is what the backend-coupled commands answer now.
+// One message, in one place, so every gated path refuses with the same
+// sentence -- and refuses BEFORE the network is touched, because the domain
+// this used to reach answers nobody any more.
+var errServiceDecommissioned = errors.New("the komizo service is decommissioned -- this command is no longer available (see README).\n\n" +
+	"    The CLI is the whole product: you manage your servers from it directly,\n" +
+	"    over SSH, with nothing to sign in to.")
+
+// There is deliberately no DefaultAPI any more: a default that points at a
+// dead domain is a silent network call to nothing. Every remaining path that
+// talks to a service takes its address explicitly.
 //
 // Four calls, and they are all a person doing something: starting a sign-in,
 // finishing one, and creating a server. There is nothing here that reads a box
 // -- that is SSH, and it stays SSH, because the service holds no credential for
 // anybody's infrastructure and must not start.
-
-// DefaultAPI is the service a session belongs to unless somebody says otherwise.
-const DefaultAPI = "https://api.komizo.dev"
 
 // serviceTimeout bounds one call. Short, because every one of these is a person
 // waiting at a prompt.

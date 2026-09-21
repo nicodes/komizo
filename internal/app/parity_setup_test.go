@@ -230,17 +230,18 @@ func TestEverySetupPathInstallsTheAgent(t *testing.T) {
 	}
 }
 
-// A FRESH box is filed under an account. `komizo update` is exempt and must be:
-// it runs against a box that is already set up, and re-registering one would be
-// how a second row with the same name appears in somebody's app.
-func TestSettingUpAFreshBoxRegistersIt(t *testing.T) {
+// NO setup path files a box under an account any more. The komizo service is
+// decommissioned, so a registration call in either of these would be a network
+// request to nothing on every box setup -- and a re-registration was always how
+// a second row with the same name appeared in somebody's app.
+func TestNoSetupPathRegistersABox(t *testing.T) {
 	fn, ok := setupPaths(t)["RunInit"]
 	if !ok {
 		t.Fatal("RunInit no longer provisions a box, so nothing here is guarding setup")
 	}
-	if !calls(fn, "registerAndEnrol") {
-		t.Error("RunInit sets a box up without filing it under an account -- " +
-			"a server set up this way never appears in the app")
+	if calls(fn, "registerAndEnrol") {
+		t.Error("RunInit still files the box under an account -- the service is " +
+			"decommissioned, so that call is a network request to nothing on every init")
 	}
 	if u, ok := setupPaths(t)["RunUpdate"]; ok && calls(u, "registerAndEnrol") {
 		t.Error("RunUpdate registers the box it is updating -- a box that has " +

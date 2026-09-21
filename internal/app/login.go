@@ -6,12 +6,17 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 )
 
 // Signing in, from a device that is not this one.
+//
+// DECOMMISSIONED. This command's whole subject was the komizo service, and
+// the service is gone (board decision): the CLI is the whole product, and a
+// server is managed from it directly. The command is gated rather than
+// ripped out -- it refuses, before the network is touched, with a sentence
+// rather than a hang against a dead domain. The machinery below stays until
+// the command itself is removed.
 //
 // This shows a code. Somebody approves it where they are already signed in --
 // their phone will do -- and the credential arrives here on the next poll.
@@ -29,50 +34,21 @@ import (
 func RunLogin(args []string) error {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	fs.Usage = func() { usageLogin(fs) }
-	api := fs.String("api", DefaultAPI, "the komizo service")
-	token := fs.Bool("with-token", false, "read a credential from stdin instead, for a script")
+	// The flags stay accepted so an old script fails on the refusal below,
+	// not on "flag provided but not defined" -- which would read as a typo
+	// rather than as the service being gone.
+	_ = fs.String("api", "", "unused -- the komizo service is decommissioned")
+	_ = fs.Bool("with-token", false, "unused -- the komizo service is decommissioned")
 	if err := fs.Parse(args); err != nil {
 		return ErrSilent
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))
 	}
-	base, err := validateAPI(*api)
-	if err != nil {
-		return err
-	}
-
-	// A credential a script holds, minted in the app. Read from STDIN and never
-	// a flag: a long-lived credential on a command line lands in shell history
-	// and in the process table of this machine.
-	if *token {
-		return loginWithToken(base)
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	start, err := startSignIn(ctx, base)
-	if err != nil {
-		return err
-	}
-
-	step("Approve this terminal")
-	fmt.Printf("\n    Open  %s\n    Enter %s\n\n", start.VerificationURL, start.UserCode)
-	note("your phone will do -- it does not have to be this machine.")
-	fmt.Print("    Waiting...")
-
-	s, err := awaitApproval(ctx, base, start)
-	fmt.Println()
-	if err != nil {
-		return err
-	}
-	if err := writeSession(s); err != nil {
-		return fmt.Errorf("signed in, but could not store the session: %w", err)
-	}
-	path, _ := sessionPath()
-	note("signed in. The session is in %s and nothing else was written.", path)
-	return nil
+	// The gate IS the body: every path this command had reached the service,
+	// and the service is decommissioned. Nothing below this function is
+	// reached; it is kept, unread, for as long as the command is.
+	return errServiceDecommissioned
 }
 
 // awaitApproval polls until somebody says yes, the code expires, or you give up.
@@ -147,25 +123,21 @@ func RunLogout(args []string) error {
 	if err := clearSession(); err != nil {
 		return err
 	}
-	// Said out loud, because forgetting a credential here does not revoke it.
-	// The same distinction komizo enrol --remove makes about a box.
 	note("signed out on this machine.")
-	note("the credential still exists; revoke it in the app if this machine is not yours.")
+	note("the service is decommissioned, so the credential this forgets opens nothing.")
 	return nil
 }
 
 func usageLogin(fs *flag.FlagSet) {
-	fmt.Fprint(fs.Output(), `komizo login -- sign this machine in
+	fmt.Fprint(fs.Output(), `komizo login -- decommissioned with the service
 
-Shows a code. Approve it from a device you are already signed in on -- your
-phone will do -- and this machine is signed in. Nothing is typed here.
+The komizo service this signed a machine in to is gone (board decision), so
+this command is no longer available: it refuses, without touching the
+network. The CLI is the whole product -- you manage your servers from it
+directly, over SSH, with nothing to sign in to. See README.
 
-  komizo login
-
-For a machine that runs unattended, mint a credential in the app under
-"Connect a terminal" and pass it in:
-
-  komizo login --with-token < credential.txt
+"komizo logout" still works, and only ever touched this machine: it forgets
+the stored session file.
 
 Flags:
 `)
@@ -175,8 +147,8 @@ Flags:
 func usageLogout(fs *flag.FlagSet) {
 	fmt.Fprint(fs.Output(), `komizo logout -- forget the session on this machine
 
-Removes the stored credential. It does NOT revoke it: do that in the app if
-this machine is not yours any more.
+Removes the stored credential. With the service decommissioned there is
+nothing left to revoke it with -- it opens nothing either way.
 
   komizo logout
 `)
