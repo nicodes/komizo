@@ -79,10 +79,11 @@ exactly as long as it takes.
 
 ## The local web app
 
-`komizo ui`, run ON the box as root, serves the local web app: the reference
-Expo app ported read-mostly, embedded in the binary as a static export
-(`ui/` is the source, `internal/ui/dist` is the committed export CI
-byte-verifies). It shows this server — status, problems, system facts and
+`komizo ui`, run ON the box as root, serves the local web app: a SolidJS +
+Tailwind app (the RN-port screens from the archived reference remain the
+design reference), embedded in the binary as a static export
+(`ui/` is the source, built with `make ui`; `internal/ui/dist` is the
+committed export CI byte-verifies). It shows this server — status, problems, system facts and
 usage, apps and their services, routes, proxy and network, and the events the
 box was told (the daemon's command results). The only actions are `start`,
 `stop` and `restart` for an app, enforced server-side in the CLI: the
