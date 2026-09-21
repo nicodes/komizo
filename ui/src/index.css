@@ -1,0 +1,18 @@
+/* Tailwind v4, utilities only -- the palette is the one the RN-port screens
+   used, kept so the port reads as the same product. No component framework
+   beyond this: the page is served by the CLI from an embedded export, and
+   every runtime added to it is code in the trust base of a screen that can
+   restart an app. */
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #0c1116;
+  --color-card: #151d24;
+  --color-edge: #26313b;
+  --color-ink: #e6edf3;
+  --color-dim: #8b98a5;
+  --color-good: #3fb950;
+  --color-bad: #f85149;
+  --color-warn: #d29922;
+  --color-accent: #58a6ff;
+}
