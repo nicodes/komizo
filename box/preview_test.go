@@ -335,7 +335,7 @@ func TestPreviewComposeCarriesTheOwnerRole(t *testing.T) {
 		V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
 		DBPassword: "abc123", Images: []string{"ghcr.io/you/web:pr-12"}, RouteFile: "_preview-gdam-pr-12.caddy",
 	}
-	compose := previewCompose(rec, cfg.Knob, "edge")
+	compose := previewCompose(rec, cfg.Knob, "edge", false)
 	for _, want := range []string{"PGUSER: gdam_pr_12", "PGPASSWORD: abc123", "PGDATABASE: gdam_pr_12"} {
 		if !strings.Contains(compose, want) {
 			t.Errorf("compose is missing %q:\n%s", want, compose)
@@ -465,7 +465,7 @@ func TestPreviewComposePublishesTheGatePortOnLoopbackOnly(t *testing.T) {
 		DBPassword: "abc123", GatePort: 20005,
 		Images: []string{"ghcr.io/you/web:pr-12"}, RouteFile: "_preview-gdam-pr-12.caddy",
 	}
-	compose := previewCompose(rec, cfg.Knob, "edge")
+	compose := previewCompose(rec, cfg.Knob, "edge", false)
 	if !strings.Contains(compose, `"127.0.0.1:20005:80"`) {
 		t.Errorf("the gate port is not published on loopback:\n%s", compose)
 	}
@@ -690,7 +690,7 @@ func TestPreviewComposeCapsNetworksAndEnvironment(t *testing.T) {
 		V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
 		Images: []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, RouteFile: "_preview-gdam-pr-12.caddy",
 	}
-	compose := previewCompose(rec, cfg.Knob, "edge")
+	compose := previewCompose(rec, cfg.Knob, "edge", false)
 	for _, want := range []string{
 		"mem_limit: 512m", "cpus: 0.75",
 		"container_name: gdam-pr-12-gate",
@@ -765,5 +765,139 @@ func TestPreviewKnob(t *testing.T) {
 	knob, note = ParsePreviewKnob("TTL_HOURS=soon\n")
 	if knob.TTL != PreviewTTLDefault || !strings.Contains(note, "soon") {
 		t.Errorf("non-numeric knob = %+v, %q, want the default and the note naming the value", knob, note)
+	}
+}
+
+// --- the stack.env seam --------------------------------------------------------
+
+// STACK.ENV (a): absent, the render is exactly what it always was -- no
+// env_file, no mention of stack.env anywhere in the compose.
+func TestPreviewComposeWithoutStackEnvIsUnchanged(t *testing.T) {
+	cfg := previewTestConfig(t)
+	rec := PreviewRecord{
+		V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
+		Images: []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, RouteFile: "_preview-gdam-pr-12.caddy",
+	}
+	compose := previewCompose(rec, cfg.Knob, "edge", false)
+	if strings.Contains(compose, "env_file") || strings.Contains(compose, "stack.env") {
+		t.Errorf("an absent stack.env changed the render:\n%s", compose)
+	}
+}
+
+// STACK.ENV (b): present, the API services get `env_file: - stack.env` --
+// RELATIVE, because compose resolves a relative env_file against the compose
+// file's own directory (the preview's state directory, where both files
+// live), so the reference survives a project-directory override -- and the
+// gate does NOT: it keys off BASE_URL, already passed via environment:, and
+// a product-writable file gets no say in the routed entrypoint.
+func TestPreviewComposeEnvFilesStackEnvIntoAPIServicesOnly(t *testing.T) {
+	cfg := previewTestConfig(t)
+	rec := PreviewRecord{
+		V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
+		Images:    []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12", "ghcr.io/you/worker:pr-12"},
+		RouteFile: "_preview-gdam-pr-12.caddy",
+	}
+	compose := previewCompose(rec, cfg.Knob, "edge", true)
+	if n := strings.Count(compose, "    env_file:\n      - stack.env\n"); n != 2 {
+		t.Errorf("env_file: - stack.env appears %d times, want exactly the 2 API services:\n%s", n, compose)
+	}
+	if strings.Contains(compose, "env_file: stack.env") || strings.Contains(compose, filepath.Join(cfg.Root, "previews")) {
+		t.Errorf("the env_file is not the pinned RELATIVE form:\n%s", compose)
+	}
+	gate := compose[:strings.Index(compose, "  api:")]
+	if strings.Contains(gate, "env_file") || strings.Contains(gate, "stack.env") {
+		t.Errorf("the gate got the product-writable env_file:\n%s", gate)
+	}
+}
+
+// STACK.ENV (a, lifecycle half): no stack.env on disk, up writes a compose
+// with no env_file and the up path is unchanged.
+func TestPreviewUpWithoutStackEnvRendersNoEnvFile(t *testing.T) {
+	f := &fakeDocker{}
+	cfg := previewTestConfig(t)
+	if _, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, previewNow); err != nil {
+		t.Fatal(err)
+	}
+	compose, err := os.ReadFile(filepath.Join(previewDir(cfg.Root, "gdam-pr-12"), "compose.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(compose), "env_file") || strings.Contains(string(compose), "stack.env") {
+		t.Errorf("up without a stack.env rendered one:\n%s", compose)
+	}
+}
+
+// STACK.ENV (c) and (d): the product pre-creates the state directory and
+// writes stack.env (0600) BEFORE up; up must not fail on the pre-existing
+// directory, must not clobber the file, and the file's CONTENTS -- a
+// sentinel secret value -- must never appear in the compose, the JSON
+// record up prints, or anything a docker call is told. Only the path
+// reference is rendered.
+func TestPreviewUpLeavesAPreExistingStackEnvUntouchedAndUnechoed(t *testing.T) {
+	f := &fakeDocker{}
+	cfg := previewTestConfig(t)
+	dir := previewDir(cfg.Root, "gdam-pr-12")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	const sentinel = "SENTINEL-SECRET-VALUE-7f3a9c-never-echoed"
+	stackBody := "SENTRY_DSN=" + sentinel + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "stack.env"), []byte(stackBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, previewNow)
+	if err != nil {
+		t.Fatalf("up on a pre-created state directory failed: %v", err)
+	}
+	// (d) Unclobbered, byte for byte.
+	got, err := os.ReadFile(filepath.Join(dir, "stack.env"))
+	if err != nil {
+		t.Fatal("up removed the pre-existing stack.env")
+	}
+	if string(got) != stackBody {
+		t.Errorf("up clobbered stack.env: got %q, want %q", got, stackBody)
+	}
+	// The compose references the path...
+	compose, err := os.ReadFile(filepath.Join(dir, "compose.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(compose), "    env_file:\n      - stack.env\n") {
+		t.Errorf("the compose does not env_file the stack.env:\n%s", compose)
+	}
+	// (c) ...and the VALUE is nowhere: not in the compose, not in the JSON
+	// record up prints, not in any docker argv or stdin.
+	if strings.Contains(string(compose), sentinel) {
+		t.Errorf("the sentinel value leaked into compose.yml:\n%s", compose)
+	}
+	printed, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(printed), sentinel) {
+		t.Errorf("the sentinel value leaked into the up record's JSON: %s", printed)
+	}
+	for i, c := range f.calls {
+		if strings.Contains(strings.Join(c, " ")+"\x00"+f.stdins[i], sentinel) {
+			t.Errorf("the sentinel value leaked into a docker call: %v (stdin %q)", c, f.stdins[i])
+		}
+	}
+}
+
+// STACK.ENV (e): down removes the state directory, and stack.env goes with
+// it -- the credential file does not outlive the preview.
+func TestPreviewDownRemovesStackEnvWithTheStateDir(t *testing.T) {
+	f := &fakeDocker{}
+	cfg := previewTestConfig(t)
+	rec := writeTestPreview(t, cfg, "gdam", 12, previewNow)
+	dir := previewDir(cfg.Root, rec.Project)
+	if err := os.WriteFile(filepath.Join(dir, "stack.env"), []byte("SENTRY_DSN=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := PreviewDown(context.Background(), f.run, cfg, rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Errorf("the state directory (and its stack.env) survived down: %v", err)
 	}
 }
