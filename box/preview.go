@@ -393,7 +393,33 @@ func PreviewCheckFloors(f PreviewFloors, present bool, report []byte) (refuse st
 // writable file must not get a say in the routed entrypoint. The file's
 // existence is all this function is told -- its contents are never read,
 // rendered or logged, only the path reference is written.
-func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv bool) string {
+//
+// dbEndpoint is the discovered NAME of the app's postgres container and
+// dbNetworks its networks. The API services get a derived
+// RUNTIME_DATABASE_URL -- postgres://<role>:<pw>@<dbEndpoint>:5432/<db>,
+// role and db both the preview's own -- because products fail-closed-require
+// a DSN and ignore the PG* vars (which stay: harmless, and other apps read
+// them). Docker DNS resolves container names on user-defined networks, so
+// once the API shares the DB's network it reaches postgres by name. The DSN
+// carries the DB password, a credential: it lands ONLY in the API services'
+// environment, never on the gate (the gate routes HTTP, it does not touch
+// the database) and never on stdout -- the same discipline as DBPassword's
+// json:"-". The API services join the DB's networks IN ADDITION to appnet:
+// an app's postgres may live on a different network than <app>_default, and
+// joining is reachability only -- the preview role can already touch only
+// its own database, so no data access widens. The gate's networks stay
+// [shared, appnet].
+func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv bool, dbEndpoint string, dbNetworks []string) string {
+	// The extra networks the API joins: the DB container's, minus appnet's
+	// (<app>_default, already joined) and the shared edge network, deduped.
+	var extraNets []string
+	seen := map[string]bool{r.App + "_default": true, network: true}
+	for _, n := range dbNetworks {
+		if !seen[n] {
+			seen[n] = true
+			extraNets = append(extraNets, n)
+		}
+	}
 	var b strings.Builder
 	b.WriteString("# Written by komizo preview. Re-run `komizo preview up` to change it.\n")
 	fmt.Fprintf(&b, "# Preview of %s PR #%d. Own project, own database (%s), own route.\nservices:\n", r.App, r.PR, r.DBName)
@@ -419,13 +445,22 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 			b.WriteString("    networks:\n      - shared\n      - appnet\n")
 		} else {
 			fmt.Fprintf(&b, "    environment:\n      PREVIEW: \"1\"\n      PR: \"%d\"\n      DB_NAME: %s\n      PGDATABASE: %s\n      PGUSER: %s\n      PGPASSWORD: %s\n", r.PR, r.DBName, r.DBName, r.DBName, r.DBPassword)
+			if dbEndpoint != "" {
+				fmt.Fprintf(&b, "      RUNTIME_DATABASE_URL: postgres://%s:%s@%s:5432/%s\n", r.DBName, r.DBPassword, dbEndpoint, r.DBName)
+			}
 			if stackEnv {
 				b.WriteString("    env_file:\n      - stack.env\n")
 			}
 			b.WriteString("    networks:\n      - appnet\n")
+			for _, n := range extraNets {
+				fmt.Fprintf(&b, "      - %s\n", n)
+			}
 		}
 	}
 	fmt.Fprintf(&b, "networks:\n  shared:\n    external: true\n    name: %s\n  appnet:\n    external: true\n    name: %s_default\n", network, r.App)
+	for _, n := range extraNets {
+		fmt.Fprintf(&b, "  %s:\n    external: true\n    name: %s\n", n, n)
+	}
 	return b.String()
 }
 
@@ -556,6 +591,30 @@ func previewDBEnv(ctx context.Context, run previewRun, container string) (string
 		}
 	}
 	return user, db, nil
+}
+
+// previewDBNetworks reads the container's network names. The preview's API
+// services join them so they can reach postgres by the container's name --
+// docker DNS answers container names on user-defined networks, and an app's
+// postgres does not necessarily live on <app>_default. A container with no
+// networks is one the API can never reach, and that is an error rather than
+// a silently broken preview.
+func previewDBNetworks(ctx context.Context, run previewRun, container string) ([]string, error) {
+	out, err := run(ctx, "", "inspect", container, "--format", "{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}")
+	if err != nil {
+		return nil, fmt.Errorf("could not read %s's networks: %w", container, err)
+	}
+	var nets []string
+	for _, ln := range strings.Split(out, "\n") {
+		if n := strings.TrimSpace(ln); n != "" {
+			nets = append(nets, n)
+		}
+	}
+	if len(nets) == 0 {
+		return nil, fmt.Errorf("%s is on no networks -- a preview's API could never reach its database", container)
+	}
+	sort.Strings(nets)
+	return nets, nil
 }
 
 // previewNewPassword generates the per-preview role's password: 24 random hex
@@ -700,10 +759,13 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 		return zero, fmt.Errorf("no free gate ports in %d-%d", lo, hi)
 	}
 
-	// STATE FIRST. The record and its compose file exist before anything is
-	// created, and everything after this point rolls back BOTH -- a failure
-	// must never leave resources without state (an orphan nothing can reap)
-	// or state without resources (a record the reaper would chase forever).
+	// STATE FIRST. The record exists before anything is created, and
+	// everything after this point rolls back BOTH -- a failure must never
+	// leave resources without state (an orphan nothing can reap) or state
+	// without resources (a record the reaper would chase forever). The
+	// compose file is written after the read-only database discovery below
+	// (it renders the discovered DB container's name and networks), still
+	// before the first thing created.
 	if err := writePreviewRecord(cfg.Root, rec); err != nil {
 		return zero, err
 	}
@@ -715,9 +777,6 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	// and only its EXISTENCE is asked, so the compose render can reference
 	// the path without the contents ever passing through komizo.
 	_, stackEnvErr := os.Stat(filepath.Join(previewDir(cfg.Root, project), "stack.env"))
-	if err := os.WriteFile(composePath, []byte(previewCompose(rec, cfg.Knob, cfg.Network, stackEnvErr == nil)), 0o600); err != nil {
-		return zero, err
-	}
 	rollback := func(dbContainer, dbUser, dbDB string, created bool) {
 		_, _ = run(ctx, "", "compose", "-p", project, "-f", composePath, "down", "-v")
 		if created && dbContainer != "" {
@@ -750,6 +809,19 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	// connecting with it is the failure the avior.studio smoke found.
 	dbUser, dbDB, err := previewDBEnv(ctx, run, dbContainer)
 	if err != nil {
+		rollback("", "", "", false)
+		return zero, err
+	}
+	// The DB container's networks: the API services join them (in addition
+	// to appnet) so the derived RUNTIME_DATABASE_URL resolves -- docker DNS
+	// answers container names on user-defined networks, and an app's
+	// postgres may not live on <app>_default.
+	dbNetworks, err := previewDBNetworks(ctx, run, dbContainer)
+	if err != nil {
+		rollback("", "", "", false)
+		return zero, err
+	}
+	if err := os.WriteFile(composePath, []byte(previewCompose(rec, cfg.Knob, cfg.Network, stackEnvErr == nil, dbContainer, dbNetworks)), 0o600); err != nil {
 		rollback("", "", "", false)
 		return zero, err
 	}

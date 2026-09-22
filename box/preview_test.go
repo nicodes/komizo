@@ -28,6 +28,7 @@ type fakeDocker struct {
 	psOut          string            // what ps answers (default: a tagged postgres)
 	inspectAnswers map[string]string // Config.Image per container name
 	envAnswers     map[string]string // Config.Env per container name
+	netAnswers     map[string]string // NetworkSettings.Networks names per container name
 }
 
 func (f *fakeDocker) run(_ context.Context, stdin string, args ...string) (string, error) {
@@ -54,6 +55,12 @@ func (f *fakeDocker) run(_ context.Context, stdin string, args ...string) (strin
 				return f.envAnswers[args[1]], nil
 			}
 			return "", nil
+		}
+		if strings.Contains(format, "NetworkSettings") {
+			if f.netAnswers != nil {
+				return f.netAnswers[args[1]], nil
+			}
+			return "gdam_default\n", nil // on appnet only; dedupes away in the render
 		}
 		if f.inspectAnswers != nil {
 			return f.inspectAnswers[args[1]], nil
@@ -335,7 +342,7 @@ func TestPreviewComposeCarriesTheOwnerRole(t *testing.T) {
 		V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
 		DBPassword: "abc123", Images: []string{"ghcr.io/you/web:pr-12"}, RouteFile: "_preview-gdam-pr-12.caddy",
 	}
-	compose := previewCompose(rec, cfg.Knob, "edge", false)
+	compose := previewCompose(rec, cfg.Knob, "edge", false, "", nil)
 	for _, want := range []string{"PGUSER: gdam_pr_12", "PGPASSWORD: abc123", "PGDATABASE: gdam_pr_12"} {
 		if !strings.Contains(compose, want) {
 			t.Errorf("compose is missing %q:\n%s", want, compose)
@@ -465,7 +472,7 @@ func TestPreviewComposePublishesTheGatePortOnLoopbackOnly(t *testing.T) {
 		DBPassword: "abc123", GatePort: 20005,
 		Images: []string{"ghcr.io/you/web:pr-12"}, RouteFile: "_preview-gdam-pr-12.caddy",
 	}
-	compose := previewCompose(rec, cfg.Knob, "edge", false)
+	compose := previewCompose(rec, cfg.Knob, "edge", false, "", nil)
 	if !strings.Contains(compose, `"127.0.0.1:20005:80"`) {
 		t.Errorf("the gate port is not published on loopback:\n%s", compose)
 	}
@@ -690,7 +697,7 @@ func TestPreviewComposeCapsNetworksAndEnvironment(t *testing.T) {
 		V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
 		Images: []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, RouteFile: "_preview-gdam-pr-12.caddy",
 	}
-	compose := previewCompose(rec, cfg.Knob, "edge", false)
+	compose := previewCompose(rec, cfg.Knob, "edge", false, "", nil)
 	for _, want := range []string{
 		"mem_limit: 512m", "cpus: 0.75",
 		"container_name: gdam-pr-12-gate",
@@ -778,7 +785,7 @@ func TestPreviewComposeWithoutStackEnvIsUnchanged(t *testing.T) {
 		V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
 		Images: []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, RouteFile: "_preview-gdam-pr-12.caddy",
 	}
-	compose := previewCompose(rec, cfg.Knob, "edge", false)
+	compose := previewCompose(rec, cfg.Knob, "edge", false, "", nil)
 	if strings.Contains(compose, "env_file") || strings.Contains(compose, "stack.env") {
 		t.Errorf("an absent stack.env changed the render:\n%s", compose)
 	}
@@ -797,7 +804,7 @@ func TestPreviewComposeEnvFilesStackEnvIntoAPIServicesOnly(t *testing.T) {
 		Images:    []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12", "ghcr.io/you/worker:pr-12"},
 		RouteFile: "_preview-gdam-pr-12.caddy",
 	}
-	compose := previewCompose(rec, cfg.Knob, "edge", true)
+	compose := previewCompose(rec, cfg.Knob, "edge", true, "", nil)
 	if n := strings.Count(compose, "    env_file:\n      - stack.env\n"); n != 2 {
 		t.Errorf("env_file: - stack.env appears %d times, want exactly the 2 API services:\n%s", n, compose)
 	}
@@ -899,5 +906,131 @@ func TestPreviewDownRemovesStackEnvWithTheStateDir(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Errorf("the state directory (and its stack.env) survived down: %v", err)
+	}
+}
+
+// --- the database reachability seam -------------------------------------------------
+
+// RUNTIME_DATABASE_URL (1) and (3): the API services get the derived DSN --
+// postgres://<role>:<pw>@<db-container-name>:5432/<db>, role and db the
+// preview's own -- because products fail-closed-require it and ignore the
+// PG* vars (which stay). The DSN carries the DB password, a credential: it
+// is NEVER on the gate (the gate routes HTTP, it does not touch the
+// database) and never in the JSON record up prints.
+func TestPreviewComposeRendersRuntimeDatabaseURLIntoAPIServicesOnly(t *testing.T) {
+	cfg := previewTestConfig(t)
+	rec := PreviewRecord{
+		V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
+		DBPassword: "abc123",
+		Images:     []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12", "ghcr.io/you/worker:pr-12"},
+		RouteFile:  "_preview-gdam-pr-12.caddy",
+	}
+	compose := previewCompose(rec, cfg.Knob, "edge", false, "gdam-db-1", []string{"gdam_database"})
+	const dsn = "RUNTIME_DATABASE_URL: postgres://gdam_pr_12:abc123@gdam-db-1:5432/gdam_pr_12"
+	if n := strings.Count(compose, dsn); n != 2 {
+		t.Errorf("the DSN appears %d times, want exactly the 2 API services:\n%s", n, compose)
+	}
+	gate := compose[:strings.Index(compose, "  api:")]
+	if strings.Contains(gate, "RUNTIME_DATABASE_URL") || strings.Contains(gate, "postgres://") {
+		t.Errorf("the DSN leaked onto the gate:\n%s", gate)
+	}
+	printed, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(printed), "postgres://") || strings.Contains(string(printed), "RUNTIME_DATABASE_URL") {
+		t.Errorf("the DSN leaked into the up record's JSON: %s", printed)
+	}
+}
+
+// DB NETWORKS (2): the API services join the DB container's networks IN
+// ADDITION to appnet -- an app's postgres may live on a different network
+// than <app>_default -- and the extra networks are declared external with
+// their stable names. The gate's networks stay [shared, appnet], and the
+// appnet network itself is never duplicated.
+func TestPreviewComposeWiresTheAPIIntoTheDBNetworks(t *testing.T) {
+	cfg := previewTestConfig(t)
+	rec := PreviewRecord{
+		V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
+		Images:    []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"},
+		RouteFile: "_preview-gdam-pr-12.caddy",
+	}
+	compose := previewCompose(rec, cfg.Knob, "edge", false, "gdam-db-1", []string{"gdam_database", "gdam_default"})
+	// gdam_default IS appnet -- discovered but already joined, so it is
+	// never duplicated; gdam_database is the extra, joined and declared.
+	api := compose[strings.Index(compose, "  api:"):strings.Index(compose, "\nnetworks:")]
+	if !strings.Contains(api, "    networks:\n      - appnet\n      - gdam_database") {
+		t.Errorf("the api service does not join appnet + the DB's network:\n%s", api)
+	}
+	if strings.Contains(api, "gdam_default") {
+		t.Errorf("appnet's own network was duplicated onto the api service:\n%s", api)
+	}
+	if !strings.Contains(compose, "  gdam_database:\n    external: true\n    name: gdam_database\n") {
+		t.Errorf("the DB's network is not declared external with its stable name:\n%s", compose)
+	}
+	gate := compose[:strings.Index(compose, "  api:")]
+	if !strings.Contains(gate, "    networks:\n      - shared\n      - appnet\n") {
+		t.Errorf("the gate's networks changed:\n%s", gate)
+	}
+	if strings.Contains(gate, "gdam_database") {
+		t.Errorf("the gate joined the DB's network:\n%s", gate)
+	}
+}
+
+// DISCOVERY (4), lifecycle: the DB container on a non-<app>_default network
+// is discovered, its networks are read by inspect, and the api service is
+// wired into them -- generic, nothing hardcoded to one app.
+func TestPreviewUpWiresTheAPIIntoTheDiscoveredDBNetworks(t *testing.T) {
+	f := &fakeDocker{
+		envAnswers: map[string]string{"gdam-db-1": "POSTGRES_USER=gdam_migrator\nPOSTGRES_DB=gdam\n"},
+		netAnswers: map[string]string{"gdam-db-1": "gdam_database\n"},
+	}
+	cfg := previewTestConfig(t)
+	rec, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, previewNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The discovery asked the container for its networks.
+	if got := f.matching("inspect", "gdam-db-1", "NetworkSettings.Networks"); len(got) != 1 {
+		t.Fatalf("the DB container's networks were not discovered by inspect: %v", f.calls)
+	}
+	compose, err := os.ReadFile(filepath.Join(previewDir(cfg.Root, "gdam-pr-12"), "compose.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"      RUNTIME_DATABASE_URL: postgres://gdam_pr_12:" + rec.DBPassword + "@gdam-db-1:5432/gdam_pr_12\n",
+		"    networks:\n      - appnet\n      - gdam_database\n",
+		"  gdam_database:\n    external: true\n    name: gdam_database\n",
+	} {
+		if !strings.Contains(string(compose), want) {
+			t.Errorf("the rendered compose is missing %q:\n%s", want, string(compose))
+		}
+	}
+	// (3), the lifecycle half: the DSN went nowhere but the compose file --
+	// no docker argv or stdin ever carried it.
+	dsn := "postgres://gdam_pr_12:" + rec.DBPassword + "@gdam-db-1:5432/gdam_pr_12"
+	for i, c := range f.calls {
+		if strings.Contains(strings.Join(c, " ")+"\x00"+f.stdins[i], dsn) {
+			t.Errorf("the DSN leaked into a docker call: %v (stdin %q)", c, f.stdins[i])
+		}
+	}
+}
+
+// DISCOVERY, the parsing: names are read one per line, sorted, blanks
+// dropped; a container on no networks is an error, not a silent preview
+// whose API can never reach its database.
+func TestPreviewDBNetworksParsing(t *testing.T) {
+	f := &fakeDocker{netAnswers: map[string]string{"db": "zeta\n\nalpha\n"}}
+	nets, err := previewDBNetworks(context.Background(), f.run, "db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nets) != 2 || nets[0] != "alpha" || nets[1] != "zeta" {
+		t.Errorf("networks = %v, want [alpha zeta]", nets)
+	}
+	empty := &fakeDocker{netAnswers: map[string]string{"db": "\n"}}
+	if _, err := previewDBNetworks(context.Background(), empty.run, "db"); err == nil {
+		t.Error("a container on no networks was accepted")
 	}
 }
