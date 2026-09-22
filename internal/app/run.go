@@ -107,6 +107,8 @@ func runCommand(name string, args []string) error {
 		return RunRestart(args)
 	case "logs":
 		return RunLogs(args)
+	case "preview":
+		return RunPreview(args)
 	case "ui":
 		return RunUI(args)
 	case "proxy":
@@ -159,7 +161,7 @@ func Main(args []string) error {
 	case "logout":
 		err = RunLogout(args[1:])
 	case "init", "update", "add", "list", "report", "enrol", "remove", "proxy",
-		"start", "stop", "restart", "logs", "ui", "reconcile":
+		"start", "stop", "restart", "logs", "preview", "ui", "reconcile":
 		// No gate. An account is needed to REGISTER a box, and the two places
 		// that do it ask for one where they do it.
 		//
