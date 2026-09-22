@@ -418,13 +418,13 @@ func previewRoute(r PreviewRecord, k PreviewKnob) string {
 // route change on this box: write, validate the COMBINED config inside the
 // proxy container, restore the previous file set on failure, reload on
 // success. The previous content of the file (if any) is held for the restore.
-func ApplyPreviewRoute(ctx context.Context, run func(context.Context, ...string) (string, error), proxy, routesDir, file, content string) error {
+func ApplyPreviewRoute(ctx context.Context, run previewRun, proxy, routesDir, file, content string) error {
 	path := filepath.Join(routesDir, file)
 	previous, _ := os.ReadFile(path)
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return err
 	}
-	if _, err := run(ctx, "exec", proxy, "caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"); err != nil {
+	if _, err := run(ctx, "", "exec", proxy, "caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"); err != nil {
 		// Put the previous state back and do NOT reload: the proxy keeps
 		// serving what it had, and the failure is reported with the broken
 		// file already gone.
@@ -435,7 +435,7 @@ func ApplyPreviewRoute(ctx context.Context, run func(context.Context, ...string)
 		}
 		return fmt.Errorf("the combined proxy config does not validate with the new route -- left as it was: %w", err)
 	}
-	if _, err := run(ctx, "exec", proxy, "caddy", "reload", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"); err != nil {
+	if _, err := run(ctx, "", "exec", proxy, "caddy", "reload", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"); err != nil {
 		return fmt.Errorf("the route validates but the proxy did not reload: %w", err)
 	}
 	return nil
@@ -443,7 +443,7 @@ func ApplyPreviewRoute(ctx context.Context, run func(context.Context, ...string)
 
 // RemovePreviewRoute takes a route out with the same discipline: remove,
 // validate, restore on failure, reload on success.
-func RemovePreviewRoute(ctx context.Context, run func(context.Context, ...string) (string, error), proxy, routesDir, file string) error {
+func RemovePreviewRoute(ctx context.Context, run previewRun, proxy, routesDir, file string) error {
 	path := filepath.Join(routesDir, file)
 	previous, err := os.ReadFile(path)
 	if err != nil {
@@ -452,11 +452,11 @@ func RemovePreviewRoute(ctx context.Context, run func(context.Context, ...string
 	if err := os.Remove(path); err != nil {
 		return err
 	}
-	if _, err := run(ctx, "exec", proxy, "caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"); err != nil {
+	if _, err := run(ctx, "", "exec", proxy, "caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"); err != nil {
 		_ = os.WriteFile(path, previous, 0o644)
 		return fmt.Errorf("removing the route broke the combined config -- restored: %w", err)
 	}
-	if _, err := run(ctx, "exec", proxy, "caddy", "reload", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"); err != nil {
+	if _, err := run(ctx, "", "exec", proxy, "caddy", "reload", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"); err != nil {
 		return fmt.Errorf("the route is gone but the proxy did not reload: %w", err)
 	}
 	return nil
@@ -481,7 +481,7 @@ func RemovePreviewRoute(ctx context.Context, run func(context.Context, ...string
 //
 // The psql call after discovery is the final proof: a container that matched
 // on name and is not postgres fails there, loudly, with nothing created.
-func findAppDBContainer(ctx context.Context, run func(context.Context, ...string) (string, error), psOut, app string) (string, error) {
+func findAppDBContainer(ctx context.Context, run previewRun, psOut, app string) (string, error) {
 	type candidate struct{ name, image string }
 	var candidates []candidate
 	for _, ln := range strings.Split(psOut, "\n") {
@@ -496,7 +496,7 @@ func findAppDBContainer(ctx context.Context, run func(context.Context, ...string
 		}
 	}
 	for _, c := range candidates {
-		out, err := run(ctx, "inspect", c.name, "--format", "{{.Config.Image}}")
+		out, err := run(ctx, "", "inspect", c.name, "--format", "{{.Config.Image}}")
 		if err == nil && strings.Contains(out, "postgres") {
 			return c.name, nil
 		}
@@ -514,8 +514,8 @@ func findAppDBContainer(ctx context.Context, run func(context.Context, ...string
 // answers postgres/postgres and needs neither set; a product that names its
 // own superuser is connected to as THAT, and the hardcoded 'postgres' never
 // appears. An env that cannot be read is an error rather than a guess.
-func previewDBEnv(ctx context.Context, run func(context.Context, ...string) (string, error), container string) (string, string, error) {
-	out, err := run(ctx, "inspect", container, "--format", "{{range .Config.Env}}{{println .}}{{end}}")
+func previewDBEnv(ctx context.Context, run previewRun, container string) (string, string, error) {
+	out, err := run(ctx, "", "inspect", container, "--format", "{{range .Config.Env}}{{println .}}{{end}}")
 	if err != nil {
 		return "", "", fmt.Errorf("could not read %s's environment: %w", container, err)
 	}
@@ -568,6 +568,23 @@ func PreviewAskAllow(host, domain string) bool {
 
 // --- the lifecycle ---------------------------------------------------------------
 
+// previewRun is the docker runner the preview lifecycle uses. stdin feeds
+// the statements psql must hear from a pipe -- psql performs :'var'
+// substitution on lines it reads from STDIN and NOT on -c arguments (psql
+// 18.6, verified on gdam-postgres-1), so the role's password travels as the
+// 'pw' variable and never inside SQL text.
+type previewRun func(ctx context.Context, stdin string, args ...string) (string, error)
+
+// previewSQL runs one psql statement read from STDIN via docker exec -i, as
+// the container's own superuser. Used for every statement that carries a
+// variable psql must substitute; -c statements (no variables) keep the
+// simpler form.
+func previewSQL(ctx context.Context, run previewRun, container, user, db, sql string, args ...string) error {
+	argv := append([]string{"exec", "-i", container, "psql", "-U", user, "-d", db}, args...)
+	_, err := run(ctx, sql+"\n", argv...)
+	return err
+}
+
 // PreviewUpConfig is what an up needs. Run is the docker runner; everything
 // else is paths and the knob, so a test drives the whole lifecycle with
 // fakes and a temp root.
@@ -585,7 +602,7 @@ type PreviewUpConfig struct {
 // state, compose, route. Each step before the compose up leaves nothing
 // behind on failure; the route is the last thing to change, and it carries
 // its own restore.
-func PreviewUp(ctx context.Context, run func(context.Context, ...string) (string, error), cfg PreviewUpConfig, app string, pr int, images []string, now time.Time) (PreviewRecord, error) {
+func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app string, pr int, images []string, now time.Time) (PreviewRecord, error) {
 	var zero PreviewRecord
 	if err := validatePreviewArgs(app, pr); err != nil {
 		return zero, err
@@ -655,7 +672,7 @@ func PreviewUp(ctx context.Context, run func(context.Context, ...string) (string
 	// The database, before anything runs: the app's postgres container, a new
 	// role and database named for the PR, owned by that role, and nothing
 	// else touched.
-	psOut, err := run(ctx, "ps", "--filter", "label=com.docker.compose.project="+app,
+	psOut, err := run(ctx, "", "ps", "--filter", "label=com.docker.compose.project="+app,
 		"--format", "{{.Names}}\t{{.Image}}")
 	if err != nil {
 		return zero, fmt.Errorf("could not look for the app's postgres: %w", err)
@@ -673,12 +690,12 @@ func PreviewUp(ctx context.Context, run func(context.Context, ...string) (string
 		return zero, err
 	}
 	rec.DBPassword = previewNewPassword()
-	if _, err := run(ctx, "exec", dbContainer, "psql", "-U", dbUser, "-d", dbDB,
-		"-v", "pw="+rec.DBPassword, "-c",
-		"CREATE ROLE "+rec.DBName+" LOGIN PASSWORD :'pw'"); err != nil {
+	if err := previewSQL(ctx, run, dbContainer, dbUser, dbDB,
+		"CREATE ROLE "+rec.DBName+" LOGIN PASSWORD :'pw';",
+		"-v", "pw="+rec.DBPassword); err != nil {
 		return zero, fmt.Errorf("could not create the preview role %s in %s: %w", rec.DBName, dbContainer, err)
 	}
-	if _, err := run(ctx, "exec", dbContainer, "psql", "-U", dbUser, "-d", dbDB, "-c",
+	if _, err := run(ctx, "", "exec", dbContainer, "psql", "-U", dbUser, "-d", dbDB, "-c",
 		"CREATE DATABASE "+rec.DBName+" OWNER "+rec.DBName); err != nil {
 		return zero, fmt.Errorf("could not create the preview database %s in %s: %w", rec.DBName, dbContainer, err)
 	}
@@ -690,7 +707,7 @@ func PreviewUp(ctx context.Context, run func(context.Context, ...string) (string
 	if err := os.WriteFile(filepath.Join(previewDir(cfg.Root, project), "compose.yml"), []byte(compose), 0o600); err != nil {
 		return zero, err
 	}
-	if _, err := run(ctx, "compose", "-p", project, "-f", filepath.Join(previewDir(cfg.Root, project), "compose.yml"), "up", "-d"); err != nil {
+	if _, err := run(ctx, "", "compose", "-p", project, "-f", filepath.Join(previewDir(cfg.Root, project), "compose.yml"), "up", "-d"); err != nil {
 		return zero, fmt.Errorf("the preview project did not come up: %w", err)
 	}
 	if err := ApplyPreviewRoute(ctx, run, cfg.Proxy, cfg.RoutesDir, rec.RouteFile, previewRoute(rec, cfg.Knob)); err != nil {
@@ -702,16 +719,16 @@ func PreviewUp(ctx context.Context, run func(context.Context, ...string) (string
 // PreviewDown takes a preview down, exactly: project down, ITS database
 // dropped, ITS route removed with the validate discipline, ITS state
 // directory gone. Nothing else is named.
-func PreviewDown(ctx context.Context, run func(context.Context, ...string) (string, error), cfg PreviewUpConfig, rec PreviewRecord) error {
+func PreviewDown(ctx context.Context, run previewRun, cfg PreviewUpConfig, rec PreviewRecord) error {
 	composeFile := filepath.Join(previewDir(cfg.Root, rec.Project), "compose.yml")
-	if _, err := run(ctx, "compose", "-p", rec.Project, "-f", composeFile, "down", "-v"); err != nil {
+	if _, err := run(ctx, "", "compose", "-p", rec.Project, "-f", composeFile, "down", "-v"); err != nil {
 		// A missing project is already down; anything else is reported.
 		if _, statErr := os.Stat(composeFile); statErr == nil {
 			return fmt.Errorf("could not take the preview project down: %w", err)
 		}
 	}
 	if rec.DBName != "" {
-		psOut, err := run(ctx, "ps", "--filter", "label=com.docker.compose.project="+rec.App,
+		psOut, err := run(ctx, "", "ps", "--filter", "label=com.docker.compose.project="+rec.App,
 			"--format", "{{.Names}}\t{{.Image}}")
 		if err == nil {
 			if dbContainer, derr := findAppDBContainer(ctx, run, psOut, rec.App); derr == nil {
@@ -719,12 +736,12 @@ func PreviewDown(ctx context.Context, run func(context.Context, ...string) (stri
 				if derr != nil {
 					return fmt.Errorf("could not read %s's environment to drop the preview database cleanly: %w", dbContainer, derr)
 				}
-				if _, err := run(ctx, "exec", dbContainer, "psql", "-U", dbUser, "-d", dbDB, "-c",
+				if _, err := run(ctx, "", "exec", dbContainer, "psql", "-U", dbUser, "-d", dbDB, "-c",
 					"DROP DATABASE IF EXISTS "+rec.DBName); err != nil {
 					return fmt.Errorf("could not drop the preview database %s: %w", rec.DBName, err)
 				}
-				if _, err := run(ctx, "exec", dbContainer, "psql", "-U", dbUser, "-d", dbDB, "-c",
-					"DROP ROLE IF EXISTS "+rec.DBName); err != nil {
+				if err := previewSQL(ctx, run, dbContainer, dbUser, dbDB,
+					"DROP ROLE IF EXISTS "+rec.DBName+";"); err != nil {
 					return fmt.Errorf("could not drop the preview role %s: %w", rec.DBName, err)
 				}
 			}
@@ -756,7 +773,7 @@ func PreviewReapPath() string { return ServedDir + "/preview-reap.json" }
 // container, no image, no route that is not derived from a record in the
 // previews directory. That is the reaper's refusal, and the contract test
 // pins it.
-func PreviewGC(ctx context.Context, run func(context.Context, ...string) (string, error), cfg PreviewUpConfig, now time.Time) (PreviewReap, error) {
+func PreviewGC(ctx context.Context, run previewRun, cfg PreviewUpConfig, now time.Time) (PreviewReap, error) {
 	reap := PreviewReap{V: 1, At: now}
 	existing, err := ListPreviews(cfg.Root)
 	if err != nil {
