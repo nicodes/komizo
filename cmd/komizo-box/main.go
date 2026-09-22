@@ -71,6 +71,8 @@ func main() {
 		err = runServe(os.Args[2:])
 	case "app":
 		err = runApp(os.Args[2:])
+	case "preview":
+		err = runPreview(os.Args[2:])
 	case "enrol":
 		err = runEnrol(os.Args[2:])
 	case "unenrol":
