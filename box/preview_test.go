@@ -335,7 +335,7 @@ func TestPreviewComposeCarriesTheOwnerRole(t *testing.T) {
 		V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
 		DBPassword: "abc123", Images: []string{"ghcr.io/you/web:pr-12"}, RouteFile: "_preview-gdam-pr-12.caddy",
 	}
-	compose := previewCompose(rec, cfg.Knob, "edge")
+	compose := previewCompose(rec, cfg.Knob, "edge", "")
 	for _, want := range []string{"PGUSER: gdam_pr_12", "PGPASSWORD: abc123", "PGDATABASE: gdam_pr_12"} {
 		if !strings.Contains(compose, want) {
 			t.Errorf("compose is missing %q:\n%s", want, compose)
@@ -465,7 +465,7 @@ func TestPreviewComposePublishesTheGatePortOnLoopbackOnly(t *testing.T) {
 		DBPassword: "abc123", GatePort: 20005,
 		Images: []string{"ghcr.io/you/web:pr-12"}, RouteFile: "_preview-gdam-pr-12.caddy",
 	}
-	compose := previewCompose(rec, cfg.Knob, "edge")
+	compose := previewCompose(rec, cfg.Knob, "edge", "")
 	if !strings.Contains(compose, `"127.0.0.1:20005:80"`) {
 		t.Errorf("the gate port is not published on loopback:\n%s", compose)
 	}
@@ -690,7 +690,7 @@ func TestPreviewComposeCapsNetworksAndEnvironment(t *testing.T) {
 		V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
 		Images: []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, RouteFile: "_preview-gdam-pr-12.caddy",
 	}
-	compose := previewCompose(rec, cfg.Knob, "edge")
+	compose := previewCompose(rec, cfg.Knob, "edge", "")
 	for _, want := range []string{
 		"mem_limit: 512m", "cpus: 0.75",
 		"container_name: gdam-pr-12-gate",
@@ -765,5 +765,188 @@ func TestPreviewKnob(t *testing.T) {
 	knob, note = ParsePreviewKnob("TTL_HOURS=soon\n")
 	if knob.TTL != PreviewTTLDefault || !strings.Contains(note, "soon") {
 		t.Errorf("non-numeric knob = %+v, %q, want the default and the note naming the value", knob, note)
+	}
+}
+
+// --- the stack-env seam ---------------------------------------------------------
+//
+// A product that needs its stack configuration in its previews writes
+// <state-dir>/stack.env (0600 root) into the preview's state directory BEFORE
+// up. Up env_files it into the api services by REFERENCE -- the compose file
+// carries the path, never a value, and komizo never reads, copies or logs the
+// contents. Absent, nothing changes: a zero-config preview stays zero-config.
+
+// CONTRACT 1: no stack.env, no env_file -- the render and the lifecycle are
+// exactly what a zero-config preview has always had.
+func TestPreviewNoStackEnvMeansNoEnvFile(t *testing.T) {
+	cfg := previewTestConfig(t)
+	rec := PreviewRecord{
+		V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
+		Images: []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, RouteFile: "_preview-gdam-pr-12.caddy",
+	}
+	if compose := previewCompose(rec, cfg.Knob, "edge", ""); strings.Contains(compose, "env_file") {
+		t.Errorf("a zero-config render mentions env_file:\n%s", compose)
+	}
+	f := &fakeDocker{}
+	if _, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, previewNow); err != nil {
+		t.Fatalf("up without stack.env = %v, want unchanged behaviour", err)
+	}
+	b, err := os.ReadFile(filepath.Join(previewDir(cfg.Root, "gdam-pr-12"), "compose.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "env_file") {
+		t.Errorf("the on-disk compose mentions env_file without a stack.env:\n%s", b)
+	}
+}
+
+// CONTRACT 2: a present stack.env is env_file'd, on the api service(s) and
+// NOT on the gate -- the gate keys off BASE_URL, already passed via
+// environment: -- and the reference is the ABSOLUTE path, so no
+// project-directory or working-directory override can move where it resolves.
+func TestPreviewStackEnvIsEnvFiledIntoTheApiServices(t *testing.T) {
+	f := &fakeDocker{}
+	cfg := previewTestConfig(t)
+	dir := previewDir(cfg.Root, "gdam-pr-12")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	stackEnv := filepath.Join(dir, PreviewStackEnvFile)
+	if err := os.WriteFile(stackEnv, []byte("STACK_KEY=value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, previewNow); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "compose.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	compose := string(b)
+	ref := "    env_file:\n      - " + stackEnv + "\n"
+	if !strings.Contains(compose, ref) {
+		t.Errorf("the api service is missing the env_file reference %q:\n%s", ref, compose)
+	}
+	if strings.Count(compose, "env_file") != 1 {
+		t.Errorf("env_file appears %d times, want exactly the api service's one:\n%s", strings.Count(compose, "env_file"), compose)
+	}
+	api := strings.Index(compose, "  api:")
+	env := strings.Index(compose, "env_file")
+	if api < 0 || env < api {
+		t.Errorf("the env_file reference is not inside the api service's block:\n%s", compose)
+	}
+	gate := compose[:api]
+	if strings.Contains(gate, "env_file") {
+		t.Errorf("the gate service got an env_file -- it keys off BASE_URL via environment:\n%s", compose)
+	}
+}
+
+// CONTRACT 3: stack.env VALUES never leak -- not into the compose file's
+// environment: block, not into any docker call, not into any output komizo
+// produces. Only the env_file path reference may appear.
+func TestPreviewStackEnvValuesNeverLeak(t *testing.T) {
+	const sentinel = "s3cr3t-sentinel-value-do-not-leak"
+	f := &fakeDocker{}
+	cfg := previewTestConfig(t)
+	dir := previewDir(cfg.Root, "gdam-pr-12")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	stackEnv := filepath.Join(dir, PreviewStackEnvFile)
+	if err := os.WriteFile(stackEnv, []byte("PRODUCT_SECRET="+sentinel+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, previewNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "compose.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), sentinel) || strings.Contains(string(b), "PRODUCT_SECRET") {
+		t.Errorf("a stack.env value leaked into the compose file:\n%s", b)
+	}
+	if !strings.Contains(string(b), "env_file:\n      - "+stackEnv) {
+		t.Errorf("the compose file is missing the env_file reference:\n%s", b)
+	}
+	for i, c := range f.calls {
+		if j := strings.Join(c, " "); strings.Contains(j, sentinel) || strings.Contains(f.stdins[i], sentinel) {
+			t.Errorf("a stack.env value reached a docker call: %v / stdin %q", c, f.stdins[i])
+		}
+	}
+	// The up record on stdout: the JSON record carries no stack.env content
+	// either -- up's stdout stays exactly the single record.
+	out, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), sentinel) {
+		t.Errorf("a stack.env value reached the up record's JSON: %s", out)
+	}
+}
+
+// CONTRACT 4: teardown removes stack.env with the state dir -- nothing of the
+// preview, including the product's pre-written file, survives down.
+func TestPreviewDownRemovesStackEnvWithTheStateDir(t *testing.T) {
+	f := &fakeDocker{}
+	cfg := previewTestConfig(t)
+	dir := previewDir(cfg.Root, "gdam-pr-12")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	stackEnv := filepath.Join(dir, PreviewStackEnvFile)
+	if err := os.WriteFile(stackEnv, []byte("STACK_KEY=value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.RoutesDir, rec.RouteFile), []byte("route\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := PreviewDown(context.Background(), f.run, cfg, rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stackEnv); !os.IsNotExist(err) {
+		t.Error("stack.env survived down")
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Error("the preview's state directory survived down")
+	}
+}
+
+// THE SEAM'S OTHER HALF: the product pre-creates the state dir and writes
+// stack.env BEFORE up. Up must tolerate the pre-existing dir and never
+// clobber the file -- byte for byte.
+func TestPreviewUpDoesNotClobberAPreExistingStackEnv(t *testing.T) {
+	f := &fakeDocker{}
+	cfg := previewTestConfig(t)
+	dir := previewDir(cfg.Root, "gdam-pr-12")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	const body = "DATABASE_URL=postgres://example\nPRODUCT_SECRET=s3cr3t\n"
+	stackEnv := filepath.Join(dir, PreviewStackEnvFile)
+	if err := os.WriteFile(stackEnv, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, previewNow); err != nil {
+		t.Fatalf("up with a pre-existing state dir and stack.env = %v", err)
+	}
+	got, err := os.ReadFile(stackEnv)
+	if err != nil {
+		t.Fatalf("stack.env is gone after up: %v", err)
+	}
+	if string(got) != body {
+		t.Errorf("up rewrote stack.env: got %q, want %q", got, body)
+	}
+	info, err := os.Stat(stackEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("stack.env is %v after up, want the 0600 the product wrote", info.Mode().Perm())
 	}
 }
