@@ -16,6 +16,20 @@ export type Report = {
   orphans?: string[];
   system: System;
   problems: Problem[];
+  // What the disk-hygiene sweep last did, when it has run. Absent on a box
+  // that has never swept -- see box/sweep.go.
+  sweep?: Sweep;
+};
+
+export type Sweep = {
+  v: number;
+  at: string;
+  min_age_days: number;
+  candidates: number;
+  removed: number;
+  skipped: number;
+  reclaimed_bytes: number;
+  note?: string;
 };
 
 export type Server = {

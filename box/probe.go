@@ -87,6 +87,13 @@ func (p *Probe) Report(ctx context.Context) Report {
 	r.Network = p.network(ctx, r.Proxy, inv)
 	r.Orphans = p.orphans()
 	r.System = p.System(inv)
+	// What the sweep last did, when it has done anything: the record rootd
+	// leaves beside the history and metrics. Read rather than recomputed --
+	// the sweep's own account of itself, so the report and the sweep can
+	// never disagree about what was removed.
+	if rec, ok := ReadSweepRecord(p.path(SweepPath())); ok {
+		r.Sweep = &rec
+	}
 	r.Problems = Diagnose(r)
 	return r
 }
