@@ -94,6 +94,10 @@ func (p *Probe) Report(ctx context.Context) Report {
 	if rec, ok := ReadSweepRecord(p.path(SweepPath())); ok {
 		r.Sweep = &rec
 	}
+	// And the preview reaper's account of itself, the same way.
+	if rec, ok := ReadPreviewReap(p.path(PreviewReapPath())); ok {
+		r.Preview = &rec
+	}
 	r.Problems = Diagnose(r)
 	return r
 }

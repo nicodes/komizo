@@ -35,10 +35,13 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -173,6 +176,7 @@ func runRootdAt(root string, args []string) error {
 	socketDir := fs.String("socket-dir", box.APISocketDir, "the directory the API socket lives in")
 	volEvery := fs.Int("volumes-every", 15, "measure volumes every Nth reading (0 disables)")
 	once := fs.Bool("once", false, "probe once and exit")
+	network := fs.String("network", "edge", "the shared docker network previews join and the preview ask binds onto")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -381,16 +385,18 @@ func runRootdAt(root string, args []string) error {
 	// past the floor age and nothing else; the refusals are in box/sweep.go.
 	// The knob is re-read every pass, so an operator tightening it does not
 	// wait for a restart.
-	go func() {
-		// box.Probe's docker runner is unexported, so the sweep gets its own:
-		// the same exec this package already makes everywhere else.
-		run := func(ctx context.Context, args ...string) (string, error) {
-			out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
-			if err != nil {
-				return "", fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
-			}
-			return string(out), nil
+	// box.Probe's docker runner is unexported, so rootd's own work gets one
+	// here: the same exec this package already makes everywhere else. Shared
+	// by the sweep, the ask and the reaper goroutines below.
+	run := func(ctx context.Context, args ...string) (string, error) {
+		out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+		if err != nil {
+			return "", fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
 		}
+		return string(out), nil
+	}
+
+	go func() {
 		pass := func() {
 			knob, note := box.ReadSweepKnob(box.SweepKnobPath)
 			rec := box.DockerSweep(ctx, knob, box.AppsDir, box.SrvDir, time.Now(), run)
@@ -411,6 +417,67 @@ func runRootdAt(root string, args []string) error {
 			case <-ctx.Done():
 				return
 			case <-time.After(knob.Interval):
+				pass()
+			}
+		}
+	}()
+
+	// The on-demand-TLS ask, narrowly re-enabled for previews -- and bound
+	// ONLY to the host's address on the shared network's bridge, so it is
+	// reachable from the proxy container and from nothing else. The guard
+	// from #132 is untouched; what is served here is WHO may cause a
+	// certificate, and the answer is pr-<N> under the preview domain alone
+	// (box/preview_ask.go, pinned over the wire).
+	go func() {
+		knob, _ := box.ReadPreviewKnob(box.PreviewKnobPath)
+		gw, err := run(ctx, "network", "inspect", *network,
+			"--format", "{{range .IPAM.Config}}{{.Gateway}}{{end}}")
+		gw = strings.TrimSpace(gw)
+		if err != nil || gw == "" {
+			fmt.Fprintf(os.Stderr, "komizo-box: the preview ask is not being served -- no gateway on %s: %v\n", *network, err)
+			return
+		}
+		ln, err := net.Listen("tcp", net.JoinHostPort(gw, strconv.Itoa(knob.AskPort)))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "komizo-box: the preview ask could not bind %s:%d: %v\n", gw, knob.AskPort, err)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "komizo-box: serving the preview ask on http://%s/ask (scope: %s)\n", ln.Addr(), knob.Domain)
+		_ = (&http.Server{Handler: box.PreviewAskHandler(knob.Domain), ReadHeaderTimeout: 10 * time.Second}).Serve(ln)
+	}()
+
+	// The preview reaper: TTL and the max-N ceiling, hourly, acting only on
+	// previews it has state records for -- box/preview.go pins that refusal.
+	// Each pass leaves a record the report surfaces, so komizo ui can show
+	// the reaper working (or say, quietly, that it had nothing to do).
+	go func() {
+		pass := func() {
+			knob, _ := box.ReadPreviewKnob(box.PreviewKnobPath)
+			cfg := box.PreviewUpConfig{
+				Knob:      knob,
+				RoutesDir: "/srv/_proxy/routes",
+				Proxy:     ProxyProject,
+				Network:   *network,
+			}
+			if b, err := os.ReadFile(box.DeployFloorsPath); err == nil {
+				cfg.FloorsBody = string(b)
+			}
+			cfg.ReportJSON, _ = os.ReadFile(box.ReportPath)
+			reap, err := box.PreviewGC(ctx, run, cfg, time.Now())
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "komizo-box: preview reap: %v\n", err)
+				return
+			}
+			if err := box.WritePreviewReap(box.PreviewReapPath(), reap); err != nil {
+				fmt.Fprintf(os.Stderr, "komizo-box: writing the preview reap record: %v\n", err)
+			}
+		}
+		pass()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Hour):
 				pass()
 			}
 		}
