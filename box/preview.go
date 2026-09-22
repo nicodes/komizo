@@ -458,14 +458,45 @@ func RemovePreviewRoute(ctx context.Context, run func(context.Context, ...string
 // --- the database, inside the app's postgres container ---------------------------
 
 // findAppDBContainer names the running postgres container in the app's
-// compose project, from `docker ps` output in "<name>\t<image>" lines. The
-// app record is not asked: the container is the fact, and asking a file what
-// runs is how yesterday's truth becomes today's mistake.
-func findAppDBContainer(psOut, app string) (string, error) {
+// compose project. The app record is not asked: the container is the fact,
+// and asking a file what runs is how yesterday's truth becomes today's
+// mistake.
+//
+// THREE WAYS TO KNOW, in order, because products pin postgres by digest and
+// docker ps's Image column for a digest-pulled image shows only the short
+// digest -- no "postgres" substring anywhere:
+//
+//  1. the ps Image column (the cheap, common case, matched on "postgres");
+//  2. the container's Config.Image, asked of docker inspect -- the ORIGINAL
+//     reference, which for a digest pull is postgres@sha256:... and carries
+//     the name the column lost;
+//  3. the container's own NAME (compose's <project>-postgres-1).
+//
+// The psql call after discovery is the final proof: a container that matched
+// on name and is not postgres fails there, loudly, with nothing created.
+func findAppDBContainer(ctx context.Context, run func(context.Context, ...string) (string, error), psOut, app string) (string, error) {
+	type candidate struct{ name, image string }
+	var candidates []candidate
 	for _, ln := range strings.Split(psOut, "\n") {
 		f := strings.Split(strings.TrimRight(ln, "\r"), "\t")
-		if len(f) >= 2 && strings.Contains(f[1], "postgres") {
-			return f[0], nil
+		if len(f) >= 2 && f[0] != "" {
+			candidates = append(candidates, candidate{f[0], f[1]})
+		}
+	}
+	for _, c := range candidates {
+		if strings.Contains(c.image, "postgres") {
+			return c.name, nil
+		}
+	}
+	for _, c := range candidates {
+		out, err := run(ctx, "inspect", c.name, "--format", "{{.Config.Image}}")
+		if err == nil && strings.Contains(out, "postgres") {
+			return c.name, nil
+		}
+	}
+	for _, c := range candidates {
+		if strings.Contains(c.name, "postgres") {
+			return c.name, nil
 		}
 	}
 	return "", fmt.Errorf("no postgres container is running in %s's project -- a preview needs the app's database to put its own beside", app)
@@ -585,7 +616,7 @@ func PreviewUp(ctx context.Context, run func(context.Context, ...string) (string
 	if err != nil {
 		return zero, fmt.Errorf("could not look for the app's postgres: %w", err)
 	}
-	dbContainer, err := findAppDBContainer(psOut, app)
+	dbContainer, err := findAppDBContainer(ctx, run, psOut, app)
 	if err != nil {
 		return zero, err
 	}
@@ -625,7 +656,7 @@ func PreviewDown(ctx context.Context, run func(context.Context, ...string) (stri
 		psOut, err := run(ctx, "ps", "--filter", "label=com.docker.compose.project="+rec.App,
 			"--format", "{{.Names}}\t{{.Image}}")
 		if err == nil {
-			if dbContainer, derr := findAppDBContainer(psOut, rec.App); derr == nil {
+			if dbContainer, derr := findAppDBContainer(ctx, run, psOut, rec.App); derr == nil {
 				if _, err := run(ctx, "exec", dbContainer, "psql", "-U", "postgres", "-c",
 					"DROP DATABASE IF EXISTS "+rec.DBName); err != nil {
 					return fmt.Errorf("could not drop the preview database %s: %w", rec.DBName, err)
