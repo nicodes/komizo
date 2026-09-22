@@ -97,6 +97,11 @@ type Report struct {
 	// reason Proxy is: a record full of zeroes reads as installed-and-broken
 	// rather than never-run. See sweep.go.
 	Sweep *SweepRecord `json:"sweep,omitempty"`
+
+	// Preview is what the preview reaper last did, when it has run: what it
+	// reaped, what it kept, and the quiet line when the answer is nothing.
+	// Absent on a box that has never reaped -- see preview.go.
+	Preview *PreviewReap `json:"preview,omitempty"`
 }
 
 // Schema is the version this document was written against. See Decode.
