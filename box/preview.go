@@ -50,6 +50,13 @@ const PreviewsDir = StateDir + "/previews"
 // defaults below are the conservative answer.
 const PreviewKnobPath = "/etc/komizo/preview"
 
+// PreviewStackEnvFile is the stack-env seam: a product that needs its stack
+// configuration in its previews writes this file (0600 root) into the
+// preview's state directory BEFORE `preview up`, and up env_files it into the
+// preview's api services. Komizo never creates, writes, reads or logs it --
+// the compose file carries the reference, never a value.
+const PreviewStackEnvFile = "stack.env"
+
 // Preview defaults.
 const (
 	PreviewDomainDefault    = "preview.gdam.dev"
@@ -382,7 +389,17 @@ func PreviewCheckFloors(f PreviewFloors, present bool, report []byte) (refuse st
 // gate -- the one the proxy routes to -- and joins the shared network by its
 // project-scoped alias; every service is capped, because a preview is a guest
 // on a box that also feeds people.
-func previewCompose(r PreviewRecord, k PreviewKnob, network string) string {
+//
+// envFile is the stack-env seam: the calling product may write
+// <previewDir>/stack.env (0600 root) BEFORE up, and up passes its absolute
+// path here. Non-empty, it is referenced as env_file on every non-gate
+// service -- the product's stack configuration follows its code into the
+// preview without komizo ever reading, copying or logging a value. Empty, no
+// env_file appears and a zero-config preview stays zero-config. The gate
+// never gets it: the gate keys off BASE_URL, which is already passed via
+// environment:, and environment: overrides env_file in compose -- the
+// preview-derived values (PGPASSWORD et al.) always win.
+func previewCompose(r PreviewRecord, k PreviewKnob, network, envFile string) string {
 	var b strings.Builder
 	b.WriteString("# Written by komizo preview. Re-run `komizo preview up` to change it.\n")
 	fmt.Fprintf(&b, "# Preview of %s PR #%d. Own project, own database (%s), own route.\nservices:\n", r.App, r.PR, r.DBName)
@@ -407,6 +424,9 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string) string {
 			fmt.Fprintf(&b, "      - \"127.0.0.1:%d:80\"\n", r.GatePort)
 			b.WriteString("    networks:\n      - shared\n      - appnet\n")
 		} else {
+			if envFile != "" {
+				fmt.Fprintf(&b, "    env_file:\n      - %s\n", envFile)
+			}
 			fmt.Fprintf(&b, "    environment:\n      PREVIEW: \"1\"\n      PR: \"%d\"\n      DB_NAME: %s\n      PGDATABASE: %s\n      PGUSER: %s\n      PGPASSWORD: %s\n", r.PR, r.DBName, r.DBName, r.DBName, r.DBPassword)
 			b.WriteString("    networks:\n      - appnet\n")
 		}
@@ -690,11 +710,20 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	// created, and everything after this point rolls back BOTH -- a failure
 	// must never leave resources without state (an orphan nothing can reap)
 	// or state without resources (a record the reaper would chase forever).
+	// The state dir may ALREADY exist: a product that uses the stack-env
+	// seam pre-creates it and writes stack.env before up. MkdirAll tolerates
+	// that, nothing here writes stack.env, and the env_file reference below
+	// appears only if the file exists at render time.
 	if err := writePreviewRecord(cfg.Root, rec); err != nil {
 		return zero, err
 	}
 	composePath := filepath.Join(previewDir(cfg.Root, project), "compose.yml")
-	if err := os.WriteFile(composePath, []byte(previewCompose(rec, cfg.Knob, cfg.Network)), 0o600); err != nil {
+	envFile := ""
+	stackEnv := filepath.Join(previewDir(cfg.Root, project), PreviewStackEnvFile)
+	if _, err := os.Stat(stackEnv); err == nil {
+		envFile = stackEnv
+	}
+	if err := os.WriteFile(composePath, []byte(previewCompose(rec, cfg.Knob, cfg.Network, envFile)), 0o600); err != nil {
 		return zero, err
 	}
 	rollback := func(dbContainer, dbUser, dbDB string, created bool) {
