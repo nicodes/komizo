@@ -90,6 +90,13 @@ type Report struct {
 	// and a diagnosis reimplemented four times is four chances to disagree about
 	// whether a server is broken.
 	Problems []Problem `json:"problems"`
+
+	// Sweep is what the disk-hygiene sweep last did, when it has run: what was
+	// swept, when, how much came back -- and the quiet line when the answer is
+	// nothing. Absent, not zeroed, on a box that has never swept, for the same
+	// reason Proxy is: a record full of zeroes reads as installed-and-broken
+	// rather than never-run. See sweep.go.
+	Sweep *SweepRecord `json:"sweep,omitempty"`
 }
 
 // Schema is the version this document was written against. See Decode.

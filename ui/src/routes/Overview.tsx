@@ -176,6 +176,24 @@ export default function Overview() {
                   </For>
                 </Section>
 
+                <Show when={rep().sweep}>
+                  {(sw) => (
+                    <Section title="disk hygiene">
+                      <Row label="last sweep">{ago(sw().at)}</Row>
+                      <Row label="swept">
+                        {`${sw().removed} dangling image${sw().removed === 1 ? "" : "s"} · ${formatBytes(sw().reclaimed_bytes)} reclaimed`}
+                      </Row>
+                      <Show when={sw().skipped > 0}>
+                        <Row label="kept">{`${sw().skipped} (docker or the rules said no)`}</Row>
+                      </Show>
+                      <Show when={sw().note}>
+                        <Dim>{sw().note}</Dim>
+                      </Show>
+                      <Dim>Only dangling images older than {sw().min_age_days} days are ever swept — tagged images, anything a container references, volumes, and anything state names are always kept.</Dim>
+                    </Section>
+                  )}
+                </Show>
+
                 <Section title="backups">
                   <Dim>{backups()?.note ?? "—"}</Dim>
                 </Section>
