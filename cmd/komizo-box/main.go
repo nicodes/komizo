@@ -36,8 +36,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -367,6 +369,47 @@ func runRootdAt(root string, args []string) error {
 				return
 			case <-t.C:
 				collectLogs(ctx, "", *logsDir)
+			}
+		}
+	}()
+
+	// The disk-hygiene sweep, on its own timer for the same reason the logs
+	// are: it shells out to docker, and nothing that shells out to docker
+	// holds up the report. Conservative by construction -- dangling images
+	// past the floor age and nothing else; the refusals are in box/sweep.go.
+	// The knob is re-read every pass, so an operator tightening it does not
+	// wait for a restart.
+	go func() {
+		// box.Probe's docker runner is unexported, so the sweep gets its own:
+		// the same exec this package already makes everywhere else.
+		run := func(ctx context.Context, args ...string) (string, error) {
+			out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+			if err != nil {
+				return "", fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+			}
+			return string(out), nil
+		}
+		pass := func() {
+			knob, note := box.ReadSweepKnob(box.SweepKnobPath)
+			rec := box.DockerSweep(ctx, knob, box.AppsDir, box.SrvDir, time.Now(), run)
+			if note != "" {
+				rec.Note = rec.Note + "; " + note
+			}
+			if err := box.WriteSweepRecord(box.SweepPath(), rec); err != nil {
+				fmt.Fprintf(os.Stderr, "komizo-box: writing the sweep record: %v\n", err)
+			}
+		}
+		pass()
+		for {
+			// The interval comes from the knob each pass, so a timer is
+			// rebuilt rather than reset: an operator shortening the cadence
+			// should not wait out the previous one.
+			knob, _ := box.ReadSweepKnob(box.SweepKnobPath)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(knob.Interval):
+				pass()
 			}
 		}
 	}()
