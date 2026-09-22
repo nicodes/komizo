@@ -20,6 +20,7 @@ var previewNow = time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 // fakeDocker records argv and answers the handful of calls a lifecycle makes.
 type fakeDocker struct {
 	calls          [][]string
+	stdins         []string // parallel to calls: what each call was fed on stdin
 	validateErr    error
 	psqlErr        error
 	psOut          string            // what ps answers (default: a tagged postgres)
@@ -27,8 +28,9 @@ type fakeDocker struct {
 	envAnswers     map[string]string // Config.Env per container name
 }
 
-func (f *fakeDocker) run(_ context.Context, args ...string) (string, error) {
+func (f *fakeDocker) run(_ context.Context, stdin string, args ...string) (string, error) {
 	f.calls = append(f.calls, append([]string{}, args...))
+	f.stdins = append(f.stdins, stdin)
 	switch args[0] {
 	case "ps":
 		if f.psOut != "" {
@@ -66,7 +68,7 @@ func (f *fakeDocker) run(_ context.Context, args ...string) (string, error) {
 
 func (f *fakeDocker) matching(want ...string) [][]string {
 	var out [][]string
-	for _, c := range f.calls {
+	for i, c := range f.calls {
 		j := strings.Join(c, " ")
 		ok := true
 		for _, w := range want {
@@ -75,10 +77,33 @@ func (f *fakeDocker) matching(want ...string) [][]string {
 			}
 		}
 		if ok {
-			out = append(out, c)
+			out = append(out, append(c, "\x00"+f.stdins[i]))
 		}
 	}
 	return out
+}
+
+// stdinOf returns the stdin recorded for the i-th call matching the wants,
+// or fails the test when there is not exactly one.
+func (f *fakeDocker) stdinOf(t *testing.T, want ...string) string {
+	t.Helper()
+	var found []string
+	for i, c := range f.calls {
+		j := strings.Join(c, " ")
+		ok := true
+		for _, w := range want {
+			if !strings.Contains(j, w) {
+				ok = false
+			}
+		}
+		if ok {
+			found = append(found, f.stdins[i])
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("expected exactly one call matching %v, found %d (%v)", want, len(found), f.calls)
+	}
+	return found[0]
 }
 
 func previewTestConfig(t *testing.T) PreviewUpConfig {
@@ -258,16 +283,27 @@ func TestPreviewCreatesItsDatabaseAsTheContainersOwnSuperuser(t *testing.T) {
 			t.Fatalf("connected as the hardcoded 'postgres' role, which does not exist here: %v", c)
 		}
 	}
-	roleCalls := f.matching("psql", "-U gdam_migrator", "-d gdam", "CREATE ROLE gdam_pr_12 LOGIN PASSWORD :'pw'")
-	dbCalls := f.matching("psql", "-U gdam_migrator", "CREATE DATABASE gdam_pr_12 OWNER gdam_pr_12")
-	if len(roleCalls) != 1 || len(dbCalls) != 1 {
-		t.Fatalf("role and database were not created as gdam_migrator with the owner set:\nrole %v\ndb %v", roleCalls, dbCalls)
+	// The role statement reaches psql via STDIN (docker exec -i, no -c),
+	// because psql substitutes :'var' on lines it reads from stdin and NOT on
+	// -c arguments -- the fourth gap, verified on gdam-postgres-1 (psql 18.6).
+	// The password travels as the 'pw' variable in argv and NEVER inside the
+	// SQL text.
+	roleStdin := f.stdinOf(t, "psql", "-i", "-U gdam_migrator", "-d gdam", "-v", "pw="+rec.DBPassword)
+	if !strings.Contains(roleStdin, "CREATE ROLE gdam_pr_12 LOGIN PASSWORD :'pw';") {
+		t.Errorf("the role statement did not reach psql via stdin with the variable intact: %q", roleStdin)
 	}
-	// The password travels by psql variable, quoted by psql itself -- never
-	// interpolated into the SQL string.
-	vars := f.matching("-v", "pw="+rec.DBPassword)
-	if len(vars) != 1 {
-		t.Errorf("the password did not travel as a psql variable: %v", vars)
+	if strings.Contains(roleStdin, rec.DBPassword) {
+		t.Errorf("the password was interpolated into the SQL text: %q", roleStdin)
+	}
+	for _, c := range f.calls {
+		j := strings.Join(c, " ")
+		if strings.Contains(j, "CREATE ROLE") && strings.Contains(j, "-c") {
+			t.Errorf("the role statement went through -c, where :'pw' is not substituted: %v", c)
+		}
+	}
+	dbCalls := f.matching("psql", "-U gdam_migrator", "CREATE DATABASE gdam_pr_12 OWNER gdam_pr_12")
+	if len(dbCalls) != 1 {
+		t.Fatalf("the database was not created as gdam_migrator with the owner set: %v", dbCalls)
 	}
 }
 
@@ -316,8 +352,9 @@ func TestPreviewDownDropsTheRole(t *testing.T) {
 	if err := PreviewDown(context.Background(), f.run, cfg, rec); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.matching("psql", "-U gdam_migrator", "DROP ROLE IF EXISTS gdam_pr_12"); len(got) != 1 {
-		t.Errorf("the role was not dropped as the container's own superuser: %v", got)
+	dropStdin := f.stdinOf(t, "psql", "-i", "-U gdam_migrator", "-d gdam")
+	if !strings.Contains(dropStdin, "DROP ROLE IF EXISTS gdam_pr_12;") {
+		t.Errorf("the role drop did not reach psql via stdin: %q", dropStdin)
 	}
 	for _, c := range f.calls {
 		if strings.Contains(strings.Join(c, " "), "-U postgres") {
