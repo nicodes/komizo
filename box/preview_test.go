@@ -2,6 +2,7 @@ package box
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,6 +24,7 @@ type fakeDocker struct {
 	stdins         []string // parallel to calls: what each call was fed on stdin
 	validateErr    error
 	psqlErr        error
+	composeUpErr   error
 	psOut          string            // what ps answers (default: a tagged postgres)
 	inspectAnswers map[string]string // Config.Image per container name
 	envAnswers     map[string]string // Config.Env per container name
@@ -37,6 +39,11 @@ func (f *fakeDocker) run(_ context.Context, stdin string, args ...string) (strin
 			return f.psOut, nil
 		}
 		return "gdam-db-1\tpostgres:16\n", nil
+	case "compose":
+		if args[len(args)-1] == "-d" && f.composeUpErr != nil {
+			return "", f.composeUpErr
+		}
+		return "", nil
 	case "inspect":
 		format := ""
 		if len(args) > 3 {
@@ -360,6 +367,110 @@ func TestPreviewDownDropsTheRole(t *testing.T) {
 		if strings.Contains(strings.Join(c, " "), "-U postgres") {
 			t.Errorf("connected as the hardcoded 'postgres' role: %v", c)
 		}
+	}
+}
+
+// F1 (SECURITY): the owner role's password is a credential, and credentials
+// are never marshalled -- `preview up` and `preview ls` print this record as
+// JSON, and a credential on stdout is a credential in somebody's scrollback.
+// The state file keeps it, 600 and root-owned, which is the only place it
+// may exist.
+func TestPreviewPasswordIsNeverMarshalledToStdout(t *testing.T) {
+	rec := PreviewRecord{V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12", DBPassword: "the-password-value"}
+	b, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "the-password-value") {
+		t.Errorf("the password was marshalled into the record's JSON: %s", b)
+	}
+	if strings.Contains(string(b), "db_password") {
+		t.Errorf("the password's key was marshalled into the record's JSON: %s", b)
+	}
+}
+
+// F2 (critical): up persists the state -- preview.env at the expected path,
+// 600-root, with the recorded keys -- and ls reads it back. The box smoke
+// found up writing NO state at all (a relative path when the root is the
+// box's), which orphaned every resource it created.
+func TestPreviewUpPersistsStateWhereDownCanFindIt(t *testing.T) {
+	f := &fakeDocker{}
+	cfg := previewTestConfig(t)
+	rec, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envPath := filepath.Join(previewDir(cfg.Root, "gdam-pr-12"), "preview.env")
+	info, err := os.Stat(envPath)
+	if err != nil {
+		t.Fatalf("preview.env was not written at the expected path: %v", err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("preview.env is %v, not 0600", info.Mode().Perm())
+	}
+	body, _ := os.ReadFile(envPath)
+	for _, want := range []string{"APP=gdam", "PR=12", "PROJECT=gdam-pr-12", "DB_NAME=gdam_pr_12",
+		"DB_PASSWORD=" + rec.DBPassword, "ROUTE_FILE=_preview-gdam-pr-12.caddy"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("preview.env is missing %q:\n%s", want, body)
+		}
+	}
+	// F3: ls reads the persisted state.
+	listed, err := ListPreviews(cfg.Root)
+	if err != nil || len(listed) != 1 || listed[0].DBPassword != rec.DBPassword {
+		t.Fatalf("ListPreviews = %+v, %v -- the persisted preview is not readable back", listed, err)
+	}
+}
+
+// F2, the other half: a failure after state is written rolls back BOTH the
+// state and the created resources. No orphans, no ghost records.
+func TestPreviewFailureRollsBackResourcesAndState(t *testing.T) {
+	f := &fakeDocker{composeUpErr: fmt.Errorf("no such image")}
+	cfg := previewTestConfig(t)
+	_, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow)
+	if err == nil {
+		t.Fatal("a failed compose up succeeded")
+	}
+	if _, statErr := os.Stat(previewDir(cfg.Root, "gdam-pr-12")); !os.IsNotExist(statErr) {
+		t.Error("the state directory survived a failed up")
+	}
+	if got := f.matching("psql", "DROP DATABASE IF EXISTS gdam_pr_12"); len(got) == 0 {
+		t.Error("the rollback did not drop the database -- the failure is an orphan")
+	}
+	// The role drop travels on stdin (psql's :'var' path), not in argv.
+	var droppedRole bool
+	for i, c := range f.calls {
+		if strings.Contains(strings.Join(c, " "), "psql") && strings.Contains(f.stdins[i], "DROP ROLE IF EXISTS gdam_pr_12") {
+			droppedRole = true
+		}
+	}
+	if !droppedRole {
+		t.Error("the rollback did not drop the role -- the failure is an orphan")
+	}
+	if got := f.matching("compose", "-p", "gdam-pr-12", "down"); len(got) == 0 {
+		t.Error("the rollback did not take the project down")
+	}
+	if listed, _ := ListPreviews(cfg.Root); len(listed) != 0 {
+		t.Errorf("a ghost record survived the rollback: %+v", listed)
+	}
+}
+
+// F4 (design): the gate port answers, on loopback ONLY -- the direct HTTP
+// entry from the box itself, never from the network. The public way in is
+// the proxy route, with TLS.
+func TestPreviewComposePublishesTheGatePortOnLoopbackOnly(t *testing.T) {
+	cfg := previewTestConfig(t)
+	rec := PreviewRecord{
+		V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
+		DBPassword: "abc123", GatePort: 20005,
+		Images: []string{"ghcr.io/you/web:pr-12"}, RouteFile: "_preview-gdam-pr-12.caddy",
+	}
+	compose := previewCompose(rec, cfg.Knob, "edge")
+	if !strings.Contains(compose, `"127.0.0.1:20005:80"`) {
+		t.Errorf("the gate port is not published on loopback:\n%s", compose)
+	}
+	if strings.Contains(compose, `"20005:80"`) {
+		t.Errorf("the gate port is published on every interface:\n%s", compose)
 	}
 }
 
