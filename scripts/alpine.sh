@@ -843,6 +843,17 @@ if [ -n "$disk_floor" ] || [ -n "$mem_floor" ]; then
 		echo "deploy: refusing: disk available ${disk_avail} bytes is below floor ${disk_floor} bytes" >&2
 		exit 1
 	fi
+	# Past the floor is not the same as comfortable. Between 1x and 2x the
+	# floor the deploy proceeds, but loudly: tonight's disk died between one
+	# deploy and the next, and a box drifting toward the line should be
+	# audible in the log before it is over it. Doubled with awk for the same
+	# reason below_bytes exists -- BusyBox [ ] is 32-bit signed; bytes are not.
+	if [ -n "$mem_floor" ] && below_bytes "$mem_avail" "$(awk -v f="$mem_floor" 'BEGIN{printf "%.0f", f*2}')"; then
+		echo "deploy: WARNING -- mem available ${mem_avail} bytes is below twice the floor ${mem_floor} bytes" >&2
+	fi
+	if [ -n "$disk_floor" ] && below_bytes "$disk_avail" "$(awk -v f="$disk_floor" 'BEGIN{printf "%.0f", f*2}')"; then
+		echo "deploy: WARNING -- disk available ${disk_avail} bytes is below twice the floor ${disk_floor} bytes" >&2
+	fi
 else
 	echo "deploy: WARNING -- no operator resource floors configured ($FLOORS_FILE absent or keys empty); deploying anyway" >&2
 	echo "deploy: WARNING -- reported available bytes: mem=${mem_avail:-unknown} disk=${disk_avail:-unknown}" >&2
