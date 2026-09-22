@@ -382,7 +382,18 @@ func PreviewCheckFloors(f PreviewFloors, present bool, report []byte) (refuse st
 // gate -- the one the proxy routes to -- and joins the shared network by its
 // project-scoped alias; every service is capped, because a preview is a guest
 // on a box that also feeds people.
-func previewCompose(r PreviewRecord, k PreviewKnob, network string) string {
+//
+// stackEnv is whether the preview's state directory holds a stack.env written
+// by the calling product BEFORE up. When it does, every API (non-gate)
+// service gets `env_file: - stack.env` -- RELATIVE, because compose resolves
+// a relative env_file against the compose file's own directory, and both
+// files live in the preview's state directory, so the reference survives any
+// project-directory override. The gate does NOT get it: the gate keys off
+// BASE_URL, which it already receives via environment:, and a product-
+// writable file must not get a say in the routed entrypoint. The file's
+// existence is all this function is told -- its contents are never read,
+// rendered or logged, only the path reference is written.
+func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv bool) string {
 	var b strings.Builder
 	b.WriteString("# Written by komizo preview. Re-run `komizo preview up` to change it.\n")
 	fmt.Fprintf(&b, "# Preview of %s PR #%d. Own project, own database (%s), own route.\nservices:\n", r.App, r.PR, r.DBName)
@@ -408,6 +419,9 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string) string {
 			b.WriteString("    networks:\n      - shared\n      - appnet\n")
 		} else {
 			fmt.Fprintf(&b, "    environment:\n      PREVIEW: \"1\"\n      PR: \"%d\"\n      DB_NAME: %s\n      PGDATABASE: %s\n      PGUSER: %s\n      PGPASSWORD: %s\n", r.PR, r.DBName, r.DBName, r.DBName, r.DBPassword)
+			if stackEnv {
+				b.WriteString("    env_file:\n      - stack.env\n")
+			}
 			b.WriteString("    networks:\n      - appnet\n")
 		}
 	}
@@ -694,7 +708,14 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 		return zero, err
 	}
 	composePath := filepath.Join(previewDir(cfg.Root, project), "compose.yml")
-	if err := os.WriteFile(composePath, []byte(previewCompose(rec, cfg.Knob, cfg.Network)), 0o600); err != nil {
+	// The OPTIONAL stack.env seam: the calling product may have pre-created
+	// the state directory and written stack.env (0600, root) BEFORE up. Up
+	// never creates, writes or reads that file -- writePreviewRecord's
+	// MkdirAll leaves a pre-existing directory and its contents untouched --
+	// and only its EXISTENCE is asked, so the compose render can reference
+	// the path without the contents ever passing through komizo.
+	_, stackEnvErr := os.Stat(filepath.Join(previewDir(cfg.Root, project), "stack.env"))
+	if err := os.WriteFile(composePath, []byte(previewCompose(rec, cfg.Knob, cfg.Network, stackEnvErr == nil)), 0o600); err != nil {
 		return zero, err
 	}
 	rollback := func(dbContainer, dbUser, dbDB string, created bool) {
