@@ -19,16 +19,26 @@ var previewNow = time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 
 // fakeDocker records argv and answers the handful of calls a lifecycle makes.
 type fakeDocker struct {
-	calls       [][]string
-	validateErr error
-	psqlErr     error
+	calls          [][]string
+	validateErr    error
+	psqlErr        error
+	psOut          string            // what ps answers (default: a tagged postgres)
+	inspectAnswers map[string]string // Config.Image per container name
 }
 
 func (f *fakeDocker) run(_ context.Context, args ...string) (string, error) {
 	f.calls = append(f.calls, append([]string{}, args...))
 	switch args[0] {
 	case "ps":
+		if f.psOut != "" {
+			return f.psOut, nil
+		}
 		return "gdam-db-1\tpostgres:16\n", nil
+	case "inspect":
+		if f.inspectAnswers != nil {
+			return f.inspectAnswers[args[1]], nil
+		}
+		return "", nil
 	case "exec":
 		// caddy validate/reload against the proxy; psql against the db.
 		if len(args) > 2 && args[2] == "caddy" && args[3] == "validate" && f.validateErr != nil {
@@ -118,6 +128,75 @@ func TestPreviewUpCreatesOnlyItsOwnDatabase(t *testing.T) {
 		if strings.Contains(j, "DROP DATABASE") || strings.Contains(j, "gdam_production") || strings.Contains(j, "ALTER ") {
 			t.Fatalf("a statement reached for something that is not the preview's database: %v", c)
 		}
+	}
+}
+
+// The discovery's three ways to know a postgres, pinned. Products pin
+// postgres by digest, and docker ps's Image column for a digest-pulled image
+// shows only the short digest -- no "postgres" substring -- so a discovery
+// that reads only that column never sees it. Found by the preview smoke on
+// avior.studio, whose gdam-postgres-1 runs postgres@sha256:....
+func TestPreviewDiscoveryFindsDigestPulledPostgres(t *testing.T) {
+	f := &fakeDocker{
+		psOut:          "gdam-postgres-1\t4ef4dbc939d6b2a1c0f9e8d7c6b5a4\n",
+		inspectAnswers: map[string]string{"gdam-postgres-1": "postgres@sha256:4ef4dbc939d6b2a1c0f9e8d7c6b5a4"},
+	}
+	cfg := previewTestConfig(t)
+	if _, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow); err != nil {
+		t.Fatalf("a digest-pulled postgres was not discovered: %v", err)
+	}
+	created := f.matching("psql", "CREATE DATABASE gdam_pr_12")
+	if len(created) != 1 || !strings.Contains(strings.Join(created[0], " "), "gdam-postgres-1") {
+		t.Fatalf("the create did not run against the digest-pulled container: %v", created)
+	}
+}
+
+// A non-postgres container is still not one, on every one of the three
+// signals -- ps column, Config.Image, name.
+func TestPreviewDiscoveryRefusesANonPostgresContainer(t *testing.T) {
+	f := &fakeDocker{
+		psOut:          "gdam-redis-1\tredis:7\n",
+		inspectAnswers: map[string]string{"gdam-redis-1": "redis:7"},
+	}
+	cfg := previewTestConfig(t)
+	_, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow)
+	if err == nil || !strings.Contains(err.Error(), "no postgres container") {
+		t.Fatalf("a redis container was discovered as postgres: %v", err)
+	}
+	for _, c := range f.calls {
+		if strings.Contains(strings.Join(c, " "), "psql") {
+			t.Fatalf("psql ran against a container that is not postgres: %v", c)
+		}
+	}
+}
+
+// The common case stays cheap: a tagged postgres is discovered from the ps
+// Image column alone, and nothing is inspected.
+func TestPreviewDiscoveryFastPathSkipsInspect(t *testing.T) {
+	f := &fakeDocker{} // default ps answer is a tagged postgres
+	cfg := previewTestConfig(t)
+	if _, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.matching("inspect"); len(got) != 0 {
+		t.Errorf("the fast path inspected containers anyway: %v", got)
+	}
+}
+
+// And when neither image field says postgres, the container's own name is the
+// last word -- compose's <project>-postgres-1 -- with the psql call after
+// discovery as the final proof.
+func TestPreviewDiscoveryFallsBackToTheContainerName(t *testing.T) {
+	f := &fakeDocker{
+		psOut:          "gdam-postgres-1\tcustom-sidecar:1\n",
+		inspectAnswers: map[string]string{"gdam-postgres-1": "custom-sidecar:1"},
+	}
+	cfg := previewTestConfig(t)
+	if _, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow); err != nil {
+		t.Fatalf("a postgres named by compose was not discovered: %v", err)
+	}
+	if got := f.matching("psql", "CREATE DATABASE gdam_pr_12"); len(got) != 1 {
+		t.Errorf("the create did not run against the name-matched container: %v", got)
 	}
 }
 
