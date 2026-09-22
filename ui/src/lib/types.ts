@@ -19,6 +19,16 @@ export type Report = {
   // What the disk-hygiene sweep last did, when it has run. Absent on a box
   // that has never swept -- see box/sweep.go.
   sweep?: Sweep;
+  // What the preview reaper last did, when it has run -- see box/preview.go.
+  preview?: PreviewReap;
+};
+
+export type PreviewReap = {
+  v: number;
+  at: string;
+  reaped: string[];
+  kept: number;
+  note?: string;
 };
 
 export type Sweep = {

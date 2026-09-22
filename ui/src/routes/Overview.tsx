@@ -194,6 +194,25 @@ export default function Overview() {
                   )}
                 </Show>
 
+                <Show when={rep().preview}>
+                  {(pv) => (
+                    <Section title="previews">
+                      <Row label="last reap">{ago(pv().at)}</Row>
+                      <Row label="reaped">
+                        {pv().reaped.length === 0 ? "none" : pv().reaped.join(", ")}
+                      </Row>
+                      <Row label="kept">{pv().kept}</Row>
+                      <Show when={pv().note}>
+                        <Dim>{pv().note}</Dim>
+                      </Show>
+                      <Dim>
+                        The reaper only ever touches previews it has state records for — expired PR previews and the
+                        least-recently-used over the ceiling. Apps, volumes, and anything without a record are never touched.
+                      </Dim>
+                    </Section>
+                  )}
+                </Show>
+
                 <Section title="backups">
                   <Dim>{backups()?.note ?? "—"}</Dim>
                 </Section>
