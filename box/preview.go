@@ -191,7 +191,13 @@ type PreviewRecord struct {
 	// DBPassword is the per-preview owner role's password, recorded 600-root
 	// and injected into the preview's compose environment. The preview
 	// connects as its own role, which can touch only its own database.
-	DBPassword string    `json:"db_password,omitempty"`
+	//
+	// json:"-" -- it is a credential, and credentials are never marshalled:
+	// `preview up` and `preview ls` print this record as JSON, and a
+	// credential on stdout is a credential in somebody's scrollback. The
+	// state file keeps it, 600 and root-owned, which is the only place it
+	// may exist.
+	DBPassword string    `json:"-"`
 	GatePort   int       `json:"gate_port"`
 	Images     []string  `json:"images"`
 	CreatedAt  time.Time `json:"created_at"`
@@ -199,7 +205,7 @@ type PreviewRecord struct {
 	RouteFile  string    `json:"route_file"`
 }
 
-func previewDir(root, project string) string { return filepath.Join(root, "previews", project) }
+func previewDir(root, project string) string { return filepath.Join(previewDirRoot(root), project) }
 
 // writePreviewRecord stores the record as key=value lines.
 func writePreviewRecord(root string, r PreviewRecord) error {
@@ -392,6 +398,13 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string) string {
 		if i == 0 {
 			fmt.Fprintf(&b, "    container_name: %s-gate\n    environment:\n", r.Project)
 			fmt.Fprintf(&b, "      PREVIEW: \"1\"\n      PR: \"%d\"\n      DB_NAME: %s\n      PGDATABASE: %s\n      PGUSER: %s\n      PGPASSWORD: %s\n      BASE_URL: https://%s\n", r.PR, r.DBName, r.DBName, r.DBName, r.DBPassword, PreviewHost(r.PR, k.Domain))
+			// The gate port, LOOPBACK only: the direct HTTP entry to the
+			// preview from the box itself, never from the network -- the
+			// public way in is the proxy route, with TLS. Publishing on all
+			// interfaces would put every preview one port-scan away from the
+			// internet.
+			b.WriteString("    ports:\n")
+			fmt.Fprintf(&b, "      - \"127.0.0.1:%d:80\"\n", r.GatePort)
 			b.WriteString("    networks:\n      - shared\n      - appnet\n")
 		} else {
 			fmt.Fprintf(&b, "    environment:\n      PREVIEW: \"1\"\n      PR: \"%d\"\n      DB_NAME: %s\n      PGDATABASE: %s\n      PGUSER: %s\n      PGPASSWORD: %s\n", r.PR, r.DBName, r.DBName, r.DBName, r.DBPassword)
@@ -633,6 +646,10 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 		CreatedAt: now, LastUsed: now,
 		RouteFile: "_preview-" + project + ".caddy",
 	}
+	// The password is generated NOW, before the state file is written, so
+	// the record on disk carries it from the start -- a preview.env without
+	// it is a preview that cannot be taken down cleanly.
+	rec.DBPassword = previewNewPassword()
 
 	// Evict BEFORE adding, so max-N is a ceiling and not a target to exceed
 	// and come back under: the least-recently-used preview goes first.
@@ -669,16 +686,41 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 		return zero, fmt.Errorf("no free gate ports in %d-%d", lo, hi)
 	}
 
+	// STATE FIRST. The record and its compose file exist before anything is
+	// created, and everything after this point rolls back BOTH -- a failure
+	// must never leave resources without state (an orphan nothing can reap)
+	// or state without resources (a record the reaper would chase forever).
+	if err := writePreviewRecord(cfg.Root, rec); err != nil {
+		return zero, err
+	}
+	composePath := filepath.Join(previewDir(cfg.Root, project), "compose.yml")
+	if err := os.WriteFile(composePath, []byte(previewCompose(rec, cfg.Knob, cfg.Network)), 0o600); err != nil {
+		return zero, err
+	}
+	rollback := func(dbContainer, dbUser, dbDB string, created bool) {
+		_, _ = run(ctx, "", "compose", "-p", project, "-f", composePath, "down", "-v")
+		if created && dbContainer != "" {
+			_, _ = run(ctx, "", "exec", dbContainer, "psql", "-U", dbUser, "-d", dbDB, "-c",
+				"DROP DATABASE IF EXISTS "+rec.DBName)
+			_ = previewSQL(ctx, run, dbContainer, dbUser, dbDB,
+				"DROP ROLE IF EXISTS "+rec.DBName+";")
+		}
+		_ = os.Remove(filepath.Join(cfg.RoutesDir, rec.RouteFile))
+		_ = os.RemoveAll(previewDir(cfg.Root, project))
+	}
+
 	// The database, before anything runs: the app's postgres container, a new
 	// role and database named for the PR, owned by that role, and nothing
 	// else touched.
 	psOut, err := run(ctx, "", "ps", "--filter", "label=com.docker.compose.project="+app,
 		"--format", "{{.Names}}\t{{.Image}}")
 	if err != nil {
+		rollback("", "", "", false)
 		return zero, fmt.Errorf("could not look for the app's postgres: %w", err)
 	}
 	dbContainer, err := findAppDBContainer(ctx, run, psOut, app)
 	if err != nil {
+		rollback("", "", "", false)
 		return zero, err
 	}
 	// Connect as the container's OWN superuser -- POSTGRES_USER from its
@@ -687,30 +729,27 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	// connecting with it is the failure the avior.studio smoke found.
 	dbUser, dbDB, err := previewDBEnv(ctx, run, dbContainer)
 	if err != nil {
+		rollback("", "", "", false)
 		return zero, err
 	}
-	rec.DBPassword = previewNewPassword()
 	if err := previewSQL(ctx, run, dbContainer, dbUser, dbDB,
 		"CREATE ROLE "+rec.DBName+" LOGIN PASSWORD :'pw';",
 		"-v", "pw="+rec.DBPassword); err != nil {
+		rollback(dbContainer, dbUser, dbDB, false)
 		return zero, fmt.Errorf("could not create the preview role %s in %s: %w", rec.DBName, dbContainer, err)
 	}
 	if _, err := run(ctx, "", "exec", dbContainer, "psql", "-U", dbUser, "-d", dbDB, "-c",
 		"CREATE DATABASE "+rec.DBName+" OWNER "+rec.DBName); err != nil {
+		rollback(dbContainer, dbUser, dbDB, false)
 		return zero, fmt.Errorf("could not create the preview database %s in %s: %w", rec.DBName, dbContainer, err)
 	}
 
-	if err := writePreviewRecord(cfg.Root, rec); err != nil {
-		return zero, err
-	}
-	compose := previewCompose(rec, cfg.Knob, cfg.Network)
-	if err := os.WriteFile(filepath.Join(previewDir(cfg.Root, project), "compose.yml"), []byte(compose), 0o600); err != nil {
-		return zero, err
-	}
-	if _, err := run(ctx, "", "compose", "-p", project, "-f", filepath.Join(previewDir(cfg.Root, project), "compose.yml"), "up", "-d"); err != nil {
+	if _, err := run(ctx, "", "compose", "-p", project, "-f", composePath, "up", "-d"); err != nil {
+		rollback(dbContainer, dbUser, dbDB, true)
 		return zero, fmt.Errorf("the preview project did not come up: %w", err)
 	}
 	if err := ApplyPreviewRoute(ctx, run, cfg.Proxy, cfg.RoutesDir, rec.RouteFile, previewRoute(rec, cfg.Knob)); err != nil {
+		rollback(dbContainer, dbUser, dbDB, true)
 		return zero, err
 	}
 	return rec, nil
