@@ -38,8 +38,12 @@ func runPreview(args []string) error {
 		return err
 	}
 
-	run := func(ctx context.Context, a ...string) (string, error) {
-		out, err := exec.CommandContext(ctx, "docker", a...).CombinedOutput()
+	run := func(ctx context.Context, stdin string, a ...string) (string, error) {
+		cmd := exec.CommandContext(ctx, "docker", a...)
+		if stdin != "" {
+			cmd.Stdin = strings.NewReader(stdin)
+		}
+		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return "", fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
 		}

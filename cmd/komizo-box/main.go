@@ -388,8 +388,12 @@ func runRootdAt(root string, args []string) error {
 	// box.Probe's docker runner is unexported, so rootd's own work gets one
 	// here: the same exec this package already makes everywhere else. Shared
 	// by the sweep, the ask and the reaper goroutines below.
-	run := func(ctx context.Context, args ...string) (string, error) {
-		out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	run := func(ctx context.Context, stdin string, args ...string) (string, error) {
+		cmd := exec.CommandContext(ctx, "docker", args...)
+		if stdin != "" {
+			cmd.Stdin = strings.NewReader(stdin)
+		}
+		out, err := cmd.CombinedOutput()
 		if err != nil {
 			return "", fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
 		}
@@ -399,7 +403,12 @@ func runRootdAt(root string, args []string) error {
 	go func() {
 		pass := func() {
 			knob, note := box.ReadSweepKnob(box.SweepKnobPath)
-			rec := box.DockerSweep(ctx, knob, box.AppsDir, box.SrvDir, time.Now(), run)
+			// DockerSweep predates the stdin-carrying runner (the sweep never
+			// feeds one); the adapter keeps its signature.
+			sweepRun := func(ctx context.Context, args ...string) (string, error) {
+				return run(ctx, "", args...)
+			}
+			rec := box.DockerSweep(ctx, knob, box.AppsDir, box.SrvDir, time.Now(), sweepRun)
 			if note != "" {
 				rec.Note = rec.Note + "; " + note
 			}
@@ -430,7 +439,7 @@ func runRootdAt(root string, args []string) error {
 	// (box/preview_ask.go, pinned over the wire).
 	go func() {
 		knob, _ := box.ReadPreviewKnob(box.PreviewKnobPath)
-		gw, err := run(ctx, "network", "inspect", *network,
+		gw, err := run(ctx, "", "network", "inspect", *network,
 			"--format", "{{range .IPAM.Config}}{{.Gateway}}{{end}}")
 		gw = strings.TrimSpace(gw)
 		if err != nil || gw == "" {
