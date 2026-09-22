@@ -2,6 +2,8 @@ package box
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -181,16 +183,20 @@ func validatePreviewArgs(app string, pr int) error {
 
 // PreviewRecord is one preview's state file, key=value like the app records.
 type PreviewRecord struct {
-	V         int       `json:"v"`
-	App       string    `json:"app"`
-	PR        int       `json:"pr"`
-	Project   string    `json:"project"`
-	DBName    string    `json:"db_name"`
-	GatePort  int       `json:"gate_port"`
-	Images    []string  `json:"images"`
-	CreatedAt time.Time `json:"created_at"`
-	LastUsed  time.Time `json:"last_used"`
-	RouteFile string    `json:"route_file"`
+	V       int    `json:"v"`
+	App     string `json:"app"`
+	PR      int    `json:"pr"`
+	Project string `json:"project"`
+	DBName  string `json:"db_name"`
+	// DBPassword is the per-preview owner role's password, recorded 600-root
+	// and injected into the preview's compose environment. The preview
+	// connects as its own role, which can touch only its own database.
+	DBPassword string    `json:"db_password,omitempty"`
+	GatePort   int       `json:"gate_port"`
+	Images     []string  `json:"images"`
+	CreatedAt  time.Time `json:"created_at"`
+	LastUsed   time.Time `json:"last_used"`
+	RouteFile  string    `json:"route_file"`
 }
 
 func previewDir(root, project string) string { return filepath.Join(root, "previews", project) }
@@ -202,8 +208,8 @@ func writePreviewRecord(root string, r PreviewRecord) error {
 		return err
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "V=%d\nAPP=%s\nPR=%d\nPROJECT=%s\nDB_NAME=%s\nGATE_PORT=%d\nIMAGES=%s\nCREATED_AT=%s\nLAST_USED=%s\nROUTE_FILE=%s\n",
-		1, r.App, r.PR, r.Project, r.DBName, r.GatePort,
+	fmt.Fprintf(&b, "V=%d\nAPP=%s\nPR=%d\nPROJECT=%s\nDB_NAME=%s\nDB_PASSWORD=%s\nGATE_PORT=%d\nIMAGES=%s\nCREATED_AT=%s\nLAST_USED=%s\nROUTE_FILE=%s\n",
+		1, r.App, r.PR, r.Project, r.DBName, r.DBPassword, r.GatePort,
 		strings.Join(r.Images, ","),
 		r.CreatedAt.UTC().Format(time.RFC3339), r.LastUsed.UTC().Format(time.RFC3339), r.RouteFile)
 	return os.WriteFile(filepath.Join(dir, "preview.env"), []byte(b.String()), 0o600)
@@ -226,6 +232,7 @@ func readPreviewRecord(dir string) (PreviewRecord, error) {
 	var r PreviewRecord
 	r.V, _ = strconv.Atoi(kv["V"])
 	r.App, r.Project, r.DBName, r.RouteFile = kv["APP"], kv["PROJECT"], kv["DB_NAME"], kv["ROUTE_FILE"]
+	r.DBPassword = kv["DB_PASSWORD"]
 	r.PR, _ = strconv.Atoi(kv["PR"])
 	r.GatePort, _ = strconv.Atoi(kv["GATE_PORT"])
 	if kv["IMAGES"] != "" {
@@ -384,10 +391,10 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string) string {
 		fmt.Fprintf(&b, "  %s:\n    image: %s\n    mem_limit: %s\n    cpus: %s\n    restart: unless-stopped\n", name, image, k.MemLimit, k.CPULimit)
 		if i == 0 {
 			fmt.Fprintf(&b, "    container_name: %s-gate\n    environment:\n", r.Project)
-			fmt.Fprintf(&b, "      PREVIEW: \"1\"\n      PR: \"%d\"\n      DB_NAME: %s\n      PGDATABASE: %s\n      BASE_URL: https://%s\n", r.PR, r.DBName, r.DBName, PreviewHost(r.PR, k.Domain))
+			fmt.Fprintf(&b, "      PREVIEW: \"1\"\n      PR: \"%d\"\n      DB_NAME: %s\n      PGDATABASE: %s\n      PGUSER: %s\n      PGPASSWORD: %s\n      BASE_URL: https://%s\n", r.PR, r.DBName, r.DBName, r.DBName, r.DBPassword, PreviewHost(r.PR, k.Domain))
 			b.WriteString("    networks:\n      - shared\n      - appnet\n")
 		} else {
-			fmt.Fprintf(&b, "    environment:\n      PREVIEW: \"1\"\n      PR: \"%d\"\n      DB_NAME: %s\n      PGDATABASE: %s\n", r.PR, r.DBName, r.DBName)
+			fmt.Fprintf(&b, "    environment:\n      PREVIEW: \"1\"\n      PR: \"%d\"\n      DB_NAME: %s\n      PGDATABASE: %s\n      PGUSER: %s\n      PGPASSWORD: %s\n", r.PR, r.DBName, r.DBName, r.DBName, r.DBPassword)
 			b.WriteString("    networks:\n      - appnet\n")
 		}
 	}
@@ -502,6 +509,42 @@ func findAppDBContainer(ctx context.Context, run func(context.Context, ...string
 	return "", fmt.Errorf("no postgres container is running in %s's project -- a preview needs the app's database to put its own beside", app)
 }
 
+// previewDBEnv reads the container's POSTGRES_USER and POSTGRES_DB from its
+// environment, the superuser and the database to connect to. The stock image
+// answers postgres/postgres and needs neither set; a product that names its
+// own superuser is connected to as THAT, and the hardcoded 'postgres' never
+// appears. An env that cannot be read is an error rather than a guess.
+func previewDBEnv(ctx context.Context, run func(context.Context, ...string) (string, error), container string) (string, string, error) {
+	out, err := run(ctx, "inspect", container, "--format", "{{range .Config.Env}}{{println .}}{{end}}")
+	if err != nil {
+		return "", "", fmt.Errorf("could not read %s's environment: %w", container, err)
+	}
+	user, db := "postgres", "postgres"
+	for _, ln := range strings.Split(out, "\n") {
+		if v, ok := strings.CutPrefix(ln, "POSTGRES_USER="); ok && v != "" {
+			user = v
+		}
+		if v, ok := strings.CutPrefix(ln, "POSTGRES_DB="); ok && v != "" {
+			db = v
+		}
+	}
+	return user, db, nil
+}
+
+// previewNewPassword generates the per-preview role's password: 24 random hex
+// characters, recorded in the preview's state file (600, root-owned) and
+// injected into its compose environment. The role exists so a preview
+// connects as something that can touch ONLY its own database.
+func previewNewPassword() string {
+	b := make([]byte, 12)
+	if _, err := rand.Read(b); err != nil {
+		// crypto/rand failing on a linux box is a panic-grade environment
+		// problem, not something a preview can work around.
+		panic(fmt.Sprintf("crypto/rand: %v", err))
+	}
+	return hex.EncodeToString(b)
+}
+
 // --- the ask matcher --------------------------------------------------------------
 
 // previewAskPattern is what the on-demand-TLS gate approves: pr-<digits> and
@@ -610,7 +653,8 @@ func PreviewUp(ctx context.Context, run func(context.Context, ...string) (string
 	}
 
 	// The database, before anything runs: the app's postgres container, a new
-	// database named for the PR, and nothing else touched.
+	// role and database named for the PR, owned by that role, and nothing
+	// else touched.
 	psOut, err := run(ctx, "ps", "--filter", "label=com.docker.compose.project="+app,
 		"--format", "{{.Names}}\t{{.Image}}")
 	if err != nil {
@@ -620,8 +664,22 @@ func PreviewUp(ctx context.Context, run func(context.Context, ...string) (string
 	if err != nil {
 		return zero, err
 	}
-	if _, err := run(ctx, "exec", dbContainer, "psql", "-U", "postgres", "-c",
-		"CREATE DATABASE "+rec.DBName); err != nil {
+	// Connect as the container's OWN superuser -- POSTGRES_USER from its
+	// environment, never a hardcoded 'postgres': products that set a custom
+	// one (gdam_migrator, for example) have no 'postgres' role at all, and
+	// connecting with it is the failure the avior.studio smoke found.
+	dbUser, dbDB, err := previewDBEnv(ctx, run, dbContainer)
+	if err != nil {
+		return zero, err
+	}
+	rec.DBPassword = previewNewPassword()
+	if _, err := run(ctx, "exec", dbContainer, "psql", "-U", dbUser, "-d", dbDB,
+		"-v", "pw="+rec.DBPassword, "-c",
+		"CREATE ROLE "+rec.DBName+" LOGIN PASSWORD :'pw'"); err != nil {
+		return zero, fmt.Errorf("could not create the preview role %s in %s: %w", rec.DBName, dbContainer, err)
+	}
+	if _, err := run(ctx, "exec", dbContainer, "psql", "-U", dbUser, "-d", dbDB, "-c",
+		"CREATE DATABASE "+rec.DBName+" OWNER "+rec.DBName); err != nil {
 		return zero, fmt.Errorf("could not create the preview database %s in %s: %w", rec.DBName, dbContainer, err)
 	}
 
@@ -657,9 +715,17 @@ func PreviewDown(ctx context.Context, run func(context.Context, ...string) (stri
 			"--format", "{{.Names}}\t{{.Image}}")
 		if err == nil {
 			if dbContainer, derr := findAppDBContainer(ctx, run, psOut, rec.App); derr == nil {
-				if _, err := run(ctx, "exec", dbContainer, "psql", "-U", "postgres", "-c",
+				dbUser, dbDB, derr := previewDBEnv(ctx, run, dbContainer)
+				if derr != nil {
+					return fmt.Errorf("could not read %s's environment to drop the preview database cleanly: %w", dbContainer, derr)
+				}
+				if _, err := run(ctx, "exec", dbContainer, "psql", "-U", dbUser, "-d", dbDB, "-c",
 					"DROP DATABASE IF EXISTS "+rec.DBName); err != nil {
 					return fmt.Errorf("could not drop the preview database %s: %w", rec.DBName, err)
+				}
+				if _, err := run(ctx, "exec", dbContainer, "psql", "-U", dbUser, "-d", dbDB, "-c",
+					"DROP ROLE IF EXISTS "+rec.DBName); err != nil {
+					return fmt.Errorf("could not drop the preview role %s: %w", rec.DBName, err)
 				}
 			}
 		}

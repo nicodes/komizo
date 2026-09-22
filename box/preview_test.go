@@ -24,6 +24,7 @@ type fakeDocker struct {
 	psqlErr        error
 	psOut          string            // what ps answers (default: a tagged postgres)
 	inspectAnswers map[string]string // Config.Image per container name
+	envAnswers     map[string]string // Config.Env per container name
 }
 
 func (f *fakeDocker) run(_ context.Context, args ...string) (string, error) {
@@ -35,6 +36,16 @@ func (f *fakeDocker) run(_ context.Context, args ...string) (string, error) {
 		}
 		return "gdam-db-1\tpostgres:16\n", nil
 	case "inspect":
+		format := ""
+		if len(args) > 3 {
+			format = args[3]
+		}
+		if strings.Contains(format, "Config.Env") {
+			if f.envAnswers != nil {
+				return f.envAnswers[args[1]], nil
+			}
+			return "", nil
+		}
 		if f.inspectAnswers != nil {
 			return f.inspectAnswers[args[1]], nil
 		}
@@ -171,15 +182,17 @@ func TestPreviewDiscoveryRefusesANonPostgresContainer(t *testing.T) {
 }
 
 // The common case stays cheap: a tagged postgres is discovered from the ps
-// Image column alone, and nothing is inspected.
+// Image column alone, and no Config.Image is ever inspected. (The container
+// environment read for POSTGRES_USER is a different question, asked of every
+// container the creation runs against.)
 func TestPreviewDiscoveryFastPathSkipsInspect(t *testing.T) {
 	f := &fakeDocker{} // default ps answer is a tagged postgres
 	cfg := previewTestConfig(t)
 	if _, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.matching("inspect"); len(got) != 0 {
-		t.Errorf("the fast path inspected containers anyway: %v", got)
+	if got := f.matching("inspect", "Config.Image"); len(got) != 0 {
+		t.Errorf("the fast path inspected Config.Image anyway: %v", got)
 	}
 }
 
@@ -220,6 +233,96 @@ func TestPreviewDownDropsOnlyItsOwnDatabase(t *testing.T) {
 	}
 	if _, err := os.Stat(previewDir(cfg.Root, rec.Project)); !os.IsNotExist(err) {
 		t.Error("the preview's state directory survived down")
+	}
+}
+
+// The connecting role: a container with a custom POSTGRES_USER (and no
+// 'postgres' role at all) is connected to as THAT, never as 'postgres' --
+// the third integration gap the avior.studio smoke found, where
+// gdam-postgres-1's superuser is gdam_migrator and no 'postgres' role exists.
+func TestPreviewCreatesItsDatabaseAsTheContainersOwnSuperuser(t *testing.T) {
+	f := &fakeDocker{envAnswers: map[string]string{
+		"gdam-db-1": "POSTGRES_USER=gdam_migrator\nPOSTGRES_DB=gdam\n",
+	}}
+	cfg := previewTestConfig(t)
+	rec, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.DBPassword == "" {
+		t.Fatal("no owner-role password was generated and recorded")
+	}
+	for _, c := range f.calls {
+		j := strings.Join(c, " ")
+		if strings.Contains(j, "psql") && strings.Contains(j, "-U postgres") {
+			t.Fatalf("connected as the hardcoded 'postgres' role, which does not exist here: %v", c)
+		}
+	}
+	roleCalls := f.matching("psql", "-U gdam_migrator", "-d gdam", "CREATE ROLE gdam_pr_12 LOGIN PASSWORD :'pw'")
+	dbCalls := f.matching("psql", "-U gdam_migrator", "CREATE DATABASE gdam_pr_12 OWNER gdam_pr_12")
+	if len(roleCalls) != 1 || len(dbCalls) != 1 {
+		t.Fatalf("role and database were not created as gdam_migrator with the owner set:\nrole %v\ndb %v", roleCalls, dbCalls)
+	}
+	// The password travels by psql variable, quoted by psql itself -- never
+	// interpolated into the SQL string.
+	vars := f.matching("-v", "pw="+rec.DBPassword)
+	if len(vars) != 1 {
+		t.Errorf("the password did not travel as a psql variable: %v", vars)
+	}
+}
+
+// The stock container still works: no POSTGRES_USER in its env, and the
+// default 'postgres' role is what connects.
+func TestPreviewCreatesItsDatabaseAsPostgresOnAStockContainer(t *testing.T) {
+	f := &fakeDocker{envAnswers: map[string]string{"gdam-db-1": "OTHER_VAR=1\n"}}
+	cfg := previewTestConfig(t)
+	if _, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.matching("psql", "-U postgres", "CREATE DATABASE gdam_pr_12"); len(got) != 1 {
+		t.Errorf("the stock container was not connected to as postgres: %v", got)
+	}
+}
+
+// And the compose carries the connection: the preview's OWN role and
+// password, so a preview can touch only its own database.
+func TestPreviewComposeCarriesTheOwnerRole(t *testing.T) {
+	cfg := previewTestConfig(t)
+	rec := PreviewRecord{
+		V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
+		DBPassword: "abc123", Images: []string{"ghcr.io/you/web:pr-12"}, RouteFile: "_preview-gdam-pr-12.caddy",
+	}
+	compose := previewCompose(rec, cfg.Knob, "edge")
+	for _, want := range []string{"PGUSER: gdam_pr_12", "PGPASSWORD: abc123", "PGDATABASE: gdam_pr_12"} {
+		if !strings.Contains(compose, want) {
+			t.Errorf("compose is missing %q:\n%s", want, compose)
+		}
+	}
+}
+
+// Down drops the role too, with the same discovered connection.
+func TestPreviewDownDropsTheRole(t *testing.T) {
+	f := &fakeDocker{envAnswers: map[string]string{
+		"gdam-db-1": "POSTGRES_USER=gdam_migrator\nPOSTGRES_DB=gdam\n",
+	}}
+	cfg := previewTestConfig(t)
+	rec := writeTestPreview(t, cfg, "gdam", 12, previewNow.Add(-time.Hour))
+	if err := os.MkdirAll(cfg.RoutesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.RoutesDir, rec.RouteFile), []byte("route\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := PreviewDown(context.Background(), f.run, cfg, rec); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.matching("psql", "-U gdam_migrator", "DROP ROLE IF EXISTS gdam_pr_12"); len(got) != 1 {
+		t.Errorf("the role was not dropped as the container's own superuser: %v", got)
+	}
+	for _, c := range f.calls {
+		if strings.Contains(strings.Join(c, " "), "-U postgres") {
+			t.Errorf("connected as the hardcoded 'postgres' role: %v", c)
+		}
 	}
 }
 
