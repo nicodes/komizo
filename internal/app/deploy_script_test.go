@@ -592,6 +592,53 @@ func TestDeployFloorsAboveProceeds(t *testing.T) {
 	}
 }
 
+// Past the floor is not the same as comfortable: between 1x and 2x the floor
+// the deploy proceeds, but says so -- the band that is audible in the log
+// before the box is over the line.
+func TestDeployFloorsBelowTwiceWarnsAndProceeds(t *testing.T) {
+	b := newDeployBox(t)
+	b.writeFloors(t, "DISK_AVAILABLE_FLOOR_BYTES=100\nMEM_AVAILABLE_FLOOR_BYTES=100\n")
+	b.writeReportJSON(t, `{"system":{"mem":{"total":2000,"used":500,"available":150},"disks":[{"mount":"/","used":100,"size":1600,"available":150}]}}`)
+	b.publishes(t, "services:\n  web:\n    image: x\n", "blog.example.com\n")
+	out, err := b.deploy(t, "abc123")
+	if err != nil {
+		t.Fatalf("deploy failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"WARNING -- mem available 150 bytes is below twice the floor 100 bytes",
+		"WARNING -- disk available 150 bytes is below twice the floor 100 bytes",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the warning band is not audible (%q missing):\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "deploy: refusing:") {
+		t.Errorf("refused inside the warning band, which is proceed-loudly:\n%s", out)
+	}
+	if got := b.dotenv(t); !strings.Contains(got, "APP_VERSION=abc123") {
+		t.Errorf("did not proceed: %q\n%s", got, out)
+	}
+}
+
+// And above 2x the floor the deploy is quiet about floors entirely -- a box
+// with room should not be warned as though it has none.
+func TestDeployFloorsAboveTwiceIsQuiet(t *testing.T) {
+	b := newDeployBox(t)
+	b.writeFloors(t, "DISK_AVAILABLE_FLOOR_BYTES=100\nMEM_AVAILABLE_FLOOR_BYTES=100\n")
+	b.writeReportJSON(t, `{"system":{"mem":{"total":2000,"used":500,"available":1500},"disks":[{"mount":"/","used":100,"size":1600,"available":1500}]}}`)
+	b.publishes(t, "services:\n  web:\n    image: x\n", "blog.example.com\n")
+	out, err := b.deploy(t, "abc123")
+	if err != nil {
+		t.Fatalf("deploy failed: %v\n%s", err, out)
+	}
+	if strings.Contains(out, "twice the floor") {
+		t.Errorf("warned despite available above twice the floor:\n%s", out)
+	}
+	if got := b.dotenv(t); !strings.Contains(got, "APP_VERSION=abc123") {
+		t.Errorf("did not proceed: %q\n%s", got, out)
+	}
+}
+
 func TestDeployFloorsSetButReportMissingRefuses(t *testing.T) {
 	b := newDeployBox(t)
 	b.writeFloors(t, "MEM_AVAILABLE_FLOOR_BYTES=100\n")
