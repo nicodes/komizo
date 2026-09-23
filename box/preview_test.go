@@ -775,6 +775,112 @@ func TestPreviewKnob(t *testing.T) {
 	}
 }
 
+// --- per-app preview domains -----------------------------------------------------
+
+// KNOB PARSE + RESOLUTION CHAIN, byte-exact with the composite's mirror:
+// get("DOMAIN."+app) → get("DOMAIN") → PreviewDomainDefault, using the
+// existing get() (CutPrefix key+"=", Trim `\r \t` only, first-match-wins,
+// empty-value falls through). Quotes are NOT stripped. Unknown app is
+// never an error.
+func TestPreviewKnobPerAppDomainChain(t *testing.T) {
+	knob, note := ParsePreviewKnob("DOMAIN=preview.gdam.dev\nDOMAIN.avior=preview.avior.studio\nDOMAIN.biome=preview.biome.example\nTTL_HOURS=48\n")
+	if note != "" {
+		t.Errorf("a clean per-app knob was noted: %q", note)
+	}
+	if knob.Domain != "preview.gdam.dev" {
+		t.Errorf("bare DOMAIN = %q, want the default", knob.Domain)
+	}
+	if got := knob.DomainFor("avior"); got != "preview.avior.studio" {
+		t.Errorf("DomainFor(avior) = %q", got)
+	}
+	if got := knob.DomainFor("biome"); got != "preview.biome.example" {
+		t.Errorf("DomainFor(biome) = %q", got)
+	}
+	if knob.TTL != 48*time.Hour {
+		t.Errorf("an unrelated key was disturbed: TTL = %v", knob.TTL)
+	}
+
+	// Unknown app → default, never a refusal.
+	if got := knob.DomainFor("never-heard-of-it"); got != "preview.gdam.dev" {
+		t.Errorf("DomainFor(unknown) = %q, want the default", got)
+	}
+
+	// Empty DOMAIN.<app>= falls through to bare DOMAIN.
+	emptyApp, _ := ParsePreviewKnob("DOMAIN=preview.gdam.dev\nDOMAIN.avior=\n")
+	if got := emptyApp.DomainFor("avior"); got != "preview.gdam.dev" {
+		t.Errorf("empty DOMAIN.avior= = %q, want the bare DOMAIN", got)
+	}
+
+	// Empty bare DOMAIN= falls through to the compiled default.
+	emptyBare, _ := ParsePreviewKnob("DOMAIN=\n")
+	if emptyBare.Domain != PreviewDomainDefault || emptyBare.DomainFor("gdam") != PreviewDomainDefault {
+		t.Errorf("empty DOMAIN= = Domain %q DomainFor %q, want %q", emptyBare.Domain, emptyBare.DomainFor("gdam"), PreviewDomainDefault)
+	}
+
+	// First-wins on both keys.
+	firstApp, _ := ParsePreviewKnob("DOMAIN.avior=first.example\nDOMAIN.avior=second.example\nDOMAIN=preview.gdam.dev\n")
+	if got := firstApp.DomainFor("avior"); got != "first.example" {
+		t.Errorf("first-wins DOMAIN.avior = %q, want first.example", got)
+	}
+	firstBare, _ := ParsePreviewKnob("DOMAIN=first.example\nDOMAIN=second.example\n")
+	if firstBare.Domain != "first.example" || firstBare.DomainFor("gdam") != "first.example" {
+		t.Errorf("first-wins DOMAIN = Domain %q DomainFor %q, want first.example", firstBare.Domain, firstBare.DomainFor("gdam"))
+	}
+
+	// Unquoted value used verbatim -- quotes are NOT stripped.
+	quoted, _ := ParsePreviewKnob("DOMAIN.avior=\"preview.avior.studio\"\nDOMAIN=preview.gdam.dev\n")
+	if got := quoted.DomainFor("avior"); got != `"preview.avior.studio"` {
+		t.Errorf("quoted value was stripped: %q", got)
+	}
+	verbatim, _ := ParsePreviewKnob("DOMAIN.avior=preview.avior.studio\n")
+	if got := verbatim.DomainFor("avior"); got != "preview.avior.studio" {
+		t.Errorf("unquoted value = %q", got)
+	}
+
+	// Case-sensitive keys; bare DOMAIN does not match DOMAIN.<app>.
+	cased, _ := ParsePreviewKnob("DOMAIN.Avior=preview.AVIOR\nDOMAIN.avior=preview.avior.studio\nDOMAIN=preview.gdam.dev\n")
+	if got := cased.DomainFor("avior"); got != "preview.avior.studio" {
+		t.Errorf("DomainFor(avior) mixed-case = %q", got)
+	}
+	if got := cased.DomainFor("Avior"); got != "preview.AVIOR" {
+		t.Errorf("DomainFor(Avior) mixed-case = %q", got)
+	}
+
+	// BACKWARD COMPAT: a knob with only a bare DOMAIN -- gdam's box today --
+	// resolves every app to that domain, exactly as before.
+	gdam, _ := ParsePreviewKnob("DOMAIN=preview.gdam.dev\n")
+	if gdam.Domain != "preview.gdam.dev" || gdam.DomainFor("avior") != "preview.gdam.dev" || gdam.DomainFor("gdam") != "preview.gdam.dev" {
+		t.Errorf("a bare-DOMAIN knob changed: Domain=%q avior=%q gdam=%q", gdam.Domain, gdam.DomainFor("avior"), gdam.DomainFor("gdam"))
+	}
+	if got := gdam.Domains(); len(got) != 1 || got[0] != "preview.gdam.dev" {
+		t.Errorf("a bare-DOMAIN knob's ask union = %v, want exactly the default", got)
+	}
+
+	// The ask's union: the default first, the configured domains sorted.
+	domains := knob.Domains()
+	if len(domains) != 3 || domains[0] != "preview.gdam.dev" || domains[1] != "preview.avior.studio" || domains[2] != "preview.biome.example" {
+		t.Errorf("Domains() = %v, want default first then sorted", domains)
+	}
+}
+
+// ROUTE + COLLISION-FREE: the route names pr-<N> and pr-<N>-api under the
+// APP'S domain, and two apps with different DOMAIN.<app> keys get different
+// hosts for the same PR number.
+func TestPreviewRouteUsesTheAppsOwnDomain(t *testing.T) {
+	knob, _ := ParsePreviewKnob("DOMAIN=preview.gdam.dev\nDOMAIN.avior=preview.avior.studio\n")
+	avior := previewRoute(PreviewRecord{V: 1, App: "avior", PR: 3, Project: "avior-pr-3", RouteFile: "_preview-avior-pr-3.caddy"}, knob)
+	if !strings.Contains(avior, "pr-3.preview.avior.studio, pr-3-api.preview.avior.studio {") {
+		t.Errorf("the route does not name the app's own domain:\n%s", avior)
+	}
+	gdam := previewRoute(PreviewRecord{V: 1, App: "gdam", PR: 3, Project: "gdam-pr-3", RouteFile: "_preview-gdam-pr-3.caddy"}, knob)
+	if !strings.Contains(gdam, "pr-3.preview.gdam.dev, pr-3-api.preview.gdam.dev {") {
+		t.Errorf("the default app's route changed:\n%s", gdam)
+	}
+	if strings.Contains(gdam, "avior.studio") || strings.Contains(avior, "gdam.dev") {
+		t.Errorf("two apps' preview hosts collided for the same PR:\n%s\n%s", avior, gdam)
+	}
+}
+
 // --- the stack.env seam --------------------------------------------------------
 
 // STACK.ENV (a): absent, the render is exactly what it always was -- no
