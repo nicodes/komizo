@@ -70,6 +70,10 @@ type PreviewKnob struct {
 	CPULimit  string
 	AskPort   int
 	PortRange string
+	// body is the raw knob, so DomainFor reuses the same lookup that
+	// ParsePreviewKnob used -- there is one get, not two parsers that
+	// could drift.
+	body string
 }
 
 // ParsePreviewKnob reads the key=value knob. Missing keys are defaults; a
@@ -79,15 +83,9 @@ func ParsePreviewKnob(body string) (PreviewKnob, string) {
 		Domain: PreviewDomainDefault, TTL: PreviewTTLDefault, Max: PreviewMaxDefault,
 		MemLimit: PreviewMemLimitDefault, CPULimit: PreviewCPULimitDefault,
 		AskPort: PreviewAskPortDefault, PortRange: PreviewPortRangeDefault,
+		body: body,
 	}
-	get := func(key string) string {
-		for _, ln := range strings.Split(body, "\n") {
-			if v, ok := strings.CutPrefix(ln, key+"="); ok {
-				return strings.Trim(v, "\r \t")
-			}
-		}
-		return ""
-	}
+	get := func(key string) string { return previewKnobGet(body, key) }
 	var bad []string
 	if v := get("DOMAIN"); v != "" {
 		k.Domain = v
@@ -137,6 +135,68 @@ func ReadPreviewKnob(path string) (PreviewKnob, string) {
 		return k, "could not read " + path + ", using defaults: " + err.Error()
 	}
 	return ParsePreviewKnob(string(b))
+}
+
+// previewKnobGet is the knob's one lookup: first line whose prefix is
+// key+"=", value trimmed of CR and spaces/tabs only -- quotes are not
+// stripped, so an unquoted value is used verbatim. First match wins;
+// empty after trim is "not set" and the caller falls through. Bare
+// "DOMAIN" does not match "DOMAIN.<app>" (CutPrefix on key+"=").
+func previewKnobGet(body, key string) string {
+	for _, ln := range strings.Split(body, "\n") {
+		if v, ok := strings.CutPrefix(ln, key+"="); ok {
+			return strings.Trim(v, "\r \t")
+		}
+	}
+	return ""
+}
+
+// DomainFor is the per-app resolution chain, exactly:
+// get("DOMAIN."+app) → get("DOMAIN") → PreviewDomainDefault.
+// An empty DOMAIN.<app>= falls through to the bare DOMAIN; an empty
+// DOMAIN= falls through to the compiled default. An unknown app is
+// NEVER refused -- a product without its own key previews on the
+// default, exactly as before per-app keys existed.
+func (k PreviewKnob) DomainFor(app string) string {
+	if v := previewKnobGet(k.body, "DOMAIN."+app); v != "" {
+		return v
+	}
+	if v := previewKnobGet(k.body, "DOMAIN"); v != "" {
+		return v
+	}
+	return PreviewDomainDefault
+}
+
+// Domains is the union the TLS ask approves under: the default domain
+// plus every resolved DOMAIN.<app> value, deduped. Values come from
+// the same get() DomainFor uses -- empty keys fall through and are
+// not a separate domain. The default is first, the rest sorted.
+func (k PreviewKnob) Domains() []string {
+	def := k.Domain
+	if def == "" {
+		def = PreviewDomainDefault
+	}
+	out := []string{def}
+	seen := map[string]bool{def: true}
+	var rest []string
+	for _, ln := range strings.Split(k.body, "\n") {
+		tail, ok := strings.CutPrefix(ln, "DOMAIN.")
+		if !ok {
+			continue
+		}
+		app, _, ok := strings.Cut(tail, "=")
+		if !ok || app == "" {
+			continue
+		}
+		d := previewKnobGet(k.body, "DOMAIN."+app)
+		if d == "" || seen[d] {
+			continue
+		}
+		seen[d] = true
+		rest = append(rest, d)
+	}
+	sort.Strings(rest)
+	return append(out, rest...)
 }
 
 // --- names: the one place every derivation lives ------------------------------
@@ -434,7 +494,7 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 		fmt.Fprintf(&b, "  %s:\n    image: %s\n    mem_limit: %s\n    cpus: %s\n    restart: unless-stopped\n", name, image, k.MemLimit, k.CPULimit)
 		if i == 0 {
 			fmt.Fprintf(&b, "    container_name: %s-gate\n    environment:\n", r.Project)
-			fmt.Fprintf(&b, "      PREVIEW: \"1\"\n      PR: \"%d\"\n      DB_NAME: %s\n      PGDATABASE: %s\n      PGUSER: %s\n      PGPASSWORD: %s\n      BASE_URL: https://%s\n", r.PR, r.DBName, r.DBName, r.DBName, r.DBPassword, PreviewHost(r.PR, k.Domain))
+			fmt.Fprintf(&b, "      PREVIEW: \"1\"\n      PR: \"%d\"\n      DB_NAME: %s\n      PGDATABASE: %s\n      PGUSER: %s\n      PGPASSWORD: %s\n      BASE_URL: https://%s\n", r.PR, r.DBName, r.DBName, r.DBName, r.DBPassword, PreviewHost(r.PR, k.DomainFor(r.App)))
 			// The gate port, LOOPBACK only: the direct HTTP entry to the
 			// preview from the box itself, never from the network -- the
 			// public way in is the proxy route, with TLS. Publishing on all
@@ -473,7 +533,7 @@ func previewRoute(r PreviewRecord, k PreviewKnob) string {
 %s, %s {
 	reverse_proxy %s-gate:80
 }
-`, r.App, r.PR, PreviewHost(r.PR, k.Domain), fmt.Sprintf("pr-%d-api.%s", r.PR, k.Domain), r.Project)
+`, r.App, r.PR, PreviewHost(r.PR, k.DomainFor(r.App)), fmt.Sprintf("pr-%d-api.%s", r.PR, k.DomainFor(r.App)), r.Project)
 }
 
 // ApplyPreviewRoute writes a route with the same discipline as every other

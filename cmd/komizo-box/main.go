@@ -451,8 +451,8 @@ func runRootdAt(root string, args []string) error {
 			fmt.Fprintf(os.Stderr, "komizo-box: the preview ask could not bind %s:%d: %v\n", gw, knob.AskPort, err)
 			return
 		}
-		fmt.Fprintf(os.Stderr, "komizo-box: serving the preview ask on http://%s/ask (scope: %s)\n", ln.Addr(), knob.Domain)
-		_ = (&http.Server{Handler: box.PreviewAskHandler(knob.Domain), ReadHeaderTimeout: 10 * time.Second}).Serve(ln)
+		fmt.Fprintf(os.Stderr, "komizo-box: serving the preview ask on http://%s/ask (scope: %s)\n", ln.Addr(), strings.Join(knob.Domains(), ", "))
+		_ = (&http.Server{Handler: box.PreviewAskHandler(knob), ReadHeaderTimeout: 10 * time.Second}).Serve(ln)
 	}()
 
 	// The preview reaper: TTL and the max-N ceiling, hourly, acting only on
