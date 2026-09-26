@@ -98,8 +98,12 @@ length; `sk_test_` and a value already set in the environment are refused. It
 writes four mode-0600 files and switches `secrets/current` once. A second run
 refuses. It does not restart containers or delete a PocketBase volume. Deploy
 of this profile takes a fourth argument, the expected generation id, and checks
-the generation and the eleven-value map under the app lock before changing
-config. Other apps still take one or three arguments and reject a fourth.
+the generation under the app lock before changing config. That check, status,
+and start read a root-only mode-0400 `provenance` marker written only by this
+provision (`profile=fields-postgres-v2`, `schema=11`, and the generation id).
+They do not open the env files. A recorded v1 profile, or a generation without
+that marker, is not ready. Other apps still take one or three arguments and
+reject a fourth.
 `komizo remove` deletes the commands. `KEEP_DATA=1` leaves the app directory,
 including `secrets/`, and does not read those files. Clerk values that contain
 space, `"`, `#`, `$`, `'`, backslash, or backtick are refused: Fields compose

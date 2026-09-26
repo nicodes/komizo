@@ -1,7 +1,7 @@
 #!/bin/sh
 # Read-only fields-postgres-v2 status. One nonsecret line. No env values.
-# A fields-postgres-v1 record, or a generation without a production
-# CLERK_SECRET_KEY confined to api.env, is not ready.
+# A fields-postgres-v1 record, or a generation without the v2 provenance
+# marker, is not ready. Env files are not opened.
 set -eu
 
 APP_NAME="__APP_NAME__"
@@ -30,55 +30,31 @@ state_get() {
 	sed -n "s/^$1=//p" "$STATE_FILE" | tr -d '\r' | head -n 1
 }
 
-# Names only, plus the production-key prefix. File bytes are not printed.
-v2_layout() {
-	gdir=$1
-	awk '
-	function bad(s) {
-		if (length(s) < 9 || length(s) > 4096) return 1
-		if (substr(s, 1, 8) == "sk_test_") return 1
-		if (substr(s, 1, 8) != "sk_live_") return 1
-		n = length(s)
-		for (i = 1; i <= n; i++) {
-			c = substr(s, i, 1)
-			if (c ~ /[ "#$'\''\\`]/) return 1
-			if (c < "!" || c > "~") return 1
-		}
-		return 0
-	}
-	BEGIN {
-		req["postgres.env"] = " POSTGRES_PASSWORD REVIK_MIGRATOR_PASSWORD REVIK_APP_PASSWORD REVIK_BACKUP_PASSWORD "
-		req["migrate.env"] = " DATABASE_MIGRATION_URL "
-		req["api.env"] = " DATABASE_URL WS_SECRET CLERK_ISSUER CLERK_JWKS_URL CLERK_AUTHORIZED_PARTIES CLERK_SECRET_KEY "
-		req["godot-api.env"] = " WS_SECRET "
-		secrets = 0
-		failed = 0
-	}
-	{
-		fn = FILENAME
-		sub(/^.*\//, "", fn)
-		if (index($0, "CLERK_SECRET_KEY") != 0) {
-			if (fn != "api.env" || $0 !~ /^CLERK_SECRET_KEY=/) failed = 1
-			secrets++
-			if (bad(substr($0, 18))) failed = 1
-		}
-		if ($0 ~ /^[A-Za-z0-9_]+=/) {
-			k = $0
-			sub(/=.*/, "", k)
-			seen[fn, k] = 1
-		}
-	}
-	END {
-		if (failed || secrets != 1) exit 1
-		for (fn in req) {
-			n = split(req[fn], keys, " ")
-			for (i = 1; i <= n; i++) {
-				if (keys[i] != "" && seen[fn, keys[i]] != 1) exit 1
-			}
-		}
-		exit 0
-	}
-	' "$gdir/postgres.env" "$gdir/migrate.env" "$gdir/api.env" "$gdir/godot-api.env"
+# 0 matches, 1 missing or wrong, 2 symlink, 3 bad mode or owner.
+# The marker is nonsecret. A size mismatch returns before the file is read.
+provenance_ok() {
+	id=$1
+	file=$2
+	if [ -L "$file" ]; then
+		return 2
+	fi
+	if [ ! -f "$file" ]; then
+		return 1
+	fi
+	mode=$(stat -c %a "$file" 2>/dev/null || true)
+	owner=$(stat -c %u "$file" 2>/dev/null || true)
+	if [ "$mode" != "400" ] || [ "$owner" != "0" ]; then
+		return 3
+	fi
+	size=$(stat -c %s "$file" 2>/dev/null || true)
+	expected_size=$(printf 'profile=fields-postgres-v2\nschema=11\ngeneration=%s\n' "$id" | wc -c | tr -d '[:space:]')
+	if [ "$size" != "$expected_size" ]; then
+		return 1
+	fi
+	if ! printf 'profile=fields-postgres-v2\nschema=11\ngeneration=%s\n' "$id" | cmp -s - "$file"; then
+		return 1
+	fi
+	return 0
 }
 
 
@@ -157,7 +133,13 @@ recorded=$(state_get SCOPED_GENERATION || true)
 if [ "$recorded" != "$id" ]; then
 	emit invalid none partial
 fi
-if ! v2_layout "$gdir"; then
-	emit invalid none profile-mismatch
-fi
+marker="$gdir/provenance"
+rc=0
+provenance_ok "$id" "$marker" || rc=$?
+case "$rc" in
+	0) ;;
+	2) emit invalid none symlink ;;
+	3) emit invalid none bad-mode ;;
+	*) emit invalid none profile-mismatch ;;
+esac
 emit ready "$id" ok

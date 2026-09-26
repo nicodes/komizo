@@ -128,7 +128,7 @@ func writeRootStubs(t *testing.T, bin string) {
 	t.Helper()
 	writeStub(t, bin, "id", "#!/bin/sh\nif [ \"$1\" = \"-u\" ]; then echo 0; exit 0; fi\nexit 0\n")
 	writeStub(t, bin, "chown", "#!/bin/sh\nexit 0\n")
-	writeStub(t, bin, "stat", "#!/bin/sh\nfmt=\nfile=\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    -c) fmt=$2; shift 2 ;;\n    *) file=$1; shift ;;\n  esac\ndone\nif [ \"$fmt\" = \"%u\" ]; then echo 0; exit 0; fi\nif [ -d \"$file\" ]; then echo 700; else echo 600; fi\n")
+	writeStub(t, bin, "stat", "#!/bin/sh\nfmt=\nfile=\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    -c) fmt=$2; shift 2 ;;\n    *) file=$1; shift ;;\n  esac\ndone\nif [ \"$fmt\" = \"%u\" ]; then echo 0; exit 0; fi\nif [ \"$fmt\" = \"%a\" ] || [ \"$fmt\" = \"%s\" ]; then\n  /usr/bin/stat -c \"$fmt\" \"$file\"\n  exit 0\nfi\nif [ -d \"$file\" ]; then echo 700; else echo 600; fi\n")
 }
 
 func scopedPaths(t *testing.T) (root, appDir, stateFile, lock, bin string) {
@@ -243,6 +243,16 @@ func TestProvisionWritesTenValuesOnceAndDoesNotEchoThem(t *testing.T) {
 	}
 	if !strings.Contains(string(api), "@postgres/revik?sslmode=disable") {
 		t.Fatal("dsn shape drifted")
+	}
+	markerPath := filepath.Join(appDir, "secrets", "generations", id, "provenance")
+	marker, err := os.ReadFile(markerPath)
+	wantMarker := "profile=fields-postgres-v2\nschema=11\ngeneration=" + id + "\n"
+	if err != nil || string(marker) != wantMarker || strings.Contains(out, wantMarker) {
+		t.Fatalf("provenance %q err=%v", marker, err)
+	}
+	info, err := os.Stat(markerPath)
+	if err != nil || info.Mode().Perm() != 0o400 {
+		t.Fatalf("provenance mode %v %v", info, err)
 	}
 	rec, err := os.ReadFile(stateFile)
 	if err != nil || !strings.Contains(string(rec), "SCOPED_GENERATION="+id+"\n") {
@@ -495,34 +505,46 @@ func TestStatusRejectsV1RecordAndTenKeyGeneration(t *testing.T) {
 		t.Fatalf("ten-key status code %d %q", code, out)
 	}
 
-	testKey := "sk_test_StatusMustNotEcho"
-	replaced := strings.Replace(v2EnvFixture("api.env"), "sk_live_deployfixture", testKey, 1)
-	if err := os.WriteFile(filepath.Join(gen, "api.env"), []byte(replaced), 0o600); err != nil {
+	sentinel := "STATUS_SENTINEL_MUST_NOT_ECHO"
+	if err := os.WriteFile(filepath.Join(gen, "api.env"), []byte("CLERK_SECRET_KEY="+sentinel+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out, code = runScript(t, path, nil)
-	if code != 0 || out != want || strings.Contains(out, testKey) || strings.Contains(out, "sk_test_") || strings.Contains(out, "sk_live_") {
-		t.Fatal("sk_test_ generation was reported ready or printed")
-	}
-
-	if err := os.WriteFile(filepath.Join(gen, "api.env"), []byte(v2EnvFixture("api.env")), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(gen, "godot-api.env"), []byte(v2EnvFixture("godot-api.env")+"CLERK_SECRET_KEY=sk_live_deployfixture\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	out, code = runScript(t, path, nil)
-	if code != 0 || out != want || strings.Contains(out, "sk_live_deployfixture") {
-		t.Fatal("secret outside api.env was reported ready or printed")
-	}
-
-	if err := os.WriteFile(filepath.Join(gen, "godot-api.env"), []byte(v2EnvFixture("godot-api.env")), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(gen, "provenance"), []byte("profile=fields-postgres-v2\nschema=11\ngeneration="+id+"\n"), 0o400); err != nil {
 		t.Fatal(err)
 	}
 	out, code = runScript(t, path, nil)
 	ready := "wire=v2 profile=fields-postgres-v2 source=host-local state=ready generation=" + id + " reason=ok\n"
-	if code != 0 || out != ready || strings.Contains(out, "sk_live_deployfixture") {
-		t.Fatalf("confined generation status code %d %q", code, out)
+	if code != 0 || out != ready || strings.Contains(out, sentinel) {
+		t.Fatalf("marker status read or refused env bytes: code %d %q", code, out)
+	}
+
+	if err := os.Remove(filepath.Join(gen, "provenance")); err != nil {
+		t.Fatal(err)
+	}
+	out, code = runScript(t, path, nil)
+	if code != 0 || out != want || strings.Contains(out, sentinel) {
+		t.Fatal("generation without provenance was reported ready or printed")
+	}
+	if err := os.WriteFile(filepath.Join(gen, "provenance"), []byte("profile=fields-postgres-v1\nschema=11\ngeneration="+id+"\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	out, code = runScript(t, path, nil)
+	if code != 0 || out != want || strings.Contains(out, sentinel) {
+		t.Fatal("wrong provenance profile was reported ready or printed")
+	}
+	if err := os.WriteFile(filepath.Join(gen, "provenance"), []byte("profile=fields-postgres-v2\nschema=11\ngeneration="+id+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(gen, "provenance"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, code = runScript(t, path, nil)
+	badMode := "wire=v2 profile=fields-postgres-v2 source=host-local state=invalid generation=none reason=bad-mode\n"
+	if code != 0 || out != badMode || strings.Contains(out, sentinel) {
+		t.Fatalf("loose provenance mode code %d %q", code, out)
+	}
+	if strings.Contains(fieldsScopedStatusBody, "CLERK_SECRET_KEY") || strings.Contains(fieldsScopedStatusBody, "api.env\"") {
+		t.Fatal("status script still opens an env value")
 	}
 }
 
@@ -585,6 +607,9 @@ func TestDeployReadyComparesExpectedGeneration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if err := os.WriteFile(filepath.Join(gen, "provenance"), []byte("profile=fields-postgres-v2\nschema=11\ngeneration="+id+"\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Symlink("generations/"+id, filepath.Join(app, "secrets", "current")); err != nil {
 		t.Fatal(err)
 	}
@@ -606,15 +631,29 @@ func TestDeployReadyComparesExpectedGeneration(t *testing.T) {
 	if err == nil || !strings.Contains(string(out), "scoped generation mismatch") {
 		t.Fatalf("mismatch should refuse, err=%v\n%s", err, out)
 	}
-	tenKey := strings.Replace(v2EnvFixture("api.env"), "CLERK_SECRET_KEY=sk_live_deployfixture\n", "", 1)
-	if err := os.WriteFile(filepath.Join(gen, "api.env"), []byte(tenKey), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(gen, "api.env"), []byte("CLERK_SECRET_KEY=sk_live_deployfixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command("sh", "-s")
+	cmd.Stdin = strings.NewReader(ready)
+	out, err = cmd.CombinedOutput()
+	if err != nil || strings.Contains(string(out), "sk_live_deployfixture") {
+		t.Fatalf("deploy read env bytes: %v\n%s", err, out)
+	}
+	if err := os.Remove(filepath.Join(gen, "provenance")); err != nil {
 		t.Fatal(err)
 	}
 	cmd = exec.Command("sh", "-s")
 	cmd.Stdin = strings.NewReader(ready)
 	out, err = cmd.CombinedOutput()
 	if err == nil || !strings.Contains(string(out), "not a fields-postgres-v2 generation") || strings.Contains(string(out), "sk_live_deployfixture") {
-		t.Fatal("ten-key generation was accepted or printed")
+		t.Fatal("generation without provenance was accepted or printed")
+	}
+	const startFn = "komizo_scoped_env_ready() {"
+	fnStart := strings.Index(AlpineScript, startFn)
+	fnEnd := strings.Index(AlpineScript, "# Operator-written host-wide floors")
+	if fnStart < 0 || fnEnd < fnStart || strings.Contains(AlpineScript[fnStart:fnEnd], "CLERK_SECRET_KEY") {
+		t.Fatal("deploy preflight still names a secret")
 	}
 }
 
