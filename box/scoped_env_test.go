@@ -85,10 +85,14 @@ func TestRefuseScopedStartUsesProvenanceNotEnvBytes(t *testing.T) {
 	if err := os.WriteFile(marker, body, 0o400); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chown(marker, 0, 0); err != nil {
-		t.Fatal(err)
+	err = RefuseScopedStart(root, "fieldsofrevik")
+	if os.Getuid() == 0 {
+		if err != nil {
+			t.Fatal(err)
+		}
+		return
 	}
-	if err := RefuseScopedStart(root, "fieldsofrevik"); err != nil {
-		t.Fatal(err)
+	if err == nil || strings.Contains(err.Error(), sentinel) {
+		t.Fatalf("non-root marker was started or echoed: %v", err)
 	}
 }

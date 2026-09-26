@@ -514,8 +514,15 @@ func TestStatusRejectsV1RecordAndTenKeyGeneration(t *testing.T) {
 	}
 	out, code = runScript(t, path, nil)
 	ready := "wire=v2 profile=fields-postgres-v2 source=host-local state=ready generation=" + id + " reason=ok\n"
-	if code != 0 || out != ready || strings.Contains(out, sentinel) {
-		t.Fatalf("marker status read or refused env bytes: code %d %q", code, out)
+	if strings.Contains(out, sentinel) {
+		t.Fatalf("status printed env bytes: %q", out)
+	}
+	if os.Getuid() == 0 {
+		if code != 0 || out != ready {
+			t.Fatalf("marker status code %d %q", code, out)
+		}
+	} else if out == ready {
+		t.Fatal("non-root marker was reported ready")
 	}
 
 	if err := os.Remove(filepath.Join(gen, "provenance")); err != nil {
@@ -532,10 +539,14 @@ func TestStatusRejectsV1RecordAndTenKeyGeneration(t *testing.T) {
 	if code != 0 || out != want || strings.Contains(out, sentinel) {
 		t.Fatal("wrong provenance profile was reported ready or printed")
 	}
-	if err := os.WriteFile(filepath.Join(gen, "provenance"), []byte("profile=fields-postgres-v2\nschema=11\ngeneration="+id+"\n"), 0o644); err != nil {
+	loose := filepath.Join(gen, "provenance")
+	if err := os.Chmod(loose, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(filepath.Join(gen, "provenance"), 0o644); err != nil {
+	if err := os.WriteFile(loose, []byte("profile=fields-postgres-v2\nschema=11\ngeneration="+id+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(loose, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	out, code = runScript(t, path, nil)
