@@ -696,9 +696,9 @@ SCOPED_ENV="__SCOPED_ENV__"
 # that fails when the service is down.
 STATE_FILE="__STATE_DIR__/__APP_NAME__.env"
 
-# Metadata, plus a silent layout check. Env files are opened only to prove the
-# fields-postgres-v2 map. Their bytes are not printed, so a deploy log cannot
-# carry a credential. A missing or escaping current link fails before
+# Metadata, file type, owner, and mode, plus the nonsecret provenance marker
+# written only by v2 provision. Env files are not opened, so a deploy log
+# cannot carry a credential. A missing or escaping current link fails before
 # compose.yml is swapped: the running stack is still the previous one.
 komizo_scoped_env_ready() {
 	recorded=$(sed -n 's/^APP_DIR=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)
@@ -754,53 +754,26 @@ komizo_scoped_env_ready() {
 		echo "deploy: refusing: scoped generation mismatch" >&2
 		return 1
 	fi
-	if ! awk '
-	function bad(s) {
-		if (length(s) < 9 || length(s) > 4096) return 1
-		if (substr(s, 1, 8) == "sk_test_") return 1
-		if (substr(s, 1, 8) != "sk_live_") return 1
-		n = length(s)
-		for (i = 1; i <= n; i++) {
-			c = substr(s, i, 1)
-			if (c ~ /[ "#$'\''\\`]/) return 1
-			if (c < "!" || c > "~") return 1
-		}
-		return 0
-	}
-	BEGIN {
-		req["postgres.env"] = " POSTGRES_PASSWORD REVIK_MIGRATOR_PASSWORD REVIK_APP_PASSWORD REVIK_BACKUP_PASSWORD "
-		req["migrate.env"] = " DATABASE_MIGRATION_URL "
-		req["api.env"] = " DATABASE_URL WS_SECRET CLERK_ISSUER CLERK_JWKS_URL CLERK_AUTHORIZED_PARTIES CLERK_SECRET_KEY "
-		req["godot-api.env"] = " WS_SECRET "
-		secrets = 0
-		failed = 0
-	}
-	{
-		fn = FILENAME
-		sub(/^.*\//, "", fn)
-		if (index($0, "CLERK_SECRET_KEY") != 0) {
-			if (fn != "api.env" || $0 !~ /^CLERK_SECRET_KEY=/) failed = 1
-			secrets++
-			if (bad(substr($0, 18))) failed = 1
-		}
-		if ($0 ~ /^[A-Za-z0-9_]+=/) {
-			k = $0
-			sub(/=.*/, "", k)
-			seen[fn, k] = 1
-		}
-	}
-	END {
-		if (failed || secrets != 1) exit 1
-		for (fn in req) {
-			n = split(req[fn], keys, " ")
-			for (i = 1; i <= n; i++) {
-				if (keys[i] != "" && seen[fn, keys[i]] != 1) exit 1
-			}
-		}
-		exit 0
-	}
-	' "$gdir/postgres.env" "$gdir/migrate.env" "$gdir/api.env" "$gdir/godot-api.env"
-	then
+	marker="$gdir/provenance"
+	if [ -L "$marker" ] || [ ! -f "$marker" ]; then
+		echo "deploy: refusing: scoped env is not a fields-postgres-v2 generation" >&2
+		return 1
+	fi
+	mode=$(stat -c %a "$marker" 2>/dev/null || true)
+	owner=$(stat -c %u "$marker" 2>/dev/null || true)
+	if [ "$mode" != "400" ] || [ "$owner" != "0" ]; then
+		echo "deploy: refusing: scoped env file provenance is not root-owned mode 400" >&2
+		return 1
+	fi
+	size=$(stat -c %s "$marker" 2>/dev/null || true)
+	expected_size=$(printf 'profile=fields-postgres-v2\nschema=11\ngeneration=%s\n' "$id" | wc -c | tr -d '[:space:]')
+	match=0
+	if [ "$size" = "$expected_size" ]; then
+		printf 'profile=fields-postgres-v2\nschema=11\ngeneration=%s\n' "$id" | cmp -s - "$marker" || match=$?
+	else
+		match=1
+	fi
+	if [ "$match" -ne 0 ]; then
 		echo "deploy: refusing: scoped env is not a fields-postgres-v2 generation" >&2
 		return 1
 	fi

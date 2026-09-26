@@ -8,11 +8,11 @@ import (
 )
 
 // RefuseScopedStart stops start and restart for fields-postgres-v2 unless the
-// current generation still matches the id recorded at provision and api.env
-// alone holds a production CLERK_SECRET_KEY. A withdrawn fields-postgres-v1
-// record is not treated as ready. Other apps are untouched. File bytes are
-// not included in errors. A lock that cannot be taken is a refusal, not a
-// start beside a deploy.
+// current generation still matches the id recorded at provision and the
+// nonsecret provenance marker written only by v2 provision. Env files are
+// not opened. A withdrawn fields-postgres-v1 record is not treated as ready.
+// Other apps are untouched. Marker bytes are not included in errors. A lock
+// that cannot be taken is a refusal, not a start beside a deploy.
 func RefuseScopedStart(root, app string) error {
 	if app == "" {
 		return nil
@@ -66,83 +66,29 @@ func RefuseScopedStart(root, app string) error {
 			return fmt.Errorf("scoped env is not ready, so nothing was started")
 		}
 	}
-	if !v2Layout(gdir) {
+	if !provenanceReady(gdir, id) {
 		return fmt.Errorf("scoped env is not ready, so nothing was started")
 	}
 	return nil
 }
 
-func v2Layout(gdir string) bool {
-	api, err := os.ReadFile(filepath.Join(gdir, "api.env"))
-	if err != nil || !oneProductionSecret(api) {
+func provenanceReady(gdir, id string) bool {
+	path := filepath.Join(gdir, "provenance")
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0o400 {
 		return false
 	}
-	for _, name := range []string{"postgres.env", "migrate.env", "godot-api.env"} {
-		body, err := os.ReadFile(filepath.Join(gdir, name))
-		if err != nil || bytes.Contains(body, []byte("CLERK_SECRET_KEY")) {
-			return false
-		}
-	}
-	required := map[string][]string{
-		"postgres.env":  {"POSTGRES_PASSWORD", "REVIK_MIGRATOR_PASSWORD", "REVIK_APP_PASSWORD", "REVIK_BACKUP_PASSWORD"},
-		"migrate.env":   {"DATABASE_MIGRATION_URL"},
-		"api.env":       {"DATABASE_URL", "WS_SECRET", "CLERK_ISSUER", "CLERK_JWKS_URL", "CLERK_AUTHORIZED_PARTIES", "CLERK_SECRET_KEY"},
-		"godot-api.env": {"WS_SECRET"},
-	}
-	files := map[string][]byte{"api.env": api}
-	for _, name := range []string{"postgres.env", "migrate.env", "godot-api.env"} {
-		body, err := os.ReadFile(filepath.Join(gdir, name))
-		if err != nil {
-			return false
-		}
-		files[name] = body
-	}
-	for name, keys := range required {
-		for _, key := range keys {
-			if !hasKey(files[name], key) {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func hasKey(body []byte, key string) bool {
-	prefix := []byte(key + "=")
-	for _, line := range bytes.Split(body, []byte("\n")) {
-		if bytes.HasPrefix(line, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
-func oneProductionSecret(body []byte) bool {
-	n := 0
-	for _, line := range bytes.Split(body, []byte("\n")) {
-		if !bytes.Contains(line, []byte("CLERK_SECRET_KEY")) {
-			continue
-		}
-		prefix := []byte("CLERK_SECRET_KEY=")
-		if !bytes.HasPrefix(line, prefix) || !productionSecret(line[len(prefix):]) {
-			return false
-		}
-		n++
-	}
-	return n == 1
-}
-
-func productionSecret(s []byte) bool {
-	if len(s) < 9 || len(s) > 4096 {
+	uid, ok := fileUID(info)
+	if !ok || uid != 0 {
 		return false
 	}
-	if bytes.HasPrefix(s, []byte("sk_test_")) || !bytes.HasPrefix(s, []byte("sk_live_")) {
+	expected := []byte("profile=fields-postgres-v2\nschema=11\ngeneration=" + id + "\n")
+	if info.Size() != int64(len(expected)) {
 		return false
 	}
-	for _, c := range s {
-		if c <= ' ' || c > '~' || c == '"' || c == '#' || c == '$' || c == '\'' || c == '\\' || c == '`' {
-			return false
-		}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, expected) {
+		return false
 	}
 	return true
 }

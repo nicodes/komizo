@@ -20,6 +20,7 @@ hex32() {
 
 facts_tmp=""
 tty_saved=""
+provenance_tmp=""
 restore_tty() {
 	[ -n "$tty_saved" ] || return 0
 	saved=$tty_saved
@@ -32,6 +33,9 @@ cleanup() {
 	restore_tty || true
 	if [ -n "$facts_tmp" ]; then
 		rm -f "$facts_tmp"
+	fi
+	if [ -n "$provenance_tmp" ]; then
+		rm -f "$provenance_tmp"
 	fi
 }
 trap cleanup EXIT
@@ -567,6 +571,13 @@ CLERK_SECRET_KEY=$CLERK_SECRET_KEY
 "
 write_file "$secrets/generations/$id/godot-api.env" "WS_SECRET=$WS_SECRET
 "
+
+provenance_tmp="$secrets/generations/$id/provenance.tmp.$$"
+printf 'profile=fields-postgres-v2\nschema=11\ngeneration=%s\n' "$id" > "$provenance_tmp" || fail "refusing: cannot write provenance"
+chown root:root "$provenance_tmp"
+chmod 400 "$provenance_tmp"
+mv -f "$provenance_tmp" "$secrets/generations/$id/provenance" || fail "refusing: cannot commit provenance"
+provenance_tmp=""
 
 ln -s "generations/$id" "$secrets/current.new.$$"
 mv -T "$secrets/current.new.$$" "$secrets/current" || fail "refusing: cannot switch current"
