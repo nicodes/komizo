@@ -29,7 +29,7 @@
 #   TASKS          fixed named-task profile; currently only the Termcade
 #                  release-identity-backfill task                    (optional)
 #   TASKS_SET      1 when TASKS is an explicit edit; otherwise keep recorded
-#   SCOPED_ENV     fixed scoped-env profile; fields-postgres-v1 only, and
+#   SCOPED_ENV     fixed scoped-env profile; fields-postgres-v2 only, and
 #                  only for app fieldsofrevik                         (optional)
 #   SCOPED_ENV_SET 1 when SCOPED_ENV is an explicit edit; otherwise keep
 #                  the recorded profile
@@ -247,9 +247,9 @@ fi
 # path the caller gets to choose.
 case "$SCOPED_ENV" in
 	'') ;;
-	fields-postgres-v1)
+	fields-postgres-v2)
 		[ "$APP_NAME" = "fieldsofrevik" ] || {
-			echo "error: scoped env profile fields-postgres-v1 is only defined for app fieldsofrevik" >&2
+			echo "error: scoped env profile fields-postgres-v2 is only defined for app fieldsofrevik" >&2
 			exit 1
 		}
 		;;
@@ -696,9 +696,10 @@ SCOPED_ENV="__SCOPED_ENV__"
 # that fails when the service is down.
 STATE_FILE="__STATE_DIR__/__APP_NAME__.env"
 
-# Metadata only. Does not open env files, so a deploy log cannot carry a
-# credential. A missing or escaping current link fails before compose.yml is
-# swapped: the running stack is still the previous one.
+# Metadata, plus a silent layout check. Env files are opened only to prove the
+# fields-postgres-v2 map. Their bytes are not printed, so a deploy log cannot
+# carry a credential. A missing or escaping current link fails before
+# compose.yml is swapped: the running stack is still the previous one.
 komizo_scoped_env_ready() {
 	recorded=$(sed -n 's/^APP_DIR=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)
 	if [ "$recorded" != "$APP_DIR" ]; then
@@ -751,6 +752,56 @@ komizo_scoped_env_ready() {
 	recorded_gen=$(sed -n 's/^SCOPED_GENERATION=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)
 	if [ "$recorded_gen" != "$id" ]; then
 		echo "deploy: refusing: scoped generation mismatch" >&2
+		return 1
+	fi
+	if ! awk '
+	function bad(s) {
+		if (length(s) < 9 || length(s) > 4096) return 1
+		if (substr(s, 1, 8) == "sk_test_") return 1
+		if (substr(s, 1, 8) != "sk_live_") return 1
+		n = length(s)
+		for (i = 1; i <= n; i++) {
+			c = substr(s, i, 1)
+			if (c ~ /[ "#$'\''\\`]/) return 1
+			if (c < "!" || c > "~") return 1
+		}
+		return 0
+	}
+	BEGIN {
+		req["postgres.env"] = " POSTGRES_PASSWORD REVIK_MIGRATOR_PASSWORD REVIK_APP_PASSWORD REVIK_BACKUP_PASSWORD "
+		req["migrate.env"] = " DATABASE_MIGRATION_URL "
+		req["api.env"] = " DATABASE_URL WS_SECRET CLERK_ISSUER CLERK_JWKS_URL CLERK_AUTHORIZED_PARTIES CLERK_SECRET_KEY "
+		req["godot-api.env"] = " WS_SECRET "
+		secrets = 0
+		failed = 0
+	}
+	{
+		fn = FILENAME
+		sub(/^.*\//, "", fn)
+		if (index($0, "CLERK_SECRET_KEY") != 0) {
+			if (fn != "api.env" || $0 !~ /^CLERK_SECRET_KEY=/) failed = 1
+			secrets++
+			if (bad(substr($0, 18))) failed = 1
+		}
+		if ($0 ~ /^[A-Za-z0-9_]+=/) {
+			k = $0
+			sub(/=.*/, "", k)
+			seen[fn, k] = 1
+		}
+	}
+	END {
+		if (failed || secrets != 1) exit 1
+		for (fn in req) {
+			n = split(req[fn], keys, " ")
+			for (i = 1; i <= n; i++) {
+				if (keys[i] != "" && seen[fn, keys[i]] != 1) exit 1
+			}
+		}
+		exit 0
+	}
+	' "$gdir/postgres.env" "$gdir/migrate.env" "$gdir/api.env" "$gdir/godot-api.env"
+	then
+		echo "deploy: refusing: scoped env is not a fields-postgres-v2 generation" >&2
 		return 1
 	fi
 	return 0
@@ -883,12 +934,12 @@ case "$version" in
 		;;
 esac
 
-# fields-postgres-v1 always takes four arguments. The generation is not a
+# fields-postgres-v2 always takes four arguments. The generation is not a
 # secret and is not read from stdin; stdin remains the registry token, and is
 # left unread when the registry arguments are both empty. Any other app stays
 # at one or three arguments and rejects a fourth rather than ignoring it.
 expected_generation=""
-if [ "$SCOPED_ENV" = "fields-postgres-v1" ]; then
+if [ "$SCOPED_ENV" = "fields-postgres-v2" ]; then
 	if [ "$#" -ne 4 ]; then
 		echo "deploy: refusing: scoped generation missing" >&2
 		exit 1
@@ -946,8 +997,8 @@ then
 	fi
 	komizo_locked=1
 fi
-if [ "$SCOPED_ENV" = "fields-postgres-v1" ] && [ "${komizo_locked:-0}" != 1 ]; then
-	echo "deploy: refusing: fields-postgres-v1 requires the shared app lock" >&2
+if [ "$SCOPED_ENV" = "fields-postgres-v2" ] && [ "${komizo_locked:-0}" != 1 ]; then
+	echo "deploy: refusing: fields-postgres-v2 requires the shared app lock" >&2
 	exit 1
 fi
 
@@ -1149,7 +1200,7 @@ revert() {
 	return 0
 }
 
-if [ "$SCOPED_ENV" = "fields-postgres-v1" ]; then
+if [ "$SCOPED_ENV" = "fields-postgres-v2" ]; then
 	# Once, under the lock taken above, immediately before the first app-config
 	# mutation. The config image is still only in the staging directory.
 	if ! /usr/local/bin/provision-scoped-env-$APP_NAME --check-compose "$staging/compose.yml"; then
@@ -1764,8 +1815,8 @@ cd "__APP_DIR__"
 
 # This profile's values are host-local. A stale doas grant must not write them.
 profile="$(sed -n 's/^SCOPED_ENV=//p' "__STATE_FILE__" | tr -d '\r' | head -n 1)"
-if [ "$profile" = "fields-postgres-v1" ]; then
-	echo "set-secret: refusing: fields-postgres-v1 does not accept deploy-user secrets" >&2
+if [ "$profile" = "fields-postgres-v2" ]; then
+	echo "set-secret: refusing: fields-postgres-v2 does not accept deploy-user secrets" >&2
 	exit 1
 fi
 
@@ -1819,7 +1870,7 @@ chmod 755 "$SECRET_BIN"
 rm -f "$SCOPED_BIN" "$SCOPED_BIN.tmp" \
 	"/etc/periodic/15min/komizo-scoped-env-$APP_NAME" \
 	"/etc/local.d/komizo-scoped-env-$APP_NAME.start"
-if [ "$SCOPED_ENV" = "fields-postgres-v1" ]; then
+if [ "$SCOPED_ENV" = "fields-postgres-v2" ]; then
 	log "Installing $PROVISION_BIN and $STATUS_BIN"
 	cat > "$PROVISION_BIN.tmp" <<'KOMIZO_SCOPED_EOF'
 # __FIELDS_SCOPED_ENV_BODY__
@@ -2117,7 +2168,7 @@ cat >> /etc/doas.conf <<-EOF
 	# komizo: $CI_USER BEGIN
 	permit nopass $CI_USER as root cmd $DEPLOY_BIN
 EOF
-if [ "$SCOPED_ENV" = "fields-postgres-v1" ]; then
+if [ "$SCOPED_ENV" = "fields-postgres-v2" ]; then
 	# Status only. Provision is mode 0700 and is not in doas. set-secret is
 	# not granted for this profile; the script also refuses if a stale rule
 	# remains.
@@ -2396,13 +2447,15 @@ fi
 log "Done"
 SCOPED_HINT=""
 SCOPED_NOTE=""
-if [ "$SCOPED_ENV" = "fields-postgres-v1" ]; then
+if [ "$SCOPED_ENV" = "fields-postgres-v2" ]; then
 	SCOPED_HINT="doas $STATUS_BIN"
 	SCOPED_NOTE="
-When the fields-postgres-v1 profile is installed, '$CI_USER' can run
+When the fields-postgres-v2 profile is installed, '$CI_USER' can run
 $STATUS_BIN and nothing else for secrets. It prints one nonsecret status line.
 Provisioning is root-only: $PROVISION_BIN, once, before the first postgres
 start. It is not in doas. set-secret is not granted for this profile."
+	# CLERK_SECRET_KEY stays on the box. It is not a deploy argument and not
+	# a value this note or the status line can carry.
 fi
 cat <<EOF
 

@@ -254,7 +254,8 @@ func TestTTYClerkEntryDoesNotEchoValues(t *testing.T) {
 	issuer := "https://tty-ok-9f3a.example"
 	jwks := "https://tty-ok-9f3a.example/jwks"
 	parties := "https://app-tty-ok-9f3a.example"
-	markers := []string{issuer, jwks, parties, "tty-ok-9f3a", "app-tty-ok-9f3a"}
+	secret := "sk_live_TtyOk9f3aKey"
+	markers := []string{issuer, jwks, parties, secret, "tty-ok-9f3a", "app-tty-ok-9f3a"}
 
 	scriptPath, candidate, appDir := provisionTTYFixture(t)
 	run := startTTYProvision(t, scriptPath, candidate)
@@ -264,6 +265,8 @@ func TestTTYClerkEntryDoesNotEchoValues(t *testing.T) {
 	run.writeLine(t, jwks)
 	run.waitStderr(t, "CLERK_AUTHORIZED_PARTIES:", markers...)
 	run.writeLine(t, parties)
+	run.waitStderr(t, "CLERK_SECRET_KEY:", markers...)
+	run.writeLine(t, secret)
 
 	err := run.finish(t, 30*time.Second)
 	run.assertNoClerkEcho(t, markers...)
@@ -282,13 +285,23 @@ func TestTTYClerkEntryDoesNotEchoValues(t *testing.T) {
 	if !strings.Contains(string(body), "CLERK_ISSUER="+issuer) || !strings.Contains(string(body), "CLERK_JWKS_URL="+jwks) || !strings.Contains(string(body), "CLERK_AUTHORIZED_PARTIES="+parties) {
 		t.Fatal("terminal entry was not recorded")
 	}
+	if !strings.Contains(string(body), "CLERK_SECRET_KEY="+secret+"\n") {
+		t.Fatal("terminal production key was not recorded")
+	}
+	for _, name := range []string{"postgres.env", "migrate.env", "godot-api.env"} {
+		other, err := os.ReadFile(filepath.Join(appDir, "secrets", "current", name))
+		if err != nil || strings.Contains(string(other), "CLERK_SECRET_KEY") || strings.Contains(string(other), secret) {
+			t.Fatalf("%s is not confined", name)
+		}
+	}
 }
 
-func TestTTYClerkEntryRestoresEchoOnRefusal(t *testing.T) {
-	issuer := "https://tty-refuse-9f3a.example/$x"
-	jwks := "https://tty-refuse-9f3a.example/jwks"
-	parties := "https://app-tty-refuse-9f3a.example"
-	markers := []string{issuer, jwks, parties, "tty-refuse-9f3a", "app-tty-refuse-9f3a"}
+func TestTTYClerkSecretRestoresEchoWhenRejected(t *testing.T) {
+	issuer := "https://tty-badkey-9f3a.example"
+	jwks := "https://tty-badkey-9f3a.example/jwks"
+	parties := "https://app-tty-badkey-9f3a.example"
+	secret := "sk_test_TtyMustNotEcho"
+	markers := []string{issuer, jwks, parties, secret, "tty-badkey-9f3a", "app-tty-badkey-9f3a", "sk_test_", "sk_live_"}
 
 	scriptPath, candidate, appDir := provisionTTYFixture(t)
 	run := startTTYProvision(t, scriptPath, candidate)
@@ -298,6 +311,38 @@ func TestTTYClerkEntryRestoresEchoOnRefusal(t *testing.T) {
 	run.writeLine(t, jwks)
 	run.waitStderr(t, "CLERK_AUTHORIZED_PARTIES:", markers...)
 	run.writeLine(t, parties)
+	run.waitStderr(t, "CLERK_SECRET_KEY:", markers...)
+	run.writeLine(t, secret)
+
+	err := run.finish(t, 8*time.Second)
+	run.assertNoClerkEcho(t, markers...)
+	run.assertEchoRestored(t)
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() == 0 {
+		t.Fatalf("bad production key exit = %v, want refusal", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(appDir, "secrets")); !os.IsNotExist(statErr) {
+		t.Fatal("rejected production key wrote secrets")
+	}
+}
+
+func TestTTYClerkEntryRestoresEchoOnRefusal(t *testing.T) {
+	issuer := "https://tty-refuse-9f3a.example/$x"
+	jwks := "https://tty-refuse-9f3a.example/jwks"
+	parties := "https://app-tty-refuse-9f3a.example"
+	secret := "sk_live_TtyRefuse9f3a"
+	markers := []string{issuer, jwks, parties, secret, "tty-refuse-9f3a", "app-tty-refuse-9f3a"}
+
+	scriptPath, candidate, appDir := provisionTTYFixture(t)
+	run := startTTYProvision(t, scriptPath, candidate)
+	run.waitStderr(t, "CLERK_ISSUER:", markers...)
+	run.writeLine(t, issuer)
+	run.waitStderr(t, "CLERK_JWKS_URL:", markers...)
+	run.writeLine(t, jwks)
+	run.waitStderr(t, "CLERK_AUTHORIZED_PARTIES:", markers...)
+	run.writeLine(t, parties)
+	run.waitStderr(t, "CLERK_SECRET_KEY:", markers...)
+	run.writeLine(t, secret)
 
 	err := run.finish(t, 8*time.Second)
 	run.assertNoClerkEcho(t, markers...)
