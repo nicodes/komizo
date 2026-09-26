@@ -81,9 +81,12 @@ volumes:
 `
 
 func dockerStub(mount string) string {
-	return `#!/bin/sh
-if [ "$1" = "compose" ]; then
-  exec /usr/bin/docker "$@"
+	docker, err := exec.LookPath("docker")
+	if err != nil {
+		docker = "/usr/bin/docker"
+	}
+	return "#!/bin/sh\nreal=" + shellQuote(docker) + "\n" + `if [ "$1" = "compose" ]; then
+  exec "$real" "$@"
 fi
 if [ "$1" = "ps" ]; then
   exit 0
@@ -104,6 +107,13 @@ exit 1
 `
 }
 
+func writeRootStubs(t *testing.T, bin string) {
+	t.Helper()
+	writeStub(t, bin, "id", "#!/bin/sh\nif [ \"$1\" = \"-u\" ]; then echo 0; exit 0; fi\nexit 0\n")
+	writeStub(t, bin, "chown", "#!/bin/sh\nexit 0\n")
+	writeStub(t, bin, "stat", "#!/bin/sh\nfmt=\nfile=\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    -c) fmt=$2; shift 2 ;;\n    *) file=$1; shift ;;\n  esac\ndone\nif [ \"$fmt\" = \"%u\" ]; then echo 0; exit 0; fi\nif [ -d \"$file\" ]; then echo 700; else echo 600; fi\n")
+}
+
 func scopedPaths(t *testing.T) (root, appDir, stateFile, lock, bin string) {
 	t.Helper()
 	root = t.TempDir()
@@ -118,6 +128,7 @@ func scopedPaths(t *testing.T) (root, appDir, stateFile, lock, bin string) {
 		t.Fatal(err)
 	}
 	writeStub(t, bin, "docker", dockerStub(""))
+	writeRootStubs(t, bin)
 	t.Setenv("PATH", bin+":/usr/bin:/bin")
 	return root, appDir, stateFile, lock, bin
 }
@@ -144,8 +155,13 @@ func TestProvisionWritesTenValuesOnceAndDoesNotEchoThem(t *testing.T) {
 	}
 	_, appDir, stateFile, lock, _ := scopedPaths(t)
 	writeState(t, stateFile, appDir)
-	writeCompose(t, appDir, placeholderCompose)
+	live := "services:\n  db:\n    image: pb:1\n"
+	writeCompose(t, appDir, live)
 	if err := os.WriteFile(filepath.Join(appDir, "secrets.env"), []byte("POCKETBASE_ADMIN_PASSWORD=leave-me\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	candidate := filepath.Join(t.TempDir(), "candidate.yml")
+	if err := os.WriteFile(candidate, []byte(pgCompose), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	clerk := filepath.Join(t.TempDir(), "clerk")
@@ -155,7 +171,7 @@ func TestProvisionWritesTenValuesOnceAndDoesNotEchoThem(t *testing.T) {
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	out, code := runScript(t, path, nil, "--clerk-file", clerk)
+	out, code := runScript(t, path, nil, "--clerk-file", clerk, "--compose-file", candidate)
 	if code != 0 {
 		t.Fatalf("provision failed: %s", out)
 	}
@@ -175,6 +191,10 @@ func TestProvisionWritesTenValuesOnceAndDoesNotEchoThem(t *testing.T) {
 	kept, err := os.ReadFile(filepath.Join(appDir, "secrets.env"))
 	if err != nil || string(kept) != "POCKETBASE_ADMIN_PASSWORD=leave-me\n" {
 		t.Fatalf("secrets.env changed: %q %v", kept, err)
+	}
+	gotLive, err := os.ReadFile(filepath.Join(appDir, "compose.yml"))
+	if err != nil || string(gotLive) != live {
+		t.Fatalf("live compose changed: %q %v", gotLive, err)
 	}
 	link, err := os.Readlink(filepath.Join(appDir, "secrets", "current"))
 	if err != nil || link != "generations/"+id {
@@ -199,7 +219,7 @@ func TestProvisionWritesTenValuesOnceAndDoesNotEchoThem(t *testing.T) {
 	if err != nil || !strings.Contains(string(rec), "SCOPED_GENERATION="+id+"\n") {
 		t.Fatalf("record missing generation: %s", rec)
 	}
-	again, code := runScript(t, path, nil, "--clerk-file", clerk)
+	again, code := runScript(t, path, nil, "--compose-file", candidate)
 	if code == 0 || !strings.Contains(again, "already exists") {
 		t.Fatalf("second provision code %d\n%s", code, again)
 	}
@@ -221,12 +241,16 @@ func TestProvisionRefusesInitializedPostgresAndLeavesPocketBase(t *testing.T) {
 	writeCompose(t, appDir, pgCompose)
 	clerk := filepath.Join(t.TempDir(), "clerk")
 	writeClerk(t, clerk, "https://app.example")
+	candidate := filepath.Join(t.TempDir(), "candidate.yml")
+	if err := os.WriteFile(candidate, []byte(pgCompose), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	script := renderScoped(t, fieldsScopedEnvBody, appDir, stateFile, lock)
 	path := filepath.Join(t.TempDir(), "provision")
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	out, code := runScript(t, path, []string{"STUB_MOUNT=" + mount}, "--clerk-file", clerk)
+	out, code := runScript(t, path, []string{"STUB_MOUNT=" + mount}, "--clerk-file", clerk, "--compose-file", candidate)
 	if code == 0 || !strings.Contains(out, "already initialized") {
 		t.Fatalf("initialized volume should refuse, code %d\n%s", code, out)
 	}
@@ -247,13 +271,24 @@ func TestProvisionRefusesInitializedPostgresAndLeavesPocketBase(t *testing.T) {
 	}
 	writeState(t, stateFile, pbDir)
 	writeCompose(t, pbDir, pbCompose)
-	out, code = runScript(t, path, []string{"STUB_MOUNT=" + pbMount}, "--clerk-file", clerk)
-	if code != 0 {
-		t.Fatalf("pocketbase volume should not block a fresh postgres provision: %s", out)
+	before, err := os.ReadFile(filepath.Join(pbDir, "compose.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, code = runScript(t, path, []string{"STUB_MOUNT=" + pbMount}, "--clerk-file", clerk, "--compose-file", filepath.Join(pbDir, "compose.yml"))
+	if code == 0 || !strings.Contains(out, "not the fields-postgres-v1 map") {
+		t.Fatalf("pocketbase compose should refuse, code %d\n%s", code, out)
+	}
+	after, err := os.ReadFile(filepath.Join(pbDir, "compose.yml"))
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("live pocketbase compose changed: %q %v", after, err)
 	}
 	got, err := os.ReadFile(filepath.Join(pbMount, "data.db"))
 	if err != nil || string(got) != "pocketbase" {
 		t.Fatalf("pocketbase data changed: %q %v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(pbDir, "secrets", "current")); !os.IsNotExist(err) {
+		t.Fatal("pocketbase compose produced a ready generation")
 	}
 }
 
@@ -280,7 +315,23 @@ func TestStatusLineAndMissing(t *testing.T) {
 	if err := os.WriteFile(pp, []byte(prov), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	pout, pcode := runScript(t, pp, nil, "--clerk-file", clerk)
+	placeholder := filepath.Join(t.TempDir(), "placeholder.yml")
+	if err := os.WriteFile(placeholder, []byte(placeholderCompose), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pout, pcode := runScript(t, pp, nil, "--clerk-file", clerk, "--compose-file", placeholder)
+	if pcode == 0 || !strings.Contains(pout, "not the fields-postgres-v1 map") {
+		t.Fatalf("placeholder should not provision, code %d\n%s", pcode, pout)
+	}
+	out, code = runScript(t, path, nil)
+	if code != 0 || out != "wire=v2 profile=fields-postgres-v1 source=host-local state=missing generation=none reason=no-current\n" {
+		t.Fatalf("placeholder provision claimed ready, code %d %q", code, out)
+	}
+	candidate := filepath.Join(t.TempDir(), "candidate.yml")
+	if err := os.WriteFile(candidate, []byte(pgCompose), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pout, pcode = runScript(t, pp, nil, "--clerk-file", clerk, "--compose-file", candidate)
 	if pcode != 0 {
 		t.Fatal(pout)
 	}
@@ -301,6 +352,10 @@ func TestProvisionRefusesBadClerkBeforeWrite(t *testing.T) {
 	writeState(t, stateFile, appDir)
 	writeCompose(t, appDir, placeholderCompose)
 	clerk := filepath.Join(t.TempDir(), "clerk")
+	candidate := filepath.Join(t.TempDir(), "candidate.yml")
+	if err := os.WriteFile(candidate, []byte(pgCompose), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(clerk, []byte("CLERK_ISSUER=https://clerk.example/$x\nCLERK_JWKS_URL=https://clerk.example/jwks\nCLERK_AUTHORIZED_PARTIES=https://app.example\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +364,7 @@ func TestProvisionRefusesBadClerkBeforeWrite(t *testing.T) {
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	out, code := runScript(t, path, nil, "--clerk-file", clerk)
+	out, code := runScript(t, path, nil, "--clerk-file", clerk, "--compose-file", candidate)
 	if code == 0 || strings.Contains(out, "$x") {
 		t.Fatalf("bad clerk code %d\n%s", code, out)
 	}
@@ -318,7 +373,46 @@ func TestProvisionRefusesBadClerkBeforeWrite(t *testing.T) {
 	}
 }
 
+func TestProvisionRefusesPermutedEnvFiles(t *testing.T) {
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker is not installed")
+	}
+	_, appDir, stateFile, lock, _ := scopedPaths(t)
+	writeState(t, stateFile, appDir)
+	swapped := strings.Replace(pgCompose,
+		"image: postgres:16\n    env_file: [./secrets/current/postgres.env]",
+		"image: postgres:16\n    env_file: [./secrets/current/migrate.env]", 1)
+	swapped = strings.Replace(swapped,
+		"image: migrate:1\n    env_file: [./secrets/current/migrate.env]",
+		"image: migrate:1\n    env_file: [./secrets/current/postgres.env]", 1)
+	candidate := filepath.Join(t.TempDir(), "swapped.yml")
+	if err := os.WriteFile(candidate, []byte(swapped), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	clerk := filepath.Join(t.TempDir(), "clerk")
+	writeClerk(t, clerk, "https://app.example")
+	script := renderScoped(t, fieldsScopedEnvBody, appDir, stateFile, lock)
+	path := filepath.Join(t.TempDir(), "provision")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	out, code := runScript(t, path, nil, "--clerk-file", clerk, "--compose-file", candidate)
+	if code == 0 || !strings.Contains(out, "not the fields-postgres-v1 map") {
+		t.Fatalf("permuted env files should refuse, code %d\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(appDir, "secrets", "current")); !os.IsNotExist(err) {
+		t.Fatal("permuted map wrote a generation")
+	}
+}
+
 func TestDeployReadyComparesExpectedGeneration(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeRootStubs(t, bin)
+	t.Setenv("PATH", bin+":/usr/bin:/bin")
 	const start = "komizo_scoped_env_ready() {"
 	const end = "# Operator-written host-wide floors"
 	i := strings.Index(AlpineScript, start)
@@ -327,7 +421,6 @@ func TestDeployReadyComparesExpectedGeneration(t *testing.T) {
 		t.Fatal("deploy preflight function was not found")
 	}
 	fn := AlpineScript[i:j]
-	dir := t.TempDir()
 	app := filepath.Join(dir, "app")
 	id := "0123456789abcdef0123456789abcdef"
 	gen := filepath.Join(app, "secrets", "generations", id)

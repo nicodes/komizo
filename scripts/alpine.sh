@@ -606,6 +606,24 @@ fi
 if [ -n "$GEN_KEEP" ]; then
 	printf 'SCOPED_GENERATION=%s\n' "$GEN_KEEP" >> "$STATE_TMP"
 fi
+VOL_KEEP=""
+PROJECT_KEEP=""
+if [ -f "$STATE_FILE" ]; then
+	VOL_KEEP="$(sed -n 's/^SCOPED_PG_VOLUME=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)"
+	PROJECT_KEEP="$(sed -n 's/^SCOPED_COMPOSE_PROJECT=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)"
+	case "$VOL_KEEP" in
+		*[!A-Za-z0-9_.-]*|'') VOL_KEEP="" ;;
+	esac
+	case "$PROJECT_KEEP" in
+		*[!a-z0-9_-]*|'') PROJECT_KEEP="" ;;
+	esac
+fi
+if [ -n "$VOL_KEEP" ]; then
+	printf 'SCOPED_PG_VOLUME=%s\n' "$VOL_KEEP" >> "$STATE_TMP"
+fi
+if [ -n "$PROJECT_KEEP" ]; then
+	printf 'SCOPED_COMPOSE_PROJECT=%s\n' "$PROJECT_KEEP" >> "$STATE_TMP"
+fi
 chown root:root "$STATE_TMP"
 chmod 640 "$STATE_TMP"
 mv -f "$STATE_TMP" "$STATE_FILE"

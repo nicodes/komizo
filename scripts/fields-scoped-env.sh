@@ -41,13 +41,31 @@ done
 
 check_compose=""
 clerk_file=""
-if [ "${1:-}" = "--check-compose" ]; then
-	[ "$#" -eq 2 ] || fail "refusing: --check-compose needs one path"
-	check_compose=$2
-elif [ "${1:-}" = "--clerk-file" ]; then
-	[ "$#" -eq 2 ] || fail "refusing: --clerk-file needs one path"
-	clerk_file=$2
-elif [ "$#" -ne 0 ]; then
+compose_file=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--check-compose)
+			[ "$#" -ge 2 ] || fail "refusing: --check-compose needs one path"
+			[ -z "$check_compose" ] || fail "refusing: unexpected arguments"
+			check_compose=$2
+			shift 2
+			;;
+		--clerk-file)
+			[ "$#" -ge 2 ] || fail "refusing: --clerk-file needs one path"
+			[ -z "$clerk_file" ] || fail "refusing: unexpected arguments"
+			clerk_file=$2
+			shift 2
+			;;
+		--compose-file)
+			[ "$#" -ge 2 ] || fail "refusing: --compose-file needs one path"
+			[ -z "$compose_file" ] || fail "refusing: unexpected arguments"
+			compose_file=$2
+			shift 2
+			;;
+		*) fail "refusing: unexpected arguments" ;;
+	esac
+done
+if [ -n "$check_compose" ] && { [ -n "$clerk_file" ] || [ -n "$compose_file" ]; }; then
 	fail "refusing: unexpected arguments"
 fi
 
@@ -82,13 +100,23 @@ function qval(s,   t) {
 }
 BEGIN { bad = 0; pg = 0; project = ""; in_vol = 0; volkey = "" }
 {
+	if ($0 ~ /"aliases":/) bad = 1
 	if ($0 ~ /^  "name": /) {
 		v = qval(substr($0, 10))
 		if (v == "" || project != "") bad = 1
 		else project = v
 	}
-	if ($0 ~ /^  "volumes": \{$/) in_vol = 1
+	if ($0 ~ /^  "volumes": \{$/) { in_vol = 1; in_svc = 0; svc = "" }
 	if (in_vol && $0 ~ /^  \}$/) { in_vol = 0; volkey = "" }
+	if ($0 ~ /^  "services": \{$/) { in_svc = 1; in_vol = 0; svc = "" }
+	if (in_svc && $0 ~ /^  \}$/) { in_svc = 0; svc = "" }
+	if (in_svc && $0 ~ /^    "[A-Za-z0-9_-]+": \{$/) {
+		svc = $0
+		sub(/^    "/, "", svc)
+		sub(/": \{$/, "", svc)
+		print "service " svc
+	}
+	if (in_svc && $0 ~ /^    \},?$/) svc = ""
 	if (in_vol && $0 ~ /^    "[A-Za-z0-9_-]+": \{$/) {
 		volkey = $0
 		sub(/^    "/, "", volkey)
@@ -100,25 +128,30 @@ BEGIN { bad = 0; pg = 0; project = ""; in_vol = 0; volkey = "" }
 		else print "volume-key " volkey " " v
 		volkey = ""
 	}
-	if ($0 ~ /^          "path": /) {
+	if (in_svc && $0 ~ /^          "path": /) {
 		v = qval(substr($0, 18))
-		if (v == "") bad = 1
-		else print "env " v
+		if (v == "" || svc == "") bad = 1
+		else print "service-env " svc " " v
 	}
-	if ($0 ~ /^          "source": /) {
+	if (in_svc && $0 ~ /^          "source": /) {
 		last_source = qval(substr($0, 20))
 		if (last_source == "") bad = 1
 	}
-	if ($0 ~ /^          "target": "\/var\/lib\/postgresql\/data",?$/) {
+	if (in_svc && $0 ~ /^          "target": "\/var\/lib\/postgresql\/data",?$/) {
+		if (svc == "" || last_source == "") bad = 1
 		pg++
 		pg_source = last_source
+		pg_service = svc
 	}
 }
 END {
 	if (bad || project == "" || project !~ /^[a-z0-9][a-z0-9_-]*$/) exit 1
 	print "project " project
 	print "pg-count " pg
-	if (pg == 1) print "pg-source " pg_source
+	if (pg == 1) {
+		print "pg-source " pg_source
+		print "pg-service " pg_service
+	}
 }
 ' > "$facts_tmp"; then
 		rm -f "$facts_tmp.err"
@@ -135,21 +168,64 @@ compose_map_ok() {
 	pg=$(sed -n 's/^pg-count //p' "$facts_tmp" | head -n 1)
 	[ "$pg" = "1" ] || return 1
 	src_key=$(sed -n 's/^pg-source //p' "$facts_tmp" | head -n 1)
-	grep -q "^volume-key $src_key " "$facts_tmp" || return 1
-	want1="$APP_DIR/secrets/current/postgres.env"
-	want2="$APP_DIR/secrets/current/migrate.env"
-	want3="$APP_DIR/secrets/current/api.env"
-	want4="$APP_DIR/secrets/current/godot-api.env"
-	got=$(sed -n 's/^env //p' "$facts_tmp" | sort)
-	need=$(printf '%s\n' "$want1" "$want2" "$want3" "$want4" | sort)
-	[ "$got" = "$need" ]
+	pg_service=$(sed -n 's/^pg-service //p' "$facts_tmp" | head -n 1)
+	[ "$src_key" = "pg_data" ] || return 1
+	[ "$pg_service" = "postgres" ] || return 1
+	grep -q "^volume-key pg_data " "$facts_tmp" || return 1
+	# Per service, not a sorted set. postgres must not receive migrate.env,
+	# and no other service may carry an env file, including secrets.env.
+	got=$(sed -n 's/^service-env //p' "$facts_tmp" | sort)
+	need=$(printf '%s\n' \
+		"api $APP_DIR/secrets/current/api.env" \
+		"godot-api $APP_DIR/secrets/current/godot-api.env" \
+		"migrate $APP_DIR/secrets/current/migrate.env" \
+		"postgres $APP_DIR/secrets/current/postgres.env" | sort)
+	[ "$got" = "$need" ] || return 1
+	for svc in postgres migrate api godot-api; do
+		n=$(grep -c "^service $svc\$" "$facts_tmp" || true)
+		[ "$n" = "1" ] || return 1
+	done
+	return 0
+}
+
+candidate_ok() {
+	f=$1
+	case "$f" in
+		/*) ;;
+		*) return 1 ;;
+	esac
+	case "$f" in
+		*..*) return 1 ;;
+	esac
+	[ -f "$f" ] && [ ! -L "$f" ] || return 1
+	owner=$(stat -c %u "$f")
+	mode=$(stat -c %a "$f")
+	[ "$owner" = "0" ] || return 1
+	case "$mode" in
+		600|644) ;;
+		*) return 1 ;;
+	esac
+	return 0
 }
 
 if [ -n "$check_compose" ]; then
 	if ! compose_map_ok "$check_compose"; then
 		fail "refusing: compose file is not the fields-postgres-v1 map"
 	fi
+	recorded_vol=$(state_get SCOPED_PG_VOLUME || true)
+	got_vol=$(sed -n 's/^volume-key pg_data //p' "$facts_tmp" | head -n 1)
+	recorded_project=$(state_get SCOPED_COMPOSE_PROJECT || true)
+	got_project=$(sed -n 's/^project //p' "$facts_tmp" | head -n 1)
+	if [ -z "$recorded_vol" ] || [ "$got_vol" != "$recorded_vol" ] || [ "$got_project" != "$recorded_project" ]; then
+		fail "refusing: compose project or postgres volume does not match the provisioned identity"
+	fi
 	exit 0
+fi
+if [ -z "$compose_file" ]; then
+	fail "refusing: a validated postgres compose candidate is required"
+fi
+if ! candidate_ok "$compose_file"; then
+	fail "refusing: compose candidate must be a root-owned regular file, mode 600 or 644, not a symlink"
 fi
 
 # The rest writes secrets. One provision at a time, same lock as deploy.
@@ -267,18 +343,14 @@ while [ -n "$rest" ]; do
 	https_ok "$origin" 0 || fail "refusing: CLERK_AUTHORIZED_PARTIES is not comma-separated https origins"
 done
 
-# Freshness from the compose file that is actually on disk, then from the
-# volume names docker compose itself reports. A non-postgres volume, such as
-# PocketBase pb_data, is left in place. A postgres volume that is not empty
-# and not provably uninitialized fails closed. Nothing here deletes a volume.
-[ -f "$APP_DIR/compose.yml" ] && [ ! -L "$APP_DIR/compose.yml" ] || fail "refusing: compose.yml is missing or a symlink"
-scoped_facts "$APP_DIR/compose.yml" || fail "refusing: cannot read compose project or volumes"
+# The live compose.yml is not the candidate and is not modified. A placeholder
+# or PocketBase file cannot prove the postgres volume, so it is not fresh.
+if ! compose_map_ok "$compose_file"; then
+	fail "refusing: compose candidate is not the fields-postgres-v1 map"
+fi
 project=$(sed -n 's/^project //p' "$facts_tmp" | head -n 1)
-pg=$(sed -n 's/^pg-count //p' "$facts_tmp" | head -n 1)
-case "$pg" in
-	0|1) ;;
-	*) fail "refusing: compose declares more than one postgres data mount" ;;
-esac
+pg_volume=$(sed -n 's/^volume-key pg_data //p' "$facts_tmp" | head -n 1)
+[ -n "$project" ] && [ -n "$pg_volume" ] || fail "refusing: postgres volume identity is missing"
 if ! command -v docker >/dev/null 2>&1; then
 	fail "refusing: docker is required to prove the data volume is fresh"
 fi
@@ -335,13 +407,6 @@ volume_state() {
 	fi
 	return 0
 }
-
-pg_volume=""
-if [ "$pg" = "1" ]; then
-	src_key=$(sed -n 's/^pg-source //p' "$facts_tmp" | head -n 1)
-	pg_volume=$(sed -n "s/^volume-key $src_key //p" "$facts_tmp" | head -n 1)
-	[ -n "$pg_volume" ] || fail "refusing: postgres data volume name is not in compose config"
-fi
 
 if ! labeled=$(docker volume ls -q --filter "label=com.docker.compose.project=$project"); then
 	fail "refusing: cannot list compose volumes"
@@ -444,7 +509,11 @@ if grep -q '^SCOPED_GENERATION=' "$STATE_FILE"; then
 	fail "refusing: a generation is already recorded"
 fi
 cp -a "$STATE_FILE" "$state_tmp"
-printf 'SCOPED_GENERATION=%s\n' "$id" >> "$state_tmp"
+{
+	printf 'SCOPED_GENERATION=%s\n' "$id"
+	printf 'SCOPED_COMPOSE_PROJECT=%s\n' "$project"
+	printf 'SCOPED_PG_VOLUME=%s\n' "$pg_volume"
+} >> "$state_tmp"
 chown root:root "$state_tmp"
 chmod 640 "$state_tmp"
 mv -f "$state_tmp" "$STATE_FILE"
