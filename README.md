@@ -78,6 +78,11 @@ komizo add    --host root@box ...  # a deploy account and its two privileged com
 `provision-scoped-env-fieldsofrevik` (mode 0700, not in doas) and a status-only
 `scoped-env-status-fieldsofrevik`. The deploy account may run status. It may
 not run provision, and `set-secret` is not granted for this profile. Provision
+takes `--compose-file`, a root-owned regular file that is the postgres compose
+candidate. It does not read or replace the live `compose.yml`. The candidate
+must map each service to its own env file, mount `pg_data` on `postgres`, and
+name a volume that is absent or empty. A placeholder or PocketBase compose is
+refused, and the PocketBase volume is left in place. Provision
 reads three Clerk values from a root-local file or the terminal, generates the
 four database passwords and `WS_SECRET` on the host, and derives the two
 postgres URLs. It writes four mode-0600 files and switches `secrets/current`
