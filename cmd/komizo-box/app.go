@@ -289,6 +289,11 @@ func runVerb(ctx context.Context, verb string, sub subject, tail int, svc, by st
 		}
 	}
 
+	if verb == "start" || verb == "restart" {
+		if err := box.RefuseScopedStart(sub.root, sub.app); err != nil {
+			return err
+		}
+	}
 	if err := compose(ctx, sub.dir, sub.project, composeArgs(verb, tail, svc)...); err != nil {
 		if verb == "stop" && marks {
 			// The stop did not happen, so the record of it must not survive --
