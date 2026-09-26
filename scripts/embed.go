@@ -30,7 +30,38 @@ import (
 // shellcheck through one glob -- none of which is true of a Go string.
 
 //go:embed alpine.sh
-var AlpineScript string
+var alpineScriptRaw string
+
+//go:embed fields-scoped-env.sh
+var fieldsScopedEnvBody string
+
+//go:embed fields-scoped-status.sh
+var fieldsScopedStatusBody string
+
+// AlpineScript is alpine.sh with the fields scoped-env writer spliced into
+// the quoted heredoc that installs it. The writer is its own file so
+// shellcheck sees it; the box receives one script, so the splice happens
+// before anything is piped.
+var AlpineScript = mustSpliceScopedEnv(alpineScriptRaw, fieldsScopedEnvBody, fieldsScopedStatusBody)
+
+func mustSpliceScopedEnv(raw, body, status string) string {
+	const marker = "# __FIELDS_SCOPED_ENV_BODY__\n"
+	const statusMarker = "# __FIELDS_SCOPED_STATUS_BODY__\n"
+	if strings.Count(raw, marker) != 1 {
+		panic("scripts: alpine.sh must contain exactly one fields scoped-env body marker")
+	}
+	if strings.Count(raw, statusMarker) != 1 {
+		panic("scripts: alpine.sh must contain exactly one fields scoped-env status marker")
+	}
+	if !strings.HasPrefix(body, "#!/bin/sh\n") {
+		panic("scripts: fields-scoped-env.sh must start with a shebang")
+	}
+	if !strings.HasPrefix(status, "#!/bin/sh\n") {
+		panic("scripts: fields-scoped-status.sh must start with a shebang")
+	}
+	out := strings.Replace(raw, marker, body, 1)
+	return strings.Replace(out, statusMarker, status, 1)
+}
 
 //go:embed alpine-remove.sh
 var AlpineRemoveScript string

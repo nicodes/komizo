@@ -78,7 +78,7 @@ exit 0
 		"$TASK_BIN", "/usr/local/bin/task-blog",
 	).Replace(body)
 	// The section opens mid-script, so give it the two things it reads.
-	b.section = "set -eu\nOLD_CI_USER=\"\"\nTASKS=\"\"\nlog() { :; }\ndie() { echo \"error: $*\" >&2; exit 1; }\n" +
+	b.section = "set -eu\nOLD_CI_USER=\"\"\nTASKS=\"\"\nSCOPED_ENV=\"\"\nlog() { :; }\ndie() { echo \"error: $*\" >&2; exit 1; }\n" +
 		b.section
 	return b
 }

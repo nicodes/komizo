@@ -73,6 +73,23 @@ komizo proxy  --host root@box      # one Caddy, terminating TLS for every app
 komizo add    --host root@box ...  # a deploy account and its two privileged commands
 ```
 
+`komizo add --scoped-env fields-postgres-v1` is a separate opt-in, and only for
+`--app fieldsofrevik`. It installs a root-only
+`provision-scoped-env-fieldsofrevik` (mode 0700, not in doas) and a status-only
+`scoped-env-status-fieldsofrevik`. The deploy account may run status. It may
+not run provision, and `set-secret` is not granted for this profile. Provision
+reads three Clerk values from a root-local file or the terminal, generates the
+four database passwords and `WS_SECRET` on the host, and derives the two
+postgres URLs. It writes four mode-0600 files and switches `secrets/current`
+once. A second run refuses. It does not restart containers or delete a
+PocketBase volume. Deploy of this profile takes a fourth argument, the
+expected generation id, and checks it under the app lock before changing
+config. Other apps still take one or three arguments and reject a fourth.
+`komizo remove` deletes the commands. `KEEP_DATA=1` leaves the app directory,
+including `secrets/`, and does not read those files. Clerk values that contain
+space, `"`, `#`, `$`, `'`, backslash, or backtick are refused: Fields compose
+still uses the short `env_file` form and does not set `format: raw`.
+
 **Provisioning** is shell, piped down the connection that is already open, run
 once and thrown away. It is the half that CHANGES a machine, and it runs as root
 exactly as long as it takes.

@@ -20,6 +20,11 @@ type addOpts struct {
 	knownAs string
 	task    string
 	taskSet bool
+	// scopedEnv is the fixed fields-postgres-v1 profile, or empty to revoke.
+	// scopedEnvSet distinguishes an explicit edit from omission, which keeps
+	// the recorded profile across komizo update.
+	scopedEnv    string
+	scopedEnvSet bool
 	// keepKey leaves the deploy key alone, for an edit that is about settings.
 	keepKey bool
 	// clearKnownAs is whether --known-as was GIVEN, as opposed to what it was
@@ -45,6 +50,7 @@ func (o *addOpts) bind(fs *flag.FlagSet) {
 	fs.StringVar(&o.keyPath, "key", "", "also write the keypair here (default: not written, printed instead)")
 	fs.StringVar(&o.knownAs, "known-as", "", "other hostname(s) CI connects by, comma-separated (host keys are pinned per name)")
 	fs.StringVar(&o.task, "task", "", "fixed task profile; release-identity-backfill or termcade-operations (empty revokes)")
+	fs.StringVar(&o.scopedEnv, "scoped-env", "", "fixed scoped-env profile; fields-postgres-v1 for fieldsofrevik (empty revokes)")
 	fs.IntVar(&o.port, "port", 22, "SSH port")
 	fs.BoolVar(&o.hardenSSHD, "harden-sshd", false, "also disable password auth and root password login for EVERY user")
 	fs.BoolVar(&o.acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
@@ -165,6 +171,9 @@ func RunAdd(args []string) error {
 		if f.Name == "task" {
 			o.taskSet = true
 		}
+		if f.Name == "scoped-env" {
+			o.scopedEnvSet = true
+		}
 	})
 	if o.taskSet {
 		if o.task != "" && o.task != "release-identity-backfill" && o.task != "termcade-operations" {
@@ -172,6 +181,14 @@ func RunAdd(args []string) error {
 		}
 		if o.task != "" && o.app != "termcade" {
 			return fmt.Errorf("--task %s is defined only for app termcade", o.task)
+		}
+	}
+	if o.scopedEnvSet {
+		if o.scopedEnv != "" && o.scopedEnv != "fields-postgres-v1" {
+			return fmt.Errorf("--scoped-env must be fields-postgres-v1, or empty to revoke")
+		}
+		if o.scopedEnv != "" && o.app != "fieldsofrevik" {
+			return fmt.Errorf("--scoped-env %s is defined only for app fieldsofrevik", o.scopedEnv)
 		}
 	}
 
@@ -205,15 +222,17 @@ func RunAdd(args []string) error {
 	}
 
 	res, err := performAdd(addPlan{
-		tgt:     tgt,
-		app:     o.app,
-		user:    o.user,
-		config:  o.config,
-		appDir:  o.appDir,
-		keyPath: o.keyPath,
-		knownAs: knownAs,
-		task:    o.task,
-		taskSet: o.taskSet,
+		tgt:          tgt,
+		app:          o.app,
+		user:         o.user,
+		config:       o.config,
+		appDir:       o.appDir,
+		keyPath:      o.keyPath,
+		knownAs:      knownAs,
+		task:         o.task,
+		taskSet:      o.taskSet,
+		scopedEnv:    o.scopedEnv,
+		scopedEnvSet: o.scopedEnvSet,
 		// Only an answer when the flag was given AND resolved to nothing.
 		// Passing names and clearing are not the same request.
 		clearKnownAs: o.clearKnownAs && len(knownAs) == 0,
@@ -250,8 +269,10 @@ type addPlan struct {
 	knownAs []string
 	// task is a catalog key, never a path or command. taskSet distinguishes an
 	// explicit empty value (revoke) from omission (preserve recorded policy).
-	task    string
-	taskSet bool
+	task         string
+	taskSet      bool
+	scopedEnv    string
+	scopedEnvSet bool
 	// clearKnownAs says the empty knownAs above is an answer rather than a
 	// silence. The server keeps the recorded names when it is not told any,
 	// which is what a config-image change means by saying nothing -- so without
@@ -326,14 +347,16 @@ func performAdd(p addPlan, out progress, runner func(script string, env map[stri
 	// because that is what the script reads back; empty means "unchanged",
 	// which is what a config-image change is saying.
 	env := map[string]string{
-		"KNOWN_AS":     strings.Join(p.knownAs, ","),
-		"CI_PUBKEY":    kp.public,
-		"CI_USER":      p.user,
-		"APP_NAME":     p.app,
-		"CONFIG_IMAGE": p.config,
-		"HARDEN_SSH":   boolEnv(p.harden),
-		"TASKS":        p.task,
-		"TASKS_SET":    boolEnv(p.taskSet),
+		"KNOWN_AS":       strings.Join(p.knownAs, ","),
+		"CI_PUBKEY":      kp.public,
+		"CI_USER":        p.user,
+		"APP_NAME":       p.app,
+		"CONFIG_IMAGE":   p.config,
+		"HARDEN_SSH":     boolEnv(p.harden),
+		"TASKS":          p.task,
+		"TASKS_SET":      boolEnv(p.taskSet),
+		"SCOPED_ENV":     p.scopedEnv,
+		"SCOPED_ENV_SET": boolEnv(p.scopedEnvSet),
 		// Only ever 1 when the caller means "none", never as a matter of course:
 		// the server reads an empty KNOWN_AS as "not mentioned" for every other
 		// operation, and that is the reading a config-image change needs.
