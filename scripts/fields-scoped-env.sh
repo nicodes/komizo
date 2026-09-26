@@ -232,7 +232,7 @@ fi
 if ! command -v flock >/dev/null 2>&1; then
 	fail "refusing: flock is required"
 fi
-mkdir -p /run/komizo
+mkdir -p "$(dirname "$LOCK_FILE")"
 : > "$LOCK_FILE"
 exec 9>"$LOCK_FILE"
 if ! flock -w 300 9; then

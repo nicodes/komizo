@@ -40,7 +40,7 @@ esac
 if ! command -v flock >/dev/null 2>&1; then
 	exit 1
 fi
-mkdir -p /run/komizo
+mkdir -p "$(dirname "$LOCK_FILE")"
 : > "$LOCK_FILE"
 exec 9>"$LOCK_FILE"
 if ! flock -w 300 9; then
