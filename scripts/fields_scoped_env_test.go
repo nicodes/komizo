@@ -514,15 +514,19 @@ func TestStatusRejectsV1RecordAndTenKeyGeneration(t *testing.T) {
 	}
 	out, code = runScript(t, path, nil)
 	ready := "wire=v2 profile=fields-postgres-v2 source=host-local state=ready generation=" + id + " reason=ok\n"
-	if strings.Contains(out, sentinel) {
-		t.Fatalf("status printed env bytes: %q", out)
+	if code != 0 || out != ready || strings.Contains(out, sentinel) {
+		t.Fatalf("marker status read or refused env bytes: code %d %q", code, out)
 	}
-	if os.Getuid() == 0 {
-		if code != 0 || out != ready {
-			t.Fatalf("marker status code %d %q", code, out)
-		}
-	} else if out == ready {
-		t.Fatal("non-root marker was reported ready")
+	ownerBin := filepath.Join(t.TempDir(), "ownerbin")
+	if err := os.MkdirAll(ownerBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeStub(t, ownerBin, "id", "#!/bin/sh\nif [ \"$1\" = \"-u\" ]; then echo 0; exit 0; fi\nexit 0\n")
+	writeStub(t, ownerBin, "stat", "#!/bin/sh\nfmt=\nfile=\nwhile [ $# -gt 0 ]; do\n  case \"$1\" in\n    -c) fmt=$2; shift 2 ;;\n    *) file=$1; shift ;;\n  esac\ndone\nif [ \"$fmt\" = \"%u\" ]; then\n  case \"$file\" in\n    */provenance) echo 1000 ;;\n    *) echo 0 ;;\n  esac\n  exit 0\nfi\nif [ \"$fmt\" = \"%a\" ] || [ \"$fmt\" = \"%s\" ]; then\n  /usr/bin/stat -c \"$fmt\" \"$file\"\n  exit 0\nfi\nif [ -d \"$file\" ]; then echo 700; else echo 600; fi\n")
+	out, code = runScript(t, path, []string{"PATH=" + ownerBin + ":/usr/bin:/bin"})
+	badOwner := "wire=v2 profile=fields-postgres-v2 source=host-local state=invalid generation=none reason=bad-mode\n"
+	if code != 0 || out != badOwner || strings.Contains(out, sentinel) {
+		t.Fatalf("non-root provenance status code %d %q", code, out)
 	}
 
 	if err := os.Remove(filepath.Join(gen, "provenance")); err != nil {
