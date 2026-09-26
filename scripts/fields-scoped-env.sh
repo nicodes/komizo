@@ -2,8 +2,9 @@
 # Root-only fields-postgres-v1 provision. Not reachable through doas.
 # Generates four database passwords and WS_SECRET on this host, reads three
 # Clerk values from a root-local file or the terminal, and derives the two
-# postgres URLs. It does not read a CI batch, print a secret, or rotate an
-# initialized database.
+# postgres URLs. Terminal entry turns echo off for all three reads and restores
+# the previous settings on success, refusal, and signal. It does not read a CI
+# batch, print a value, or rotate an initialized database.
 set -eu
 
 APP_NAME="__APP_NAME__"
@@ -16,7 +17,17 @@ hex32() {
 }
 
 facts_tmp=""
+tty_saved=""
+restore_tty() {
+	[ -n "$tty_saved" ] || return 0
+	saved=$tty_saved
+	# shellcheck disable=SC2086 # stty -g output is arguments for a later stty
+	stty $saved < /dev/tty || return 1
+	tty_saved=""
+	return 0
+}
 cleanup() {
+	restore_tty || true
 	if [ -n "$facts_tmp" ]; then
 		rm -f "$facts_tmp"
 	fi
@@ -319,12 +330,20 @@ else
 	if [ ! -r /dev/tty ]; then
 		fail "refusing: no clerk file and no terminal"
 	fi
+	command -v stty >/dev/null 2>&1 || fail "refusing: stty is required to hide clerk input"
+	tty_saved=$(stty -g < /dev/tty) || fail "refusing: cannot read terminal settings"
+	[ -n "$tty_saved" ] || fail "refusing: cannot read terminal settings"
+	stty -echo < /dev/tty || fail "refusing: cannot hide clerk input"
 	printf 'CLERK_ISSUER: ' >&2
 	IFS= read -r CLERK_ISSUER < /dev/tty || fail "refusing: clerk input ended early"
+	printf '\n' >&2
 	printf 'CLERK_JWKS_URL: ' >&2
 	IFS= read -r CLERK_JWKS_URL < /dev/tty || fail "refusing: clerk input ended early"
+	printf '\n' >&2
 	printf 'CLERK_AUTHORIZED_PARTIES: ' >&2
 	IFS= read -r CLERK_AUTHORIZED_PARTIES < /dev/tty || fail "refusing: clerk input ended early"
+	printf '\n' >&2
+	restore_tty || fail "refusing: cannot restore terminal echo"
 fi
 
 charset_ok "$CLERK_ISSUER" || fail "refusing: CLERK_ISSUER is not a single-line env value"
