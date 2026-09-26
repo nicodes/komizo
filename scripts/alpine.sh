@@ -29,6 +29,10 @@
 #   TASKS          fixed named-task profile; currently only the Termcade
 #                  release-identity-backfill task                    (optional)
 #   TASKS_SET      1 when TASKS is an explicit edit; otherwise keep recorded
+#   SCOPED_ENV     fixed scoped-env profile; fields-postgres-v2 only, and
+#                  only for app fieldsofrevik                         (optional)
+#   SCOPED_ENV_SET 1 when SCOPED_ENV is an explicit edit; otherwise keep
+#                  the recorded profile
 #   KNOWN_AS       names CI dials this app by, comma-separated    (kept if unset)
 #   CLEAR_KNOWN_AS 1 to record that there are none                (default: 0)
 #   HARDEN_SSH     1 to also harden sshd machine-wide             (default: 0)
@@ -76,6 +80,11 @@ esac
 DEPLOY_BIN="/usr/local/bin/deploy-$APP_NAME"
 SECRET_BIN="/usr/local/bin/set-secret-$APP_NAME"
 TASK_BIN="/usr/local/bin/task-$APP_NAME"
+PROVISION_BIN="/usr/local/bin/provision-scoped-env-$APP_NAME"
+STATUS_BIN="/usr/local/bin/scoped-env-status-$APP_NAME"
+# The old setter path. Removed on install and remove so a stale doas grant
+# cannot be pointed at a binary that provisions.
+SCOPED_BIN="/usr/local/bin/set-scoped-env-$APP_NAME"
 
 APP_DIR="${APP_DIR:-/srv/$APP_NAME}"
 
@@ -201,6 +210,8 @@ CONFIG_IMAGE="${CONFIG_IMAGE:-}"
 HARDEN_SSH="${HARDEN_SSH:-0}"
 TASKS="${TASKS:-}"
 TASKS_SET="${TASKS_SET:-0}"
+SCOPED_ENV="${SCOPED_ENV:-}"
+SCOPED_ENV_SET="${SCOPED_ENV_SET:-0}"
 
 case "$TASKS_SET" in
 	1|yes|true) TASKS_SET=1 ;;
@@ -221,6 +232,28 @@ case "$TASKS" in
 		}
 		;;
 	*) echo "error: TASKS names an unknown fixed task profile" >&2; exit 1 ;;
+esac
+
+case "$SCOPED_ENV_SET" in
+	1|yes|true) SCOPED_ENV_SET=1 ;;
+	0|no|false|'') SCOPED_ENV_SET=0 ;;
+	*) echo "error: SCOPED_ENV_SET must be 0 or 1" >&2; exit 1 ;;
+esac
+if [ "$SCOPED_ENV_SET" = "0" ] && [ -f "$STATE_FILE" ]; then
+	SCOPED_ENV="$(sed -n 's/^SCOPED_ENV=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)"
+fi
+# A catalog, like TASKS. The only profile writes per-service env files for
+# fieldsofrevik. Any other app, or any other name, is a mistake rather than a
+# path the caller gets to choose.
+case "$SCOPED_ENV" in
+	'') ;;
+	fields-postgres-v2)
+		[ "$APP_NAME" = "fieldsofrevik" ] || {
+			echo "error: scoped env profile fields-postgres-v2 is only defined for app fieldsofrevik" >&2
+			exit 1
+		}
+		;;
+	*) echo "error: SCOPED_ENV names an unknown profile" >&2; exit 1 ;;
 esac
 
 # The names CI connects to this app by. Recorded per APP rather than per box:
@@ -527,6 +560,16 @@ if [ -f "$STATE_FILE" ] && [ "$(sed -n 's/^STOPPED=//p' "$STATE_FILE" | tr -d '\
 		"$(sed -n 's/^STOPPED_BY=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)" \
 		"$(sed -n 's/^STOPPED_AT=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)")"
 fi
+GEN_KEEP=""
+if [ -f "$STATE_FILE" ]; then
+	GEN_KEEP="$(sed -n 's/^SCOPED_GENERATION=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)"
+	case "$GEN_KEEP" in
+		*[!0-9a-f]*|'') GEN_KEEP="" ;;
+	esac
+	if [ -n "$GEN_KEEP" ] && [ "${#GEN_KEEP}" -ne 32 ]; then
+		GEN_KEEP=""
+	fi
+fi
 
 # Built beside the file and MOVED over it, never truncated in place.
 #
@@ -555,9 +598,31 @@ CI_USER=$CI_USER
 CONFIG_IMAGE=$CONFIG_IMAGE
 KNOWN_AS=$KNOWN_AS
 TASKS=${TASKS:-}
+SCOPED_ENV=${SCOPED_ENV:-}
 EOF
 if [ -n "$STOPPED_KEEP" ]; then
 	printf '%s\n' "$STOPPED_KEEP" >> "$STATE_TMP"
+fi
+if [ -n "$GEN_KEEP" ]; then
+	printf 'SCOPED_GENERATION=%s\n' "$GEN_KEEP" >> "$STATE_TMP"
+fi
+VOL_KEEP=""
+PROJECT_KEEP=""
+if [ -f "$STATE_FILE" ]; then
+	VOL_KEEP="$(sed -n 's/^SCOPED_PG_VOLUME=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)"
+	PROJECT_KEEP="$(sed -n 's/^SCOPED_COMPOSE_PROJECT=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)"
+	case "$VOL_KEEP" in
+		*[!A-Za-z0-9_.-]*|'') VOL_KEEP="" ;;
+	esac
+	case "$PROJECT_KEEP" in
+		*[!a-z0-9_-]*|'') PROJECT_KEEP="" ;;
+	esac
+fi
+if [ -n "$VOL_KEEP" ]; then
+	printf 'SCOPED_PG_VOLUME=%s\n' "$VOL_KEEP" >> "$STATE_TMP"
+fi
+if [ -n "$PROJECT_KEEP" ]; then
+	printf 'SCOPED_COMPOSE_PROJECT=%s\n' "$PROJECT_KEEP" >> "$STATE_TMP"
 fi
 chown root:root "$STATE_TMP"
 chmod 640 "$STATE_TMP"
@@ -615,6 +680,7 @@ PROXY_DIR="__PROXY_DIR__"
 APP_NAME="__APP_NAME__"
 APP_DIR="__APP_DIR__"
 ROUTE_FILE="__ROUTES_DIR__/__APP_NAME__.caddy"
+SCOPED_ENV="__SCOPED_ENV__"
 
 # This app's own record, which is where a DELIBERATE STOP is written down.
 #
@@ -629,6 +695,90 @@ ROUTE_FILE="__ROUTES_DIR__/__APP_NAME__.caddy"
 # has to consult a service to find out whether it may start the app is a deploy
 # that fails when the service is down.
 STATE_FILE="__STATE_DIR__/__APP_NAME__.env"
+
+# Metadata, file type, owner, and mode, plus the nonsecret provenance marker
+# written only by v2 provision. Env files are not opened, so a deploy log
+# cannot carry a credential. A missing or escaping current link fails before
+# compose.yml is swapped: the running stack is still the previous one.
+komizo_scoped_env_ready() {
+	recorded=$(sed -n 's/^APP_DIR=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)
+	if [ "$recorded" != "$APP_DIR" ]; then
+		echo "deploy: refusing: app record APP_DIR does not match this deploy script" >&2
+		return 1
+	fi
+	secrets="$APP_DIR/secrets"
+	if [ -L "$secrets" ] || [ ! -d "$secrets" ]; then
+		echo "deploy: refusing: scoped env is not staged (secrets is missing or a symlink)" >&2
+		return 1
+	fi
+	if [ ! -L "$secrets/current" ]; then
+		echo "deploy: refusing: scoped env current link is missing" >&2
+		return 1
+	fi
+	target=$(readlink "$secrets/current") || {
+		echo "deploy: refusing: cannot read scoped env current link" >&2
+		return 1
+	}
+	case "$target" in
+		generations/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]) ;;
+		*)
+			echo "deploy: refusing: scoped env current link is not a confined generation" >&2
+			return 1
+			;;
+	esac
+	id=${target#generations/}
+	gdir="$secrets/generations/$id"
+	if [ -L "$gdir" ] || [ ! -d "$gdir" ]; then
+		echo "deploy: refusing: scoped env generation is missing or a symlink" >&2
+		return 1
+	fi
+	for f in postgres.env migrate.env api.env godot-api.env; do
+		p="$gdir/$f"
+		if [ -L "$p" ] || [ ! -f "$p" ]; then
+			echo "deploy: refusing: scoped env file $f is missing or a symlink" >&2
+			return 1
+		fi
+		mode=$(stat -c %a "$p" 2>/dev/null || true)
+		owner=$(stat -c %u "$p" 2>/dev/null || true)
+		if [ "$mode" != "600" ] || [ "$owner" != "0" ]; then
+			echo "deploy: refusing: scoped env file $f is not root-owned mode 600" >&2
+			return 1
+		fi
+	done
+	if [ "$id" != "${expected_generation:-}" ]; then
+		echo "deploy: refusing: scoped generation mismatch" >&2
+		return 1
+	fi
+	recorded_gen=$(sed -n 's/^SCOPED_GENERATION=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)
+	if [ "$recorded_gen" != "$id" ]; then
+		echo "deploy: refusing: scoped generation mismatch" >&2
+		return 1
+	fi
+	marker="$gdir/provenance"
+	if [ -L "$marker" ] || [ ! -f "$marker" ]; then
+		echo "deploy: refusing: scoped env is not a fields-postgres-v2 generation" >&2
+		return 1
+	fi
+	mode=$(stat -c %a "$marker" 2>/dev/null || true)
+	owner=$(stat -c %u "$marker" 2>/dev/null || true)
+	if [ "$mode" != "400" ] || [ "$owner" != "0" ]; then
+		echo "deploy: refusing: scoped env file provenance is not root-owned mode 400" >&2
+		return 1
+	fi
+	size=$(stat -c %s "$marker" 2>/dev/null || true)
+	expected_size=$(printf 'profile=fields-postgres-v2\nschema=11\ngeneration=%s\n' "$id" | wc -c | tr -d '[:space:]')
+	match=0
+	if [ "$size" = "$expected_size" ]; then
+		printf 'profile=fields-postgres-v2\nschema=11\ngeneration=%s\n' "$id" | cmp -s - "$marker" || match=$?
+	else
+		match=1
+	fi
+	if [ "$match" -ne 0 ]; then
+		echo "deploy: refusing: scoped env is not a fields-postgres-v2 generation" >&2
+		return 1
+	fi
+	return 0
+}
 
 
 # Operator-written host-wide floors. Komizo never creates this file. Empty or
@@ -757,6 +907,41 @@ case "$version" in
 		;;
 esac
 
+# fields-postgres-v2 always takes four arguments. The generation is not a
+# secret and is not read from stdin; stdin remains the registry token, and is
+# left unread when the registry arguments are both empty. Any other app stays
+# at one or three arguments and rejects a fourth rather than ignoring it.
+expected_generation=""
+if [ "$SCOPED_ENV" = "fields-postgres-v2" ]; then
+	if [ "$#" -ne 4 ]; then
+		echo "deploy: refusing: scoped generation missing" >&2
+		exit 1
+	fi
+	expected_generation=$4
+	case "$expected_generation" in
+		*[!0-9a-f]*|'')
+			echo "deploy: refusing: scoped generation malformed" >&2
+			exit 1
+			;;
+	esac
+	if [ "${#expected_generation}" -ne 32 ]; then
+		echo "deploy: refusing: scoped generation malformed" >&2
+		exit 1
+	fi
+	if [ -z "$registry" ] && [ -n "$registry_user" ]; then
+		echo "deploy: refusing: registry user set without registry" >&2
+		exit 1
+	fi
+	if [ -n "$registry" ] && [ -z "$registry_user" ]; then
+		echo "deploy: refusing registry user '$registry_user'" >&2
+		exit 1
+	fi
+elif [ "$#" -ne 1 ] && [ "$#" -ne 3 ]; then
+	echo "deploy: usage: deploy <tag> [<registry> <registry-user>]  (token on stdin)" >&2
+	echo "deploy: refusing: unexpected arguments" >&2
+	exit 1
+fi
+
 # One deploy of this app at a time.
 #
 # Two runs of the same app interleave their compose.yml swaps and their .env
@@ -783,6 +968,11 @@ then
 		echo "deploy: another deploy of __APP_NAME__ has been running for over 5 minutes" >&2
 		exit 1
 	fi
+	komizo_locked=1
+fi
+if [ "$SCOPED_ENV" = "fields-postgres-v2" ] && [ "${komizo_locked:-0}" != 1 ]; then
+	echo "deploy: refusing: fields-postgres-v2 requires the shared app lock" >&2
+	exit 1
 fi
 
 # Resource floors, if the operator set any. Until they do, fail-open with a
@@ -983,6 +1173,16 @@ revert() {
 	return 0
 }
 
+if [ "$SCOPED_ENV" = "fields-postgres-v2" ]; then
+	# Once, under the lock taken above, immediately before the first app-config
+	# mutation. The config image is still only in the staging directory.
+	if ! /usr/local/bin/provision-scoped-env-$APP_NAME --check-compose "$staging/compose.yml"; then
+		echo "deploy: refusing: scoped compose map" >&2
+		exit 1
+	fi
+	komizo_scoped_env_ready || exit 1
+	echo "deploy: scoped-generation=$expected_generation"
+fi
 cp compose.yml compose.yml.prev
 rm -f "$ROUTE_FILE.prev"
 [ -f "$ROUTE_FILE" ] && cp -a "$ROUTE_FILE" "$ROUTE_FILE.prev"
@@ -1557,6 +1757,7 @@ sed -i \
 	-e "s|__PROXY_DIR__|$PROXY_DIR|g" \
 	-e "s|__ROUTES_DIR__|$ROUTES_DIR|g" \
 	-e "s|__STATE_DIR__|$STATE_DIR|g" \
+	-e "s|__SCOPED_ENV__|$SCOPED_ENV|g" \
 	"$DEPLOY_BIN.tmp"
 if grep -q '__[A-Z_][A-Z_]*__' "$DEPLOY_BIN.tmp"; then
 	rm -f "$DEPLOY_BIN.tmp"
@@ -1584,6 +1785,13 @@ set -eu
 
 name="${1:-}"
 cd "__APP_DIR__"
+
+# This profile's values are host-local. A stale doas grant must not write them.
+profile="$(sed -n 's/^SCOPED_ENV=//p' "__STATE_FILE__" | tr -d '\r' | head -n 1)"
+if [ "$profile" = "fields-postgres-v2" ]; then
+	echo "set-secret: refusing: fields-postgres-v2 does not accept deploy-user secrets" >&2
+	exit 1
+fi
 
 # Env-var charset. Also makes the name safe as a grep pattern below.
 case "$name" in
@@ -1616,7 +1824,10 @@ mv -f "$tmp" secrets.env
 
 echo "set-secret: $name updated"
 KOMIZO_SECRET_EOF
-sed -i -e "s|__APP_DIR__|$APP_DIR|g" "$SECRET_BIN.tmp"
+sed -i \
+	-e "s|__APP_DIR__|$APP_DIR|g" \
+	-e "s|__STATE_FILE__|$STATE_FILE|g" \
+	"$SECRET_BIN.tmp"
 if grep -q '__[A-Z_][A-Z_]*__' "$SECRET_BIN.tmp"; then
 	rm -f "$SECRET_BIN.tmp"
 	die "the generated secret script still has placeholders in it -- this is a komizo bug"
@@ -1624,6 +1835,39 @@ fi
 mv "$SECRET_BIN.tmp" "$SECRET_BIN"
 chown root:root "$SECRET_BIN"
 chmod 755 "$SECRET_BIN"
+
+# --- 3b2. Scoped env path --------------------------------------------------
+# Opt-in, and only the fixed fieldsofrevik profile. Provision is root-only
+# and mode 0700. Status is the only doas grant. The old setter and its lease
+# helpers are removed; they are not data.
+rm -f "$SCOPED_BIN" "$SCOPED_BIN.tmp" \
+	"/etc/periodic/15min/komizo-scoped-env-$APP_NAME" \
+	"/etc/local.d/komizo-scoped-env-$APP_NAME.start"
+if [ "$SCOPED_ENV" = "fields-postgres-v2" ]; then
+	log "Installing $PROVISION_BIN and $STATUS_BIN"
+	cat > "$PROVISION_BIN.tmp" <<'KOMIZO_SCOPED_EOF'
+# __FIELDS_SCOPED_ENV_BODY__
+KOMIZO_SCOPED_EOF
+	cat > "$STATUS_BIN.tmp" <<'KOMIZO_STATUS_EOF'
+# __FIELDS_SCOPED_STATUS_BODY__
+KOMIZO_STATUS_EOF
+	sed -i \
+		-e "s|__APP_NAME__|$APP_NAME|g" \
+		-e "s|__STATE_FILE__|$STATE_FILE|g" \
+		-e "s|__LOCK_FILE__|/run/komizo/deploy-$APP_NAME.lock|g" \
+		"$PROVISION_BIN.tmp" "$STATUS_BIN.tmp"
+	if grep -q '__[A-Z_][A-Z_]*__' "$PROVISION_BIN.tmp" "$STATUS_BIN.tmp"; then
+		rm -f "$PROVISION_BIN.tmp" "$STATUS_BIN.tmp"
+		die "the generated scoped-env script still has placeholders in it -- this is a komizo bug"
+	fi
+	mv "$PROVISION_BIN.tmp" "$PROVISION_BIN"
+	mv "$STATUS_BIN.tmp" "$STATUS_BIN"
+	chown root:root "$PROVISION_BIN" "$STATUS_BIN"
+	chmod 700 "$PROVISION_BIN"
+	chmod 755 "$STATUS_BIN"
+else
+	rm -f "$PROVISION_BIN" "$PROVISION_BIN.tmp" "$STATUS_BIN" "$STATUS_BIN.tmp"
+fi
 
 # --- 3c. Named task path ---------------------------------------------------
 # Optional and app-specific. The deploy account gets no Docker membership and
@@ -1896,8 +2140,15 @@ sed -i -E "/^# $PROJECT_MARKER: $CI_USER BEGIN\$/,/^# $PROJECT_MARKER: $CI_USER 
 cat >> /etc/doas.conf <<-EOF
 	# komizo: $CI_USER BEGIN
 	permit nopass $CI_USER as root cmd $DEPLOY_BIN
-	permit nopass $CI_USER as root cmd $SECRET_BIN
 EOF
+if [ "$SCOPED_ENV" = "fields-postgres-v2" ]; then
+	# Status only. Provision is mode 0700 and is not in doas. set-secret is
+	# not granted for this profile; the script also refuses if a stale rule
+	# remains.
+	printf 'permit nopass %s as root cmd %s\n' "$CI_USER" "$STATUS_BIN" >> /etc/doas.conf
+else
+	printf 'permit nopass %s as root cmd %s\n' "$CI_USER" "$SECRET_BIN" >> /etc/doas.conf
+fi
 if [ -n "$TASKS" ]; then
 	# Exactly one extra rule, for the root-owned validator/executor. Dynamic
 	# task/mode matching lives in that wrapper because doas args cannot express
@@ -2167,6 +2418,18 @@ else
 fi
 
 log "Done"
+SCOPED_HINT=""
+SCOPED_NOTE=""
+if [ "$SCOPED_ENV" = "fields-postgres-v2" ]; then
+	SCOPED_HINT="doas $STATUS_BIN"
+	SCOPED_NOTE="
+When the fields-postgres-v2 profile is installed, '$CI_USER' can run
+$STATUS_BIN and nothing else for secrets. It prints one nonsecret status line.
+Provisioning is root-only: $PROVISION_BIN, once, before the first postgres
+start. It is not in doas. set-secret is not granted for this profile."
+	# CLERK_SECRET_KEY stays on the box. It is not a deploy argument and not
+	# a value this note or the status line can carry.
+fi
 cat <<EOF
 
   app:      $APP_NAME
@@ -2175,6 +2438,7 @@ cat <<EOF
   keys:     $KEYS_FILE (root-owned -- the account cannot add its own)
   deploy:   doas $DEPLOY_BIN
   secrets:  doas $SECRET_BIN <NAME>  (value on stdin)
+  scoped:   ${SCOPED_HINT:-}
   config:   $CONFIG_IMAGE
   docker:   $(docker --version)
 
@@ -2195,6 +2459,7 @@ itself -- deliberately, so a workflow can run a migration or a backup -- but it
 cannot run docker, write anything under $APP_DIR, or introduce new code:
 compose.yml arrives as a registry layer that root extracts, so changing the
 shape of the stack requires push access to the registry.
+${SCOPED_NOTE:-}
 
 That is the real boundary: REGISTRY PUSH is root-equivalent on this box, the
 deploy key is not. A leaked deploy key lets an attacker roll the stack back to
