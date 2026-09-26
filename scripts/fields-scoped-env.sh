@@ -1,16 +1,18 @@
 #!/bin/sh
-# Root-only fields-postgres-v1 provision. Not reachable through doas.
-# Generates four database passwords and WS_SECRET on this host, reads three
+# Root-only fields-postgres-v2 provision. Not reachable through doas.
+# Generates four database passwords and WS_SECRET on this host, reads four
 # Clerk values from a root-local file or the terminal, and derives the two
-# postgres URLs. Terminal entry turns echo off for all three reads and restores
+# postgres URLs. CLERK_SECRET_KEY is a production sk_live_ value and is written
+# only to api.env. Terminal entry turns echo off for all four reads and restores
 # the previous settings on success, refusal, and signal. It does not read a CI
-# batch, print a value, or rotate an initialized database.
+# batch, accept the secret as an argument, print a value, or rotate an
+# initialized database.
 set -eu
 
 APP_NAME="__APP_NAME__"
 STATE_FILE="__STATE_FILE__"
 LOCK_FILE="__LOCK_FILE__"
-PROFILE="fields-postgres-v1"
+PROFILE="fields-postgres-v2"
 
 hex32() {
 	awk -v s="$1" 'BEGIN { exit (s ~ /^[0-9a-f]{32}$/) ? 0 : 1 }'
@@ -42,7 +44,7 @@ fail() {
 
 [ "$(id -u)" -eq 0 ] || fail "must run as root"
 
-for leaked in POSTGRES_PASSWORD REVIK_MIGRATOR_PASSWORD REVIK_APP_PASSWORD REVIK_BACKUP_PASSWORD DATABASE_URL DATABASE_MIGRATION_URL WS_SECRET CLERK_ISSUER CLERK_JWKS_URL CLERK_AUTHORIZED_PARTIES; do
+for leaked in POSTGRES_PASSWORD REVIK_MIGRATOR_PASSWORD REVIK_APP_PASSWORD REVIK_BACKUP_PASSWORD DATABASE_URL DATABASE_MIGRATION_URL WS_SECRET CLERK_ISSUER CLERK_JWKS_URL CLERK_AUTHORIZED_PARTIES CLERK_SECRET_KEY; do
 	# A value already in the environment would be copied into a file from a
 	# channel this command does not accept. Refuse before reading it back.
 	if eval "[ -n \"\${$leaked+x}\" ]"; then
@@ -221,7 +223,7 @@ candidate_ok() {
 
 if [ -n "$check_compose" ]; then
 	if ! compose_map_ok "$check_compose"; then
-		fail "refusing: compose file is not the fields-postgres-v1 map"
+		fail "refusing: compose file is not the fields-postgres-v2 map"
 	fi
 	recorded_vol=$(state_get SCOPED_PG_VOLUME || true)
 	got_vol=$(sed -n 's/^volume-key pg_data //p' "$facts_tmp" | head -n 1)
@@ -278,6 +280,25 @@ charset_ok() {
 	}'
 }
 
+production_secret() {
+	# sk_live_ only. sk_test_, empty, and the short env_file charset/length
+	# are refused. The value is not an argument to awk and is not printed.
+	printf '%s\n' "$1" | awk 'BEGIN {
+		if ((getline s) != 1) exit 1
+		if ((getline extra) != 0) exit 1
+		if (length(s) < 9 || length(s) > 4096) exit 1
+		if (substr(s, 1, 8) == "sk_test_") exit 1
+		if (substr(s, 1, 8) != "sk_live_") exit 1
+		n = length(s)
+		for (i = 1; i <= n; i++) {
+			c = substr(s, i, 1)
+			if (c ~ /[ "#$'\''\\`]/) exit 1
+			if (c < "!" || c > "~") exit 1
+		}
+		exit 0
+	}'
+}
+
 https_ok() {
 	SCOPED_CHECK=$1 SCOPED_ALLOW=$2 awk 'BEGIN {
 		s = ENVIRON["SCOPED_CHECK"]
@@ -307,17 +328,39 @@ read_clerk() {
 	mode=$(stat -c %a "$file")
 	[ "$owner" = "0" ] && [ "$mode" = "600" ] || fail "refusing: clerk file must be root mode 600"
 	n=0
+	seen_issuer=0
+	seen_jwks=0
+	seen_parties=0
+	seen_secret=0
 	while IFS= read -r line || [ -n "$line" ]; do
 		n=$((n + 1))
-		[ "$n" -le 3 ] || fail "refusing: clerk file has extra lines"
+		[ "$n" -le 4 ] || fail "refusing: clerk file has extra lines"
 		case "$line" in
-			CLERK_ISSUER=*) CLERK_ISSUER=${line#CLERK_ISSUER=} ;;
-			CLERK_JWKS_URL=*) CLERK_JWKS_URL=${line#CLERK_JWKS_URL=} ;;
-			CLERK_AUTHORIZED_PARTIES=*) CLERK_AUTHORIZED_PARTIES=${line#CLERK_AUTHORIZED_PARTIES=} ;;
+			CLERK_ISSUER=*)
+				[ "$seen_issuer" = 0 ] || fail "refusing: clerk file repeats a key"
+				seen_issuer=1
+				CLERK_ISSUER=${line#CLERK_ISSUER=}
+				;;
+			CLERK_JWKS_URL=*)
+				[ "$seen_jwks" = 0 ] || fail "refusing: clerk file repeats a key"
+				seen_jwks=1
+				CLERK_JWKS_URL=${line#CLERK_JWKS_URL=}
+				;;
+			CLERK_AUTHORIZED_PARTIES=*)
+				[ "$seen_parties" = 0 ] || fail "refusing: clerk file repeats a key"
+				seen_parties=1
+				CLERK_AUTHORIZED_PARTIES=${line#CLERK_AUTHORIZED_PARTIES=}
+				;;
+			CLERK_SECRET_KEY=*)
+				[ "$seen_secret" = 0 ] || fail "refusing: clerk file repeats a key"
+				seen_secret=1
+				CLERK_SECRET_KEY=${line#CLERK_SECRET_KEY=}
+				;;
 			*) fail "refusing: clerk file line is not a fixed Clerk key" ;;
 		esac
 	done < "$file"
-	[ "$n" -eq 3 ] || fail "refusing: clerk file must have exactly three lines"
+	[ "$n" -eq 4 ] || fail "refusing: clerk file must have exactly four lines"
+	[ "$seen_issuer$seen_jwks$seen_parties$seen_secret" = "1111" ] || fail "refusing: clerk file is missing a fixed Clerk key"
 }
 
 if [ -n "$clerk_file" ]; then
@@ -343,12 +386,16 @@ else
 	printf 'CLERK_AUTHORIZED_PARTIES: ' >&2
 	IFS= read -r CLERK_AUTHORIZED_PARTIES < /dev/tty || fail "refusing: clerk input ended early"
 	printf '\n' >&2
+	printf 'CLERK_SECRET_KEY: ' >&2
+	IFS= read -r CLERK_SECRET_KEY < /dev/tty || fail "refusing: clerk input ended early"
+	printf '\n' >&2
 	restore_tty || fail "refusing: cannot restore terminal echo"
 fi
 
 charset_ok "$CLERK_ISSUER" || fail "refusing: CLERK_ISSUER is not a single-line env value"
 charset_ok "$CLERK_JWKS_URL" || fail "refusing: CLERK_JWKS_URL is not a single-line env value"
 charset_ok "$CLERK_AUTHORIZED_PARTIES" || fail "refusing: CLERK_AUTHORIZED_PARTIES is not a single-line env value"
+production_secret "$CLERK_SECRET_KEY" || fail "refusing: CLERK_SECRET_KEY is not a production key"
 https_ok "$CLERK_ISSUER" 1 || fail "refusing: CLERK_ISSUER is not an https URL"
 https_ok "$CLERK_JWKS_URL" 1 || fail "refusing: CLERK_JWKS_URL is not an https URL"
 rest=$CLERK_AUTHORIZED_PARTIES
@@ -365,7 +412,7 @@ done
 # The live compose.yml is not the candidate and is not modified. A placeholder
 # or PocketBase file cannot prove the postgres volume, so it is not fresh.
 if ! compose_map_ok "$compose_file"; then
-	fail "refusing: compose candidate is not the fields-postgres-v1 map"
+	fail "refusing: compose candidate is not the fields-postgres-v2 map"
 fi
 project=$(sed -n 's/^project //p' "$facts_tmp" | head -n 1)
 pg_volume=$(sed -n 's/^volume-key pg_data //p' "$facts_tmp" | head -n 1)
@@ -516,6 +563,7 @@ WS_SECRET=$WS_SECRET
 CLERK_ISSUER=$CLERK_ISSUER
 CLERK_JWKS_URL=$CLERK_JWKS_URL
 CLERK_AUTHORIZED_PARTIES=$CLERK_AUTHORIZED_PARTIES
+CLERK_SECRET_KEY=$CLERK_SECRET_KEY
 "
 write_file "$secrets/generations/$id/godot-api.env" "WS_SECRET=$WS_SECRET
 "

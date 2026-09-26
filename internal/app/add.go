@@ -20,7 +20,7 @@ type addOpts struct {
 	knownAs string
 	task    string
 	taskSet bool
-	// scopedEnv is the fixed fields-postgres-v1 profile, or empty to revoke.
+	// scopedEnv is the fixed fields-postgres-v2 profile, or empty to revoke.
 	// scopedEnvSet distinguishes an explicit edit from omission, which keeps
 	// the recorded profile across komizo update.
 	scopedEnv    string
@@ -50,7 +50,7 @@ func (o *addOpts) bind(fs *flag.FlagSet) {
 	fs.StringVar(&o.keyPath, "key", "", "also write the keypair here (default: not written, printed instead)")
 	fs.StringVar(&o.knownAs, "known-as", "", "other hostname(s) CI connects by, comma-separated (host keys are pinned per name)")
 	fs.StringVar(&o.task, "task", "", "fixed task profile; release-identity-backfill or termcade-operations (empty revokes)")
-	fs.StringVar(&o.scopedEnv, "scoped-env", "", "fixed scoped-env profile; fields-postgres-v1 for fieldsofrevik (empty revokes)")
+	fs.StringVar(&o.scopedEnv, "scoped-env", "", "fixed scoped-env profile; fields-postgres-v2 for fieldsofrevik (empty revokes)")
 	fs.IntVar(&o.port, "port", 22, "SSH port")
 	fs.BoolVar(&o.hardenSSHD, "harden-sshd", false, "also disable password auth and root password login for EVERY user")
 	fs.BoolVar(&o.acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
@@ -184,8 +184,8 @@ func RunAdd(args []string) error {
 		}
 	}
 	if o.scopedEnvSet {
-		if o.scopedEnv != "" && o.scopedEnv != "fields-postgres-v1" {
-			return fmt.Errorf("--scoped-env must be fields-postgres-v1, or empty to revoke")
+		if o.scopedEnv != "" && o.scopedEnv != "fields-postgres-v2" {
+			return fmt.Errorf("--scoped-env must be fields-postgres-v2, or empty to revoke")
 		}
 		if o.scopedEnv != "" && o.app != "fieldsofrevik" {
 			return fmt.Errorf("--scoped-env %s is defined only for app fieldsofrevik", o.scopedEnv)

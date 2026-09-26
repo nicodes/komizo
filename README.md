@@ -73,27 +73,32 @@ komizo proxy  --host root@box      # one Caddy, terminating TLS for every app
 komizo add    --host root@box ...  # a deploy account and its two privileged commands
 ```
 
-`komizo add --scoped-env fields-postgres-v1` is a separate opt-in, and only for
-`--app fieldsofrevik`. It installs a root-only
-`provision-scoped-env-fieldsofrevik` (mode 0700, not in doas) and a status-only
-`scoped-env-status-fieldsofrevik`. The deploy account may run status. It may
-not run provision, and `set-secret` is not granted for this profile. Provision
-takes `--compose-file`, a root-owned regular file that is the postgres compose
-candidate. It does not read or replace the live `compose.yml`. The candidate
-must map each service to its own env file, mount `pg_data` on `postgres`, and
-name a volume that is absent or empty. A placeholder or PocketBase compose is
-refused, and the PocketBase volume is left in place. Provision
-reads three Clerk values from a root-owned mode-0600 file (`--clerk-file`) or
-the terminal. Terminal entry turns echo off for all three reads and restores
-the previous terminal settings on success, refusal, and signal. Neither path
-prints a value, including these Clerk keys. The file is removed after a
-successful provision; a refused run leaves it in place, and the operator
-deletes it without printing it. Provision generates the four database
-passwords and `WS_SECRET` on the host, and derives the two postgres URLs. It
+`komizo add --scoped-env fields-postgres-v2` is a separate opt-in, and only for
+`--app fieldsofrevik`. `fields-postgres-v1` is withdrawn: a recorded v1 profile
+or a ten-key generation is not reported ready and is not started. The profile
+installs a root-only `provision-scoped-env-fieldsofrevik` (mode 0700, not in
+doas) and a status-only `scoped-env-status-fieldsofrevik`. The deploy account
+may run status. It may not run provision, and `set-secret` is not granted for
+this profile. Provision takes `--compose-file`, a root-owned regular file that
+is the postgres compose candidate. It does not read or replace the live
+`compose.yml`. The candidate must map each service to its own env file, mount
+`pg_data` on `postgres`, and name a volume that is absent or empty. A
+placeholder or PocketBase compose is refused, and the PocketBase volume is left
+in place. Provision reads four Clerk values from a root-owned mode-0600 file
+(`--clerk-file`) or the terminal. The file must contain each fixed Clerk key
+once. Terminal entry turns echo off for all four reads, including
+`CLERK_SECRET_KEY`, and restores the previous terminal settings on success,
+refusal, and signal. Neither path accepts the secret as an argument or prints
+a value. The file is removed after a successful provision; a refused run leaves
+it in place, and the operator deletes it without printing it. Provision
+generates the four database passwords and `WS_SECRET` on the host, derives the
+two postgres URLs, and writes `CLERK_SECRET_KEY` only to `api.env`. That key
+must be a non-empty `sk_live_` value within the short env-file charset and
+length; `sk_test_` and a value already set in the environment are refused. It
 writes four mode-0600 files and switches `secrets/current` once. A second run
 refuses. It does not restart containers or delete a PocketBase volume. Deploy
-of this profile takes a fourth argument, the
-expected generation id, and checks it under the app lock before changing
+of this profile takes a fourth argument, the expected generation id, and checks
+the generation and the eleven-value map under the app lock before changing
 config. Other apps still take one or three arguments and reject a fourth.
 `komizo remove` deletes the commands. `KEEP_DATA=1` leaves the app directory,
 including `secrets/`, and does not read those files. Clerk values that contain

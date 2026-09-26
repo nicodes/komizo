@@ -31,7 +31,7 @@ func renderScoped(t *testing.T, body, appDir, stateFile, lock string) string {
 
 func writeState(t *testing.T, path, appDir string) {
 	t.Helper()
-	body := "APP_NAME=fieldsofrevik\nAPP_DIR=" + appDir + "\nSCOPED_ENV=fields-postgres-v1\n"
+	body := "APP_NAME=fieldsofrevik\nAPP_DIR=" + appDir + "\nSCOPED_ENV=fields-postgres-v2\n"
 	if err := os.WriteFile(path, []byte(body), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -39,9 +39,26 @@ func writeState(t *testing.T, path, appDir string) {
 
 func writeClerk(t *testing.T, path, parties string) {
 	t.Helper()
-	body := "CLERK_ISSUER=https://clerk.example\nCLERK_JWKS_URL=https://clerk.example/jwks\nCLERK_AUTHORIZED_PARTIES=" + parties + "\n"
+	body := "CLERK_ISSUER=https://clerk.example\nCLERK_JWKS_URL=https://clerk.example/jwks\nCLERK_AUTHORIZED_PARTIES=" + parties + "\nCLERK_SECRET_KEY=" + clerkSecretFixture + "\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+const clerkSecretFixture = "sk_live_ExampleKey123"
+
+func v2EnvFixture(name string) string {
+	switch name {
+	case "postgres.env":
+		return "POSTGRES_PASSWORD=x\nREVIK_MIGRATOR_PASSWORD=x\nREVIK_APP_PASSWORD=x\nREVIK_BACKUP_PASSWORD=x\n"
+	case "migrate.env":
+		return "DATABASE_MIGRATION_URL=x\n"
+	case "api.env":
+		return "DATABASE_URL=x\nWS_SECRET=x\nCLERK_ISSUER=https://clerk.example\nCLERK_JWKS_URL=https://clerk.example/jwks\nCLERK_AUTHORIZED_PARTIES=https://app.example\nCLERK_SECRET_KEY=sk_live_deployfixture\n"
+	case "godot-api.env":
+		return "WS_SECRET=x\n"
+	default:
+		return ""
 	}
 }
 
@@ -209,11 +226,23 @@ func TestProvisionWritesTenValuesOnceAndDoesNotEchoThem(t *testing.T) {
 	}
 	for _, key := range []string{"DATABASE_URL=", "WS_SECRET=", "CLERK_ISSUER=https://clerk.example", "CLERK_JWKS_URL=https://clerk.example/jwks", "CLERK_AUTHORIZED_PARTIES=https://app.example"} {
 		if !strings.Contains(string(api), key) {
-			t.Fatalf("api.env missing %s\n%s", key, api)
+			t.Fatalf("api.env missing %s", key)
+		}
+	}
+	if !strings.Contains(string(api), "CLERK_SECRET_KEY="+clerkSecretFixture+"\n") {
+		t.Fatal("api.env missing production key")
+	}
+	if strings.Contains(out, clerkSecretFixture) {
+		t.Fatal("stdout contains the production key")
+	}
+	for _, name := range []string{"postgres.env", "migrate.env", "godot-api.env"} {
+		body, err := os.ReadFile(filepath.Join(appDir, "secrets", "generations", id, name))
+		if err != nil || strings.Contains(string(body), "CLERK_SECRET_KEY") {
+			t.Fatalf("%s is not confined to api.env", name)
 		}
 	}
 	if !strings.Contains(string(api), "@postgres/revik?sslmode=disable") {
-		t.Fatalf("dsn shape drifted:\n%s", api)
+		t.Fatal("dsn shape drifted")
 	}
 	rec, err := os.ReadFile(stateFile)
 	if err != nil || !strings.Contains(string(rec), "SCOPED_GENERATION="+id+"\n") {
@@ -276,7 +305,7 @@ func TestProvisionRefusesInitializedPostgresAndLeavesPocketBase(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, code = runScript(t, path, []string{"STUB_MOUNT=" + pbMount}, "--clerk-file", clerk, "--compose-file", filepath.Join(pbDir, "compose.yml"))
-	if code == 0 || !strings.Contains(out, "not the fields-postgres-v1 map") {
+	if code == 0 || !strings.Contains(out, "not the fields-postgres-v2 map") {
 		t.Fatalf("pocketbase compose should refuse, code %d\n%s", code, out)
 	}
 	after, err := os.ReadFile(filepath.Join(pbDir, "compose.yml"))
@@ -302,7 +331,7 @@ func TestStatusLineAndMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, code := runScript(t, path, nil)
-	if code != 0 || out != "wire=v2 profile=fields-postgres-v1 source=host-local state=missing generation=none reason=no-current\n" {
+	if code != 0 || out != "wire=v2 profile=fields-postgres-v2 source=host-local state=missing generation=none reason=no-current\n" {
 		t.Fatalf("missing status code %d %q", code, out)
 	}
 	if _, err := exec.LookPath("docker"); err != nil {
@@ -320,11 +349,11 @@ func TestStatusLineAndMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	pout, pcode := runScript(t, pp, nil, "--clerk-file", clerk, "--compose-file", placeholder)
-	if pcode == 0 || !strings.Contains(pout, "not the fields-postgres-v1 map") {
+	if pcode == 0 || !strings.Contains(pout, "not the fields-postgres-v2 map") {
 		t.Fatalf("placeholder should not provision, code %d\n%s", pcode, pout)
 	}
 	out, code = runScript(t, path, nil)
-	if code != 0 || out != "wire=v2 profile=fields-postgres-v1 source=host-local state=missing generation=none reason=no-current\n" {
+	if code != 0 || out != "wire=v2 profile=fields-postgres-v2 source=host-local state=missing generation=none reason=no-current\n" {
 		t.Fatalf("placeholder provision claimed ready, code %d %q", code, out)
 	}
 	candidate := filepath.Join(t.TempDir(), "candidate.yml")
@@ -337,7 +366,7 @@ func TestStatusLineAndMissing(t *testing.T) {
 	}
 	id := strings.TrimPrefix(strings.TrimSpace(pout), "generation=")
 	out, code = runScript(t, path, nil)
-	want := "wire=v2 profile=fields-postgres-v1 source=host-local state=ready generation=" + id + " reason=ok\n"
+	want := "wire=v2 profile=fields-postgres-v2 source=host-local state=ready generation=" + id + " reason=ok\n"
 	if code != 0 || out != want {
 		t.Fatalf("ready status code %d\n got %q\nwant %q", code, out, want)
 	}
@@ -356,7 +385,7 @@ func TestProvisionRefusesBadClerkBeforeWrite(t *testing.T) {
 	if err := os.WriteFile(candidate, []byte(pgCompose), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(clerk, []byte("CLERK_ISSUER=https://clerk.example/$x\nCLERK_JWKS_URL=https://clerk.example/jwks\nCLERK_AUTHORIZED_PARTIES=https://app.example\n"), 0o600); err != nil {
+	if err := os.WriteFile(clerk, []byte("CLERK_ISSUER=https://clerk.example/$x\nCLERK_JWKS_URL=https://clerk.example/jwks\nCLERK_AUTHORIZED_PARTIES=https://app.example\nCLERK_SECRET_KEY="+clerkSecretFixture+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	script := renderScoped(t, fieldsScopedEnvBody, appDir, stateFile, lock)
@@ -365,11 +394,135 @@ func TestProvisionRefusesBadClerkBeforeWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, code := runScript(t, path, nil, "--clerk-file", clerk, "--compose-file", candidate)
-	if code == 0 || strings.Contains(out, "$x") {
-		t.Fatalf("bad clerk code %d\n%s", code, out)
+	if code == 0 || strings.Contains(out, "$x") || strings.Contains(out, clerkSecretFixture) {
+		t.Fatal("bad clerk was accepted or printed")
 	}
 	if _, err := os.Stat(filepath.Join(appDir, "secrets")); !os.IsNotExist(err) {
 		t.Fatal("bad clerk wrote secrets")
+	}
+}
+
+func TestProvisionRefusesClerkKeyShapePresetAndArgv(t *testing.T) {
+	_, appDir, stateFile, lock, _ := scopedPaths(t)
+	writeState(t, stateFile, appDir)
+	candidate := filepath.Join(t.TempDir(), "candidate.yml")
+	if err := os.WriteFile(candidate, []byte("services: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := renderScoped(t, fieldsScopedEnvBody, appDir, stateFile, lock)
+	path := filepath.Join(t.TempDir(), "provision")
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	secret := "sk_live_MustNotBePrinted"
+	testKey := "sk_test_MustNotBePrinted"
+	valid := "CLERK_ISSUER=https://clerk.example\nCLERK_JWKS_URL=https://clerk.example/jwks\nCLERK_AUTHORIZED_PARTIES=https://app.example\nCLERK_SECRET_KEY=" + clerkSecretFixture + "\n"
+	cases := []struct {
+		name  string
+		body  string
+		env   []string
+		extra []string
+		want  string
+	}{
+		{name: "wrong key", body: "CLERK_OTHER=nope\nCLERK_JWKS_URL=https://clerk.example/jwks\nCLERK_AUTHORIZED_PARTIES=https://app.example\nCLERK_SECRET_KEY=" + clerkSecretFixture + "\n", want: "not a fixed Clerk key"},
+		{name: "missing key", body: "CLERK_ISSUER=https://clerk.example\nCLERK_JWKS_URL=https://clerk.example/jwks\nCLERK_AUTHORIZED_PARTIES=https://app.example\n", want: "exactly four"},
+		{name: "duplicate key", body: "CLERK_ISSUER=https://clerk.example\nCLERK_ISSUER=https://other.example\nCLERK_JWKS_URL=https://clerk.example/jwks\nCLERK_AUTHORIZED_PARTIES=https://app.example\n", want: "repeats a key"},
+		{name: "sk_test", body: strings.Replace(valid, "CLERK_SECRET_KEY="+clerkSecretFixture, "CLERK_SECRET_KEY="+testKey, 1), want: "not a production key"},
+		{name: "preset", body: valid, env: []string{"CLERK_SECRET_KEY=" + secret}, want: "set in the environment"},
+		{name: "argv", body: valid, extra: []string{"--clerk-secret", secret}, want: "unexpected argument"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			clerk := filepath.Join(t.TempDir(), "clerk")
+			if err := os.WriteFile(clerk, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			args := append([]string{"--clerk-file", clerk, "--compose-file", candidate}, tc.extra...)
+			out, code := runScript(t, path, tc.env, args...)
+			if code == 0 || !strings.Contains(out, tc.want) || strings.Contains(out, secret) || strings.Contains(out, testKey) || strings.Contains(out, clerkSecretFixture) {
+				t.Fatalf("%s accepted or printed a value", tc.name)
+			}
+			if _, err := os.Stat(filepath.Join(appDir, "secrets")); !os.IsNotExist(err) {
+				t.Fatal("refused clerk wrote secrets")
+			}
+		})
+	}
+}
+
+func TestStatusRejectsV1RecordAndTenKeyGeneration(t *testing.T) {
+	_, appDir, stateFile, lock, _ := scopedPaths(t)
+	id := "0123456789abcdef0123456789abcdef"
+	if err := os.WriteFile(stateFile, []byte("APP_NAME=fieldsofrevik\nAPP_DIR="+appDir+"\nSCOPED_ENV=fields-postgres-v1\nSCOPED_GENERATION="+id+"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	status := renderScoped(t, fieldsScopedStatusBody, appDir, stateFile, lock)
+	path := filepath.Join(t.TempDir(), "status")
+	if err := os.WriteFile(path, []byte(status), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := "wire=v2 profile=fields-postgres-v2 source=host-local state=invalid generation=none reason=profile-mismatch\n"
+	out, code := runScript(t, path, nil)
+	if code != 0 || out != want {
+		t.Fatalf("v1 record status code %d %q", code, out)
+	}
+
+	gen := filepath.Join(appDir, "secrets", "generations", id)
+	if err := os.MkdirAll(gen, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{filepath.Join(appDir, "secrets"), filepath.Join(appDir, "secrets", "generations"), gen} {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"postgres.env", "migrate.env", "api.env", "godot-api.env"} {
+		body := v2EnvFixture(name)
+		if name == "api.env" {
+			body = strings.Replace(body, "CLERK_SECRET_KEY=sk_live_deployfixture\n", "", 1)
+		}
+		if err := os.WriteFile(filepath.Join(gen, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("generations/"+id, filepath.Join(appDir, "secrets", "current")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stateFile, []byte("APP_NAME=fieldsofrevik\nAPP_DIR="+appDir+"\nSCOPED_ENV=fields-postgres-v2\nSCOPED_GENERATION="+id+"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	out, code = runScript(t, path, nil)
+	if code != 0 || out != want || strings.Contains(out, "sk_live_") {
+		t.Fatalf("ten-key status code %d %q", code, out)
+	}
+
+	testKey := "sk_test_StatusMustNotEcho"
+	replaced := strings.Replace(v2EnvFixture("api.env"), "sk_live_deployfixture", testKey, 1)
+	if err := os.WriteFile(filepath.Join(gen, "api.env"), []byte(replaced), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, code = runScript(t, path, nil)
+	if code != 0 || out != want || strings.Contains(out, testKey) || strings.Contains(out, "sk_test_") || strings.Contains(out, "sk_live_") {
+		t.Fatal("sk_test_ generation was reported ready or printed")
+	}
+
+	if err := os.WriteFile(filepath.Join(gen, "api.env"), []byte(v2EnvFixture("api.env")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(gen, "godot-api.env"), []byte(v2EnvFixture("godot-api.env")+"CLERK_SECRET_KEY=sk_live_deployfixture\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, code = runScript(t, path, nil)
+	if code != 0 || out != want || strings.Contains(out, "sk_live_deployfixture") {
+		t.Fatal("secret outside api.env was reported ready or printed")
+	}
+
+	if err := os.WriteFile(filepath.Join(gen, "godot-api.env"), []byte(v2EnvFixture("godot-api.env")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, code = runScript(t, path, nil)
+	ready := "wire=v2 profile=fields-postgres-v2 source=host-local state=ready generation=" + id + " reason=ok\n"
+	if code != 0 || out != ready || strings.Contains(out, "sk_live_deployfixture") {
+		t.Fatalf("confined generation status code %d %q", code, out)
 	}
 }
 
@@ -397,7 +550,7 @@ func TestProvisionRefusesPermutedEnvFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, code := runScript(t, path, nil, "--clerk-file", clerk, "--compose-file", candidate)
-	if code == 0 || !strings.Contains(out, "not the fields-postgres-v1 map") {
+	if code == 0 || !strings.Contains(out, "not the fields-postgres-v2 map") {
 		t.Fatalf("permuted env files should refuse, code %d\n%s", code, out)
 	}
 	if _, err := os.Stat(filepath.Join(appDir, "secrets", "current")); !os.IsNotExist(err) {
@@ -428,7 +581,7 @@ func TestDeployReadyComparesExpectedGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"postgres.env", "migrate.env", "api.env", "godot-api.env"} {
-		if err := os.WriteFile(filepath.Join(gen, name), []byte("A=1\n"), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(gen, name), []byte(v2EnvFixture(name)), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -440,6 +593,7 @@ func TestDeployReadyComparesExpectedGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := "set -eu\nAPP_DIR=" + shellQuote(app) + "\nSTATE_FILE=" + shellQuote(state) + "\nexpected_generation=" + id + "\n" + fn + "\nkomizo_scoped_env_ready\n"
+	ready := script
 	cmd := exec.Command("sh", "-s")
 	cmd.Stdin = strings.NewReader(script)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -452,6 +606,16 @@ func TestDeployReadyComparesExpectedGeneration(t *testing.T) {
 	if err == nil || !strings.Contains(string(out), "scoped generation mismatch") {
 		t.Fatalf("mismatch should refuse, err=%v\n%s", err, out)
 	}
+	tenKey := strings.Replace(v2EnvFixture("api.env"), "CLERK_SECRET_KEY=sk_live_deployfixture\n", "", 1)
+	if err := os.WriteFile(filepath.Join(gen, "api.env"), []byte(tenKey), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd = exec.Command("sh", "-s")
+	cmd.Stdin = strings.NewReader(ready)
+	out, err = cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "not a fields-postgres-v2 generation") || strings.Contains(string(out), "sk_live_deployfixture") {
+		t.Fatal("ten-key generation was accepted or printed")
+	}
 }
 
 func TestShippedDeployArgvContract(t *testing.T) {
@@ -461,6 +625,7 @@ func TestShippedDeployArgvContract(t *testing.T) {
 		"deploy: refusing: unexpected arguments",
 		"deploy: scoped-generation=$expected_generation",
 		"provision-scoped-env-$APP_NAME --check-compose",
+		"deploy: refusing: scoped env is not a fields-postgres-v2 generation",
 	} {
 		if !strings.Contains(AlpineScript, want) {
 			t.Errorf("shipped deploy script missing %q", want)
