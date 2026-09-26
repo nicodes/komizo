@@ -72,6 +72,9 @@ esac
 DEPLOY_BIN="/usr/local/bin/deploy-$APP_NAME"
 SECRET_BIN="/usr/local/bin/set-secret-$APP_NAME"
 TASK_BIN="/usr/local/bin/task-$APP_NAME"
+SCOPED_BIN="/usr/local/bin/set-scoped-env-$APP_NAME"
+PROVISION_BIN="/usr/local/bin/provision-scoped-env-$APP_NAME"
+STATUS_BIN="/usr/local/bin/scoped-env-status-$APP_NAME"
 PROJECT_MARKER=komizo
 PROXY_CONTAINER=komizo-proxy
 ROUTE_FILE="/srv/_proxy/routes/$APP_NAME.caddy"
@@ -225,8 +228,14 @@ if [ -f /etc/doas.conf ]; then
 	rm -f "$doas_bak"
 fi
 
-log "Removing $DEPLOY_BIN, $SECRET_BIN and $TASK_BIN"
-rm -f "$DEPLOY_BIN" "$SECRET_BIN" "$TASK_BIN"
+log "Removing $DEPLOY_BIN, $SECRET_BIN, $TASK_BIN and $SCOPED_BIN"
+# The binary is not data. KEEP_DATA leaves $APP_DIR, including secrets/, and
+# this step does not read those files. A wipe still goes through the APP_DIR
+# guard below, not a separate secrets deletion. Old lease helpers are not data
+# either. KEEP_DATA does not keep the binaries.
+rm -f "$DEPLOY_BIN" "$SECRET_BIN" "$TASK_BIN" "$SCOPED_BIN" "$PROVISION_BIN" "$STATUS_BIN"
+rm -f "/etc/periodic/15min/komizo-scoped-env-$APP_NAME" \
+	"/etc/local.d/komizo-scoped-env-$APP_NAME.start"
 
 # --- 3. sshd ---------------------------------------------------------------
 
