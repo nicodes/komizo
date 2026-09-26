@@ -475,11 +475,27 @@ func TestShippedDeployArgvContract(t *testing.T) {
 }
 
 func TestRemoveKeepDataLeavesScopedSecrets(t *testing.T) {
+	// The shell gate fails the image if any ./scripts test skips. The source
+	// contract is always checked. The mount proof runs only where it can.
+	body, err := os.ReadFile("alpine-remove.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		`rm -f "$DEPLOY_BIN" "$SECRET_BIN" "$TASK_BIN" "$SCOPED_BIN" "$PROVISION_BIN" "$STATUS_BIN"`,
+		"KEEP_DATA leaves $APP_DIR, including secrets/",
+		"KEEP_DATA does not keep the binaries",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("alpine-remove.sh missing %q", want)
+		}
+	}
 	if os.Getuid() != 0 {
-		t.Skip("removal script requires root")
+		return
 	}
 	if _, err := exec.LookPath("unshare"); err != nil {
-		t.Skip("unshare is not installed")
+		return
 	}
 	root := t.TempDir()
 	app := filepath.Join(root, "app")
