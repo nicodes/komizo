@@ -109,6 +109,37 @@ including `secrets/`, and does not read those files. Clerk values that contain
 space, `"`, `#`, `$`, `'`, backslash, or backtick are refused: Fields compose
 still uses the short `env_file` form and does not set `format: raw`.
 
+## Taking a secret off a box
+
+`set-secret` writes a key and never deletes one. That is right for the write
+side — it is what lets CI rotate a credential without being able to read the
+ones already there — but it meant nothing could take a value off a box. A name
+dropped from a workflow stayed in `secrets.env` indefinitely: delivered by
+nothing, rotated by nothing, still read by whichever containers read the file.
+One portfolio accumulated twelve that way, including a PocketBase admin
+password for a PocketBase removed months earlier.
+
+```sh
+komizo unset-secret --host root@box --app blog --list
+komizo unset-secret --host root@box --app blog --name OLD_API_KEY --yes
+komizo unset-secret --host root@box --app blog --keep DATABASE_URL,CLERK_SECRET_KEY --yes
+```
+
+`--list` prints names and never a value. `--keep` is the other direction, for
+when what should survive is a shorter list than what should not.
+
+This is an operator command over the root connection, like `komizo remove`. It
+installs nothing: there is no `unset-secret-<app>` beside `set-secret-<app>`
+and no doas rule for one, because a pipeline that can delete a secret can take
+an app down by deleting the one it needs to start.
+
+It refuses a name the file does not have, and changes nothing when it does —
+a typo that reports success is how stale keys survive being tidied up. Before
+rewriting, the box copies the file beside itself, dated and mode 0600; delete
+that once a deploy has proved the app still starts. Running containers keep the
+values they started with, so the next deploy is what recreates them without
+these.
+
 **Provisioning** is shell, piped down the connection that is already open, run
 once and thrown away. It is the half that CHANGES a machine, and it runs as root
 exactly as long as it takes.

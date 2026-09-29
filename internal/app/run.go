@@ -99,6 +99,8 @@ func runCommand(name string, args []string) error {
 		return RunEnrol(args)
 	case "remove":
 		return RunRemove(args)
+	case "unset-secret":
+		return RunUnsetSecret(args)
 	case "start":
 		return RunStart(args)
 	case "stop":
@@ -161,7 +163,8 @@ func Main(args []string) error {
 	case "logout":
 		err = RunLogout(args[1:])
 	case "init", "update", "add", "list", "report", "enrol", "remove", "proxy",
-		"start", "stop", "restart", "logs", "preview", "ui", "reconcile":
+		"start", "stop", "restart", "logs", "preview", "ui", "reconcile",
+		"unset-secret":
 		// No gate. An account is needed to REGISTER a box, and the two places
 		// that do it ask for one where they do it.
 		//
@@ -242,6 +245,7 @@ hand.
   komizo report  --host root@HOST
   komizo enrol   --host root@HOST --token kmz_enr_... --api https://service-you-run
   komizo remove  --host root@HOST --app NAME --yes
+  komizo unset-secret --host root@HOST --app NAME [--list | --name NAME --yes]
   komizo start   --host root@HOST --app NAME
   komizo stop    --host root@HOST --app NAME
   komizo restart --host root@HOST --app NAME
@@ -249,7 +253,7 @@ hand.
   komizo proxy   --host root@HOST
   komizo ui      (runs ON the box: the local web app, loopback or tailnet)
   komizo reconcile --host root@HOST --inventory expected-apps.json
-  komizo script [init|add|remove|proxy]
+  komizo script [init|add|remove|unset-secret|proxy]
 
 THE SERVICE IS DECOMMISSIONED. komizo-be is gone (board decision) and this CLI
 is the whole product: you manage your servers from it directly, over SSH, with
