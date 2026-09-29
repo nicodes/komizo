@@ -66,6 +66,17 @@ func mustSpliceScopedEnv(raw, body, status string) string {
 //go:embed alpine-remove.sh
 var AlpineRemoveScript string
 
+// AlpineUnsetSecretScript takes secrets off a box, and is the counterpart
+// set-secret never had.
+//
+// NOT installed on the box and NOT reachable through doas, unlike the
+// set-secret command alpine.sh writes. Deleting is an operator action over the
+// root connection: a pipeline that could delete a secret could take an app
+// down by deleting the one it needs to start, and no workflow has needed to.
+//
+//go:embed alpine-unset-secret.sh
+var AlpineUnsetSecretScript string
+
 // AlpineReloadSSHDScript applies the sshd config every app in an update wrote.
 //
 // Separate from alpine.sh because it runs ONCE per update rather than once per

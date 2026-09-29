@@ -94,6 +94,11 @@ const (
 	hostChars  = userChars
 	imageChars = userChars + ":/"
 	pathChars  = userChars + "/"
+	// No hyphen: an environment variable name cannot contain one, and
+	// set-secret on the box has always refused it. Narrower than appChars on
+	// purpose -- a secret name is also used as a grep pattern when unsetting
+	// one, and this is the set with no regex metacharacter in it.
+	secretChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
 )
 
 func validateApp(s string) error {

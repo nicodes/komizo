@@ -119,6 +119,20 @@ func TestTheCharsetsAgreeWithTheServerScripts(t *testing.T) {
 			why:    "removal targets the same paths the setup created",
 		},
 		{
+			what:   "app name (unset-secret)",
+			goSet:  appChars,
+			script: scripts.AlpineUnsetSecretScript,
+			marker: "APP_NAME must be letters",
+			why:    "it picks the directory whose secrets.env is about to be rewritten",
+		},
+		{
+			what:   "secret name (unset-secret)",
+			goSet:  secretChars,
+			script: scripts.AlpineUnsetSecretScript,
+			marker: "is not a valid secret name",
+			why:    "each name becomes a grep pattern in the file being rewritten, so a metacharacter would delete keys nobody named",
+		},
+		{
 			what:   "deploy account",
 			goSet:  appChars,
 			script: scripts.AlpineScript,
