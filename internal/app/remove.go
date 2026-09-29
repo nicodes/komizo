@@ -67,7 +67,7 @@ func RunScript(args []string) error {
 	case "-h", "--help", "help":
 		fmt.Print(`komizo script - print the shell komizo runs on your server
 
-  komizo script [init|add|remove|proxy]
+  komizo script [init|add|remove|unset-secret|proxy]
 
 It is piped over SSH and run as root, so this is how you read it before it
 runs. "add" is the default because it is the one that creates the deploy
@@ -76,6 +76,7 @@ account, the doas rules and the sshd restrictions.
   init     prepare a fresh box: Docker, the shared network
   add      set an app up, or update one
   remove   tear one app back off
+  unset-secret  take secrets off a box -- the counterpart set-secret never had
   proxy    install the one shared reverse proxy
 `)
 		return nil
@@ -85,10 +86,12 @@ account, the doas rules and the sshd restrictions.
 		fmt.Print(scripts.AlpineScript)
 	case "remove":
 		fmt.Print(scripts.AlpineRemoveScript)
+	case "unset-secret":
+		fmt.Print(scripts.AlpineUnsetSecretScript)
 	case "proxy":
 		fmt.Print(scripts.AlpineProxyScript)
 	default:
-		return fmt.Errorf("no such script %q -- try 'init', 'add', 'remove' or 'proxy'", which)
+		return fmt.Errorf("no such script %q -- try 'init', 'add', 'remove', 'unset-secret' or 'proxy'", which)
 	}
 	return nil
 }
