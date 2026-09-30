@@ -1935,7 +1935,7 @@ if ! mkdir "$lock" 2>/dev/null; then
 	exit 75
 fi
 # clamp-ok: this is date(1) format text, not awk/printf integer conversion.
-started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+started=$(date -u +%FT%TZ)
 image=$(docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" images -q "$service" 2>/dev/null | head -n 1)
 image=${image:-unknown}
 printf 'start=%s actor=%s app=termcade task=%s mode=%s image=%s\n' \
@@ -1953,7 +1953,7 @@ cleanup() {
 	rm -rf "$lock"
 	if [ "$finished" -eq 0 ]; then
 		# clamp-ok: this is date(1) format text, not integer conversion.
-		ended=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+		ended=$(date -u +%FT%TZ)
 		printf 'end=%s actor=%s app=termcade task=%s mode=%s image=%s result=%s\n' \
 			"$ended" "$actor" "$task" "$mode" "$image" "$rc" >> "$audit"
 		finished=1
@@ -2135,8 +2135,76 @@ trap 'mv -f "$doas_bak" /etc/doas.conf 2>/dev/null || true; exit 129' INT TERM H
 # distro later does not orphan rules written by this one.
 # Drop the previous account's block too, if this app was renamed onto a new
 # account (OLD_CI_USER is set only when it is safe to retire the old one).
+# ADOPT ANYTHING IN THE BLOCK KOMIZO DID NOT WRITE, BEFORE DELETING IT.
+#
+# The removal below drops the account's whole block, and the append after it
+# writes back exactly the rules komizo knows about. Any line an operator added
+# inside the markers therefore disappeared -- silently, with no backup kept
+# (the one taken above is removed on success), and with nothing on the box or
+# in the output saying a privilege had just been revoked.
+#
+# That is not hypothetical. komizo 0.0.43 rolled onto komizo.avior.studio and
+# took three hand-added rules with it; gdam's PR previews then failed on
+# `doas: Operation not permitted` in a step that had worked minutes earlier,
+# and the cause was invisible from both the failure and this script.
+#
+# Deleting is wrong and so is keeping: a grant komizo does not understand must
+# not sit inside a block that says komizo manages it. So the lines are moved
+# OUT, into a section of their own, and named on stdout. The next run finds
+# the block clean and leaves the adopted section alone, which makes this
+# idempotent without needing to remember anything.
+adopted_file="/tmp/.komizo-adopted.$$"
+: > "$adopted_file"
+# The rules komizo itself writes are recognised by the BINARY they grant, and
+# the list is built here rather than spelled out as six whole rule strings.
+#
+# $SCOPED_BIN is in it on purpose and for the opposite reason to the others.
+# That setter is the withdrawn path (see its definition above): komizo REVOKES
+# it, so a stale grant naming it must be dropped by this scan and not carried
+# out into the adopted section, which would resurrect a privilege the rest of
+# this script exists to remove.
+recognised="$DEPLOY_BIN $SECRET_BIN $STATUS_BIN $TASK_BIN $SCOPED_BIN $PROVISION_BIN"
+awk -v begin="# $PROJECT_MARKER: $CI_USER BEGIN" \
+    -v end="# $PROJECT_MARKER: $CI_USER END" \
+    -v user="$CI_USER" \
+    -v bins="$recognised" '
+	BEGIN {
+		n = split(bins, b, " ")
+		for (i = 1; i <= n; i++) mine["permit nopass " user " as root cmd " b[i]] = 1
+	}
+	$0 == begin { inside = 1; next }
+	$0 == end   { inside = 0; next }
+	!inside { next }
+	$0 in mine { next }
+	{ print }
+' /etc/doas.conf > "$adopted_file"
+
 [ -n "$OLD_CI_USER" ] && sed -i -E "/^# $PROJECT_MARKER: $OLD_CI_USER BEGIN\$/,/^# $PROJECT_MARKER: $OLD_CI_USER END\$/d" /etc/doas.conf
 sed -i -E "/^# $PROJECT_MARKER: $CI_USER BEGIN\$/,/^# $PROJECT_MARKER: $CI_USER END\$/d" /etc/doas.conf
+# The adopted rules, back on the file but outside the managed block, so the
+# next run of this script leaves them alone.
+#
+# Emitted BEFORE the block rather than after it. The block is deleted from
+# wherever it sat and re-appended at the end, so appending the adopted lines
+# afterwards put them above the block on the next run and below it on this
+# one -- same rules, different file, which is a diff an operator has to read
+# to dismiss. This way the order is settled from the first run.
+#
+# Named on stdout, every one of them, because a privilege komizo is carrying
+# without understanding is exactly the thing an operator has to decide about:
+# either it becomes a komizo feature, or it should not be there at all.
+if [ -s "$adopted_file" ]; then
+	{
+		printf '# komizo adopted these on %s: they were inside the\n' "$(date -u +%FT%TZ)"
+		printf '# "%s: %s" block but komizo did not write them, and a block rewrite\n' "$PROJECT_MARKER" "$CI_USER"
+		printf '# would have deleted them. Out here they survive. Make them a komizo\n'
+		printf '# feature or remove them; do not move them back inside the markers.\n'
+		cat "$adopted_file"
+	} >> /etc/doas.conf
+	log "Adopted $(wc -l < "$adopted_file" | tr -d ' ') hand-added doas rule(s) for '$CI_USER' -- kept, moved outside komizo's block:"
+	while IFS= read -r _line; do [ -n "$_line" ] && log "    $_line"; done < "$adopted_file"
+fi
+rm -f "$adopted_file"
 cat >> /etc/doas.conf <<-EOF
 	# komizo: $CI_USER BEGIN
 	permit nopass $CI_USER as root cmd $DEPLOY_BIN
@@ -2171,7 +2239,14 @@ fi
 # later step -- and it would do it while restoring a backup that no longer
 # exists, i.e. doing nothing except stopping the run.
 trap - EXIT INT TERM HUP PIPE
-rm -f "$doas_bak"
+# Keep ONE rolling copy of what this file looked like before the run, rather
+# than deleting the only evidence the moment the run succeeds. A successful
+# rewrite is precisely when nobody is looking, and it is the rewrite that
+# changes privileges. One fixed name, not one per run: a directory of dated
+# copies of a privilege file is its own problem.
+mv -f "$doas_bak" /etc/doas.conf.komizo.previous
+chown root:root /etc/doas.conf.komizo.previous
+chmod 600 /etc/doas.conf.komizo.previous
 
 # --- 4. sshd ---------------------------------------------------------------
 # Two separate things, deliberately:
