@@ -212,6 +212,8 @@ TASKS="${TASKS:-}"
 TASKS_SET="${TASKS_SET:-0}"
 SCOPED_ENV="${SCOPED_ENV:-}"
 SCOPED_ENV_SET="${SCOPED_ENV_SET:-0}"
+PREVIEW="${PREVIEW:-0}"
+PREVIEW_SET="${PREVIEW_SET:-0}"
 
 case "$TASKS_SET" in
 	1|yes|true) TASKS_SET=1 ;;
@@ -232,6 +234,20 @@ case "$TASKS" in
 		}
 		;;
 	*) echo "error: TASKS names an unknown fixed task profile" >&2; exit 1 ;;
+esac
+
+case "$PREVIEW_SET" in
+	1|yes|true) PREVIEW_SET=1 ;;
+	0|no|false|'') PREVIEW_SET=0 ;;
+	*) echo "error: PREVIEW_SET must be 0 or 1" >&2; exit 1 ;;
+esac
+if [ "$PREVIEW_SET" = "0" ] && [ -f "$STATE_FILE" ]; then
+	PREVIEW="$(sed -n 's/^PREVIEW=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)"
+fi
+case "$PREVIEW" in
+	1|yes|true) PREVIEW=1 ;;
+	0|no|false|'') PREVIEW=0 ;;
+	*) echo "error: PREVIEW must be 0 or 1" >&2; exit 1 ;;
 esac
 
 case "$SCOPED_ENV_SET" in
@@ -599,6 +615,7 @@ CONFIG_IMAGE=$CONFIG_IMAGE
 KNOWN_AS=$KNOWN_AS
 TASKS=${TASKS:-}
 SCOPED_ENV=${SCOPED_ENV:-}
+PREVIEW=${PREVIEW:-0}
 EOF
 if [ -n "$STOPPED_KEEP" ]; then
 	printf '%s\n' "$STOPPED_KEEP" >> "$STATE_TMP"
@@ -1767,6 +1784,54 @@ mv "$DEPLOY_BIN.tmp" "$DEPLOY_BIN"
 chown root:root "$DEPLOY_BIN"
 chmod 755 "$DEPLOY_BIN"
 
+# --- 3a2. Preview path -----------------------------------------------------
+# Two root-owned helpers, installed for apps that have previews and reachable
+# from the deploy account through doas.
+#
+# THEY USED TO BE HAND-INSTALLED, with hand-added doas rules, and those rules
+# were written inside komizo's own managed block. `komizo update` rewrites
+# that block, so the next update deleted them: gdam's previews began failing
+# on "doas: Operation not permitted" in a step that had worked minutes
+# earlier. A feature that needs a privilege is a feature komizo has to
+# install, or the privilege goes missing the next time komizo tidies up.
+#
+# SHARED PATHS, not per-app ones, unlike deploy-<app> and set-secret-<app>.
+# Both scripts scope themselves to the caller's own app through DOAS_USER --
+# komizo-gdam may only preview gdam -- so one copy is safe, and these are the
+# paths the preview action already invokes. Removal is therefore conditional
+# on no OTHER app still having previews: taking them away because one app
+# opted out would break every app that had not.
+PREVIEW_RUN_BIN=/usr/local/bin/komizo-preview
+PREVIEW_STACKENV_BIN=/usr/local/bin/write-preview-stackenv
+if [ "$PREVIEW" = "1" ]; then
+	log "Installing $PREVIEW_RUN_BIN and $PREVIEW_STACKENV_BIN"
+	cat > "$PREVIEW_RUN_BIN.tmp" <<'KOMIZO_PREVIEW_RUN_EOF'
+# __PREVIEW_RUN_BODY__
+KOMIZO_PREVIEW_RUN_EOF
+	cat > "$PREVIEW_STACKENV_BIN.tmp" <<'KOMIZO_PREVIEW_STACKENV_EOF'
+# __PREVIEW_STACKENV_BODY__
+KOMIZO_PREVIEW_STACKENV_EOF
+	mv "$PREVIEW_RUN_BIN.tmp" "$PREVIEW_RUN_BIN"
+	mv "$PREVIEW_STACKENV_BIN.tmp" "$PREVIEW_STACKENV_BIN"
+	chown root:root "$PREVIEW_RUN_BIN" "$PREVIEW_STACKENV_BIN"
+	chmod 755 "$PREVIEW_RUN_BIN" "$PREVIEW_STACKENV_BIN"
+else
+	rm -f "$PREVIEW_RUN_BIN.tmp" "$PREVIEW_STACKENV_BIN.tmp"
+	# Only when nothing else on the box previews. This app's own record was
+	# rewritten above with PREVIEW=0, so a read over the state directory
+	# answers about the others.
+	still_wanted=0
+	for _st in "$STATE_DIR"/*.env; do
+		[ -f "$_st" ] || continue
+		[ "$(sed -n 's/^PREVIEW=//p' "$_st" | tr -d '\r' | head -n 1)" = "1" ] || continue
+		still_wanted=1
+		break
+	done
+	if [ "$still_wanted" = "0" ]; then
+		rm -f "$PREVIEW_RUN_BIN" "$PREVIEW_STACKENV_BIN"
+	fi
+fi
+
 # --- 3b. Secret path -------------------------------------------------------
 # Write-only by construction: the value arrives on stdin and is never echoed,
 # and secrets.env stays 600 root. So CI can rotate a credential without ever
@@ -2245,6 +2310,10 @@ adopted_file="/tmp/.komizo-adopted.$$"
 # out into the adopted section, which would resurrect a privilege the rest of
 # this script exists to remove.
 recognised="$DEPLOY_BIN $SECRET_BIN $STATUS_BIN $TASK_BIN $SCOPED_BIN $PROVISION_BIN"
+# The preview helpers are komizo's own as of this change. Without them
+# here, the first update after it would "adopt" the very rules it had
+# just written and carry them out of the block.
+recognised="$recognised $PREVIEW_RUN_BIN $PREVIEW_STACKENV_BIN"
 awk -v begin="# $PROJECT_MARKER: $CI_USER BEGIN" \
     -v end="# $PROJECT_MARKER: $CI_USER END" \
     -v user="$CI_USER" \
@@ -2303,6 +2372,14 @@ if [ -n "$TASKS" ]; then
 	# task/mode matching lives in that wrapper because doas args cannot express
 	# this small OR-list without duplicating grants.
 	printf 'permit nopass %s as root cmd %s\n' "$CI_USER" "$TASK_BIN" >> /etc/doas.conf
+fi
+if [ "$PREVIEW" = "1" ]; then
+	# The two preview helpers. No "args" clause on either: what they take is
+	# an app name and a PR number, and both scripts check the app against the
+	# CALLER's own rather than against a list doas would have to be re-taught
+	# for every app on the box.
+	printf 'permit nopass %s as root cmd %s\n' "$CI_USER" "$PREVIEW_RUN_BIN" >> /etc/doas.conf
+	printf 'permit nopass %s as root cmd %s\n' "$CI_USER" "$PREVIEW_STACKENV_BIN" >> /etc/doas.conf
 fi
 cat >> /etc/doas.conf <<-EOF
 	# komizo: $CI_USER END

@@ -25,6 +25,11 @@ type addOpts struct {
 	// the recorded profile across komizo update.
 	scopedEnv    string
 	scopedEnvSet bool
+	// preview turns this app's PR previews on or off. previewSet
+	// distinguishes an explicit edit from omission, which is what lets
+	// `komizo update` keep the recorded answer instead of resetting it.
+	preview    bool
+	previewSet bool
 	// keepKey leaves the deploy key alone, for an edit that is about settings.
 	keepKey bool
 	// clearKnownAs is whether --known-as was GIVEN, as opposed to what it was
@@ -51,6 +56,7 @@ func (o *addOpts) bind(fs *flag.FlagSet) {
 	fs.StringVar(&o.knownAs, "known-as", "", "other hostname(s) CI connects by, comma-separated (host keys are pinned per name)")
 	fs.StringVar(&o.task, "task", "", "fixed task profile; release-identity-backfill or termcade-operations (empty revokes)")
 	fs.StringVar(&o.scopedEnv, "scoped-env", "", "fixed scoped-env profile; fields-postgres-v2 for fieldsofrevik (empty revokes)")
+	fs.BoolVar(&o.preview, "preview", false, "install this app's PR-preview helpers and grant them (--preview=false revokes)")
 	fs.IntVar(&o.port, "port", 22, "SSH port")
 	fs.BoolVar(&o.hardenSSHD, "harden-sshd", false, "also disable password auth and root password login for EVERY user")
 	fs.BoolVar(&o.acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
@@ -174,6 +180,9 @@ func RunAdd(args []string) error {
 		if f.Name == "scoped-env" {
 			o.scopedEnvSet = true
 		}
+		if f.Name == "preview" {
+			o.previewSet = true
+		}
 	})
 	if o.taskSet {
 		if o.task != "" && o.task != "release-identity-backfill" && o.task != "termcade-operations" {
@@ -233,6 +242,8 @@ func RunAdd(args []string) error {
 		taskSet:      o.taskSet,
 		scopedEnv:    o.scopedEnv,
 		scopedEnvSet: o.scopedEnvSet,
+		preview:      o.preview,
+		previewSet:   o.previewSet,
 		// Only an answer when the flag was given AND resolved to nothing.
 		// Passing names and clearing are not the same request.
 		clearKnownAs: o.clearKnownAs && len(knownAs) == 0,
@@ -273,6 +284,8 @@ type addPlan struct {
 	taskSet      bool
 	scopedEnv    string
 	scopedEnvSet bool
+	preview      bool
+	previewSet   bool
 	// clearKnownAs says the empty knownAs above is an answer rather than a
 	// silence. The server keeps the recorded names when it is not told any,
 	// which is what a config-image change means by saying nothing -- so without
@@ -357,6 +370,8 @@ func performAdd(p addPlan, out progress, runner func(script string, env map[stri
 		"TASKS_SET":      boolEnv(p.taskSet),
 		"SCOPED_ENV":     p.scopedEnv,
 		"SCOPED_ENV_SET": boolEnv(p.scopedEnvSet),
+		"PREVIEW":        boolEnv(p.preview),
+		"PREVIEW_SET":    boolEnv(p.previewSet),
 		// Only ever 1 when the caller means "none", never as a matter of course:
 		// the server reads an empty KNOWN_AS as "not mentioned" for every other
 		// operation, and that is the reading a config-image change needs.

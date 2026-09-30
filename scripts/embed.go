@@ -38,11 +38,43 @@ var fieldsScopedEnvBody string
 //go:embed fields-scoped-status.sh
 var fieldsScopedStatusBody string
 
+//go:embed preview-run.sh
+var previewRunBody string
+
+//go:embed preview-stackenv.sh
+var previewStackEnvBody string
+
 // AlpineScript is alpine.sh with the fields scoped-env writer spliced into
 // the quoted heredoc that installs it. The writer is its own file so
 // shellcheck sees it; the box receives one script, so the splice happens
 // before anything is piped.
-var AlpineScript = mustSpliceScopedEnv(alpineScriptRaw, fieldsScopedEnvBody, fieldsScopedStatusBody)
+var AlpineScript = mustSplicePreview(
+	mustSpliceScopedEnv(alpineScriptRaw, fieldsScopedEnvBody, fieldsScopedStatusBody),
+	previewRunBody, previewStackEnvBody)
+
+// mustSplicePreview puts the two preview helpers into the heredocs that
+// install them, the same way the scoped-env writer is spliced.
+//
+// Their own files so shellcheck reads them as the shell they are -- both were
+// hand-installed on the boxes until now, and the bash one had never been
+// linted by anything.
+func mustSplicePreview(raw, run, stackenv string) string {
+	const runMarker = "# __PREVIEW_RUN_BODY__\n"
+	const stackMarker = "# __PREVIEW_STACKENV_BODY__\n"
+	if strings.Count(raw, runMarker) != 1 {
+		panic("scripts: alpine.sh must contain exactly one preview run body marker")
+	}
+	if strings.Count(raw, stackMarker) != 1 {
+		panic("scripts: alpine.sh must contain exactly one preview stackenv body marker")
+	}
+	for name, body := range map[string]string{"preview-run.sh": run, "preview-stackenv.sh": stackenv} {
+		if !strings.HasPrefix(body, "#!/bin/sh\n") {
+			panic("scripts: " + name + " must start with a shebang")
+		}
+	}
+	out := strings.Replace(raw, runMarker, run, 1)
+	return strings.Replace(out, stackMarker, stackenv, 1)
+}
 
 func mustSpliceScopedEnv(raw, body, status string) string {
 	const marker = "# __FIELDS_SCOPED_ENV_BODY__\n"
