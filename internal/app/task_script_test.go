@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/base64"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,235 +11,234 @@ import (
 	"github.com/nicodes/komizo/scripts"
 )
 
-// task-termcade is a root/Docker boundary. These tests execute the generated
-// program with Docker and timeout replaced, so every assertion is reachable
-// without granting the test process either privilege.
+// The task channel: komizo installs the program, the app writes it.
+//
+// It used to be the other way round. 181 lines of one product's operations --
+// its compose project, its service and volume names, the path of a binary
+// only it ships -- were compiled into alpine.sh, which is otherwise the
+// generic "set an app up" script. The app could not change any of it without
+// a komizo release, and komizo carried a per-app special case forever. By the
+// time anyone looked, every path in it was stale: the executable it named had
+// been deleted and all three volumes belonged to a database the product had
+// migrated off, so the whole profile was dead code only komizo could remove.
+//
+// The tests that used to live here asserted that profile's allow-list, its
+// Docker invocation and its audit log. Those are the app's behaviour now and
+// belong to the app's own suite; what is komizo's, and what is tested here,
+// is the channel: store it, install it root-owned, keep it across updates,
+// and let go of it on request.
+
+// taskBox runs just the installer section against a fixture.
 type taskBox struct {
-	root, bin, audit, log, script string
+	root, store, bin, taskBin, chownLog string
+	section                             string
 }
 
 func newTaskBox(t *testing.T) *taskBox {
 	t.Helper()
+	needs(t, "sh")
 	root := t.TempDir()
 	b := &taskBox{
-		root:  root,
-		bin:   filepath.Join(root, "bin"),
-		audit: filepath.Join(root, "log", "tasks.log"),
-		log:   filepath.Join(root, "calls.log"),
+		root:     root,
+		store:    filepath.Join(root, "tasks"),
+		bin:      filepath.Join(root, "bin"),
+		taskBin:  filepath.Join(root, "task-blog"),
+		chownLog: filepath.Join(root, "chown.log"),
 	}
-	for _, d := range []string{b.bin, filepath.Join(root, "srv", "termcade")} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.MkdirAll(b.bin, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	body := between(t, scripts.AlpineScript,
-		`cat > "$TASK_BIN.tmp" <<'KOMIZO_TASK_EOF'`, "KOMIZO_TASK_EOF")
-	b.script = strings.NewReplacer(
-		"/srv/termcade/compose.yml", filepath.Join(root, "srv", "termcade", "compose.yml"),
-		"/srv/termcade", filepath.Join(root, "srv", "termcade"),
-		"/var/log/komizo/tasks.log", b.audit,
-		"/var/log/komizo", filepath.Join(root, "log"),
-		"/run/komizo/task-termcade.lock", filepath.Join(root, "run", "task-termcade.lock"),
-		"/run/komizo", filepath.Join(root, "run"),
-	).Replace(body)
-	write(t, filepath.Join(b.root, "srv", "termcade", "compose.yml"), 0o600, "services: {}\n")
-	write(t, filepath.Join(b.bin, "chown"), 0o755, "#!/bin/sh\nexit 0\n")
-	write(t, filepath.Join(b.bin, "docker"), 0o755, `#!/bin/sh
-printf 'docker %s\n' "$*" >> "$STUB_CALLS"
-if [ "$1" = compose ]; then
-  for arg in "$@"; do
-    [ "$arg" = images ] && { echo sha256:fixed-image; exit 0; }
-  done
-  printf '%s\n' "${STUB_TASK_OUTPUT:-safe output}"
-  exit "${STUB_RUN_RC:-0}"
-fi
-exit 0
-`)
-	write(t, filepath.Join(b.bin, "timeout"), 0o755, `#!/bin/sh
-printf 'timeout %s\n' "$*" >> "$STUB_CALLS"
-[ -z "${STUB_TIMEOUT_RC:-}" ] || exit "$STUB_TIMEOUT_RC"
-shift 5
-exec "$@"
-`)
+	// chown needs root; record the request instead, which is what the
+	// assertion is about anyway.
+	write(t, filepath.Join(b.bin, "chown"), 0o755,
+		"#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CHOWN_LOG\"\n")
+
+	b.section = between(t, scripts.AlpineScript,
+		"# --- 3c. Named task path ---------------------------------------------------\n",
+		`log "Granting '$CI_USER' narrowly scoped doas access"`)
 	return b
 }
 
-func (b *taskBox) run(args []string, extra ...string) (string, int) {
-	cmd := exec.Command("sh", append([]string{"-s"}, args...)...)
-	cmd.Stdin = strings.NewReader(b.script)
-	cmd.Env = append(os.Environ(), append([]string{
-		"PATH=" + b.bin + ":/usr/bin:/bin",
-		"STUB_CALLS=" + b.log,
-		"DOAS_USER=komizo-termcade",
-	}, extra...)...)
+// run drives the section the way alpine.sh reaches it: TASKS already decided
+// (that happens near the top of the script, so the state record can say what
+// is true), and the script itself supplied or not.
+func (b *taskBox) run(t *testing.T, tasks, scriptBody string) (string, error) {
+	t.Helper()
+	encoded := ""
+	if scriptBody != "" {
+		encoded = base64.StdEncoding.EncodeToString([]byte(scriptBody))
+	}
+	preamble := "set -eu\n" +
+		"TASK_STORE=" + b.store + "\n" +
+		"TASK_FILE=" + filepath.Join(b.store, "blog.sh") + "\n" +
+		"TASK_BIN=" + b.taskBin + "\n" +
+		"TASKS=\"" + tasks + "\"\n" +
+		"TASK_SCRIPT_B64=\"" + encoded + "\"\n" +
+		"log() { echo \"$*\"; }\ndie() { echo \"error: $*\" >&2; exit 1; }\n"
+	cmd := exec.Command("sh", "-s")
+	cmd.Stdin = strings.NewReader(preamble + b.section)
+	cmd.Env = append(os.Environ(), "PATH="+b.bin+":/usr/bin:/bin", "CHOWN_LOG="+b.chownLog)
 	out, err := cmd.CombinedOutput()
-	if err == nil {
-		return string(out), 0
-	}
-	return string(out), err.(*exec.ExitError).ExitCode()
+	return string(out), err
 }
 
-func TestTaskWrapperExactAllowlistAndFixedInvocation(t *testing.T) {
+// The script arrives byte-for-byte. It goes through a shell environment
+// assignment, which is why it is base64 -- a task script is shell, full of
+// quotes, backslashes and newlines, and every one of them has to survive.
+func TestTheTaskScriptArrivesUnchanged(t *testing.T) {
 	b := newTaskBox(t)
-	for _, mode := range []string{"dry-run", "apply", "constrain"} {
-		if out, rc := b.run([]string{"release-identity-backfill", mode}); rc != 0 {
-			t.Fatalf("allowed mode %q failed rc=%d: %s", mode, rc, out)
-		}
+	const body = "#!/bin/sh\n# a task\nset -eu\nprintf 'a\\tb \"c\" $d `e`\\n'\ncase \"$1\" in\n\tbackup) ;;\nesac\n"
+	if out, err := b.run(t, "1", body); err != nil {
+		t.Fatalf("install failed: %v\n%s", err, out)
 	}
-	calls, err := os.ReadFile(b.log)
+	got, err := os.ReadFile(b.taskBin)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("nothing was installed: %v", err)
 	}
-	got := string(calls)
-	for _, want := range []string{
-		"timeout -s TERM -k 30 900 docker compose",
-		"run --rm --no-deps -T --name termcade-komizo-task api /usr/local/bin/termcade-backfill dry-run",
-		"run --rm --no-deps -T --name termcade-komizo-task api /usr/local/bin/termcade-backfill apply",
-		"run --rm --no-deps -T --name termcade-komizo-task api /usr/local/bin/termcade-backfill constrain",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("fixed invocation missing %q from:\n%s", want, got)
-		}
-	}
-	for _, forbidden := range []string{" sh -c ", " eval ", " --env ", " --volume "} {
-		if strings.Contains(" "+b.script+" ", forbidden) {
-			t.Errorf("task template contains forbidden command surface %q", forbidden)
-		}
-	}
-	if !strings.Contains(b.script, "--entrypoint /usr/local/bin/pocketbase db migrate up") {
-		t.Error("the only entrypoint override must remain the fixed PocketBase migration executable")
-	}
-	for _, want := range []string{
-		"PB_DATA_VOLUME=%s\\n' \"$fresh_volume\"",
-		"PB_DATA_VOLUME=%s\\n' \"$old_volume\"",
-		"grep -v '^PB_DATA_VOLUME=' \"$app_dir/.env\"",
-	} {
-		if !strings.Contains(b.script, want) {
-			t.Errorf("persistent volume-state transition missing %q", want)
-		}
+	if string(got) != body {
+		t.Errorf("the script changed in transit.\nwant %q\ngot  %q", body, got)
 	}
 }
 
-func TestTaskWrapperRejectsMalformedInputsBeforeDocker(t *testing.T) {
-	cases := []struct {
-		name string
-		args []string
-	}{
-		{"missing", nil},
-		{"one", []string{"release-identity-backfill"}},
-		{"extra", []string{"release-identity-backfill", "dry-run", "extra"}},
-		{"unknown task", []string{"other", "dry-run"}},
-		{"unknown mode", []string{"release-identity-backfill", "other"}},
-		{"path", []string{"release-identity-backfill", "/bin/sh"}},
-		{"image", []string{"release-identity-backfill", "ghcr.io/evil/image"}},
-		{"service", []string{"release-identity-backfill", "db"}},
-		{"environment", []string{"release-identity-backfill", "X=1"}},
-		{"shell", []string{"release-identity-backfill", "dry-run;id"}},
-		{"control", []string{"release-identity-backfill", "dry-run\napply"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			b := newTaskBox(t)
-			if out, rc := b.run(tc.args); rc != 64 {
-				t.Fatalf("malformed input reached rc=%d, want 64: %s", rc, out)
-			}
-			if _, err := os.Stat(b.log); !os.IsNotExist(err) {
-				t.Fatalf("Docker/timeout was reached before rejection: %v", err)
-			}
-		})
-	}
-}
-
-func TestTaskWrapperPropagatesExitAndTimeoutAndCleansUp(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		env  string
-		rc   int
-	}{
-		{"child exit", "STUB_RUN_RC=23", 23},
-		{"timeout", "STUB_TIMEOUT_RC=124", 124},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			b := newTaskBox(t)
-			if out, rc := b.run([]string{"release-identity-backfill", "dry-run"}, tc.env); rc != tc.rc {
-				t.Fatalf("got rc=%d, want %d: %s", rc, tc.rc, out)
-			}
-			if _, err := os.Stat(filepath.Join(b.root, "run", "task-termcade.lock")); !os.IsNotExist(err) {
-				t.Fatalf("task lock survived failure: %v", err)
-			}
-			calls, _ := os.ReadFile(b.log)
-			if !strings.Contains(string(calls), "docker rm -f termcade-komizo-task") {
-				t.Errorf("fixed container cleanup did not run:\n%s", calls)
-			}
-			audit, _ := os.ReadFile(b.audit)
-			if !strings.Contains(string(audit), "result="+strings.TrimPrefix(tc.env, strings.Split(tc.env, "=")[0]+"=")) {
-				t.Errorf("audit did not record propagated result:\n%s", audit)
-			}
-		})
-	}
-}
-
-func TestTaskAuditIsNonSensitiveAndActorIsSanitized(t *testing.T) {
+// Root-owned and executable, because the deploy account executes it through
+// doas and must not be able to edit it.
+func TestTheInstalledTaskProgramIsRootOwnedAndExecutable(t *testing.T) {
 	b := newTaskBox(t)
-	secret := "credential-must-not-enter-audit"
-	if out, rc := b.run([]string{"release-identity-backfill", "dry-run"},
-		"DOAS_USER=bad actor\nforged=1", "STUB_TASK_OUTPUT="+secret); rc != 0 {
-		t.Fatalf("rc=%d: %s", rc, out)
+	if out, err := b.run(t, "1", "#!/bin/sh\nexit 0\n"); err != nil {
+		t.Fatalf("install failed: %v\n%s", err, out)
 	}
-	audit, err := os.ReadFile(b.audit)
+	st, err := os.Stat(b.taskBin)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := string(audit)
-	for _, want := range []string{"actor=unknown", "app=termcade", "task=release-identity-backfill", "mode=dry-run", "image=sha256:fixed-image", "result=0"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("audit missing %q:\n%s", want, got)
-		}
-	}
-	if strings.Contains(got, secret) || strings.Contains(got, "forged=1") {
-		t.Errorf("task output or injected audit fields leaked into audit:\n%s", got)
-	}
-}
-
-func TestTaskInstallerIsRootOwnedMode755AndIdempotent(t *testing.T) {
-	root := t.TempDir()
-	bin := filepath.Join(root, "bin")
-	if err := os.MkdirAll(bin, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	chownLog := filepath.Join(root, "chown.log")
-	write(t, filepath.Join(bin, "chown"), 0o755, "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$CHOWN_LOG\"\n")
-	section := between(t, scripts.AlpineScript, `if [ "$TASKS" = "release-identity-backfill" ] || [ "$TASKS" = "termcade-operations" ]; then`, `log "Granting '$CI_USER' narrowly scoped doas access"`)
-	section = "if [ \"$TASKS\" = \"release-identity-backfill\" ] || [ \"$TASKS\" = \"termcade-operations\" ]; then\n" + section
-	taskBin := filepath.Join(root, "task-termcade")
-	run := func(tasks string) {
-		cmd := exec.Command("sh", "-s")
-		cmd.Stdin = strings.NewReader("set -eu\nTASKS=" + tasks + "\nTASK_BIN=" + taskBin + "\nlog() { :; }\ndie() { exit 1; }\n" + section)
-		cmd.Env = append(os.Environ(), "PATH="+bin+":/usr/bin:/bin", "CHOWN_LOG="+chownLog)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("installer failed: %v\n%s", err, out)
-		}
-	}
-	run("release-identity-backfill")
-	first, err := os.ReadFile(taskBin)
-	if err != nil {
-		t.Fatal(err)
-	}
-	st, _ := os.Stat(taskBin)
 	if st.Mode().Perm() != 0o755 {
-		t.Fatalf("wrapper mode=%o, want 755", st.Mode().Perm())
+		t.Errorf("installed program is mode %04o, want 0755", st.Mode().Perm())
 	}
-	run("release-identity-backfill")
-	second, _ := os.ReadFile(taskBin)
+	// The stored copy is NOT executable by anyone but root: it is the record
+	// of what was reviewed, not a second way to run it.
+	stored, err := os.Stat(filepath.Join(b.store, "blog.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Mode().Perm() != 0o700 {
+		t.Errorf("stored script is mode %04o, want 0700", stored.Mode().Perm())
+	}
+	chowns, _ := os.ReadFile(b.chownLog)
+	if !strings.Contains(string(chowns), "root:root "+b.taskBin) {
+		t.Errorf("the installer never asked for root:root on the program:\n%s", chowns)
+	}
+}
+
+// An update that supplies no script reinstalls the stored one.
+//
+// This is the whole reason the box keeps a copy. Without it, every `komizo
+// update` -- which runs once per app on every upgrade -- would quietly drop
+// the task program, which is the same class of bug as the doas block eating
+// hand-added rules.
+func TestAnUpdateWithoutAScriptReinstallsTheStoredOne(t *testing.T) {
+	b := newTaskBox(t)
+	const body = "#!/bin/sh\necho original\n"
+	if _, err := b.run(t, "1", body); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(b.taskBin); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := b.run(t, "1", ""); err != nil {
+		t.Fatalf("update failed: %v\n%s", err, out)
+	}
+	got, err := os.ReadFile(b.taskBin)
+	if err != nil {
+		t.Fatalf("the update dropped the task program: %v", err)
+	}
+	if string(got) != body {
+		t.Errorf("the reinstalled program is not the stored one: %q", got)
+	}
+}
+
+// Revoking takes BOTH copies. A stored script that nothing installs is a
+// root-owned file waiting to be re-granted by accident.
+func TestRevokingRemovesTheProgramAndTheStoredCopy(t *testing.T) {
+	b := newTaskBox(t)
+	if _, err := b.run(t, "1", "#!/bin/sh\nexit 0\n"); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := b.run(t, "", ""); err != nil {
+		t.Fatalf("revoke failed: %v\n%s", err, out)
+	}
+	for _, path := range []string{b.taskBin, filepath.Join(b.store, "blog.sh")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("%s survived a revoke", path)
+		}
+	}
+}
+
+// A file that is not a script is refused, and nothing is installed from it.
+func TestAFileWithoutAShebangIsRefused(t *testing.T) {
+	b := newTaskBox(t)
+	out, err := b.run(t, "1", "not a script\n")
+	if err == nil {
+		t.Fatalf("a file with no #! line was installed:\n%s", out)
+	}
+	if _, err := os.Stat(b.taskBin); !os.IsNotExist(err) {
+		t.Error("the refused file was installed anyway")
+	}
+	if _, err := os.Stat(filepath.Join(b.store, "blog.sh")); !os.IsNotExist(err) {
+		t.Error("the refused file was stored anyway")
+	}
+}
+
+// Installing twice produces the same thing.
+func TestInstallingTheSameScriptTwiceChangesNothing(t *testing.T) {
+	b := newTaskBox(t)
+	const body = "#!/bin/sh\nexit 0\n"
+	if _, err := b.run(t, "1", body); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := os.ReadFile(b.taskBin)
+	if _, err := b.run(t, "1", body); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := os.ReadFile(b.taskBin)
 	if string(first) != string(second) {
-		t.Fatal("second install changed generated wrapper")
+		t.Error("a second install changed the program")
 	}
-	chowns, _ := os.ReadFile(chownLog)
-	if !strings.Contains(string(chowns), "root:root "+taskBin) {
-		t.Fatalf("installer did not request root:root ownership:\n%s", chowns)
-	}
-	run("")
-	if _, err := os.Stat(taskBin); !os.IsNotExist(err) {
-		t.Fatalf("explicit revocation left wrapper installed: %v", err)
+}
+
+// komizo's own provisioning script must not carry one product's operations.
+//
+// CODE only. Comments in this file cite the incidents the code exists for --
+// gdam's previews, cazper's mounted key -- and naming them is the point: a
+// rule whose reason is a real failure is one nobody undoes by accident. What
+// must never come back is a branch, a path or a volume name belonging to one
+// app, which is what 181 lines of alpine.sh used to be.
+func TestTheProvisioningScriptNamesNoParticularApp(t *testing.T) {
+	for i, line := range strings.Split(scripts.AlpineScript, "\n") {
+		code := line
+		if trimmed := strings.TrimLeft(line, " \t"); strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		// Strip a trailing comment on a code line.
+		if h := strings.Index(code, " #"); h >= 0 {
+			code = code[:h]
+		}
+		// fieldsofrevik is the ONE remaining exception, and it is the same
+		// disease: SCOPED_ENV=fields-postgres-v2 is one app's per-service env
+		// layout, compiled into komizo the way the termcade task profile was.
+		// It is still in use, so it cannot come out in the change that removes
+		// the other one -- it needs the app to take its own profile over
+		// first. Listed here rather than left out, so the debt is written
+		// down where the rule is, and so nothing NEW joins it.
+		if strings.Contains(strings.ToLower(code), "fieldsofrevik") ||
+			strings.Contains(code, "fields-postgres-v2") {
+			continue
+		}
+		for _, app := range []string{"termcade", "cazper", "gdam", "astry", "ormos"} {
+			if strings.Contains(strings.ToLower(code), app) {
+				t.Errorf("alpine.sh:%d names %q in code -- app-specific logic belongs in "+
+					"that app's task script, not in the script that sets every app up:\n  %s",
+					i+1, app, line)
+			}
+		}
 	}
 }

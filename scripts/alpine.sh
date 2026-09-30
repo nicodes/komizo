@@ -26,9 +26,10 @@
 #   APP_NAME       which app on this box                          (default: app)
 #   CI_USER        deploy account        (default: komizo-<app>)
 #   APP_DIR        root-owned app directory                (default: /srv/<app>)
-#   TASKS          fixed named-task profile; currently only the Termcade
-#                  release-identity-backfill task                    (optional)
+#   TASKS          1 when this app has a task script installed  (recorded)
 #   TASKS_SET      1 when TASKS is an explicit edit; otherwise keep recorded
+#   TASK_SCRIPT_B64  the app's task script, base64, from --task-script
+#                  (optional; absent reinstalls whatever the box stored)
 #   SCOPED_ENV     fixed scoped-env profile; fields-postgres-v2 only, and
 #                  only for app fieldsofrevik                         (optional)
 #   SCOPED_ENV_SET 1 when SCOPED_ENV is an explicit edit; otherwise keep
@@ -223,18 +224,27 @@ esac
 if [ "$TASKS_SET" = "0" ] && [ -f "$STATE_FILE" ]; then
 	TASKS="$(sed -n 's/^TASKS=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)"
 fi
-# This is a catalog, not a caller-supplied command description. Every value
-# behind the profile is compiled into the root-owned wrapper below.
-case "$TASKS" in
-	'') ;;
-	release-identity-backfill|termcade-operations)
-		[ "$APP_NAME" = "termcade" ] || {
-			echo "error: task profile is defined only for app termcade" >&2
-			exit 1
-		}
-		;;
-	*) echo "error: TASKS names an unknown fixed task profile" >&2; exit 1 ;;
-esac
+# TASKS is a recorded yes/no now, not a catalog key: what varies is the
+# script, and that is stored on the box rather than named here.
+#
+# Decided HERE rather than where the script is installed, because the state
+# record is written between the two and has to say what is true. The three
+# cases are: a script was supplied, the flag was given with nothing (revoke),
+# or neither -- in which case whatever the box already stores is what this
+# app has, which is what makes `komizo update` keep it.
+TASK_STORE=/var/lib/komizo/tasks
+TASK_FILE="$TASK_STORE/$APP_NAME.sh"
+if [ "$TASKS_SET" = "1" ]; then
+	if [ -n "${TASK_SCRIPT_B64:-}" ]; then
+		TASKS=1
+	else
+		TASKS=""
+	fi
+elif [ -f "$TASK_FILE" ]; then
+	TASKS=1
+else
+	TASKS=""
+fi
 
 case "$PREVIEW_SET" in
 	1|yes|true) PREVIEW_SET=1 ;;
@@ -2016,209 +2026,52 @@ else
 fi
 
 # --- 3c. Named task path ---------------------------------------------------
-# Optional and app-specific. The deploy account gets no Docker membership and
-# no shell grant; it may ask this root-owned program to select one operation
-# from a literal catalog. The program supplies every privileged detail.
-if [ "$TASKS" = "release-identity-backfill" ] || [ "$TASKS" = "termcade-operations" ]; then
-	log "Installing $TASK_BIN for the selected fixed Termcade task profile"
-	cat > "$TASK_BIN.tmp" <<'KOMIZO_TASK_EOF'
-#!/bin/sh
-# Written by komizo. Edits are lost the next time the app is set up.
-set -eu
-set -f
-umask 077
-
-if [ "$#" -ne 2 ]; then
-	echo "task-termcade: expected exactly TASK MODE" >&2
-	exit 64
+# Optional and app-specific: a root-owned program the deploy account may ask
+# to perform one privileged operation, without being given Docker membership
+# or a shell grant.
+#
+# THE SCRIPT COMES FROM THE APP, THE MECHANISM COMES FROM KOMIZO. It used to
+# be the other way round: 181 lines of one product's operations -- its
+# compose project, its service names, its volume names, the path of a binary
+# only it ships -- were compiled into this file, which is otherwise the
+# generic "set an app up" script. komizo grew a per-app special case, and the
+# app still could not change it without a komizo release. By the time anyone
+# looked, every path in it was stale: the executable it named had been
+# deleted and all three volumes belonged to a database the product had
+# migrated off, so the whole profile was dead code that only komizo could
+# remove.
+#
+# NOT FROM THE CONFIG IMAGE, deliberately, even though that image already
+# reaches this box. This program runs as root, and sourcing it from something
+# CI pushes would turn "can deploy" into "can run anything as root here" --
+# the deploy account's whole point is that it cannot. It comes from an
+# operator's machine, through `komizo add --task-script`, and is kept on the
+# box so an update reinstalls what was reviewed rather than dropping it.
+if [ -n "${TASK_SCRIPT_B64:-}" ]; then
+	mkdir -p "$TASK_STORE"
+	chown root:root "$TASK_STORE"
+	chmod 700 "$TASK_STORE"
+	printf '%s' "$TASK_SCRIPT_B64" | base64 -d > "$TASK_FILE.tmp"
+	# A file that is not a script would still be a root-owned thing the
+	# deploy account may execute, which is worth one check before installing.
+	if ! head -n 1 "$TASK_FILE.tmp" | grep -q '^#!'; then
+		rm -f "$TASK_FILE.tmp"
+		die "--task-script must start with a #! line"
+	fi
+	mv -f "$TASK_FILE.tmp" "$TASK_FILE"
+	chown root:root "$TASK_FILE"
+	chmod 700 "$TASK_FILE"
 fi
-task=$1
-mode=$2
-
-case "$task" in
-	release-identity-backfill) ;;
-	production-data) [ "${KOMIZO_TERMCade_OPERATIONS:-0}" = 1 ] || true ;;
-	*) echo "task-termcade: task denied" >&2; exit 64 ;;
-esac
-case "$task:$mode" in
-	release-identity-backfill:dry-run|release-identity-backfill:apply|release-identity-backfill:constrain) ;;
-	production-data:inspect|production-data:backup|production-data:drill|production-data:seal|production-data:reset|production-data:rollback) ;;
-	*) echo "task-termcade: mode denied" >&2; exit 64 ;;
-esac
-
-app_dir=/srv/termcade
-compose_file=/srv/termcade/compose.yml
-project=termcade
-service=api
-executable=/usr/local/bin/termcade-backfill
-audit=/var/log/komizo/tasks.log
-lock=/run/komizo/task-termcade.lock
-container=termcade-komizo-task
-backup_dir=/var/lib/komizo/termcade-backups
-export_archive="/home/$DOAS_USER/termcade-backup.tar.age"
-export_metadata="/home/$DOAS_USER/termcade-backup.metadata"
-identity_file=/srv/termcade/backup-age-identity
-old_volume=termcade_pb_data
-fresh_volume=termcade_pb_data_reset_20260828
-drill_volume=termcade_pb_data_drill
-
-mkdir -p /var/log/komizo /run/komizo
-chown root:root /var/log/komizo /run/komizo
-chmod 700 /var/log/komizo /run/komizo
-touch "$audit"
-chown root:root "$audit"
-chmod 600 "$audit"
-
-actor=${DOAS_USER:-unknown}
-case "$actor" in
-	''|*[!A-Za-z0-9_-]*) actor=unknown ;;
-esac
-
-# mkdir is an atomic lock on BusyBox systems and needs no optional applet. A
-# stale lock after SIGKILL deliberately fails closed until root investigates.
-if ! mkdir "$lock" 2>/dev/null; then
-	echo "task-termcade: another task is active" >&2
-	exit 75
-fi
-# clamp-ok: this is date(1) format text, not awk/printf integer conversion.
-started=$(date -u +%FT%TZ)
-image=$(docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" images -q "$service" 2>/dev/null | head -n 1)
-image=${image:-unknown}
-printf 'start=%s actor=%s app=termcade task=%s mode=%s image=%s\n' \
-	"$started" "$actor" "$task" "$mode" "$image" >> "$audit"
-
-finished=0
-# shellcheck disable=SC2329 # invoked by the EXIT trap below.
-cleanup() {
-	rc=$?
-	docker rm -f "$container" >/dev/null 2>&1 || true
-	docker rm -f termcade-restore-drill >/dev/null 2>&1 || true
-	if [ "${resume_old:-0}" -eq 1 ]; then
-		PB_DATA_VOLUME="$old_volume" docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" up -d db api >/dev/null 2>&1 || true
-	fi
-	rm -rf "$lock"
-	if [ "$finished" -eq 0 ]; then
-		# clamp-ok: this is date(1) format text, not integer conversion.
-		ended=$(date -u +%FT%TZ)
-		printf 'end=%s actor=%s app=termcade task=%s mode=%s image=%s result=%s\n' \
-			"$ended" "$actor" "$task" "$mode" "$image" "$rc" >> "$audit"
-		finished=1
-	fi
-}
-trap cleanup EXIT
-trap 'exit 129' HUP INT TERM PIPE
-
-rc=0
-# Every token except the already-literal mode is fixed. No eval, sh -c, caller
-# environment, path, image, service, executable or Docker option crosses this
-# boundary. timeout propagates the child status and returns 124 at 15 minutes.
-if [ "$task" = release-identity-backfill ]; then
-	timeout -s TERM -k 30 900 \
-		docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" \
-		run --rm --no-deps -T --name "$container" "$service" "$executable" "$mode" || rc=$?
-else
-	mkdir -p "$backup_dir"
-	chown root:root "$backup_dir"
-	chmod 700 "$backup_dir"
-	case "$mode" in
-		inspect)
-			docker volume inspect "$old_volume" >/dev/null
-			volumes=$(docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" --profile maintenance config --volumes | sort)
-			[ "$volumes" = "pb_data
-pb_data_drill" ] || { echo "task-termcade: wrong volume contract" >&2; exit 65; }
-			docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" exec -T db /usr/local/bin/pocketbase --version
-			;;
-		backup)
-			docker volume inspect "$old_volume" >/dev/null
-			[ ! -e "$backup_dir/offhost.sealed" ] || { echo "task-termcade: current backup already sealed" >&2; exit 65; }
-			key=$(sed -n 's/^TERMCADE_BACKUP_AGE_IDENTITY=//p' "$app_dir/secrets.env" | head -n 1)
-			case "$key" in AGE-SECRET-KEY-*) ;; *) echo "task-termcade: backup identity missing or malformed" >&2; exit 65 ;; esac
-			printf '%s\n' "$key" > "$identity_file"
-			unset key
-			chown root:root "$identity_file" && chmod 600 "$identity_file"
-			PB_DATA_VOLUME="$old_volume" docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" stop api db
-			resume_old=1
-			PB_DATA_VOLUME="$old_volume" timeout -s TERM -k 30 900 docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" --profile maintenance run --rm --no-deps -T --name "$container" maintenance backup
-			sha=$(sed -n 's/^encrypted_sha256=//p' "$backup_dir/current.metadata")
-			[ "$(sha256sum "$backup_dir/current.tar.age" | cut -d' ' -f1)" = "$sha" ] || { echo "task-termcade: encrypted checksum mismatch" >&2; exit 65; }
-			chown "$DOAS_USER":root "$backup_dir/current.tar.age" "$backup_dir/current.metadata"
-			chmod 444 "$backup_dir/current.tar.age" "$backup_dir/current.metadata"
-			install -o "$DOAS_USER" -g "$DOAS_USER" -m 400 "$backup_dir/current.tar.age" "$export_archive"
-			install -o "$DOAS_USER" -g "$DOAS_USER" -m 400 "$backup_dir/current.metadata" "$export_metadata"
-			;;
-		drill)
-			[ -s "$backup_dir/current.tar.age" ] && [ -s "$backup_dir/current.metadata" ] || { echo "task-termcade: verified backup missing" >&2; exit 65; }
-			docker volume rm -f "$drill_volume" >/dev/null 2>&1 || true
-			docker volume create "$drill_volume" >/dev/null
-			PB_DATA_VOLUME="$old_volume" timeout -s TERM -k 30 900 docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" --profile maintenance run --rm --no-deps -T --name "$container" maintenance drill
-			db_image=$(docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" images -q db | head -n 1)
-			[ -n "$db_image" ] || { echo "task-termcade: deployed db image missing" >&2; exit 65; }
-			docker run --rm --network none --mount "source=$drill_volume,target=/pb/pb_data" "$db_image" migrate up --dir=/pb/pb_data --migrationsDir=/pb/pb_migrations
-			docker run -d --name termcade-restore-drill --network none --mount "source=$drill_volume,target=/pb/pb_data" "$db_image" serve --automigrate=false --http=127.0.0.1:8090 --dir=/pb/pb_data --migrationsDir=/pb/pb_migrations >/dev/null
-			sleep 3
-			[ "$(docker inspect -f '{{.State.Running}}' termcade-restore-drill)" = true ] || { docker logs termcade-restore-drill >&2; exit 65; }
-			docker rm -f termcade-restore-drill >/dev/null
-			docker volume rm "$drill_volume" >/dev/null
-			echo restore_startup=ok
-			;;
-		seal)
-			[ -s "$backup_dir/current.tar.age" ] && [ -s "$backup_dir/current.metadata" ] || { echo "task-termcade: backup missing" >&2; exit 65; }
-			sha256sum "$backup_dir/current.tar.age" | cut -d' ' -f1 > "$backup_dir/offhost.sealed"
-			chown root:root "$backup_dir/current.tar.age" "$backup_dir/current.metadata" "$backup_dir/offhost.sealed"
-			chmod 400 "$backup_dir/current.tar.age" "$backup_dir/offhost.sealed" && chmod 444 "$backup_dir/current.metadata"
-			rm -f "$export_archive" "$export_metadata"
-			;;
-		reset)
-			[ -s "$backup_dir/offhost.sealed" ] || { echo "task-termcade: off-host backup is not sealed" >&2; exit 65; }
-			[ "$(cat "$backup_dir/offhost.sealed")" = "$(sha256sum "$backup_dir/current.tar.age" | cut -d' ' -f1)" ] || { echo "task-termcade: sealed checksum mismatch" >&2; exit 65; }
-			docker volume inspect "$old_volume" >/dev/null
-			if docker volume inspect "$fresh_volume" >/dev/null 2>&1; then echo "task-termcade: fresh volume already exists" >&2; exit 65; fi
-			PB_DATA_VOLUME="$old_volume" docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" stop api db
-			resume_old=1
-			docker volume create "$fresh_volume" >/dev/null
-			PB_DATA_VOLUME="$fresh_volume" docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" run --rm --no-deps -T --entrypoint /usr/local/bin/pocketbase db migrate up --dir=/pb/pb_data --migrationsDir=/pb/pb_migrations
-			PB_DATA_VOLUME="$fresh_volume" docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" up -d db api
-			resume_old=0
-			PB_DATA_VOLUME="$fresh_volume" timeout -s TERM -k 30 120 docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" --profile maintenance run --rm --no-deps -T --name "$container" maintenance empty
-			state_tmp="$app_dir/.env.task.$$"
-			grep -v '^PB_DATA_VOLUME=' "$app_dir/.env" > "$state_tmp" 2>/dev/null || true
-			printf 'PB_DATA_VOLUME=%s\n' "$fresh_volume" >> "$state_tmp"
-			chown root:root "$state_tmp" && chmod 600 "$state_tmp"
-			mv "$state_tmp" "$app_dir/.env"
-			echo reset_volume=$fresh_volume
-			;;
-		rollback)
-			docker volume inspect "$old_volume" >/dev/null
-			PB_DATA_VOLUME="$fresh_volume" docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" stop api db >/dev/null 2>&1 || true
-			PB_DATA_VOLUME="$old_volume" docker compose -f "$compose_file" --project-directory "$app_dir" -p "$project" up -d db api
-			state_tmp="$app_dir/.env.task.$$"
-			grep -v '^PB_DATA_VOLUME=' "$app_dir/.env" > "$state_tmp" 2>/dev/null || true
-			printf 'PB_DATA_VOLUME=%s\n' "$old_volume" >> "$state_tmp"
-			chown root:root "$state_tmp" && chmod 600 "$state_tmp"
-			mv "$state_tmp" "$app_dir/.env"
-			echo rollback_volume=$old_volume
-			;;
-	esac
-fi
-exit "$rc"
-KOMIZO_TASK_EOF
-	# The broader profile is compiled in at provisioning time, not selected by
-	# a caller of the installed wrapper.
-	if [ "$TASKS" = "termcade-operations" ]; then
-		# shellcheck disable=SC2016 # replacing literal generated-script text.
-		sed -i 's/${KOMIZO_TERMCade_OPERATIONS:-0}/1/' "$TASK_BIN.tmp"
-	else
-		sed -i '/production-data)/d; /production-data:/d' "$TASK_BIN.tmp"
-	fi
-	if grep -q '__[A-Z_][A-Z_]*__' "$TASK_BIN.tmp"; then
-		rm -f "$TASK_BIN.tmp"
-		die "the generated task script still has placeholders in it -- this is a komizo bug"
-	fi
-	mv "$TASK_BIN.tmp" "$TASK_BIN"
+if [ -n "$TASKS" ]; then
+	log "Installing $TASK_BIN from this app's task script"
+	cp "$TASK_FILE" "$TASK_BIN.tmp"
+	mv -f "$TASK_BIN.tmp" "$TASK_BIN"
 	chown root:root "$TASK_BIN"
 	chmod 755 "$TASK_BIN"
 else
-	rm -f "$TASK_BIN" "$TASK_BIN.tmp"
+	# Revoked, or never had one. Both copies go: a stored script nothing
+	# installs is a root-owned file waiting to be re-granted by accident.
+	rm -f "$TASK_BIN" "$TASK_BIN.tmp" "$TASK_FILE" "$TASK_FILE.tmp"
 fi
 
 log "Granting '$CI_USER' narrowly scoped doas access"

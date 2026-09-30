@@ -1,6 +1,8 @@
 package app
 
 import (
+	"bytes"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"os"
@@ -18,8 +20,13 @@ type addOpts struct {
 	appDir  string
 	keyPath string
 	knownAs string
-	task    string
-	taskSet bool
+	// taskScript is a path on the OPERATOR's machine. The script is read
+	// here, delivered by komizo, and kept on the box so an update reinstalls
+	// what was reviewed. taskSet distinguishes an explicit edit -- including
+	// an explicit revoke -- from omission.
+	taskScript string
+	taskBody   []byte
+	taskSet    bool
 	// scopedEnv is the fixed fields-postgres-v2 profile, or empty to revoke.
 	// scopedEnvSet distinguishes an explicit edit from omission, which keeps
 	// the recorded profile across komizo update.
@@ -54,7 +61,7 @@ func (o *addOpts) bind(fs *flag.FlagSet) {
 	fs.StringVar(&o.appDir, "app-dir", "", "root-owned app directory (default /srv/<app>)")
 	fs.StringVar(&o.keyPath, "key", "", "also write the keypair here (default: not written, printed instead)")
 	fs.StringVar(&o.knownAs, "known-as", "", "other hostname(s) CI connects by, comma-separated (host keys are pinned per name)")
-	fs.StringVar(&o.task, "task", "", "fixed task profile; release-identity-backfill or termcade-operations (empty revokes)")
+	fs.StringVar(&o.taskScript, "task-script", "", "install this script as the app's root-owned task program (empty revokes)")
 	fs.StringVar(&o.scopedEnv, "scoped-env", "", "fixed scoped-env profile; fields-postgres-v2 for fieldsofrevik (empty revokes)")
 	fs.BoolVar(&o.preview, "preview", false, "install this app's PR-preview helpers and grant them (--preview=false revokes)")
 	fs.IntVar(&o.port, "port", 22, "SSH port")
@@ -174,7 +181,7 @@ func RunAdd(args []string) error {
 		if f.Name == "known-as" {
 			o.clearKnownAs = true
 		}
-		if f.Name == "task" {
+		if f.Name == "task-script" {
 			o.taskSet = true
 		}
 		if f.Name == "scoped-env" {
@@ -184,13 +191,18 @@ func RunAdd(args []string) error {
 			o.previewSet = true
 		}
 	})
-	if o.taskSet {
-		if o.task != "" && o.task != "release-identity-backfill" && o.task != "termcade-operations" {
-			return fmt.Errorf("--task must be release-identity-backfill, termcade-operations, or empty")
+	if o.taskSet && o.taskScript != "" {
+		body, err := os.ReadFile(o.taskScript)
+		if err != nil {
+			return fmt.Errorf("reading --task-script: %w", err)
 		}
-		if o.task != "" && o.app != "termcade" {
-			return fmt.Errorf("--task %s is defined only for app termcade", o.task)
+		// Refused here as well as on the box, because the useful place to
+		// learn that a file is not a script is before it is sent to a server
+		// to be installed as root.
+		if !bytes.HasPrefix(body, []byte("#!")) {
+			return fmt.Errorf("--task-script %s does not start with a #! line", o.taskScript)
 		}
+		o.taskBody = body
 	}
 	if o.scopedEnvSet {
 		if o.scopedEnv != "" && o.scopedEnv != "fields-postgres-v2" {
@@ -238,7 +250,7 @@ func RunAdd(args []string) error {
 		appDir:       o.appDir,
 		keyPath:      o.keyPath,
 		knownAs:      knownAs,
-		task:         o.task,
+		taskBody:     o.taskBody,
 		taskSet:      o.taskSet,
 		scopedEnv:    o.scopedEnv,
 		scopedEnvSet: o.scopedEnvSet,
@@ -280,7 +292,7 @@ type addPlan struct {
 	knownAs []string
 	// task is a catalog key, never a path or command. taskSet distinguishes an
 	// explicit empty value (revoke) from omission (preserve recorded policy).
-	task         string
+	taskBody     []byte
 	taskSet      bool
 	scopedEnv    string
 	scopedEnvSet bool
@@ -360,18 +372,22 @@ func performAdd(p addPlan, out progress, runner func(script string, env map[stri
 	// because that is what the script reads back; empty means "unchanged",
 	// which is what a config-image change is saying.
 	env := map[string]string{
-		"KNOWN_AS":       strings.Join(p.knownAs, ","),
-		"CI_PUBKEY":      kp.public,
-		"CI_USER":        p.user,
-		"APP_NAME":       p.app,
-		"CONFIG_IMAGE":   p.config,
-		"HARDEN_SSH":     boolEnv(p.harden),
-		"TASKS":          p.task,
-		"TASKS_SET":      boolEnv(p.taskSet),
-		"SCOPED_ENV":     p.scopedEnv,
-		"SCOPED_ENV_SET": boolEnv(p.scopedEnvSet),
-		"PREVIEW":        boolEnv(p.preview),
-		"PREVIEW_SET":    boolEnv(p.previewSet),
+		"KNOWN_AS":     strings.Join(p.knownAs, ","),
+		"CI_PUBKEY":    kp.public,
+		"CI_USER":      p.user,
+		"APP_NAME":     p.app,
+		"CONFIG_IMAGE": p.config,
+		"HARDEN_SSH":   boolEnv(p.harden),
+		"TASKS_SET":    boolEnv(p.taskSet),
+		// Base64 so a script with newlines, quotes and backslashes survives
+		// the trip through a shell environment assignment untouched. Not a
+		// secret -- it lives in the app's repository -- so argv is fine; what
+		// it must not be is reinterpreted on the way.
+		"TASK_SCRIPT_B64": base64.StdEncoding.EncodeToString(p.taskBody),
+		"SCOPED_ENV":      p.scopedEnv,
+		"SCOPED_ENV_SET":  boolEnv(p.scopedEnvSet),
+		"PREVIEW":         boolEnv(p.preview),
+		"PREVIEW_SET":     boolEnv(p.previewSet),
 		// Only ever 1 when the caller means "none", never as a matter of course:
 		// the server reads an empty KNOWN_AS as "not mentioned" for every other
 		// operation, and that is the reading a config-image change needs.
