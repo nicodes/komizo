@@ -490,3 +490,20 @@ func portWasSet(fs *flag.FlagSet) bool {
 	})
 	return set
 }
+
+// runPiped runs ONE remote command with arbitrary bytes on its stdin.
+//
+// Every other caller here pipes a script to `sh -s`, which spends stdin on the
+// script itself. A secret cannot travel that way: putting the value inside the
+// script text means quoting bytes nobody has seen, and a value that is meant
+// never to be echoed has no business being part of a program. So the command
+// goes in argv and the value stays on stdin, which is the same shape the
+// set-secret binary on the box already requires and for the same reason --
+// arguments are visible in the host's process list to every other user on it.
+func (t target) runPiped(cmd string, stdin io.Reader, out io.Writer) error {
+	c := exec.Command("ssh", t.sshArgs(cmd)...)
+	c.Stdin = stdin
+	c.Stdout = out
+	c.Stderr = os.Stderr
+	return c.Run()
+}

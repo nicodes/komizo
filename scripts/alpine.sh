@@ -1783,14 +1783,95 @@ cat > "$SECRET_BIN.tmp" <<'KOMIZO_SECRET_EOF'
 # Written by komizo. Edits are lost the next time the app is set up.
 set -eu
 
+# doas always runs this as root, so in production every chown below is a no-op
+# restating what umask 077 already produced. The only caller that is not root
+# is a test driving the script against a fixture: it cannot chown and does not
+# need to, because the files it creates are already its own. Same reasoning
+# and same helper as alpine-unset-secret.sh.
+own_root() {
+	[ "$(id -u)" = 0 ] || return 0
+	chown "$1" "$2"
+}
+
+# Two shapes, one binary and therefore one doas grant: an env value in
+# secrets.env, or a FILE under secrets/.
+#
+# The file shape exists because the env shape cannot carry what half these
+# apps need. The refusal below is explicit about it -- "a value that contains
+# a newline, which an env file cannot represent" -- and every multi-line
+# credential in the portfolio went round it the same way: somebody wrote the
+# file onto the box by hand. An OpenAI key that has to be MOUNTED rather than
+# exported, an age backup identity, a PEM, a postgres owner password the
+# database container reads before the app exists. Ten such files across five
+# apps, none of them delivered by anything, none rotatable without SSH.
+#
+# secrets/ rather than a new directory, because that is already where those
+# files are and what the compose files already mount. Delivering them through
+# komizo is then a change of WRITER, not a change of layout: nothing in an
+# app has to move.
+#
+# Same binary as the env shape on purpose. A separate one would need its own
+# doas rule, and the grant is the same grant -- write this app's secrets,
+# never read them.
+shape="env"
+uid=""
+while :; do
+	case "${1:-}" in
+		--file) shape="file"; shift ;;
+		# The container that reads a mounted secret is usually not root, and a
+		# 0600 root file is unreadable to it: cazper's openai_api_key is owned
+		# by nobody for exactly that reason. Numeric only -- the host does not
+		# have to know the container's user names, and a numeric id is what
+		# the mount compares against.
+		--uid) uid="${2:-}"; shift 2 ;;
+		*) break ;;
+	esac
+done
 name="${1:-}"
 cd "__APP_DIR__"
+
+case "$uid" in
+	'') ;;
+	*[!0-9]*) echo "set-secret: --uid must be numeric" >&2; exit 1 ;;
+esac
+if [ -n "$uid" ] && [ "$shape" != "file" ]; then
+	echo "set-secret: --uid applies only to --file" >&2
+	exit 1
+fi
 
 # This profile's values are host-local. A stale doas grant must not write them.
 profile="$(sed -n 's/^SCOPED_ENV=//p' "__STATE_FILE__" | tr -d '\r' | head -n 1)"
 if [ "$profile" = "fields-postgres-v2" ]; then
 	echo "set-secret: refusing: fields-postgres-v2 does not accept deploy-user secrets" >&2
 	exit 1
+fi
+
+if [ "$shape" = "file" ]; then
+	# A FILENAME, not an env-var name, so the charset differs from the one
+	# below -- dots and hyphens are ordinary in "postgres-owner.env" and
+	# "recipient.pem". What it must not do is escape secrets/: no slash, no
+	# leading dot (which would hide it and could spell ".."), nothing that is
+	# not a plain name.
+	case "$name" in
+		''|.|..) echo "set-secret: invalid file name" >&2; exit 1 ;;
+		.*|-*) echo "set-secret: file name must not start with '.' or '-'" >&2; exit 1 ;;
+		*[!A-Za-z0-9._-]*) echo "set-secret: invalid file name '$name'" >&2; exit 1 ;;
+	esac
+	umask 077
+	mkdir -p secrets
+	own_root root:root secrets
+	chmod 700 secrets
+	# Written whole through a temp file and renamed, like the env shape: a
+	# container reading a mounted secret must never see a half-written one.
+	# NOT $(cat) here -- that strips trailing newlines, and a file secret is
+	# bytes. A PEM without its final newline is a PEM some parsers refuse.
+	ftmp="$(mktemp "__APP_DIR__/secrets/.tmp.XXXXXX")"
+	cat > "$ftmp"
+	own_root "${uid:-0}:0" "$ftmp"
+	chmod 600 "$ftmp"
+	mv -f "$ftmp" "secrets/$name"
+	echo "set-secret: file $name updated"
+	exit 0
 fi
 
 # Env-var charset. Also makes the name safe as a grep pattern below.
@@ -1818,7 +1899,7 @@ tmp="$(mktemp "__APP_DIR__/.secrets.XXXXXX")"
 # without the key, and a crash mid-write cannot truncate it.
 grep -v "^$name=" secrets.env > "$tmp" 2>/dev/null || true
 printf '%s=%s\n' "$name" "$value" >> "$tmp"
-chown root:root "$tmp"
+own_root root:root "$tmp"
 chmod 600 "$tmp"
 mv -f "$tmp" secrets.env
 

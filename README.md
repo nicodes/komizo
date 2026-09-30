@@ -109,6 +109,39 @@ including `secrets/`, and does not read those files. Clerk values that contain
 space, `"`, `#`, `$`, `'`, backslash, or backtick are refused: Fields compose
 still uses the short `env_file` form and does not set `format: raw`.
 
+## Secrets an env file cannot carry
+
+`set-secret` writes a key into the app's `secrets.env`, and refuses a value
+containing a newline — an env file cannot represent one. Everything that does
+not fit that shape used to be put on the box by hand over SSH: an OpenAI key
+that has to be *mounted* rather than exported, an age backup identity, a PEM,
+a postgres owner password the database container reads before the app exists.
+One portfolio had ten such files across five apps — delivered by nothing,
+rotated by nothing, invisible to every komizo command.
+
+`--file` writes them into the app's `secrets/` directory, which is where those
+files already live and what the compose files already mount, so adopting it
+changes the *writer* and not the layout:
+
+```sh
+komizo set-secret --host root@box --app blog --name CLERK_SECRET_KEY
+komizo set-secret --host root@box --app blog --name recipient.pem --file --from ./recipient.pem
+komizo set-secret --host root@box --app blog --name openai_api_key --file --from ./key --uid 65534
+```
+
+The value comes from `--from` or from stdin, never from an argument: arguments
+are visible in the host's process list to every other user on the box. It is
+never echoed either, here or on the box.
+
+`--uid` exists because a mounted secret is read by the container's user, and a
+mode-0600 root file is unreadable to a container running as `nobody`.
+
+This is an operator command over the root connection. It does not widen what
+CI can do: it invokes the same `set-secret-<app>` binary the deploy account
+already has, so one piece of code decides where a secret lands and with what
+mode. File secrets are listed by `komizo unset-secret --list` as `file:<name>`
+and removed under that name.
+
 ## Taking a secret off a box
 
 `set-secret` writes a key and never deletes one. That is right for the write
@@ -123,9 +156,11 @@ password for a PocketBase removed months earlier.
 komizo unset-secret --host root@box --app blog --list
 komizo unset-secret --host root@box --app blog --name OLD_API_KEY --yes
 komizo unset-secret --host root@box --app blog --keep DATABASE_URL,CLERK_SECRET_KEY --yes
+komizo unset-secret --host root@box --app blog --name file:recipient.pem --yes
 ```
 
-`--list` prints names and never a value. `--keep` is the other direction, for
+`--list` prints names and never a value, of both shapes: env keys bare and
+file secrets as `file:<name>`. `--keep` is the other direction, for
 when what should survive is a shorter list than what should not.
 
 This is an operator command over the root connection, like `komizo remove`. It
