@@ -175,9 +175,51 @@ func TestPreviewUpCreatesOnlyItsOwnDatabase(t *testing.T) {
 	}
 	for _, c := range f.calls {
 		j := strings.Join(c, " ")
-		if strings.Contains(j, "DROP DATABASE") || strings.Contains(j, "gdam_production") || strings.Contains(j, "ALTER ") {
+		// Up drops its OWN leftovers before creating them (see the reclaim
+		// in PreviewUp); any other name in a DROP is the bug this guards.
+		if strings.Contains(j, "DROP DATABASE") && !strings.Contains(j, "DROP DATABASE IF EXISTS gdam_pr_12 ") {
+			t.Fatalf("a drop named something that is not the preview's database: %v", c)
+		}
+		if strings.Contains(j, "gdam_production") || strings.Contains(j, "ALTER ") {
 			t.Fatalf("a statement reached for something that is not the preview's database: %v", c)
 		}
+	}
+}
+
+// Re-running up must work. A preview's database and role are named for its
+// own app and PR, so an earlier attempt that died after creating them left
+// litter that belongs to nobody else -- and up used to refuse on it forever
+// ("database gdam_pr_158 already exists"), which no re-run and no operator
+// acting through CI could clear.
+func TestPreviewUpReclaimsItsOwnLeftovers(t *testing.T) {
+	f := &fakeDocker{}
+	cfg := previewTestConfig(t)
+	if _, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow); err != nil {
+		t.Fatal(err)
+	}
+	dropped, created, droppedRole := -1, -1, -1
+	for i, c := range f.calls {
+		j := strings.Join(c, " ") + "\x00" + f.stdins[i]
+		switch {
+		case strings.Contains(j, "DROP DATABASE IF EXISTS gdam_pr_12 WITH (FORCE)"):
+			dropped = i
+		case strings.Contains(j, "DROP ROLE IF EXISTS gdam_pr_12;"):
+			droppedRole = i
+		case strings.Contains(j, "CREATE DATABASE gdam_pr_12"):
+			created = i
+		}
+	}
+	if dropped < 0 {
+		t.Fatalf("up did not reclaim a possible leftover database: %v", f.calls)
+	}
+	// FORCE matters: the state to clean up is the one with the failed
+	// attempt's containers still holding sessions, which a plain drop
+	// reports and walks away from.
+	if droppedRole < 0 || droppedRole < dropped {
+		t.Fatalf("the role must be dropped after its database, not before: drop=%d role=%d", dropped, droppedRole)
+	}
+	if created < 0 || created < droppedRole {
+		t.Fatalf("the reclaim must precede the create: drop=%d role=%d create=%d", dropped, droppedRole, created)
 	}
 }
 
