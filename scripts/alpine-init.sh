@@ -120,6 +120,36 @@ EOF
 chmod 755 /etc/local.d/komizo-firewall.start
 rc-update add local default >/dev/null 2>&1 || true
 
+# --- Reclaim images no container is using --------------------------------
+#
+# Every deploy and every preview pulls an image tagged by commit, and nothing
+# had ever removed the one it replaced. Two boxes reached 92% and 84%
+# reclaimable: 162 and 172 images, of which 15 and 8 were in use. gdam alone
+# held fourteen copies of the same 157MB gate image, all from one day.
+#
+# The deploy script explains at length why it is not the place for this -- a
+# machine-wide prune does not belong in a per-app path a deploy key can
+# invoke -- and ends "Disk is a SERVER concern. It belongs wherever
+# server-wide upkeep ends up living." This is that place: server-level,
+# operator-run, and reachable by nobody's deploy key.
+#
+# KEEP WHAT A CONTAINER REFERENCES, DROP THE REST. Not "the last few
+# versions": a rollback never needs a local image. revert() in the app script
+# restores config files and deliberately restarts nothing, so the previous
+# containers are still up and still hold their images; going back to an older
+# release is an ordinary deploy of that tag, which pulls it. The worst a
+# too-eager prune can cost is one pull, and ghcr is the source of truth.
+#
+# Stopped containers count as references, so an app somebody has stopped keeps
+# the image it will start again with.
+log "Reclaiming images no container is using"
+before=$(docker system df --format '{{.Reclaimable}}' 2>/dev/null | head -1)
+docker image prune -af >/dev/null 2>&1 || true
+printf '    was reclaimable: %s; now %s free on %s\n' \
+	"${before:-unknown}" \
+	"$(df -h / | awk 'NR==2 {print $4}')" \
+	"$(df -h / | awk 'NR==2 {print $6}')"
+
 log "Done"
 cat <<EOF
 
