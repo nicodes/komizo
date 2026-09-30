@@ -62,8 +62,28 @@ fi
 # The env-var charset set-secret enforces on the way in, enforced again on the
 # way out. Also what makes each name safe as a grep pattern below: a name
 # containing a regex metacharacter would match keys nobody asked to remove.
+# A "file:" prefix names a file secret under secrets/ rather than a key in
+# secrets.env. Two shapes, because set-secret now writes two: an env value it
+# can represent, and a file for everything it cannot -- a PEM, an age
+# identity, a postgres owner password read before the app exists. A secret
+# komizo can deliver but never remove is the one-way door this script exists
+# to close, so the removal side has to know both.
 for name in $NAMES; do
 	case "$name" in
+		file:*)
+			f="${name#file:}"
+			case "$f" in
+				''|.|..) echo "error: 'file:' needs a name" >&2; exit 1 ;;
+				.*|-*) echo "error: '$f' must not start with '.' or '-'" >&2; exit 1 ;;
+				*[!A-Za-z0-9._-]*)
+					echo "error: '$f' is not a valid file secret name" >&2
+					exit 1 ;;
+			esac
+			[ "$KEEP" != 1 ] || {
+				echo "error: --keep describes the env keys to retain and cannot take a file: name" >&2
+				exit 1
+			}
+			;;
 		*[!A-Za-z0-9_]*)
 			echo "error: '$name' is not a valid secret name" >&2
 			exit 1 ;;
@@ -97,6 +117,17 @@ cd "$APP_DIR"
 if [ "$LIST" = 1 ]; then
 	echo "$APP_NAME: $SECRETS"
 	grep -oE '^[A-Za-z0-9_]+=' "$SECRETS" | tr -d '=' | sed 's/^/  /' || true
+	# The file secrets, under the name that removes them. Listed even when
+	# there are none: "this app has no file secrets" and "this command does
+	# not know about file secrets" look identical otherwise, and the second
+	# is what left ten of them undiscoverable on these boxes for months.
+	echo "$APP_NAME: $APP_DIR/secrets/"
+	if [ -d secrets ]; then
+		for f in secrets/*; do
+			[ -f "$f" ] || continue
+			echo "  file:${f#secrets/}"
+		done
+	fi
 	exit 0
 fi
 
@@ -111,7 +142,10 @@ fi
 if [ "$KEEP" != 1 ]; then
 	missing=
 	for name in $NAMES; do
-		grep -q "^$name=" "$SECRETS" || missing="$missing $name"
+		case "$name" in
+			file:*) [ -f "secrets/${name#file:}" ] || missing="$missing $name" ;;
+			*) grep -q "^$name=" "$SECRETS" || missing="$missing $name" ;;
+		esac
 	done
 	if [ -n "$missing" ]; then
 		echo "error: not in $SECRETS:$missing" >&2
@@ -121,11 +155,35 @@ if [ "$KEEP" != 1 ]; then
 	fi
 fi
 
+umask 077
+# The file secrets go first, each moved aside rather than unlinked -- same
+# rule as the secrets.env backup above, and for the same reason: the value may
+# be the last copy of something nobody wrote down. Whatever is left in NAMES
+# after this is an env key.
+env_names=
+for name in $NAMES; do
+	case "$name" in
+		file:*)
+			f="${name#file:}"
+			mv -f "secrets/$f" "secrets/$f.$(date +%Y%m%d%H%M%S).bak"
+			own_root "secrets/$f."*.bak
+			echo "unset-secret: removed file:$f"
+			;;
+		*) env_names="$env_names $name" ;;
+	esac
+done
+NAMES="$env_names"
+# Only file secrets were named: secrets.env is not being rewritten, so stop
+# before taking a backup of a file nothing is about to change.
+if [ -z "$(printf '%s' "$NAMES" | tr -d ' ')" ]; then
+	echo "unset-secret: running containers keep the values they started with; the next deploy is what recreates them without these"
+	exit 0
+fi
+
 # A dated copy, root-only, beside the original. Deleting a credential is the
 # one operation here with no undo, and the value may be the last copy of
 # something -- an age identity, a key nobody wrote down. The operator deletes
 # this once the next deploy has proved the app still starts.
-umask 077
 backup="$SECRETS.$(date +%Y%m%d%H%M%S).bak"
 cp -p "$SECRETS" "$backup"
 own_root "$backup"

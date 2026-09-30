@@ -99,6 +99,8 @@ func runCommand(name string, args []string) error {
 		return RunEnrol(args)
 	case "remove":
 		return RunRemove(args)
+	case "set-secret":
+		return RunSetSecret(args)
 	case "unset-secret":
 		return RunUnsetSecret(args)
 	case "start":
@@ -164,7 +166,7 @@ func Main(args []string) error {
 		err = RunLogout(args[1:])
 	case "init", "update", "add", "list", "report", "enrol", "remove", "proxy",
 		"start", "stop", "restart", "logs", "preview", "ui", "reconcile",
-		"unset-secret":
+		"set-secret", "unset-secret":
 		// No gate. An account is needed to REGISTER a box, and the two places
 		// that do it ask for one where they do it.
 		//
@@ -245,6 +247,7 @@ hand.
   komizo report  --host root@HOST
   komizo enrol   --host root@HOST --token kmz_enr_... --api https://service-you-run
   komizo remove  --host root@HOST --app NAME --yes
+  komizo set-secret   --host root@HOST --app NAME --name SECRET [--file]
   komizo unset-secret --host root@HOST --app NAME [--list | --name NAME --yes]
   komizo start   --host root@HOST --app NAME
   komizo stop    --host root@HOST --app NAME
