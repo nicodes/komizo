@@ -134,7 +134,13 @@ func RunAdd(args []string) error {
 	// CI log, a pipe, a file it gets redirected into -- where it would persist
 	// unencrypted. --key is the scripted path: it writes the key to a file of
 	// your choosing instead of stdout. Checked before anything touches the box.
-	if o.keyPath == "" && !stdoutIsTTY() {
+	//
+	// --keep-key is exempt because it generates no key at all (see the
+	// "Deploy keypair" step), so there is nothing to leak. Refusing it was a
+	// scripted `komizo add --keep-key` -- changing a setting on an existing
+	// app, the commonest non-interactive use there is -- failing on a rule
+	// about printing a secret it was never going to print.
+	if o.keyPath == "" && !o.keepKey && !stdoutIsTTY() {
 		return fmt.Errorf("refusing to print the private key to a non-terminal;\n" +
 			"    pass --key PATH to write it to a file instead")
 	}
