@@ -109,6 +109,41 @@ including `secrets/`, and does not read those files. Clerk values that contain
 space, `"`, `#`, `$`, `'`, backslash, or backtick are refused: Fields compose
 still uses the short `env_file` form and does not set `format: raw`.
 
+## Privileged tasks an app needs
+
+Some apps need one privileged operation that is not a deploy — take a backup,
+run a drill, reset a volume. The deploy account gets no Docker membership and
+no shell grant, so it cannot do those itself; what it gets is permission to
+ask one root-owned program to do exactly one of them.
+
+**komizo installs the program; the app writes it.**
+
+```sh
+komizo add --host root@box --app blog --config ghcr.io/you/blog-config \
+    --task-script ./deploy/tasks.sh
+```
+
+The script is read from the operator's machine, kept on the box under
+`/var/lib/komizo/tasks/`, and installed as `/usr/local/bin/task-<app>`,
+root-owned 0755, granted through doas. `--task-script=` revokes and removes
+both copies. Omitted, the stored script is reinstalled — an update must not
+quietly drop it.
+
+**Not from the config image**, even though that image already reaches the box.
+This program runs as root, and taking it from something CI pushes would turn
+"can deploy" into "can run anything as root here" — which is the one thing the
+deploy account is designed not to be able to do. It comes from a person who
+read it.
+
+This used to be the other way round: 181 lines of one product's operations —
+its compose project, its service and volume names, the path of a binary only
+it ships — were compiled into `alpine.sh`, the script that sets up *every*
+app. The app could not change any of it without a komizo release. By the time
+anyone looked, every path in it was stale: the executable it named had been
+deleted and all three volumes belonged to a database the product had migrated
+off. A generic tool had grown a per-app special case, and the special case had
+rotted where only the tool could reach it.
+
 ## PR previews
 
 ```sh
@@ -119,7 +154,7 @@ komizo add --host root@box --app gdam --config ghcr.io/you/gdam-config --preview
 `komizo-preview`, which narrows the deploy account to four `komizo-box
 preview` subcommands, and `write-preview-stackenv`, which writes one
 preview's `stack.env` 0600 root — and grants both through doas.
-`--preview=false` revokes them. Like `--task`, an omitted flag keeps whatever
+`--preview=false` revokes them. Like `--task-script`, an omitted flag keeps whatever
 the box recorded, so `komizo update` does not switch previews off.
 
 Both helpers scope themselves to the caller's own app: komizo names every
