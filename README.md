@@ -109,6 +109,30 @@ including `secrets/`, and does not read those files. Clerk values that contain
 space, `"`, `#`, `$`, `'`, backslash, or backtick are refused: Fields compose
 still uses the short `env_file` form and does not set `format: raw`.
 
+## PR previews
+
+```sh
+komizo add --host root@box --app gdam --config ghcr.io/you/gdam-config --preview
+```
+
+`--preview` installs the two root-owned helpers a preview needs —
+`komizo-preview`, which narrows the deploy account to four `komizo-box
+preview` subcommands, and `write-preview-stackenv`, which writes one
+preview's `stack.env` 0600 root — and grants both through doas.
+`--preview=false` revokes them. Like `--task`, an omitted flag keeps whatever
+the box recorded, so `komizo update` does not switch previews off.
+
+Both helpers scope themselves to the caller's own app: komizo names every
+deploy account `komizo-<app>`, so `komizo-gdam` may preview `gdam` and
+nothing else. That is why they are one shared pair of paths rather than one
+per app, and why removing them waits until no app on the box previews.
+
+They used to be installed by hand, with doas rules added by hand *inside*
+komizo's managed block — so the next `komizo update` rewrote the block and
+deleted them, and gdam's previews failed on `doas: Operation not permitted`
+in a step that had worked minutes earlier. A feature that needs a privilege
+is a feature komizo has to install.
+
 ## Secrets an env file cannot carry
 
 `set-secret` writes a key into the app's `secrets.env`, and refuses a value
