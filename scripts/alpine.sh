@@ -1827,18 +1827,33 @@ KOMIZO_PREVIEW_STACKENV_EOF
 	chmod 755 "$PREVIEW_RUN_BIN" "$PREVIEW_STACKENV_BIN"
 else
 	rm -f "$PREVIEW_RUN_BIN.tmp" "$PREVIEW_STACKENV_BIN.tmp"
-	# Only when nothing else on the box previews. This app's own record was
-	# rewritten above with PREVIEW=0, so a read over the state directory
-	# answers about the others.
-	still_wanted=0
-	for _st in "$STATE_DIR"/*.env; do
-		[ -f "$_st" ] || continue
-		[ "$(sed -n 's/^PREVIEW=//p' "$_st" | tr -d '\r' | head -n 1)" = "1" ] || continue
-		still_wanted=1
-		break
-	done
-	if [ "$still_wanted" = "0" ]; then
-		rm -f "$PREVIEW_RUN_BIN" "$PREVIEW_STACKENV_BIN"
+	# ONLY ON AN EXPLICIT REVOKE, and only when nothing else on the box
+	# previews.
+	#
+	# PREVIEW_SET is the whole point of this condition. `--preview` is new, so
+	# every app on every existing box records PREVIEW=0 the first time it is
+	# read -- and the first `komizo update` after this feature shipped
+	# therefore deleted the two helpers that were already there, hand-installed
+	# and working. gdam's previews broke for the second time in one night, from
+	# the change written to stop exactly that happening.
+	#
+	# It is the same rule as the doas block adopting rules komizo did not
+	# write: an update must not take away a capability nobody asked it to
+	# remove. A default of "off" is not a request to uninstall. Only
+	# `--preview=false`, which sets PREVIEW_SET, is.
+	if [ "$PREVIEW_SET" = "1" ]; then
+		# This app's own record was rewritten above with PREVIEW=0, so a read
+		# over the state directory answers about the others.
+		still_wanted=0
+		for _st in "$STATE_DIR"/*.env; do
+			[ -f "$_st" ] || continue
+			[ "$(sed -n 's/^PREVIEW=//p' "$_st" | tr -d '\r' | head -n 1)" = "1" ] || continue
+			still_wanted=1
+			break
+		done
+		if [ "$still_wanted" = "0" ]; then
+			rm -f "$PREVIEW_RUN_BIN" "$PREVIEW_STACKENV_BIN"
+		fi
 	fi
 fi
 

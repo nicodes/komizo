@@ -98,3 +98,44 @@ func TestAMissingValueFileIsReportedWithItsPath(t *testing.T) {
 		t.Errorf("want an error naming the path, got %v", err)
 	}
 }
+
+// --keep-key generates no key, so refusing it on a non-terminal was a rule
+// about printing a secret that was never going to be printed.
+//
+// `komizo add --keep-key` is how you change a setting on an existing app --
+// the commonest non-interactive use there is, and the one a script or an
+// agent reaches for. It failed with "refusing to print the private key to a
+// non-terminal", which is advice about a flag (--key) that has nothing to do
+// with the problem.
+func TestKeepKeyDoesNotNeedAKeyPathOnANonTerminal(t *testing.T) {
+	// The check under test reads exactly these two, so the options value is
+	// the whole input: keyPath empty, stdout not a terminal (it never is in
+	// `go test`), and --keep-key given.
+	for _, c := range []struct {
+		name          string
+		keepKey       bool
+		wantRefusedBy string
+	}{
+		{"with --keep-key", true, ""},
+		{"without it", false, "refusing to print the private key"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			args := []string{"--host", "root@nowhere.invalid", "--app", "blog",
+				"--config", "ghcr.io/you/blog-config"}
+			if c.keepKey {
+				args = append(args, "--keep-key")
+			}
+			err := RunAdd(args)
+			if err == nil {
+				t.Skip("reached the network, which this test cannot assert about")
+			}
+			refused := strings.Contains(err.Error(), "refusing to print the private key")
+			if c.wantRefusedBy == "" && refused {
+				t.Errorf("--keep-key was refused for a key it never generates: %v", err)
+			}
+			if c.wantRefusedBy != "" && !refused {
+				t.Errorf("without --keep-key the refusal must still apply, got: %v", err)
+			}
+		})
+	}
+}
