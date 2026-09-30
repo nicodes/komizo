@@ -725,6 +725,33 @@ type previewRun func(ctx context.Context, stdin string, args ...string) (string,
 // the container's own superuser. Used for every statement that carries a
 // variable psql must substitute; -c statements (no variables) keep the
 // simpler form.
+// dropPreviewDB removes ONE preview's database and role and nothing else.
+// Both are named for the app and PR they belong to, so the name is the
+// authorisation: no other preview, and nothing of the app's own, can answer
+// to it.
+//
+// WITH (FORCE) because the state this has to clean up is precisely the one
+// with connections still open -- an attempt that died between creating the
+// database and bringing the project down leaves preview containers holding
+// sessions, and a plain DROP DATABASE just reports that and leaves the
+// database behind. That is how gdam_pr_158 became an orphan no re-run could
+// get past.
+func dropPreviewDB(ctx context.Context, run previewRun, container, user, db, name string) error {
+	if name == "" {
+		return nil
+	}
+	if _, err := run(ctx, "", "exec", container, "psql", "-U", user, "-d", db, "-c",
+		"DROP DATABASE IF EXISTS "+name+" WITH (FORCE)"); err != nil {
+		return fmt.Errorf("could not drop the preview database %s: %w", name, err)
+	}
+	// After its database is gone the role owns nothing, so this cannot fail
+	// for dependency reasons.
+	if err := previewSQL(ctx, run, container, user, db, "DROP ROLE IF EXISTS "+name+";"); err != nil {
+		return fmt.Errorf("could not drop the preview role %s: %w", name, err)
+	}
+	return nil
+}
+
 func previewSQL(ctx context.Context, run previewRun, container, user, db, sql string, args ...string) error {
 	argv := append([]string{"exec", "-i", container, "psql", "-U", user, "-d", db}, args...)
 	_, err := run(ctx, sql+"\n", argv...)
@@ -840,10 +867,7 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	rollback := func(dbContainer, dbUser, dbDB string, created bool) {
 		_, _ = run(ctx, "", "compose", "-p", project, "-f", composePath, "down", "-v")
 		if created && dbContainer != "" {
-			_, _ = run(ctx, "", "exec", dbContainer, "psql", "-U", dbUser, "-d", dbDB, "-c",
-				"DROP DATABASE IF EXISTS "+rec.DBName)
-			_ = previewSQL(ctx, run, dbContainer, dbUser, dbDB,
-				"DROP ROLE IF EXISTS "+rec.DBName+";")
+			_ = dropPreviewDB(ctx, run, dbContainer, dbUser, dbDB, rec.DBName)
 		}
 		_ = os.Remove(filepath.Join(cfg.RoutesDir, rec.RouteFile))
 		_ = os.RemoveAll(previewDir(cfg.Root, project))
@@ -884,6 +908,16 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	if err := os.WriteFile(composePath, []byte(previewCompose(rec, cfg.Knob, cfg.Network, stackEnvErr == nil, dbContainer, dbNetworks)), 0o600); err != nil {
 		rollback("", "", "", false)
 		return zero, err
+	}
+	// Reclaim this preview's OWN leftovers before creating them. Up is
+	// re-run constantly -- a new push to the PR, a re-run of a job that went
+	// red for an unrelated reason -- and an attempt that failed after the
+	// database existed used to poison every attempt after it: "database
+	// gdam_pr_158 already exists", with nothing an operator could do about
+	// it from CI. Only this app's and this PR's names are touched.
+	if err := dropPreviewDB(ctx, run, dbContainer, dbUser, dbDB, rec.DBName); err != nil {
+		rollback(dbContainer, dbUser, dbDB, false)
+		return zero, fmt.Errorf("could not reclaim a leftover preview database in %s: %w", dbContainer, err)
 	}
 	if err := previewSQL(ctx, run, dbContainer, dbUser, dbDB,
 		"CREATE ROLE "+rec.DBName+" LOGIN PASSWORD :'pw';",
@@ -928,13 +962,8 @@ func PreviewDown(ctx context.Context, run previewRun, cfg PreviewUpConfig, rec P
 				if derr != nil {
 					return fmt.Errorf("could not read %s's environment to drop the preview database cleanly: %w", dbContainer, derr)
 				}
-				if _, err := run(ctx, "", "exec", dbContainer, "psql", "-U", dbUser, "-d", dbDB, "-c",
-					"DROP DATABASE IF EXISTS "+rec.DBName); err != nil {
-					return fmt.Errorf("could not drop the preview database %s: %w", rec.DBName, err)
-				}
-				if err := previewSQL(ctx, run, dbContainer, dbUser, dbDB,
-					"DROP ROLE IF EXISTS "+rec.DBName+";"); err != nil {
-					return fmt.Errorf("could not drop the preview role %s: %w", rec.DBName, err)
+				if err := dropPreviewDB(ctx, run, dbContainer, dbUser, dbDB, rec.DBName); err != nil {
+					return err
 				}
 			}
 		}
