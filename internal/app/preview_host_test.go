@@ -1,7 +1,9 @@
 package app
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -107,4 +109,66 @@ func TestPreviewGrantsAreNotAdoptedAsHandAdded(t *testing.T) {
 	if second := b.conf_(t); second != first {
 		t.Errorf("a second run changed the file.\nfirst:\n%s\nsecond:\n%s", first, second)
 	}
+}
+
+// A default of "off" is not a request to uninstall.
+//
+// --preview is new, so every app on every existing box records PREVIEW=0 the
+// first time this runs -- and the first `komizo update` after the feature
+// shipped therefore DELETED the two helpers that were already there,
+// hand-installed and working. gdam's previews broke for the second time in
+// one night, from the change written to stop exactly that happening.
+//
+// Same rule as the doas block adopting rules komizo did not write: an update
+// must not take away a capability nobody asked it to remove.
+func TestAnUpdateDoesNotUninstallPreviewHelpersItDidNotInstall(t *testing.T) {
+	needs(t, "sh")
+	section := between(t, scripts.AlpineScript,
+		"# --- 3a2. Preview path -----------------------------------------------------\n",
+		"# --- 3b. Secret path ---")
+
+	run := func(t *testing.T, preview, previewSet string) (string, string) {
+		t.Helper()
+		root := t.TempDir()
+		runBin := filepath.Join(root, "komizo-preview")
+		stackBin := filepath.Join(root, "write-preview-stackenv")
+		state := filepath.Join(root, "apps")
+		if err := os.MkdirAll(state, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		// Already on the box, put there by hand before komizo knew about them.
+		write(t, runBin, 0o755, "#!/bin/sh\necho hand-installed\n")
+		write(t, stackBin, 0o755, "#!/bin/sh\necho hand-installed\n")
+
+		body := "set -eu\nPREVIEW=\"" + preview + "\"\nPREVIEW_SET=\"" + previewSet + "\"\n" +
+			"STATE_DIR=" + state + "\nlog() { :; }\ndie() { exit 1; }\n" +
+			strings.NewReplacer(
+				"PREVIEW_RUN_BIN=/usr/local/bin/komizo-preview", "PREVIEW_RUN_BIN="+runBin,
+				"PREVIEW_STACKENV_BIN=/usr/local/bin/write-preview-stackenv", "PREVIEW_STACKENV_BIN="+stackBin,
+			).Replace(section)
+		cmd := exec.Command("sh", "-s")
+		cmd.Stdin = strings.NewReader(body)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("section failed: %v\n%s", err, out)
+		}
+		return runBin, stackBin
+	}
+
+	t.Run("plain update with previews off leaves them alone", func(t *testing.T) {
+		runBin, stackBin := run(t, "0", "0")
+		for _, f := range []string{runBin, stackBin} {
+			if _, err := os.Stat(f); err != nil {
+				t.Errorf("an update uninstalled a helper nobody asked it to remove: %s", f)
+			}
+		}
+	})
+
+	t.Run("an explicit --preview=false does remove them", func(t *testing.T) {
+		runBin, stackBin := run(t, "0", "1")
+		for _, f := range []string{runBin, stackBin} {
+			if _, err := os.Stat(f); !os.IsNotExist(err) {
+				t.Errorf("an explicit revoke left %s in place", f)
+			}
+		}
+	})
 }
