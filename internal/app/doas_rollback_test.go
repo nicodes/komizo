@@ -84,12 +84,17 @@ exit 0
 		"$STATUS_BIN", "/usr/local/bin/scoped-env-status-blog",
 		"$SCOPED_BIN", "/usr/local/bin/set-scoped-env-blog",
 		"$PROVISION_BIN", "/usr/local/bin/provision-scoped-env-blog",
+		// Shared paths, not per-app ones: both preview helpers scope
+		// themselves to the caller's app through DOAS_USER, so one copy
+		// serves every app that previews.
+		"$PREVIEW_RUN_BIN", "/usr/local/bin/komizo-preview",
+		"$PREVIEW_STACKENV_BIN", "/usr/local/bin/write-preview-stackenv",
 	).Replace(body)
 	// The section opens mid-script, so give it the two things it reads.
 	// log echoes rather than discarding. What the section SAYS is part of its
 	// behaviour now: adopting a hand-added privilege rule silently would be
 	// only marginally better than deleting it silently.
-	b.section = "set -eu\nOLD_CI_USER=\"\"\nTASKS=\"\"\nSCOPED_ENV=\"\"\nlog() { echo \"$*\"; }\ndie() { echo \"error: $*\" >&2; exit 1; }\n" +
+	b.section = "set -eu\nOLD_CI_USER=\"\"\nTASKS=\"\"\nSCOPED_ENV=\"\"\nPREVIEW=\"\"\nlog() { echo \"$*\"; }\ndie() { echo \"error: $*\" >&2; exit 1; }\n" +
 		b.section
 	return b
 }
@@ -261,7 +266,7 @@ func TestHandAddedDoasRulesInsideTheBlockAreAdoptedNotDeleted(t *testing.T) {
 # komizo: komizo-blog BEGIN
 permit nopass komizo-blog as root cmd /usr/local/bin/deploy-blog
 permit nopass komizo-blog as root cmd /usr/local/bin/set-secret-blog
-permit nopass komizo-blog as root cmd /usr/local/bin/write-preview-stackenv
+permit nopass komizo-blog as root cmd /usr/local/bin/diagnose-blog
 permit nopass komizo-blog as root cmd /usr/local/bin/export-blog-backup
 # komizo: komizo-blog END
 `
@@ -273,7 +278,7 @@ permit nopass komizo-blog as root cmd /usr/local/bin/export-blog-backup
 	got := b.conf_(t)
 
 	for _, rule := range []string{
-		"permit nopass komizo-blog as root cmd /usr/local/bin/write-preview-stackenv",
+		"permit nopass komizo-blog as root cmd /usr/local/bin/diagnose-blog",
 		"permit nopass komizo-blog as root cmd /usr/local/bin/export-blog-backup",
 	} {
 		if !strings.Contains(got, rule) {
@@ -284,7 +289,7 @@ permit nopass komizo-blog as root cmd /usr/local/bin/export-blog-backup
 	// Kept, but NOT back inside the markers -- otherwise the next run has the
 	// same decision to make again, and the block still claims to be komizo's.
 	inside := between(t, got, "# komizo: komizo-blog BEGIN", "# komizo: komizo-blog END")
-	for _, rule := range []string{"write-preview-stackenv", "export-blog-backup"} {
+	for _, rule := range []string{"diagnose-blog", "export-blog-backup"} {
 		if strings.Contains(inside, rule) {
 			t.Errorf("%s was put back inside komizo's managed block:\n%s", rule, inside)
 		}
@@ -292,7 +297,7 @@ permit nopass komizo-blog as root cmd /usr/local/bin/export-blog-backup
 
 	// Said out loud. A privilege komizo is carrying without understanding is
 	// exactly what an operator has to make a decision about.
-	if !strings.Contains(out, "write-preview-stackenv") || !strings.Contains(out, "Adopted") {
+	if !strings.Contains(out, "diagnose-blog") || !strings.Contains(out, "Adopted") {
 		t.Errorf("the adopted rules were not named in the output, so nobody "+
 			"learns komizo is carrying them:\n%s", out)
 	}
@@ -306,7 +311,7 @@ permit nopass komizo-blog as root cmd /usr/local/bin/export-blog-backup
 func TestAdoptionIsIdempotent(t *testing.T) {
 	const existing = `# komizo: komizo-blog BEGIN
 permit nopass komizo-blog as root cmd /usr/local/bin/deploy-blog
-permit nopass komizo-blog as root cmd /usr/local/bin/komizo-preview
+permit nopass komizo-blog as root cmd /usr/local/bin/export-blog-backup
 # komizo: komizo-blog END
 `
 	b := newDoasBox(t, existing)
@@ -319,7 +324,7 @@ permit nopass komizo-blog as root cmd /usr/local/bin/komizo-preview
 	}
 	second := b.conf_(t)
 
-	if n := strings.Count(second, "cmd /usr/local/bin/komizo-preview"); n != 1 {
+	if n := strings.Count(second, "cmd /usr/local/bin/export-blog-backup"); n != 1 {
 		t.Errorf("the adopted rule appears %d times after two runs, want 1:\n%s", n, second)
 	}
 	if first != second {
