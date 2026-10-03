@@ -31,6 +31,8 @@ case "$SHARED_NETWORK" in
 	''|*[!A-Za-z0-9._-]*) die "SHARED_NETWORK must be letters, digits, dot, underscore or hyphen" ;;
 esac
 
+RECLAIM_BIN=/etc/periodic/daily/komizo-reclaim
+
 # --- 1. packages -----------------------------------------------------------
 # openssh and doas are here rather than assumed: doas is what grants the deploy
 # accounts their two privileged commands, and a box reached over SSH already has
@@ -142,13 +144,90 @@ rc-update add local default >/dev/null 2>&1 || true
 #
 # Stopped containers count as references, so an app somebody has stopped keeps
 # the image it will start again with.
-log "Reclaiming images no container is using"
-before=$(docker system df --format '{{.Reclaimable}}' 2>/dev/null | head -1)
+#
+# ON A SCHEDULE, not once. The first version of this ran here and only here,
+# which meant it ran the day the box was built and never again -- and the
+# thing it defends against is accumulation over weeks. A box drifted to 92%
+# full, crossed the capacity floor the deploy script enforces, and then every
+# app on it refused to deploy with no way to recover but an operator at an SSH
+# prompt. A floor with nothing keeping the box above it converts a slow
+# problem into a hard stop. So the reclaim is installed as a daily job and
+# then invoked once, here: same script both times, so the scheduled run and
+# the init run can never drift apart.
+log "Installing the daily image reclaim"
+mkdir -p /etc/periodic/daily
+cat > "$RECLAIM_BIN.tmp" <<'KOMIZO_RECLAIM_EOF'
+#!/bin/sh
+# /etc/periodic/daily/komizo-reclaim - installed by `komizo init`.
+#
+# Removes Docker images no container references. See the long explanation in
+# alpine-init.sh for why this is server-level and why "referenced by a
+# container" is the right rule rather than an age window.
+#
+# Never fails: this runs unattended out of crond, and a non-zero exit from a
+# periodic job is noise an operator cannot act on. A prune that could not run
+# today is a prune that runs tomorrow.
+set -u
+
+LOG=/var/log/komizo-reclaim.log
+
+note() { printf '%s %s\n' "$(date -u '+%FT%TZ')" "$*" >> "$LOG"; }
+
+if ! docker info >/dev/null 2>&1; then
+	note "skipped: docker is not responding"
+	exit 0
+fi
+
+# PREVIEWS FIRST, images second, and the order is the point. A preview whose
+# PR was closed is torn down by CI, which stops its containers and so makes
+# its image collectable by the prune below -- but only if the teardown
+# actually happened. `preview gc` is the backstop for the ones where it did
+# not: a PR left open for a month, a teardown job that failed, a stack from a
+# branch nobody remembers. It reaps on the TTL and the max-N ceiling, and it
+# touches ONLY previews it holds a state record for -- never an app, never a
+# container or image it did not create. Like the prune, it was written and
+# then never scheduled.
+#
+# Reaping before pruning means a preview released tonight has its image
+# collected tonight, rather than sitting on disk until tomorrow.
+if [ -x /usr/local/bin/komizo-box ]; then
+	if out="$(/usr/local/bin/komizo-box preview gc 2>&1)"; then
+		note "preview gc: $(printf '%s' "$out" | tr '\n' ' ')"
+	else
+		note "preview gc: failed, kept everything: $(printf '%s' "$out" | tr '\n' ' ')"
+	fi
+fi
+
+before="$(docker system df --format '{{.Reclaimable}}' 2>/dev/null | head -1)"
 docker image prune -af >/dev/null 2>&1 || true
-printf '    was reclaimable: %s; now %s free on %s\n' \
-	"${before:-unknown}" \
-	"$(df -h / | awk 'NR==2 {print $4}')" \
-	"$(df -h / | awk 'NR==2 {print $6}')"
+note "reclaimed; was ${before:-unknown} reclaimable, now $(df -h / | awk 'NR==2 {print $4}') free on $(df -h / | awk 'NR==2 {print $6}')"
+
+# One line a day, so a year of history is a year of lines. Trimmed rather
+# than rotated: logrotate is one more thing to install and get wrong for a
+# file that grows by about 90 bytes a day.
+if [ -f "$LOG" ]; then
+	tail -n 400 "$LOG" > "$LOG.tmp" 2>/dev/null && mv -f "$LOG.tmp" "$LOG"
+fi
+exit 0
+KOMIZO_RECLAIM_EOF
+mv "$RECLAIM_BIN.tmp" "$RECLAIM_BIN"
+chown root:root "$RECLAIM_BIN"
+chmod 755 "$RECLAIM_BIN"
+
+# busybox crond is what runs /etc/periodic. It ships with Alpine but is not
+# started on a minimal install, and an unstarted crond makes the job above a
+# file nobody executes -- the exact failure this change exists to fix, just
+# quieter.
+rc-update add crond default >/dev/null 2>&1 || true
+rc-service crond start >/dev/null 2>&1 || true
+if ! rc-service crond status >/dev/null 2>&1; then
+	printf '    WARNING: crond is not running; the daily reclaim will not fire\n' >&2
+fi
+
+log "Reclaiming images no container is using"
+"$RECLAIM_BIN"
+printf '    %s\n' "$(tail -n 1 /var/log/komizo-reclaim.log 2>/dev/null || echo 'no reclaim recorded')"
+printf '    next run: nightly via %s\n' "$RECLAIM_BIN"
 
 log "Done"
 cat <<EOF
