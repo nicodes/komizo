@@ -21,3 +21,5 @@ bin/
 # or CI, never committed.
 /ui/node_modules/
 /ui/dist/
+
+/.artifacts/
