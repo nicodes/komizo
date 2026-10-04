@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -84,6 +85,21 @@ func runPreview(args []string) error {
 			return fmt.Errorf("preview down needs --app and --pr")
 		}
 		rec, err := previewFind(cfg.Root, *app, *pr)
+		// ALREADY GONE IS SUCCESS. down is asked to leave nothing behind,
+		// and a preview that is not recorded is that state reached. This
+		// path is normal rather than exceptional: the TTL reaper removes
+		// previews on its own schedule, so a pull request closed after its
+		// preview expired used to fail its teardown job with
+		//
+		//	komizo-box: no preview of ctcalc PR #151 exists
+		//
+		// a red mark on every such close, for a box in exactly the state
+		// the job wanted. Only the sentinel is forgiven -- a state root
+		// that cannot be read is still an error.
+		if errors.Is(err, errNoSuchPreview) {
+			fmt.Fprintf(os.Stdout, "no preview of %s PR #%d is recorded; nothing to take down.\n", *app, *pr)
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -114,9 +130,15 @@ func runPreview(args []string) error {
 	return fmt.Errorf("preview what -- up, down, ls or gc, not %q", sub)
 }
 
+// errNoSuchPreview is "this preview is not recorded here", as distinct from
+// "the records could not be read". down treats the first as success and the
+// second as the failure it is; without the distinction an unreadable state
+// root would be reported as a preview that was already gone.
+var errNoSuchPreview = errors.New("not a recorded preview")
+
 // previewFind reads one preview's record by app and PR. A preview that is not
-// recorded does not exist, which is a sentence rather than a no-op: down on a
-// name that is not a preview must not become a guess at what to remove.
+// recorded does not exist, which it says rather than guessing: down on a name
+// that is not a preview must never become a guess at what to remove.
 func previewFind(root, app string, pr int) (box.PreviewRecord, error) {
 	recs, err := box.ListPreviews(root)
 	if err != nil {
@@ -127,5 +149,5 @@ func previewFind(root, app string, pr int) (box.PreviewRecord, error) {
 			return r, nil
 		}
 	}
-	return box.PreviewRecord{}, fmt.Errorf("no preview of %s PR #%d exists", app, pr)
+	return box.PreviewRecord{}, fmt.Errorf("%w: no preview of %s PR #%d exists", errNoSuchPreview, app, pr)
 }
