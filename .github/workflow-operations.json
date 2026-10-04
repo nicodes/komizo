@@ -6,7 +6,7 @@
         "-euo",
         "pipefail",
         "-c",
-        "export CICD_ENGINEERING=\"$(mise where http:cicd-engineering)\"\nexport PYTHONDONTWRITEBYTECODE=1\npython3 \"$CICD_ENGINEERING/helpers/watch-tools.py\""
+        "export CICD_ENGINEERING=\"$(python3 scripts/engineering-bootstrap.py)\"\nexport PYTHONDONTWRITEBYTECODE=1\npython3 \"$CICD_ENGINEERING/helpers/watch-tools.py\""
       ]
     ]
   },
