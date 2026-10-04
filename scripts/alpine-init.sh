@@ -154,6 +154,85 @@ rc-update add local default >/dev/null 2>&1 || true
 # problem into a hard stop. So the reclaim is installed as a daily job and
 # then invoked once, here: same script both times, so the scheduled run and
 # the init run can never drift apart.
+# --- komizo's own preview database server -------------------------------------
+#
+# ONE postgres per host, owned by komizo, for the per-PR databases previews
+# need. It is not any product's: no product connects to it in production, no
+# product's data is in it, and losing it costs nothing but open previews.
+#
+# This replaces reaching into the app's production postgres. `komizo preview
+# up` used to run CREATE ROLE and CREATE DATABASE as superuser against the
+# container serving production, discovered by inspecting the app's compose
+# project. It was carefully contained -- only its own objects named, and
+# teardown dropped only those -- but the blast radius was the production
+# database server of the thing being previewed, which is the opposite of
+# what komizo is for. It also meant a product with no database could not
+# have a preview at all, because there was nothing to put one beside:
+#
+#   no postgres container is running in ctcalc's project
+#   -- a preview needs the app's database to put its own beside
+#
+# A NAMED VOLUME, on disk, not a tmpfs. These boxes have 960MB of RAM with
+# roughly 400MB free, so holding preview data in memory would put postgres
+# and every app on the box in the same OOM. Disk is the resource there is
+# 16GB of. Growth is bounded by teardown dropping each preview's database
+# and by the TTL reaper, and the capacity floors still guard the rest.
+#
+# NO PUBLISHED PORT. It is reachable only over the shared network, by the
+# preview containers attached to it, by container name.
+#
+# Same digest the products pin, so the host holds one postgres image rather
+# than two, and a preview runs the server version production runs.
+PREVIEW_DB_IMAGE="postgres@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280"
+PREVIEW_DB_NAME="komizo-previews"
+
+log "Provisioning komizo's preview database server"
+if [ "$(docker inspect -f '{{.State.Running}}' "$PREVIEW_DB_NAME" 2>/dev/null || echo false)" = "true" ]; then
+	printf '    %s is already running\n' "$PREVIEW_DB_NAME"
+else
+	docker rm -f "$PREVIEW_DB_NAME" >/dev/null 2>&1 || true
+	# The superuser password is generated and then DELIBERATELY DISCARDED.
+	# komizo reaches postgres only by `docker exec`, over the unix socket,
+	# which the stock image's pg_hba trusts -- so no superuser credential
+	# has to be stored on the box or handed to anything.
+	#
+	# What the password buys is the other half: without POSTGRES_PASSWORD
+	# the image wants POSTGRES_HOST_AUTH_METHOD=trust, and trust would let
+	# ANY container on the shared network -- every preview, every app gate
+	# -- connect to this server as the postgres superuser and read every
+	# other preview's database. With scram over TCP, a preview can only
+	# authenticate as the role it was given, with the password generated
+	# for it alone.
+	docker run -d \
+		--name "$PREVIEW_DB_NAME" \
+		--restart unless-stopped \
+		--network "$SHARED_NETWORK" \
+		-e POSTGRES_PASSWORD="$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')" \
+		-e POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 \
+		-e POSTGRES_USER=postgres \
+		-e POSTGRES_DB=postgres \
+		-v komizo-previews-data:/var/lib/postgresql/data \
+		--memory 256m \
+		"$PREVIEW_DB_IMAGE" >/dev/null ||
+		die "could not start $PREVIEW_DB_NAME"
+	printf '    started %s on %s\n' "$PREVIEW_DB_NAME" "$SHARED_NETWORK"
+fi
+
+# Running is not accepting connections. Wait here, once, so the first
+# `preview up` on a fresh box does not fail on a server still recovering.
+i=0
+while [ "$i" -lt 60 ]; do
+	if docker exec "$PREVIEW_DB_NAME" pg_isready -U postgres -d postgres >/dev/null 2>&1; then
+		break
+	fi
+	i=$((i + 1))
+	sleep 1
+done
+if [ "$i" -ge 60 ]; then
+	die "$PREVIEW_DB_NAME started but never accepted connections"
+fi
+printf '    accepting connections\n'
+
 log "Installing the daily image reclaim"
 mkdir -p /etc/periodic/daily
 cat > "$RECLAIM_BIN.tmp" <<'KOMIZO_RECLAIM_EOF'

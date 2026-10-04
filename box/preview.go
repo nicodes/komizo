@@ -50,6 +50,32 @@ const PreviewsDir = StateDir + "/previews"
 // defaults below are the conservative answer.
 const PreviewKnobPath = "/etc/komizo/preview"
 
+// PreviewDBContainer is komizo's OWN postgres, one per box, and the only
+// database a preview ever touches.
+//
+// It used to create its role and database inside the APP's postgres --
+// superuser DDL against the server holding production data, on every PR
+// opened and every PR closed. The containment was careful and the blast
+// radius was still production's database. komizo is supposed to be
+// non-invasive: it owns what it created and nothing else, which is why
+// a stop is recorded in the app's own record and why sweep pins its argv
+// to make "never touches a volume" provable. The preview database was the
+// one place that reached inside.
+//
+// Owning the server also removes an accidental requirement. The old path
+// had to FIND the app's postgres, so a product without one -- a gate-only
+// static site -- could not have a preview at all, failing with "no postgres
+// container is running". Nothing about a static site needs a database, and
+// now nothing asks it for one.
+//
+// Parity is kept by pinning the same image every product pins, so a preview
+// runs the engine production runs.
+const (
+	PreviewDBContainer   = "komizo-previews"
+	PreviewDBSuperuser   = "postgres"
+	PreviewDBMaintenance = "postgres"
+)
+
 // Preview defaults.
 const (
 	PreviewDomainDefault    = "preview.gdam.dev"
@@ -469,20 +495,28 @@ func PreviewCheckFloors(f PreviewFloors, present bool, report []byte) (refuse st
 // joining is reachability only -- the preview role can already touch only
 // its own database, so no data access widens. The gate's networks stay
 // [shared, appnet].
-func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv bool, dbEndpoint string, dbNetworks []string) string {
-	// The extra networks the API joins: the DB container's, minus appnet's
-	// (<app>_default, already joined) and the shared edge network, deduped.
-	var extraNets []string
-	seen := map[string]bool{r.App + "_default": true, network: true}
-	for _, n := range dbNetworks {
-		if !seen[n] {
-			seen[n] = true
-			extraNets = append(extraNets, n)
-		}
+// previewDBEnvLines renders the database half of a service's environment,
+// and nothing at all when the preview has no database. A gate-only preview
+// used to be handed DB_NAME, PGUSER and PGPASSWORD with empty values --
+// credentials for a database that does not exist, which is worse than
+// absent: an app that reads PGUSER cannot tell "no database here" from
+// "database misconfigured".
+func previewDBEnvLines(r PreviewRecord) string {
+	if r.DBName == "" {
+		return ""
 	}
+	return fmt.Sprintf("      DB_NAME: %s\n      PGDATABASE: %s\n      PGUSER: %s\n      PGPASSWORD: %s\n",
+		r.DBName, r.DBName, r.DBName, r.DBPassword)
+}
+
+func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv bool, dbEndpoint string) string {
 	var b strings.Builder
 	b.WriteString("# Written by komizo preview. Re-run `komizo preview up` to change it.\n")
-	fmt.Fprintf(&b, "# Preview of %s PR #%d. Own project, own database (%s), own route.\nservices:\n", r.App, r.PR, r.DBName)
+	if r.DBName != "" {
+		fmt.Fprintf(&b, "# Preview of %s PR #%d. Own project, own database (%s), own route.\nservices:\n", r.App, r.PR, r.DBName)
+	} else {
+		fmt.Fprintf(&b, "# Preview of %s PR #%d. Own project, own route. Gate only -- no database.\nservices:\n", r.App, r.PR)
+	}
 	for i, image := range r.Images {
 		name := image[strings.LastIndex(image, "/")+1:]
 		if j := strings.Index(name, ":"); j >= 0 {
@@ -494,7 +528,9 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 		fmt.Fprintf(&b, "  %s:\n    image: %s\n    mem_limit: %s\n    cpus: %s\n    restart: unless-stopped\n", name, image, k.MemLimit, k.CPULimit)
 		if i == 0 {
 			fmt.Fprintf(&b, "    container_name: %s-gate\n    environment:\n", r.Project)
-			fmt.Fprintf(&b, "      PREVIEW: \"1\"\n      PR: \"%d\"\n      DB_NAME: %s\n      PGDATABASE: %s\n      PGUSER: %s\n      PGPASSWORD: %s\n      BASE_URL: https://%s\n", r.PR, r.DBName, r.DBName, r.DBName, r.DBPassword, PreviewHost(r.PR, k.DomainFor(r.App)))
+			fmt.Fprintf(&b, "      PREVIEW: \"1\"\n      PR: \"%d\"\n", r.PR)
+			b.WriteString(previewDBEnvLines(r))
+			fmt.Fprintf(&b, "      BASE_URL: https://%s\n", PreviewHost(r.PR, k.DomainFor(r.App)))
 			// The gate port, LOOPBACK only: the direct HTTP entry to the
 			// preview from the box itself, never from the network -- the
 			// public way in is the proxy route, with TLS. Publishing on all
@@ -504,23 +540,23 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 			fmt.Fprintf(&b, "      - \"127.0.0.1:%d:80\"\n", r.GatePort)
 			b.WriteString("    networks:\n      - shared\n      - appnet\n")
 		} else {
-			fmt.Fprintf(&b, "    environment:\n      PREVIEW: \"1\"\n      PR: \"%d\"\n      DB_NAME: %s\n      PGDATABASE: %s\n      PGUSER: %s\n      PGPASSWORD: %s\n", r.PR, r.DBName, r.DBName, r.DBName, r.DBPassword)
+			fmt.Fprintf(&b, "    environment:\n      PREVIEW: \"1\"\n      PR: \"%d\"\n", r.PR)
+			b.WriteString(previewDBEnvLines(r))
 			if dbEndpoint != "" {
 				fmt.Fprintf(&b, "      RUNTIME_DATABASE_URL: postgres://%s:%s@%s:5432/%s\n", r.DBName, r.DBPassword, dbEndpoint, r.DBName)
 			}
 			if stackEnv {
 				b.WriteString("    env_file:\n      - stack.env\n")
 			}
-			b.WriteString("    networks:\n      - appnet\n")
-			for _, n := range extraNets {
-				fmt.Fprintf(&b, "      - %s\n", n)
-			}
+			// shared as well as appnet: komizo's preview postgres lives
+			// on the shared network, and docker DNS answers its container
+			// name only to something attached to the same network. Nothing
+			// of the app's is joined beyond <app>_default, which the
+			// preview already needed.
+			b.WriteString("    networks:\n      - appnet\n      - shared\n")
 		}
 	}
 	fmt.Fprintf(&b, "networks:\n  shared:\n    external: true\n    name: %s\n  appnet:\n    external: true\n    name: %s_default\n", network, r.App)
-	for _, n := range extraNets {
-		fmt.Fprintf(&b, "  %s:\n    external: true\n    name: %s\n", n, n)
-	}
 	return b.String()
 }
 
@@ -584,97 +620,47 @@ func RemovePreviewRoute(ctx context.Context, run previewRun, proxy, routesDir, f
 	return nil
 }
 
-// --- the database, inside the app's postgres container ---------------------------
+// --- the database, inside komizo's own postgres server ---------------------------
 
-// findAppDBContainer names the running postgres container in the app's
-// compose project. The app record is not asked: the container is the fact,
-// and asking a file what runs is how yesterday's truth becomes today's
-// mistake.
+// ensurePreviewDBReady proves komizo's own postgres server is up and taking
+// connections before anything is created in it.
 //
-// THREE WAYS TO KNOW, in order, because products pin postgres by digest and
-// docker ps's Image column for a digest-pulled image shows only the short
-// digest -- no "postgres" substring anywhere:
+// This server belongs to komizo, not to any product. Previously a preview
+// put its role and database inside THE APP'S production postgres container,
+// discovered by inspecting the app's project -- which meant komizo reached
+// into a product's running stack as superuser to serve a pull request. The
+// containment was careful, but the blast radius was production's database
+// server, and a product with no database could not have a preview at all:
 //
-//  1. the ps Image column (the cheap, common case, matched on "postgres");
-//  2. the container's Config.Image, asked of docker inspect -- the ORIGINAL
-//     reference, which for a digest pull is postgres@sha256:... and carries
-//     the name the column lost;
-//  3. the container's own NAME (compose's <project>-postgres-1).
+//	no postgres container is running in ctcalc's project
+//	-- a preview needs the app's database to put its own beside
 //
-// The psql call after discovery is the final proof: a container that matched
-// on name and is not postgres fails there, loudly, with nothing created.
-func findAppDBContainer(ctx context.Context, run previewRun, psOut, app string) (string, error) {
-	type candidate struct{ name, image string }
-	var candidates []candidate
-	for _, ln := range strings.Split(psOut, "\n") {
-		f := strings.Split(strings.TrimRight(ln, "\r"), "\t")
-		if len(f) >= 2 && f[0] != "" {
-			candidates = append(candidates, candidate{f[0], f[1]})
+// One server per host, on the shared network, is both narrower and more
+// general: nothing of the app's is inspected, named or connected to, and a
+// gate-only product needs no database to be previewable.
+//
+// Provisioning is komizo init's job (see scripts/alpine-init.sh). Here we
+// only check, because a preview that creates infrastructure on demand is a
+// preview that can leave a half-built host behind when it fails.
+func ensurePreviewDBReady(ctx context.Context, run previewRun) error {
+	out, err := run(ctx, "", "inspect", PreviewDBContainer, "--format", "{{.State.Running}}")
+	if err != nil || strings.TrimSpace(out) != "true" {
+		return fmt.Errorf("komizo's preview database server (%s) is not running -- run komizo init on this host to provision it", PreviewDBContainer)
+	}
+	// Running is not the same as accepting connections: the container comes
+	// back before postgres finishes recovery, and a CREATE ROLE issued in
+	// that window fails with a message about the socket rather than about
+	// the preview. Ask postgres itself, briefly.
+	var last error
+	for i := 0; i < 30; i++ {
+		if _, err := run(ctx, "", "exec", PreviewDBContainer, "pg_isready", "-U", PreviewDBSuperuser, "-d", PreviewDBMaintenance); err == nil {
+			return nil
+		} else {
+			last = err
 		}
+		time.Sleep(time.Second)
 	}
-	for _, c := range candidates {
-		if strings.Contains(c.image, "postgres") {
-			return c.name, nil
-		}
-	}
-	for _, c := range candidates {
-		out, err := run(ctx, "", "inspect", c.name, "--format", "{{.Config.Image}}")
-		if err == nil && strings.Contains(out, "postgres") {
-			return c.name, nil
-		}
-	}
-	for _, c := range candidates {
-		if strings.Contains(c.name, "postgres") {
-			return c.name, nil
-		}
-	}
-	return "", fmt.Errorf("no postgres container is running in %s's project -- a preview needs the app's database to put its own beside", app)
-}
-
-// previewDBEnv reads the container's POSTGRES_USER and POSTGRES_DB from its
-// environment, the superuser and the database to connect to. The stock image
-// answers postgres/postgres and needs neither set; a product that names its
-// own superuser is connected to as THAT, and the hardcoded 'postgres' never
-// appears. An env that cannot be read is an error rather than a guess.
-func previewDBEnv(ctx context.Context, run previewRun, container string) (string, string, error) {
-	out, err := run(ctx, "", "inspect", container, "--format", "{{range .Config.Env}}{{println .}}{{end}}")
-	if err != nil {
-		return "", "", fmt.Errorf("could not read %s's environment: %w", container, err)
-	}
-	user, db := "postgres", "postgres"
-	for _, ln := range strings.Split(out, "\n") {
-		if v, ok := strings.CutPrefix(ln, "POSTGRES_USER="); ok && v != "" {
-			user = v
-		}
-		if v, ok := strings.CutPrefix(ln, "POSTGRES_DB="); ok && v != "" {
-			db = v
-		}
-	}
-	return user, db, nil
-}
-
-// previewDBNetworks reads the container's network names. The preview's API
-// services join them so they can reach postgres by the container's name --
-// docker DNS answers container names on user-defined networks, and an app's
-// postgres does not necessarily live on <app>_default. A container with no
-// networks is one the API can never reach, and that is an error rather than
-// a silently broken preview.
-func previewDBNetworks(ctx context.Context, run previewRun, container string) ([]string, error) {
-	out, err := run(ctx, "", "inspect", container, "--format", "{{range $name, $_ := .NetworkSettings.Networks}}{{println $name}}{{end}}")
-	if err != nil {
-		return nil, fmt.Errorf("could not read %s's networks: %w", container, err)
-	}
-	var nets []string
-	for _, ln := range strings.Split(out, "\n") {
-		if n := strings.TrimSpace(ln); n != "" {
-			nets = append(nets, n)
-		}
-	}
-	if len(nets) == 0 {
-		return nil, fmt.Errorf("%s is on no networks -- a preview's API could never reach its database", container)
-	}
-	sort.Strings(nets)
-	return nets, nil
+	return fmt.Errorf("komizo's preview database server (%s) is running but never accepted connections: %w", PreviewDBContainer, last)
 }
 
 // previewNewPassword generates the per-preview role's password: 24 random hex
@@ -801,15 +787,22 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	project := PreviewProject(app, pr)
 	rec := PreviewRecord{
 		V: 1, App: app, PR: pr, Project: project,
-		DBName:    PreviewDBName(app, pr),
 		Images:    images,
 		CreatedAt: now, LastUsed: now,
 		RouteFile: "_preview-" + project + ".caddy",
 	}
-	// The password is generated NOW, before the state file is written, so
-	// the record on disk carries it from the start -- a preview.env without
-	// it is a preview that cannot be taken down cleanly.
-	rec.DBPassword = previewNewPassword()
+	// A gate-only product -- one static container, no API -- gets NO
+	// database: nothing in it can open a connection, and a database created
+	// for a preview that will never connect is the invasiveness this whole
+	// change exists to remove. An empty DBName is also what tells teardown
+	// there is nothing to drop.
+	if len(images) > 1 {
+		rec.DBName = PreviewDBName(app, pr)
+		// The password is generated NOW, before the state file is written,
+		// so the record on disk carries it from the start -- a preview.env
+		// without it is a preview that cannot be taken down cleanly.
+		rec.DBPassword = previewNewPassword()
+	}
 
 	// Evict BEFORE adding, so max-N is a ceiling and not a target to exceed
 	// and come back under: the least-recently-used preview goes first.
@@ -864,79 +857,80 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	// and only its EXISTENCE is asked, so the compose render can reference
 	// the path without the contents ever passing through komizo.
 	_, stackEnvErr := os.Stat(filepath.Join(previewDir(cfg.Root, project), "stack.env"))
-	rollback := func(dbContainer, dbUser, dbDB string, created bool) {
+	rollback := func(_, _, _ string, created bool) {
 		_, _ = run(ctx, "", "compose", "-p", project, "-f", composePath, "down", "-v")
-		if created && dbContainer != "" {
-			_ = dropPreviewDB(ctx, run, dbContainer, dbUser, dbDB, rec.DBName)
+		if created {
+			_ = dropPreviewDB(ctx, run, PreviewDBContainer, PreviewDBSuperuser, PreviewDBMaintenance, rec.DBName)
 		}
 		_ = os.Remove(filepath.Join(cfg.RoutesDir, rec.RouteFile))
 		_ = os.RemoveAll(previewDir(cfg.Root, project))
 	}
 
-	// The database, before anything runs: the app's postgres container, a new
-	// role and database named for the PR, owned by that role, and nothing
-	// else touched.
-	psOut, err := run(ctx, "", "ps", "--filter", "label=com.docker.compose.project="+app,
-		"--format", "{{.Names}}\t{{.Image}}")
-	if err != nil {
-		rollback("", "", "", false)
-		return zero, fmt.Errorf("could not look for the app's postgres: %w", err)
+	// The database, before anything runs: a new role and database named for
+	// the PR, in KOMIZO'S OWN postgres, and nothing of the app's touched.
+	//
+	// Only when something other than the gate is going to ask for one. A
+	// gate-only product is a single static container with nothing to
+	// connect, and creating a database it will never open is exactly the
+	// kind of thing this change exists to stop doing.
+	needsDB := rec.DBName != ""
+	dbEndpoint := ""
+	if needsDB {
+		if err := ensurePreviewDBReady(ctx, run); err != nil {
+			rollback("", "", "", false)
+			return zero, err
+		}
+		dbEndpoint = PreviewDBContainer
+		// Reclaim this preview's OWN leftovers before creating them. Up is
+		// re-run constantly -- a new push to the PR, a re-run of a job that
+		// went red for an unrelated reason -- and an attempt that failed
+		// after the database existed used to poison every attempt after it:
+		// "database gdam_pr_158 already exists", with nothing an operator
+		// could do about it from CI. Only this app's and this PR's names are
+		// touched.
+		if err := dropPreviewDB(ctx, run, PreviewDBContainer, PreviewDBSuperuser, PreviewDBMaintenance, rec.DBName); err != nil {
+			rollback("", "", "", false)
+			return zero, fmt.Errorf("could not reclaim a leftover preview database in %s: %w", PreviewDBContainer, err)
+		}
+		if err := previewSQL(ctx, run, PreviewDBContainer, PreviewDBSuperuser, PreviewDBMaintenance,
+			"CREATE ROLE "+rec.DBName+" LOGIN PASSWORD :'pw';",
+			"-v", "pw="+rec.DBPassword); err != nil {
+			rollback("", "", "", false)
+			return zero, fmt.Errorf("could not create the preview role %s in %s: %w", rec.DBName, PreviewDBContainer, err)
+		}
+		if _, err := run(ctx, "", "exec", PreviewDBContainer, "psql", "-U", PreviewDBSuperuser, "-d", PreviewDBMaintenance, "-c",
+			"CREATE DATABASE "+rec.DBName+" OWNER "+rec.DBName); err != nil {
+			rollback("", "", "", false)
+			return zero, fmt.Errorf("could not create the preview database %s in %s: %w", rec.DBName, PreviewDBContainer, err)
+		}
+		// Every preview shares one server now, so "its own database" has to
+		// mean something postgres enforces. By default CONNECT on a new
+		// database is granted to PUBLIC -- which is every other preview's
+		// role on this server. Revoke it and grant it back to the owner
+		// alone, so a preview authenticating as itself can reach its own
+		// database and no other.
+		if err := previewSQL(ctx, run, PreviewDBContainer, PreviewDBSuperuser, PreviewDBMaintenance,
+			"REVOKE CONNECT ON DATABASE "+rec.DBName+" FROM PUBLIC;\n"+
+				"GRANT CONNECT ON DATABASE "+rec.DBName+" TO "+rec.DBName+";"); err != nil {
+			rollback("", "", "", true)
+			return zero, fmt.Errorf("could not isolate the preview database %s from the other previews on %s: %w", rec.DBName, PreviewDBContainer, err)
+		}
 	}
-	dbContainer, err := findAppDBContainer(ctx, run, psOut, app)
-	if err != nil {
+
+	// No extra networks: komizo's postgres sits on the shared network the
+	// preview already joins, so docker DNS answers PreviewDBContainer
+	// without the preview being attached to anything of the app's.
+	if err := os.WriteFile(composePath, []byte(previewCompose(rec, cfg.Knob, cfg.Network, stackEnvErr == nil, dbEndpoint)), 0o600); err != nil {
 		rollback("", "", "", false)
 		return zero, err
-	}
-	// Connect as the container's OWN superuser -- POSTGRES_USER from its
-	// environment, never a hardcoded 'postgres': products that set a custom
-	// one (gdam_migrator, for example) have no 'postgres' role at all, and
-	// connecting with it is the failure the avior.studio smoke found.
-	dbUser, dbDB, err := previewDBEnv(ctx, run, dbContainer)
-	if err != nil {
-		rollback("", "", "", false)
-		return zero, err
-	}
-	// The DB container's networks: the API services join them (in addition
-	// to appnet) so the derived RUNTIME_DATABASE_URL resolves -- docker DNS
-	// answers container names on user-defined networks, and an app's
-	// postgres may not live on <app>_default.
-	dbNetworks, err := previewDBNetworks(ctx, run, dbContainer)
-	if err != nil {
-		rollback("", "", "", false)
-		return zero, err
-	}
-	if err := os.WriteFile(composePath, []byte(previewCompose(rec, cfg.Knob, cfg.Network, stackEnvErr == nil, dbContainer, dbNetworks)), 0o600); err != nil {
-		rollback("", "", "", false)
-		return zero, err
-	}
-	// Reclaim this preview's OWN leftovers before creating them. Up is
-	// re-run constantly -- a new push to the PR, a re-run of a job that went
-	// red for an unrelated reason -- and an attempt that failed after the
-	// database existed used to poison every attempt after it: "database
-	// gdam_pr_158 already exists", with nothing an operator could do about
-	// it from CI. Only this app's and this PR's names are touched.
-	if err := dropPreviewDB(ctx, run, dbContainer, dbUser, dbDB, rec.DBName); err != nil {
-		rollback(dbContainer, dbUser, dbDB, false)
-		return zero, fmt.Errorf("could not reclaim a leftover preview database in %s: %w", dbContainer, err)
-	}
-	if err := previewSQL(ctx, run, dbContainer, dbUser, dbDB,
-		"CREATE ROLE "+rec.DBName+" LOGIN PASSWORD :'pw';",
-		"-v", "pw="+rec.DBPassword); err != nil {
-		rollback(dbContainer, dbUser, dbDB, false)
-		return zero, fmt.Errorf("could not create the preview role %s in %s: %w", rec.DBName, dbContainer, err)
-	}
-	if _, err := run(ctx, "", "exec", dbContainer, "psql", "-U", dbUser, "-d", dbDB, "-c",
-		"CREATE DATABASE "+rec.DBName+" OWNER "+rec.DBName); err != nil {
-		rollback(dbContainer, dbUser, dbDB, false)
-		return zero, fmt.Errorf("could not create the preview database %s in %s: %w", rec.DBName, dbContainer, err)
 	}
 
 	if _, err := run(ctx, "", "compose", "-p", project, "-f", composePath, "up", "-d"); err != nil {
-		rollback(dbContainer, dbUser, dbDB, true)
+		rollback("", "", "", true)
 		return zero, fmt.Errorf("the preview project did not come up: %w", err)
 	}
 	if err := ApplyPreviewRoute(ctx, run, cfg.Proxy, cfg.RoutesDir, rec.RouteFile, previewRoute(rec, cfg.Knob)); err != nil {
-		rollback(dbContainer, dbUser, dbDB, true)
+		rollback("", "", "", true)
 		return zero, err
 	}
 	return rec, nil
@@ -953,18 +947,13 @@ func PreviewDown(ctx context.Context, run previewRun, cfg PreviewUpConfig, rec P
 			return fmt.Errorf("could not take the preview project down: %w", err)
 		}
 	}
+	// The database, in komizo's own server. A server that is not running
+	// is not an error here: teardown's job is to leave nothing behind, and
+	// if the server is gone so is everything it held.
 	if rec.DBName != "" {
-		psOut, err := run(ctx, "", "ps", "--filter", "label=com.docker.compose.project="+rec.App,
-			"--format", "{{.Names}}\t{{.Image}}")
-		if err == nil {
-			if dbContainer, derr := findAppDBContainer(ctx, run, psOut, rec.App); derr == nil {
-				dbUser, dbDB, derr := previewDBEnv(ctx, run, dbContainer)
-				if derr != nil {
-					return fmt.Errorf("could not read %s's environment to drop the preview database cleanly: %w", dbContainer, derr)
-				}
-				if err := dropPreviewDB(ctx, run, dbContainer, dbUser, dbDB, rec.DBName); err != nil {
-					return err
-				}
+		if out, err := run(ctx, "", "inspect", PreviewDBContainer, "--format", "{{.State.Running}}"); err == nil && strings.TrimSpace(out) == "true" {
+			if err := dropPreviewDB(ctx, run, PreviewDBContainer, PreviewDBSuperuser, PreviewDBMaintenance, rec.DBName); err != nil {
+				return err
 			}
 		}
 	}
