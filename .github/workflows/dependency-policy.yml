@@ -1,6 +1,6 @@
 name: Dependency Policy
 
-# Dependabot's minor and patch action updates are grouped in dependency-policy.yml.
+# Dependabot's minor and patch action updates are grouped in .github/dependabot.yml.
 # Once the required CI check passes, this marks only those low-risk updates for
 # squash merge. Major updates never satisfy the condition and remain manual.
 on:
