@@ -526,6 +526,22 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 			name = "gate"
 		}
 		fmt.Fprintf(&b, "  %s:\n    image: %s\n    mem_limit: %s\n    cpus: %s\n    restart: unless-stopped\n", name, image, k.MemLimit, k.CPULimit)
+		// A writable /tmp, because the fleet's images are scratch or
+		// distroless and run as an unprivileged uid.
+		//
+		// Their production compose files all mount a tmpfs here; the
+		// preview mounted nothing, so the process saw the image's own /tmp
+		// -- root-owned and 0755, because COPY of a directory copies its
+		// CONTENTS and creates the destination fresh with default mode, so
+		// a Dockerfile's `chmod 1777` on the source never arrives. cazper's
+		// preview API crash-looped on exactly that, reported as "the store
+		// is unreachable" because its error mapper refuses to put a
+		// filesystem path in a log.
+		//
+		// Docker's default tmpfs mode is 1777, so this needs no uid: it is
+		// writable by whichever user the image runs as, and no product has
+		// to be asked.
+		b.WriteString("    tmpfs:\n      - /tmp:rw,noexec,nosuid,size=64m\n")
 		if i == 0 {
 			fmt.Fprintf(&b, "    container_name: %s-gate\n    environment:\n", r.Project)
 			fmt.Fprintf(&b, "      PREVIEW: \"1\"\n      PR: \"%d\"\n", r.PR)

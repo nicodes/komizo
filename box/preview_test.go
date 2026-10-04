@@ -1028,6 +1028,40 @@ func TestPreviewComposeJoinsTheSharedNetworkAndNothingElse(t *testing.T) {
 	}
 }
 
+// A WRITABLE /tmp, for every service.
+//
+// The fleet's images are scratch or distroless and run as an unprivileged
+// uid. Their production compose files all mount a tmpfs at /tmp; the
+// preview mounted nothing, so the process saw the image's own /tmp --
+// root-owned and 0755, because COPY of a directory copies its CONTENTS and
+// creates the destination fresh with the default mode, so a Dockerfile's
+// `chmod 1777` on the source never arrives in the image.
+//
+// cazper's preview API crash-looped on exactly that, and said only "the
+// store is unreachable" -- its error mapper deliberately keeps filesystem
+// paths out of logs, so the real cause (EACCES on MkdirAll) was invisible
+// until the image was unpacked by hand.
+//
+// No uid is named: docker's default tmpfs mode is 1777, so this is
+// writable by whichever user the image runs as and no product has to be
+// asked which one that is.
+func TestPreviewComposeGivesEveryServiceAWritableTmp(t *testing.T) {
+	cfg := previewTestConfig(t)
+	rec := PreviewRecord{
+		V: 1, App: "cazper", PR: 12, Project: "cazper-pr-12", DBName: "cazper_pr_12",
+		Images:    []string{"ghcr.io/you/gate:pr-12", "ghcr.io/you/api:pr-12", "ghcr.io/you/worker:pr-12"},
+		RouteFile: "_preview-cazper-pr-12.caddy",
+	}
+	compose := previewCompose(rec, cfg.Knob, "edge", false, PreviewDBContainer)
+	if n := strings.Count(compose, "    tmpfs:\n      - /tmp:rw,noexec,nosuid,size=64m\n"); n != 3 {
+		t.Errorf("%d of 3 services got a writable /tmp:\n%s", n, compose)
+	}
+	// No uid pinned: a uid here would be a guess about the image.
+	if strings.Contains(compose, "uid=") || strings.Contains(compose, "gid=") {
+		t.Errorf("the tmpfs names a uid, which assumes the image's user:\n%s", compose)
+	}
+}
+
 // ISOLATION BETWEEN PREVIEWS: every preview on a host now shares one
 // server, so "its own database" has to be something postgres enforces
 // rather than something komizo is careful about. A new database grants
