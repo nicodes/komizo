@@ -1,3 +1,5 @@
+.DEFAULT_GOAL := help
+SHELL := /bin/bash
 # The agents have to exist before the CLI is compiled: //go:embed reads the
 # filesystem at build time and cannot invoke a compiler. So `build` depends on
 # `agents`, and anyone who runs a bare `go build` gets a CLI that works for
@@ -8,7 +10,7 @@ ARCHES     := amd64 arm64
 AGENT_DIR  := internal/agent/bin
 VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: all build agents clean test check
+.PHONY: all build agents product-build clean test check help install lint unit integration artifact-check browser-install e2e vuln dev stop ui-check
 
 all: build
 
@@ -35,88 +37,35 @@ agents:
 			-o $(AGENT_DIR)/komizo-box-$(GOOS_AGENT)-$$arch ./cmd/komizo-box || exit 1; \
 	done
 
-build: agents
+product-build: agents
 	@echo "  cli    $(VERSION)"
 	@go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o bin/komizo .
 
-test:
-	go test ./...
 
-# SHELLCHECK_VERSION is read out of .mise.toml rather than written here.
-#
-# One number, in the file that installs the tool. Two copies would drift, and
-# the drift is silent -- which is the whole of komizo#59's second half.
-SHELLCHECK_VERSION := $(shell sed -n 's/^shellcheck *= *"\(.*\)"$$/\1/p' .mise.toml)
-
-# What CI runs, and what to run before pushing.
-#
-# shellcheck FIRST, and through docker when the pinned one is not installed. The
-# Go tests that run it skip themselves when the tool is absent, and a skip is a
-# green tick -- which is exactly how `A && B || C` reached CI: `make check`
-# passed locally and the gate had not run at all.
-#
-# THE VERSION IS CHECKED, not just the presence. This used to be
-#
-#	command -v shellcheck && shellcheck ... || docker run ...
-#
-# which is two failures in one line. A local shellcheck of ANY version was
-# accepted, so 0.9.0 and 0.11.0 both counted as "the check"; and because `||`
-# reads a non-zero exit as "the first branch was unavailable", a local shellcheck
-# that FOUND SOMETHING fell through to the docker run and could be overruled by
-# it. A lint that reports a problem is not a lint that failed to run.
-#
-# AND THERE IS NO DOCKER FALLBACK, which is the second half of the same lesson.
-# Only ONE of the two things that lint shell here is this line: `go test` runs
-# five more checks over the six scripts komizo writes onto a box, and they find
-# shellcheck on PATH. A docker fallback therefore linted scripts/*.sh at the
-# pinned version, printed "(docker)" saying so, and then handed the templates --
-# the part that actually runs as root -- to whatever was installed, or to
-# nothing at all. On a machine with only docker, `make check` skipped the whole
-# of komizo#59 and stayed green.
-#
-# A fallback that covers half a check while announcing the version it did not
-# use is worse than no fallback. `mise install` is one command and gets exactly
-# the pinned tool. The tests refuse a wrong version on their own account too --
-# see needPinnedShellcheck -- so neither this nor CI can route around it.
-check: agents
-	@test -n "$(SHELLCHECK_VERSION)" || { \
-		echo "no shellcheck pin in .mise.toml -- the lint has no version to be"; exit 1; }
-	@if ! shellcheck --version 2>/dev/null | grep -qx 'version: $(SHELLCHECK_VERSION)'; then \
-		echo "make check needs shellcheck $(SHELLCHECK_VERSION), the version .mise.toml pins."; \
-		echo "Run \`mise install\`."; \
-		echo; \
-		echo "Not falling back: the six scripts komizo writes onto a box are linted"; \
-		echo "from the Go suite, which finds shellcheck on PATH -- so a fallback"; \
-		echo "would check the files here and quietly skip the ones that run as root."; \
-		exit 1; \
-	fi
-	@echo "  lint   shellcheck $(SHELLCHECK_VERSION)"
-	shellcheck -s sh scripts/*.sh
-	gofmt -l . | tee /dev/stderr | (! read)
-	go vet ./...
-	# The Go dependency tree, against the vulnerability database. Pinned in
-	# .mise.toml like every other tool here: a scan run by whatever version
-	# happened to be installed is not the scan anybody reviewed.
+help:
+	@printf '%s\n' 'make install: pinned tools, Go modules and locked UI dependencies' 'make lint / unit / integration: selectable layers' 'make test: unit + integration' 'make build: exact release archives, no publication' 'make artifact-check: checksums and archived binary identity' 'make check: all applicable checks'
+install:
+	mise trust .mise.toml
+	mise install
+	go mod download
+	cd ui && npm ci --no-audit --no-fund
+lint:
+	bash tools/engineering/lint.sh
+unit:
+	go test -race -count=1 ./internal/workflows
+integration: agents
+	bash tools/engineering/integration.sh
+test: unit integration
+build: agents
+	VERSION="$(VERSION)" bash tools/engineering/build-release.sh
+artifact-check: build
+	VERSION="$(VERSION)" bash tools/engineering/artifact-check.sh
+vuln:
 	govulncheck ./...
-	KOMIZO_REQUIRE_SHELLCHECK=1 go test ./...
-	# Every gc target family, cross-compiled AND cross-vetted. The capability
-	# build tags (flock, O_NOFOLLOW|O_NONBLOCK, Mkfifo, signals) name exact
-	# platform sets; this is what proves those sets compile everywhere they
-	# are selected. vet type-checks the TESTS, which is where a unix-only
-	# syscall in a shared test file hides.
-	#
-	# Scope, stated: android is vet-only because linking needs cgo; ios needs
-	# cgo to type-check at all; hurd has no gc port. None is an operator or
-	# box platform for komizo.
-	GOOS=darwin GOARCH=amd64 go build ./...
-	@for t in windows/amd64 freebsd/amd64 netbsd/amd64 openbsd/amd64 dragonfly/amd64 \
-		aix/ppc64 illumos/amd64 solaris/amd64 wasip1/wasm js/wasm plan9/amd64; do \
-		os=$${t%/*}; arch=$${t#*/}; \
-		echo "  cross  $$os/$$arch"; \
-		GOOS=$$os GOARCH=$$arch go build ./... || exit 1; \
-		GOOS=$$os GOARCH=$$arch go vet ./... || exit 1; \
-	done
-	@GOOS=android GOARCH=arm64 go vet ./... && echo "  cross  android/arm64 (vet only; linking needs cgo)"
-
+ui-check:
+	bash tools/engineering/check-ui.sh
+browser-install e2e dev stop:
+	@echo '$@: inapplicable: operator CLI; component fixtures cover behavior without live servers'
+check: lint test vuln ui-check artifact-check
 clean:
-	rm -rf bin $(AGENT_DIR)/komizo-box-*
+	rm -rf bin dist $(AGENT_DIR)/komizo-box-*
