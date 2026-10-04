@@ -721,3 +721,46 @@ func TestNoShellIsWrittenThroughAnUnquotedHeredoc(t *testing.T) {
 		t.Fatal("no unquoted heredocs found at all -- this scan has stopped matching, so it is no longer checking anything")
 	}
 }
+
+// The pinned postgres is 18, which stores its data in a major-version
+// subdirectory and REFUSES TO START against a mount on the old path:
+//
+//	Counter to that, there appears to be PostgreSQL data in:
+//	  /var/lib/postgresql/data (unused mount/volume)
+//
+// Both boxes failed exactly this way -- "started but never accepted
+// connections", with the real reason only in the container's log -- and the
+// products already running on them mount the directory above. This pins the
+// mount so the next person writing it from memory fails here instead.
+func TestPreviewDatabaseMountsTheDirectoryPostgres18Wants(t *testing.T) {
+	init := AlpineInitScript
+	if !strings.Contains(init, "-v komizo-previews-data:/var/lib/postgresql \\") {
+		t.Error("the preview database does not mount /var/lib/postgresql")
+	}
+	if strings.Contains(init, "komizo-previews-data:/var/lib/postgresql/data") {
+		t.Error("the preview database mounts /var/lib/postgresql/data, which postgres 18 refuses to start against")
+	}
+}
+
+// The preview database must never be reachable as superuser from the shared
+// network: every preview and every app gate sits on it. POSTGRES_PASSWORD
+// (generated, then discarded) is what keeps the image off
+// POSTGRES_HOST_AUTH_METHOD=trust.
+func TestPreviewDatabaseDoesNotTrustTheSharedNetwork(t *testing.T) {
+	init := AlpineInitScript
+	// The flag as docker would receive it, not the string: the comment
+	// above the container explains why trust is wrong, and matching prose
+	// would fail the file that does the right thing.
+	if strings.Contains(init, "-e POSTGRES_HOST_AUTH_METHOD=trust") {
+		t.Error("the preview database trusts the shared network: any container could connect as superuser")
+	}
+	for _, want := range []string{"-e POSTGRES_PASSWORD=", "--auth-host=scram-sha-256"} {
+		if !strings.Contains(init, want) {
+			t.Errorf("the preview database is missing %q", want)
+		}
+	}
+	// No published port: reachable only over the shared network.
+	if strings.Contains(init, "5432:5432") {
+		t.Error("the preview database publishes a port to the host")
+	}
+}

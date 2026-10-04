@@ -538,7 +538,7 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 			// internet.
 			b.WriteString("    ports:\n")
 			fmt.Fprintf(&b, "      - \"127.0.0.1:%d:80\"\n", r.GatePort)
-			b.WriteString("    networks:\n      - shared\n      - appnet\n")
+			b.WriteString("    networks:\n      - shared\n")
 		} else {
 			fmt.Fprintf(&b, "    environment:\n      PREVIEW: \"1\"\n      PR: \"%d\"\n", r.PR)
 			b.WriteString(previewDBEnvLines(r))
@@ -548,15 +548,25 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 			if stackEnv {
 				b.WriteString("    env_file:\n      - stack.env\n")
 			}
-			// shared as well as appnet: komizo's preview postgres lives
-			// on the shared network, and docker DNS answers its container
-			// name only to something attached to the same network. Nothing
-			// of the app's is joined beyond <app>_default, which the
-			// preview already needed.
-			b.WriteString("    networks:\n      - appnet\n      - shared\n")
+			b.WriteString("    networks:\n      - shared\n")
 		}
 	}
-	fmt.Fprintf(&b, "networks:\n  shared:\n    external: true\n    name: %s\n  appnet:\n    external: true\n    name: %s_default\n", network, r.App)
+	// ONE network, the shared one, and never the app's <app>_default.
+	//
+	// Everything a preview has to reach is on it: the proxy finds the gate,
+	// the gate finds the API, and the API finds komizo's preview postgres.
+	// The app's own network was needed only while the preview's database
+	// lived inside the app's postgres container, and joining a product's
+	// production network to serve a pull request is the same invasiveness
+	// in a different costume.
+	//
+	// It was also a hard failure for any product that has no such network.
+	// A gate-only product's stack is a single container on the shared
+	// network and compose creates no <app>_default at all, so every preview
+	// of one died at:
+	//
+	//	network ctcalc_default declared as external, but could not be found
+	fmt.Fprintf(&b, "networks:\n  shared:\n    external: true\n    name: %s\n", network)
 	return b.String()
 }
 
