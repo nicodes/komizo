@@ -617,8 +617,8 @@ func TestPreviewUpEvictsLeastRecentlyUsedAtTheCeiling(t *testing.T) {
 	}
 }
 
-// The compose file: every service capped, the gate on both networks, the rest
-// on the app's network only, the preview's database named in the environment.
+// The compose file: every service capped, every service on the shared
+// network and nothing else, the preview's database named in the environment.
 func TestPreviewComposeCapsNetworksAndEnvironment(t *testing.T) {
 	cfg := previewTestConfig(t)
 	rec := PreviewRecord{
@@ -631,11 +631,14 @@ func TestPreviewComposeCapsNetworksAndEnvironment(t *testing.T) {
 		"container_name: gdam-pr-12-gate",
 		"DB_NAME: gdam_pr_12", "PGDATABASE: gdam_pr_12",
 		"BASE_URL: https://pr-12.preview.gdam.dev",
-		"name: edge", "name: gdam_default",
+		"name: edge",
 	} {
 		if !strings.Contains(compose, want) {
 			t.Errorf("compose is missing %q:\n%s", want, compose)
 		}
+	}
+	if strings.Contains(compose, "gdam_default") || strings.Contains(compose, "appnet") {
+		t.Errorf("the preview joined the app's production network:\n%s", compose)
 	}
 }
 
@@ -977,33 +980,51 @@ func TestPreviewComposeRendersRuntimeDatabaseURLIntoAPIServicesOnly(t *testing.T
 	}
 }
 
-// NETWORKS: the API services join appnet AND the shared network, because
-// komizo's preview postgres lives on the shared network and docker DNS
-// answers a container name only to something attached to the same network.
-// Nothing of the app's is joined beyond <app>_default. The gate's networks
-// are unchanged, and no per-app database network is declared at all -- the
-// app's postgres is never inspected, so komizo cannot know or care what
-// networks it is on.
-func TestPreviewComposeWiresTheAPIIntoTheSharedNetworkOnly(t *testing.T) {
+// NETWORKS: one network, the shared one, for every service -- and NEVER
+// the app's <app>_default.
+//
+// Everything a preview must reach is on it: the proxy finds the gate, the
+// gate finds the API, the API finds komizo's preview postgres. The app's
+// own network was needed only while the preview's database lived inside the
+// app's postgres container, and joining a product's production network to
+// serve a pull request is the same invasiveness in a different costume.
+//
+// It was also a hard failure for any product that has no such network. A
+// gate-only product's stack is one container on the shared network, so
+// compose creates no <app>_default at all and every preview of one died at
+// "network ctcalc_default declared as external, but could not be found" --
+// which is how this was found, on the host, after the database half was
+// already fixed.
+func TestPreviewComposeJoinsTheSharedNetworkAndNothingElse(t *testing.T) {
 	cfg := previewTestConfig(t)
-	rec := PreviewRecord{
-		V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
-		Images:    []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"},
-		RouteFile: "_preview-gdam-pr-12.caddy",
-	}
-	compose := previewCompose(rec, cfg.Knob, "edge", false, PreviewDBContainer)
-	api := compose[strings.Index(compose, "  api:"):strings.Index(compose, "\nnetworks:")]
-	if !strings.Contains(api, "    networks:\n      - appnet\n      - shared") {
-		t.Errorf("the api service does not join appnet + shared:\n%s", api)
-	}
-	gate := compose[:strings.Index(compose, "  api:")]
-	if !strings.Contains(gate, "    networks:\n      - shared\n      - appnet\n") {
-		t.Errorf("the gate's networks changed:\n%s", gate)
-	}
-	// Exactly two networks are declared: shared and appnet. A third would
-	// mean komizo went looking at the app's stack again.
-	if n := strings.Count(compose[strings.Index(compose, "\nnetworks:"):], "external: true"); n != 2 {
-		t.Errorf("%d external networks declared, want exactly shared + appnet:\n%s", n, compose)
+	for _, tc := range []struct {
+		name   string
+		images []string
+	}{
+		{"api product", []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}},
+		{"gate only", []string{"ghcr.io/you/web:pr-12"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := PreviewRecord{
+				V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
+				Images:    tc.images,
+				RouteFile: "_preview-gdam-pr-12.caddy",
+			}
+			compose := previewCompose(rec, cfg.Knob, "edge", false, PreviewDBContainer)
+			if n := strings.Count(compose, "    networks:\n      - shared\n"); n != len(tc.images) {
+				t.Errorf("%d of %d services join shared alone:\n%s", n, len(tc.images), compose)
+			}
+			// Exactly one external network is declared. A second would mean
+			// komizo went looking at the app's stack again.
+			if n := strings.Count(compose, "external: true"); n != 1 {
+				t.Errorf("%d external networks declared, want exactly shared:\n%s", n, compose)
+			}
+			for _, unwanted := range []string{"appnet", "gdam_default"} {
+				if strings.Contains(compose, unwanted) {
+					t.Errorf("the preview references %s:\n%s", unwanted, compose)
+				}
+			}
+		})
 	}
 }
 
