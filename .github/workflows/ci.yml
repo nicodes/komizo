@@ -17,6 +17,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
 permissions:
@@ -28,6 +29,7 @@ concurrency:
 
 jobs:
   ci:
+    name: Test
     runs-on: ubuntu-latest
     # A BACKSTOP, NOT THE GUARD. The guard is on the steps below.
     #
@@ -56,6 +58,12 @@ jobs:
       # enough that a cold cache or a slow mirror is not reported as one.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         timeout-minutes: 5
+      - name: Validate unified workflow contract
+        shell: bash
+        run: |
+          python3 -m venv "$RUNNER_TEMP/fleet-workflow-contract"
+          "$RUNNER_TEMP/fleet-workflow-contract/bin/python" -m pip install --disable-pip-version-check --only-binary=:all: --require-hashes -r .github/workflow-contract-requirements.txt
+          "$RUNNER_TEMP/fleet-workflow-contract/bin/python" .github/workflow_contract.py
 
       # mise rather than setup-go, so every repository in the fleet installs its
       # toolchain the same way. The cost is that the Go version now lives in
