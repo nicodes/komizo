@@ -203,6 +203,17 @@ else
 	# other preview's database. With scram over TCP, a preview can only
 	# authenticate as the role it was given, with the password generated
 	# for it alone.
+	# The data mount is /var/lib/postgresql, NOT /var/lib/postgresql/data.
+	# This image is postgres 18, which stores data in a major-version
+	# subdirectory and REFUSES TO START against a mount on the old path:
+	#
+	#   Counter to that, there appears to be PostgreSQL data in:
+	#     /var/lib/postgresql/data (unused mount/volume)
+	#
+	# Both boxes failed exactly that way on the first run, and the products
+	# already on them mount the directory above -- which is what this
+	# matches. (The comment lives here rather than beside the flag: a
+	# comment inside a \-continued command is SC2215.)
 	docker run -d \
 		--name "$PREVIEW_DB_NAME" \
 		--restart unless-stopped \
@@ -211,7 +222,7 @@ else
 		-e POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 \
 		-e POSTGRES_USER=postgres \
 		-e POSTGRES_DB=postgres \
-		-v komizo-previews-data:/var/lib/postgresql/data \
+		-v komizo-previews-data:/var/lib/postgresql \
 		--memory 256m \
 		"$PREVIEW_DB_IMAGE" >/dev/null ||
 		die "could not start $PREVIEW_DB_NAME"
