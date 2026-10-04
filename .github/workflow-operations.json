@@ -1,0 +1,31 @@
+{
+  "dependency-maintenance": {
+    "commands": [
+      [
+        "bash",
+        "-euo",
+        "pipefail",
+        "-c",
+        "export CICD_ENGINEERING=\"$(python3 scripts/engineering-bootstrap.py)\"\nexport PYTHONDONTWRITEBYTECODE=1\npython3 \"$CICD_ENGINEERING/helpers/watch-tools.py\""
+      ]
+    ]
+  },
+  "security-scan": {
+    "commands": [
+      [
+        "make",
+        "install",
+        "vuln"
+      ],
+      [
+        "npm",
+        "audit",
+        "--prefix",
+        "ui",
+        "--package-lock-only",
+        "--audit-level=high"
+      ]
+    ],
+    "timeout_seconds": 7200
+  }
+}

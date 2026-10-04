@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "kind": "tool",
+  "required": [
+    "ci.yml",
+    "dependency-maintenance.yml",
+    "dependency-policy.yml",
+    "security-scan.yml",
+    "release.yml"
+  ],
+  "legacy_apis": {},
+  "ci_gates": [
+    "Test"
+  ],
+  "engine_sha256": {
+    "workflow_contract.py": "c40c5e25d608858703c3469c89e6bc3b261c447cc3a29f2363c28db76de48071",
+    "workflow_operation.py": "6f7d1ba2779c8d6191001fb5890d9a1fd7270da993f7385422218a2ad06f7fd7",
+    "pins_compat.mjs": "4918c1cf8bfcf78ee29c406ed58486dedab7d1e44022759fd384258e4189962a"
+  }
+}
