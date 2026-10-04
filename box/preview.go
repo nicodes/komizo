@@ -538,10 +538,22 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 		// is unreachable" because its error mapper refuses to put a
 		// filesystem path in a log.
 		//
-		// Docker's default tmpfs mode is 1777, so this needs no uid: it is
-		// writable by whichever user the image runs as, and no product has
-		// to be asked.
-		b.WriteString("    tmpfs:\n      - /tmp:rw,noexec,nosuid,size=64m\n")
+		// mode=1777 EXPLICITLY. Docker's documented default for a tmpfs is
+		// 1777, but only when the mountpoint does not say otherwise: it
+		// INHERITS THE MODE OF THE DIRECTORY IN THE IMAGE. A scratch image
+		// whose /tmp is 0755 root-owned -- which is what a Dockerfile's
+		// `COPY --from=build /out/tmp /tmp` produces, because COPY of a
+		// directory copies its contents and creates the destination fresh
+		// -- gets a tmpfs that is still 0755 root-owned, and the
+		// unprivileged uid still cannot write to it.
+		//
+		// Proven on the box: busybox with /tmp chmod 755, run as 65534,
+		// gives "mkdir: can't create directory '/tmp/x': Permission
+		// denied" with this flag absent and succeeds with it present.
+		//
+		// 1777 is /tmp's own convention, not a guess about the image, so
+		// this still asks no product which user it runs as.
+		b.WriteString("    tmpfs:\n      - /tmp:rw,noexec,nosuid,size=64m,mode=1777\n")
 		if i == 0 {
 			fmt.Fprintf(&b, "    container_name: %s-gate\n    environment:\n", r.Project)
 			fmt.Fprintf(&b, "      PREVIEW: \"1\"\n      PR: \"%d\"\n", r.PR)
