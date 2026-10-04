@@ -1042,9 +1042,15 @@ func TestPreviewComposeJoinsTheSharedNetworkAndNothingElse(t *testing.T) {
 // paths out of logs, so the real cause (EACCES on MkdirAll) was invisible
 // until the image was unpacked by hand.
 //
-// No uid is named: docker's default tmpfs mode is 1777, so this is
-// writable by whichever user the image runs as and no product has to be
-// asked which one that is.
+// mode=1777 is named EXPLICITLY. Docker's default for a tmpfs is 1777
+// only when the mountpoint does not say otherwise -- it inherits the mode
+// of the directory in the image, so a scratch image whose /tmp is 0755
+// root-owned gets a 0755 root-owned tmpfs and the unprivileged uid still
+// cannot write. That is exactly what cazper's image has, and leaving the
+// mode off did not fix its crash loop.
+//
+// A uid is still never named: 1777 is /tmp's own convention rather than a
+// guess about which user the image runs as.
 func TestPreviewComposeGivesEveryServiceAWritableTmp(t *testing.T) {
 	cfg := previewTestConfig(t)
 	rec := PreviewRecord{
@@ -1053,8 +1059,13 @@ func TestPreviewComposeGivesEveryServiceAWritableTmp(t *testing.T) {
 		RouteFile: "_preview-cazper-pr-12.caddy",
 	}
 	compose := previewCompose(rec, cfg.Knob, "edge", false, PreviewDBContainer)
-	if n := strings.Count(compose, "    tmpfs:\n      - /tmp:rw,noexec,nosuid,size=64m\n"); n != 3 {
+	if n := strings.Count(compose, "    tmpfs:\n      - /tmp:rw,noexec,nosuid,size=64m,mode=1777\n"); n != 3 {
 		t.Errorf("%d of 3 services got a writable /tmp:\n%s", n, compose)
+	}
+	// The mode is not optional: without it the tmpfs inherits the image's
+	// /tmp mode, which for a scratch image is 0755 root-owned.
+	if !strings.Contains(compose, "mode=1777") {
+		t.Errorf("the tmpfs does not force mode=1777:\n%s", compose)
 	}
 	// No uid pinned: a uid here would be a guess about the image.
 	if strings.Contains(compose, "uid=") || strings.Contains(compose, "gid=") {
