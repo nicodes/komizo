@@ -1062,6 +1062,66 @@ func TestPreviewComposeGivesEveryServiceAWritableTmp(t *testing.T) {
 	}
 }
 
+// A RE-UP KEEPS ITS OWN GATE PORT.
+//
+// Up runs on every push to the PR, and this preview's own record is in the
+// list the allocator reads. Counting it as taken moved the preview to a new
+// port on every push -- churn at best, and at worst the number it moved to
+// was one another preview already held:
+//
+//	Bind for 127.0.0.1:20001 failed: port is already allocated
+//
+// which is what castledrop did when it and prizm deployed together.
+func TestPreviewUpKeepsItsOwnGatePortAcrossReUps(t *testing.T) {
+	cfg := previewTestConfig(t)
+	f := &fakeDocker{}
+	first, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12,
+		[]string{"ghcr.io/you/web:pr-12"}, previewNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		again, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12,
+			[]string{"ghcr.io/you/web:pr-12"}, previewNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if again.GatePort != first.GatePort {
+			t.Fatalf("re-up %d moved the gate port from %d to %d", i+1, first.GatePort, again.GatePort)
+		}
+	}
+}
+
+// And a DIFFERENT preview never gets a port one already holds.
+func TestPreviewUpNeverReusesAnotherPreviewsGatePort(t *testing.T) {
+	cfg := previewTestConfig(t)
+	f := &fakeDocker{}
+	seen := map[int]string{}
+	for _, p := range []struct {
+		app string
+		pr  int
+	}{{"gdam", 1}, {"termcade", 2}, {"castledrop", 3}, {"prizm", 4}} {
+		rec, err := PreviewUp(context.Background(), f.run, cfg, p.app, p.pr,
+			[]string{"ghcr.io/you/web:pr"}, previewNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if other, clash := seen[rec.GatePort]; clash {
+			t.Fatalf("%s got port %d, already held by %s", rec.Project, rec.GatePort, other)
+		}
+		seen[rec.GatePort] = rec.Project
+	}
+	// Re-upping the first must still not collide with the three after it.
+	rec, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 1,
+		[]string{"ghcr.io/you/web:pr"}, previewNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seen[rec.GatePort] != rec.Project {
+		t.Errorf("a re-up took port %d, held by %s", rec.GatePort, seen[rec.GatePort])
+	}
+}
+
 // ISOLATION BETWEEN PREVIEWS: every preview on a host now shares one
 // server, so "its own database" has to be something postgres enforces
 // rather than something komizo is careful about. A new database grants

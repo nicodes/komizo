@@ -830,6 +830,22 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 		rec.DBPassword = previewNewPassword()
 	}
 
+	// ONE preview at a time on this host, for the window that reads the
+	// other previews' ports and writes this one's.
+	//
+	// The gate port is chosen as "first free according to state", so two ups
+	// running at once both read the same state, both pick the same number,
+	// and the second container dies on
+	//
+	//	Bind for 127.0.0.1:20001 failed: port is already allocated
+	//
+	// which is what castledrop did when it and prizm deployed together.
+	// Serialising is enough: the whole window is a few hundred milliseconds
+	// of local file work, and a lock that cannot be taken degrades to the
+	// behaviour we already had rather than failing the preview.
+	unlock := lockPreviews()
+	defer unlock()
+
 	// Evict BEFORE adding, so max-N is a ceiling and not a target to exceed
 	// and come back under: the least-recently-used preview goes first.
 	existing, err := ListPreviews(cfg.Root)
@@ -855,14 +871,28 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	if cfg.Knob.PortRange != "" {
 		_, _ = fmt.Sscanf(cfg.Knob.PortRange, "%d-%d", &lo, &hi)
 	}
+	// A RE-UP KEEPS ITS OWN PORT. Up is re-run constantly -- every push to
+	// the PR -- and this preview's own record is in `existing`, so counting
+	// it as taken moved the preview to a new port on every single push. That
+	// is churn at best, and at worst it hands this preview the port another
+	// one is already bound to.
 	used := map[int]bool{}
 	for _, e := range existing {
-		used[e.GatePort] = true
+		if e.Project != project {
+			used[e.GatePort] = true
+		}
 	}
-	for rec.GatePort = lo; rec.GatePort <= hi && used[rec.GatePort]; rec.GatePort++ {
+	for _, e := range existing {
+		if e.Project == project && e.GatePort >= lo && e.GatePort <= hi && !used[e.GatePort] {
+			rec.GatePort = e.GatePort
+		}
 	}
-	if rec.GatePort > hi {
-		return zero, fmt.Errorf("no free gate ports in %d-%d", lo, hi)
+	if rec.GatePort == 0 {
+		for rec.GatePort = lo; rec.GatePort <= hi && used[rec.GatePort]; rec.GatePort++ {
+		}
+		if rec.GatePort > hi {
+			return zero, fmt.Errorf("no free gate ports in %d-%d", lo, hi)
+		}
 	}
 
 	// STATE FIRST. The record exists before anything is created, and
@@ -1086,3 +1116,40 @@ func onlyCharsPreview(s, chars string) bool {
 	}
 	return len(s) > 0
 }
+
+// lockPreviews serialises the allocate-and-record window of `preview up`
+// across concurrent invocations on one host.
+//
+// Same discipline as lockRecord: /run, because a lock's correct lifetime is
+// until reboot and a record's is not, and every failure path returns a
+// no-op release rather than an error. A host that cannot lock is a host
+// whose previews are chosen exactly as they were before -- unserialised,
+// but never refused for want of a lock.
+func lockPreviews() func() {
+	nothing := func() {}
+	if err := os.MkdirAll(RunDir, 0o755); err != nil {
+		return nothing
+	}
+	f, err := os.OpenFile(filepath.Join(RunDir, "previews.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nothing
+	}
+	deadline := time.Now().Add(previewLockWait)
+	for {
+		if flockExclusiveNB(f.Fd()) {
+			return func() {
+				flockUnlock(f.Fd())
+				_ = f.Close()
+			}
+		}
+		if time.Now().After(deadline) {
+			_ = f.Close()
+			return nothing
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// previewLockWait is longer than a record rewrite's because the window it
+// guards includes an eviction, which takes a whole preview down.
+const previewLockWait = 60 * time.Second
