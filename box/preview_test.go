@@ -29,6 +29,7 @@ type fakeDocker struct {
 	inspectAnswers map[string]string // Config.Image per container name
 	envAnswers     map[string]string // Config.Env per container name
 	netAnswers     map[string]string // NetworkSettings.Networks names per container name
+	previewDBDown  bool              // komizo's own preview postgres is not running
 }
 
 func (f *fakeDocker) run(_ context.Context, stdin string, args ...string) (string, error) {
@@ -55,6 +56,12 @@ func (f *fakeDocker) run(_ context.Context, stdin string, args ...string) (strin
 				return f.envAnswers[args[1]], nil
 			}
 			return "", nil
+		}
+		if strings.Contains(format, "State.Running") {
+			if args[1] == PreviewDBContainer && f.previewDBDown {
+				return "false", nil
+			}
+			return "true", nil
 		}
 		if strings.Contains(format, "NetworkSettings") {
 			if f.netAnswers != nil {
@@ -141,7 +148,7 @@ func writeTestPreview(t *testing.T, cfg PreviewUpConfig, app string, pr int, las
 	rec := PreviewRecord{
 		V: 1, App: app, PR: pr, Project: PreviewProject(app, pr),
 		DBName: PreviewDBName(app, pr), GatePort: 20000 + pr,
-		Images: []string{"ghcr.io/you/web:pr"}, CreatedAt: lastUsed, LastUsed: lastUsed,
+		Images: []string{"ghcr.io/you/web:pr", "ghcr.io/you/api:pr"}, CreatedAt: lastUsed, LastUsed: lastUsed,
 		RouteFile: "_preview-" + PreviewProject(app, pr) + ".caddy",
 	}
 	if err := writePreviewRecord(cfg.Root, rec); err != nil {
@@ -157,12 +164,12 @@ func writeTestPreview(t *testing.T, cfg PreviewUpConfig, app string, pr int, las
 }
 
 // ISOLATION, database side: up creates exactly one database, named for the
-// app and the PR, inside the app's postgres container -- and nothing else is
+// app and the PR, inside KOMIZO'S OWN postgres server -- and nothing else is
 // created, dropped or named. Never a shared schema, never prod data.
 func TestPreviewUpCreatesOnlyItsOwnDatabase(t *testing.T) {
 	f := &fakeDocker{}
 	cfg := previewTestConfig(t)
-	rec, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow)
+	rec, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, previewNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,7 +201,7 @@ func TestPreviewUpCreatesOnlyItsOwnDatabase(t *testing.T) {
 func TestPreviewUpReclaimsItsOwnLeftovers(t *testing.T) {
 	f := &fakeDocker{}
 	cfg := previewTestConfig(t)
-	if _, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow); err != nil {
+	if _, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, previewNow); err != nil {
 		t.Fatal(err)
 	}
 	dropped, created, droppedRole := -1, -1, -1
@@ -223,77 +230,6 @@ func TestPreviewUpReclaimsItsOwnLeftovers(t *testing.T) {
 	}
 }
 
-// The discovery's three ways to know a postgres, pinned. Products pin
-// postgres by digest, and docker ps's Image column for a digest-pulled image
-// shows only the short digest -- no "postgres" substring -- so a discovery
-// that reads only that column never sees it. Found by the preview smoke on
-// avior.studio, whose gdam-postgres-1 runs postgres@sha256:....
-func TestPreviewDiscoveryFindsDigestPulledPostgres(t *testing.T) {
-	f := &fakeDocker{
-		psOut:          "gdam-postgres-1\t4ef4dbc939d6b2a1c0f9e8d7c6b5a4\n",
-		inspectAnswers: map[string]string{"gdam-postgres-1": "postgres@sha256:4ef4dbc939d6b2a1c0f9e8d7c6b5a4"},
-	}
-	cfg := previewTestConfig(t)
-	if _, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow); err != nil {
-		t.Fatalf("a digest-pulled postgres was not discovered: %v", err)
-	}
-	created := f.matching("psql", "CREATE DATABASE gdam_pr_12")
-	if len(created) != 1 || !strings.Contains(strings.Join(created[0], " "), "gdam-postgres-1") {
-		t.Fatalf("the create did not run against the digest-pulled container: %v", created)
-	}
-}
-
-// A non-postgres container is still not one, on every one of the three
-// signals -- ps column, Config.Image, name.
-func TestPreviewDiscoveryRefusesANonPostgresContainer(t *testing.T) {
-	f := &fakeDocker{
-		psOut:          "gdam-redis-1\tredis:7\n",
-		inspectAnswers: map[string]string{"gdam-redis-1": "redis:7"},
-	}
-	cfg := previewTestConfig(t)
-	_, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow)
-	if err == nil || !strings.Contains(err.Error(), "no postgres container") {
-		t.Fatalf("a redis container was discovered as postgres: %v", err)
-	}
-	for _, c := range f.calls {
-		if strings.Contains(strings.Join(c, " "), "psql") {
-			t.Fatalf("psql ran against a container that is not postgres: %v", c)
-		}
-	}
-}
-
-// The common case stays cheap: a tagged postgres is discovered from the ps
-// Image column alone, and no Config.Image is ever inspected. (The container
-// environment read for POSTGRES_USER is a different question, asked of every
-// container the creation runs against.)
-func TestPreviewDiscoveryFastPathSkipsInspect(t *testing.T) {
-	f := &fakeDocker{} // default ps answer is a tagged postgres
-	cfg := previewTestConfig(t)
-	if _, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow); err != nil {
-		t.Fatal(err)
-	}
-	if got := f.matching("inspect", "Config.Image"); len(got) != 0 {
-		t.Errorf("the fast path inspected Config.Image anyway: %v", got)
-	}
-}
-
-// And when neither image field says postgres, the container's own name is the
-// last word -- compose's <project>-postgres-1 -- with the psql call after
-// discovery as the final proof.
-func TestPreviewDiscoveryFallsBackToTheContainerName(t *testing.T) {
-	f := &fakeDocker{
-		psOut:          "gdam-postgres-1\tcustom-sidecar:1\n",
-		inspectAnswers: map[string]string{"gdam-postgres-1": "custom-sidecar:1"},
-	}
-	cfg := previewTestConfig(t)
-	if _, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow); err != nil {
-		t.Fatalf("a postgres named by compose was not discovered: %v", err)
-	}
-	if got := f.matching("psql", "CREATE DATABASE gdam_pr_12"); len(got) != 1 {
-		t.Errorf("the create did not run against the name-matched container: %v", got)
-	}
-}
-
 // And down drops exactly that database and nothing else.
 func TestPreviewDownDropsOnlyItsOwnDatabase(t *testing.T) {
 	f := &fakeDocker{}
@@ -317,65 +253,6 @@ func TestPreviewDownDropsOnlyItsOwnDatabase(t *testing.T) {
 	}
 }
 
-// The connecting role: a container with a custom POSTGRES_USER (and no
-// 'postgres' role at all) is connected to as THAT, never as 'postgres' --
-// the third integration gap the avior.studio smoke found, where
-// gdam-postgres-1's superuser is gdam_migrator and no 'postgres' role exists.
-func TestPreviewCreatesItsDatabaseAsTheContainersOwnSuperuser(t *testing.T) {
-	f := &fakeDocker{envAnswers: map[string]string{
-		"gdam-db-1": "POSTGRES_USER=gdam_migrator\nPOSTGRES_DB=gdam\n",
-	}}
-	cfg := previewTestConfig(t)
-	rec, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rec.DBPassword == "" {
-		t.Fatal("no owner-role password was generated and recorded")
-	}
-	for _, c := range f.calls {
-		j := strings.Join(c, " ")
-		if strings.Contains(j, "psql") && strings.Contains(j, "-U postgres") {
-			t.Fatalf("connected as the hardcoded 'postgres' role, which does not exist here: %v", c)
-		}
-	}
-	// The role statement reaches psql via STDIN (docker exec -i, no -c),
-	// because psql substitutes :'var' on lines it reads from stdin and NOT on
-	// -c arguments -- the fourth gap, verified on gdam-postgres-1 (psql 18.6).
-	// The password travels as the 'pw' variable in argv and NEVER inside the
-	// SQL text.
-	roleStdin := f.stdinOf(t, "psql", "-i", "-U gdam_migrator", "-d gdam", "-v", "pw="+rec.DBPassword)
-	if !strings.Contains(roleStdin, "CREATE ROLE gdam_pr_12 LOGIN PASSWORD :'pw';") {
-		t.Errorf("the role statement did not reach psql via stdin with the variable intact: %q", roleStdin)
-	}
-	if strings.Contains(roleStdin, rec.DBPassword) {
-		t.Errorf("the password was interpolated into the SQL text: %q", roleStdin)
-	}
-	for _, c := range f.calls {
-		j := strings.Join(c, " ")
-		if strings.Contains(j, "CREATE ROLE") && strings.Contains(j, "-c") {
-			t.Errorf("the role statement went through -c, where :'pw' is not substituted: %v", c)
-		}
-	}
-	dbCalls := f.matching("psql", "-U gdam_migrator", "CREATE DATABASE gdam_pr_12 OWNER gdam_pr_12")
-	if len(dbCalls) != 1 {
-		t.Fatalf("the database was not created as gdam_migrator with the owner set: %v", dbCalls)
-	}
-}
-
-// The stock container still works: no POSTGRES_USER in its env, and the
-// default 'postgres' role is what connects.
-func TestPreviewCreatesItsDatabaseAsPostgresOnAStockContainer(t *testing.T) {
-	f := &fakeDocker{envAnswers: map[string]string{"gdam-db-1": "OTHER_VAR=1\n"}}
-	cfg := previewTestConfig(t)
-	if _, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow); err != nil {
-		t.Fatal(err)
-	}
-	if got := f.matching("psql", "-U postgres", "CREATE DATABASE gdam_pr_12"); len(got) != 1 {
-		t.Errorf("the stock container was not connected to as postgres: %v", got)
-	}
-}
-
 // And the compose carries the connection: the preview's OWN role and
 // password, so a preview can touch only its own database.
 func TestPreviewComposeCarriesTheOwnerRole(t *testing.T) {
@@ -384,7 +261,7 @@ func TestPreviewComposeCarriesTheOwnerRole(t *testing.T) {
 		V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
 		DBPassword: "abc123", Images: []string{"ghcr.io/you/web:pr-12"}, RouteFile: "_preview-gdam-pr-12.caddy",
 	}
-	compose := previewCompose(rec, cfg.Knob, "edge", false, "", nil)
+	compose := previewCompose(rec, cfg.Knob, "edge", false, "")
 	for _, want := range []string{"PGUSER: gdam_pr_12", "PGPASSWORD: abc123", "PGDATABASE: gdam_pr_12"} {
 		if !strings.Contains(compose, want) {
 			t.Errorf("compose is missing %q:\n%s", want, compose)
@@ -392,11 +269,9 @@ func TestPreviewComposeCarriesTheOwnerRole(t *testing.T) {
 	}
 }
 
-// Down drops the role too, with the same discovered connection.
+// Down drops the role too, against komizo's own server.
 func TestPreviewDownDropsTheRole(t *testing.T) {
-	f := &fakeDocker{envAnswers: map[string]string{
-		"gdam-db-1": "POSTGRES_USER=gdam_migrator\nPOSTGRES_DB=gdam\n",
-	}}
+	f := &fakeDocker{}
 	cfg := previewTestConfig(t)
 	rec := writeTestPreview(t, cfg, "gdam", 12, previewNow.Add(-time.Hour))
 	if err := os.MkdirAll(cfg.RoutesDir, 0o755); err != nil {
@@ -408,15 +283,26 @@ func TestPreviewDownDropsTheRole(t *testing.T) {
 	if err := PreviewDown(context.Background(), f.run, cfg, rec); err != nil {
 		t.Fatal(err)
 	}
-	dropStdin := f.stdinOf(t, "psql", "-i", "-U gdam_migrator", "-d gdam")
+	dropStdin := f.stdinOf(t, "psql", "-i", "-U postgres", "-d postgres")
 	if !strings.Contains(dropStdin, "DROP ROLE IF EXISTS gdam_pr_12;") {
 		t.Errorf("the role drop did not reach psql via stdin: %q", dropStdin)
 	}
+	// The superuser is komizo's, in komizo's container. The app's postgres
+	// is never named, connected to, or asked anything.
 	for _, c := range f.calls {
-		if strings.Contains(strings.Join(c, " "), "-U postgres") {
-			t.Errorf("connected as the hardcoded 'postgres' role: %v", c)
+		if c[0] == "exec" && strings.Contains(strings.Join(c, " "), "psql") && !contains(c, PreviewDBContainer) {
+			t.Errorf("a drop ran somewhere other than komizo's server: %v", c)
 		}
 	}
+}
+
+func contains(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
 }
 
 // F1 (SECURITY): the owner role's password is a credential, and credentials
@@ -445,7 +331,7 @@ func TestPreviewPasswordIsNeverMarshalledToStdout(t *testing.T) {
 func TestPreviewUpPersistsStateWhereDownCanFindIt(t *testing.T) {
 	f := &fakeDocker{}
 	cfg := previewTestConfig(t)
-	rec, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow)
+	rec, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, previewNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -476,7 +362,7 @@ func TestPreviewUpPersistsStateWhereDownCanFindIt(t *testing.T) {
 func TestPreviewFailureRollsBackResourcesAndState(t *testing.T) {
 	f := &fakeDocker{composeUpErr: fmt.Errorf("no such image")}
 	cfg := previewTestConfig(t)
-	_, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow)
+	_, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, previewNow)
 	if err == nil {
 		t.Fatal("a failed compose up succeeded")
 	}
@@ -514,7 +400,7 @@ func TestPreviewComposePublishesTheGatePortOnLoopbackOnly(t *testing.T) {
 		DBPassword: "abc123", GatePort: 20005,
 		Images: []string{"ghcr.io/you/web:pr-12"}, RouteFile: "_preview-gdam-pr-12.caddy",
 	}
-	compose := previewCompose(rec, cfg.Knob, "edge", false, "", nil)
+	compose := previewCompose(rec, cfg.Knob, "edge", false, "")
 	if !strings.Contains(compose, `"127.0.0.1:20005:80"`) {
 		t.Errorf("the gate port is not published on loopback:\n%s", compose)
 	}
@@ -686,7 +572,7 @@ func TestPreviewUpRefusesBelowTheFloor(t *testing.T) {
 	cfg := previewTestConfig(t)
 	cfg.FloorsBody = "DISK_AVAILABLE_FLOOR_BYTES=2147483648\nMEM_AVAILABLE_FLOOR_BYTES=524288000\n"
 	cfg.ReportJSON = []byte(`{"system":{"mem":{"available":100},"disks":[{"available":100}]}}`)
-	_, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow)
+	_, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, previewNow)
 	if err == nil || !strings.Contains(err.Error(), "capacity floors") {
 		t.Fatalf("up below the floor = %v, want a floors refusal", err)
 	}
@@ -702,7 +588,7 @@ func TestPreviewUpProceedsBelowTwiceTheFloor(t *testing.T) {
 	cfg := previewTestConfig(t)
 	cfg.FloorsBody = "MEM_AVAILABLE_FLOOR_BYTES=100\n"
 	cfg.ReportJSON = []byte(`{"system":{"mem":{"available":150},"disks":[{"available":150}]}}`)
-	if _, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12"}, previewNow); err != nil {
+	if _, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, previewNow); err != nil {
 		t.Fatalf("up inside the warning band = %v, want it to proceed", err)
 	}
 }
@@ -739,7 +625,7 @@ func TestPreviewComposeCapsNetworksAndEnvironment(t *testing.T) {
 		V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
 		Images: []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, RouteFile: "_preview-gdam-pr-12.caddy",
 	}
-	compose := previewCompose(rec, cfg.Knob, "edge", false, "", nil)
+	compose := previewCompose(rec, cfg.Knob, "edge", false, "")
 	for _, want := range []string{
 		"mem_limit: 512m", "cpus: 0.75",
 		"container_name: gdam-pr-12-gate",
@@ -933,7 +819,7 @@ func TestPreviewComposeWithoutStackEnvIsUnchanged(t *testing.T) {
 		V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
 		Images: []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, RouteFile: "_preview-gdam-pr-12.caddy",
 	}
-	compose := previewCompose(rec, cfg.Knob, "edge", false, "", nil)
+	compose := previewCompose(rec, cfg.Knob, "edge", false, "")
 	if strings.Contains(compose, "env_file") || strings.Contains(compose, "stack.env") {
 		t.Errorf("an absent stack.env changed the render:\n%s", compose)
 	}
@@ -952,7 +838,7 @@ func TestPreviewComposeEnvFilesStackEnvIntoAPIServicesOnly(t *testing.T) {
 		Images:    []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12", "ghcr.io/you/worker:pr-12"},
 		RouteFile: "_preview-gdam-pr-12.caddy",
 	}
-	compose := previewCompose(rec, cfg.Knob, "edge", true, "", nil)
+	compose := previewCompose(rec, cfg.Knob, "edge", true, "")
 	if n := strings.Count(compose, "    env_file:\n      - stack.env\n"); n != 2 {
 		t.Errorf("env_file: - stack.env appears %d times, want exactly the 2 API services:\n%s", n, compose)
 	}
@@ -1060,7 +946,7 @@ func TestPreviewDownRemovesStackEnvWithTheStateDir(t *testing.T) {
 // --- the database reachability seam -------------------------------------------------
 
 // RUNTIME_DATABASE_URL (1) and (3): the API services get the derived DSN --
-// postgres://<role>:<pw>@<db-container-name>:5432/<db>, role and db the
+// postgres://<role>:<pw>@komizo-previews:5432/<db>, role and db the
 // preview's own -- because products fail-closed-require it and ignore the
 // PG* vars (which stay). The DSN carries the DB password, a credential: it
 // is NEVER on the gate (the gate routes HTTP, it does not touch the
@@ -1073,8 +959,8 @@ func TestPreviewComposeRendersRuntimeDatabaseURLIntoAPIServicesOnly(t *testing.T
 		Images:     []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12", "ghcr.io/you/worker:pr-12"},
 		RouteFile:  "_preview-gdam-pr-12.caddy",
 	}
-	compose := previewCompose(rec, cfg.Knob, "edge", false, "gdam-db-1", []string{"gdam_database"})
-	const dsn = "RUNTIME_DATABASE_URL: postgres://gdam_pr_12:abc123@gdam-db-1:5432/gdam_pr_12"
+	compose := previewCompose(rec, cfg.Knob, "edge", false, PreviewDBContainer)
+	const dsn = "RUNTIME_DATABASE_URL: postgres://gdam_pr_12:abc123@komizo-previews:5432/gdam_pr_12"
 	if n := strings.Count(compose, dsn); n != 2 {
 		t.Errorf("the DSN appears %d times, want exactly the 2 API services:\n%s", n, compose)
 	}
@@ -1091,94 +977,174 @@ func TestPreviewComposeRendersRuntimeDatabaseURLIntoAPIServicesOnly(t *testing.T
 	}
 }
 
-// DB NETWORKS (2): the API services join the DB container's networks IN
-// ADDITION to appnet -- an app's postgres may live on a different network
-// than <app>_default -- and the extra networks are declared external with
-// their stable names. The gate's networks stay [shared, appnet], and the
-// appnet network itself is never duplicated.
-func TestPreviewComposeWiresTheAPIIntoTheDBNetworks(t *testing.T) {
+// NETWORKS: the API services join appnet AND the shared network, because
+// komizo's preview postgres lives on the shared network and docker DNS
+// answers a container name only to something attached to the same network.
+// Nothing of the app's is joined beyond <app>_default. The gate's networks
+// are unchanged, and no per-app database network is declared at all -- the
+// app's postgres is never inspected, so komizo cannot know or care what
+// networks it is on.
+func TestPreviewComposeWiresTheAPIIntoTheSharedNetworkOnly(t *testing.T) {
 	cfg := previewTestConfig(t)
 	rec := PreviewRecord{
 		V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
 		Images:    []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"},
 		RouteFile: "_preview-gdam-pr-12.caddy",
 	}
-	compose := previewCompose(rec, cfg.Knob, "edge", false, "gdam-db-1", []string{"gdam_database", "gdam_default"})
-	// gdam_default IS appnet -- discovered but already joined, so it is
-	// never duplicated; gdam_database is the extra, joined and declared.
+	compose := previewCompose(rec, cfg.Knob, "edge", false, PreviewDBContainer)
 	api := compose[strings.Index(compose, "  api:"):strings.Index(compose, "\nnetworks:")]
-	if !strings.Contains(api, "    networks:\n      - appnet\n      - gdam_database") {
-		t.Errorf("the api service does not join appnet + the DB's network:\n%s", api)
-	}
-	if strings.Contains(api, "gdam_default") {
-		t.Errorf("appnet's own network was duplicated onto the api service:\n%s", api)
-	}
-	if !strings.Contains(compose, "  gdam_database:\n    external: true\n    name: gdam_database\n") {
-		t.Errorf("the DB's network is not declared external with its stable name:\n%s", compose)
+	if !strings.Contains(api, "    networks:\n      - appnet\n      - shared") {
+		t.Errorf("the api service does not join appnet + shared:\n%s", api)
 	}
 	gate := compose[:strings.Index(compose, "  api:")]
 	if !strings.Contains(gate, "    networks:\n      - shared\n      - appnet\n") {
 		t.Errorf("the gate's networks changed:\n%s", gate)
 	}
-	if strings.Contains(gate, "gdam_database") {
-		t.Errorf("the gate joined the DB's network:\n%s", gate)
+	// Exactly two networks are declared: shared and appnet. A third would
+	// mean komizo went looking at the app's stack again.
+	if n := strings.Count(compose[strings.Index(compose, "\nnetworks:"):], "external: true"); n != 2 {
+		t.Errorf("%d external networks declared, want exactly shared + appnet:\n%s", n, compose)
 	}
 }
 
-// DISCOVERY (4), lifecycle: the DB container on a non-<app>_default network
-// is discovered, its networks are read by inspect, and the api service is
-// wired into them -- generic, nothing hardcoded to one app.
-func TestPreviewUpWiresTheAPIIntoTheDiscoveredDBNetworks(t *testing.T) {
-	f := &fakeDocker{
-		envAnswers: map[string]string{"gdam-db-1": "POSTGRES_USER=gdam_migrator\nPOSTGRES_DB=gdam\n"},
-		netAnswers: map[string]string{"gdam-db-1": "gdam_database\n"},
-	}
+// ISOLATION BETWEEN PREVIEWS: every preview on a host now shares one
+// server, so "its own database" has to be something postgres enforces
+// rather than something komizo is careful about. A new database grants
+// CONNECT to PUBLIC by default -- which here is every other preview's role
+// -- so up revokes it and grants it back to the owner alone.
+func TestPreviewUpRevokesPublicConnectOnItsDatabase(t *testing.T) {
+	f := &fakeDocker{}
 	cfg := previewTestConfig(t)
-	rec, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, previewNow)
+	rec, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12,
+		[]string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, previewNow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The discovery asked the container for its networks.
-	if got := f.matching("inspect", "gdam-db-1", "NetworkSettings.Networks"); len(got) != 1 {
-		t.Fatalf("the DB container's networks were not discovered by inspect: %v", f.calls)
-	}
-	compose, err := os.ReadFile(filepath.Join(previewDir(cfg.Root, "gdam-pr-12"), "compose.yml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{
-		"      RUNTIME_DATABASE_URL: postgres://gdam_pr_12:" + rec.DBPassword + "@gdam-db-1:5432/gdam_pr_12\n",
-		"    networks:\n      - appnet\n      - gdam_database\n",
-		"  gdam_database:\n    external: true\n    name: gdam_database\n",
-	} {
-		if !strings.Contains(string(compose), want) {
-			t.Errorf("the rendered compose is missing %q:\n%s", want, string(compose))
+	created, revoked := -1, -1
+	for i := range f.calls {
+		j := strings.Join(f.calls[i], " ") + "\x00" + f.stdins[i]
+		if strings.Contains(j, "CREATE DATABASE "+rec.DBName) {
+			created = i
+		}
+		if strings.Contains(j, "REVOKE CONNECT ON DATABASE "+rec.DBName+" FROM PUBLIC;") &&
+			strings.Contains(j, "GRANT CONNECT ON DATABASE "+rec.DBName+" TO "+rec.DBName+";") {
+			revoked = i
 		}
 	}
-	// (3), the lifecycle half: the DSN went nowhere but the compose file --
-	// no docker argv or stdin ever carried it.
-	dsn := "postgres://gdam_pr_12:" + rec.DBPassword + "@gdam-db-1:5432/gdam_pr_12"
-	for i, c := range f.calls {
-		if strings.Contains(strings.Join(c, " ")+"\x00"+f.stdins[i], dsn) {
-			t.Errorf("the DSN leaked into a docker call: %v (stdin %q)", c, f.stdins[i])
+	if revoked < 0 {
+		t.Fatalf("PUBLIC can still connect to this preview's database: %v", f.calls)
+	}
+	if created < 0 || revoked < created {
+		t.Errorf("the revoke must follow the create: create=%d revoke=%d", created, revoked)
+	}
+}
+
+// NON-INVASIVENESS, the whole point: a preview up never inspects, names or
+// connects to anything belonging to the app. The app's project is not
+// listed, its containers are not inspected, and every psql call goes to
+// komizo's own server.
+func TestPreviewUpNeverTouchesTheAppsOwnContainers(t *testing.T) {
+	f := &fakeDocker{}
+	cfg := previewTestConfig(t)
+	if _, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12,
+		[]string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, previewNow); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range f.calls {
+		joined := strings.Join(c, " ")
+		if c[0] == "ps" && strings.Contains(joined, "com.docker.compose.project=gdam") {
+			t.Errorf("up listed the app's own project: %v", c)
+		}
+		if c[0] == "inspect" && c[1] == "gdam-db-1" {
+			t.Errorf("up inspected the app's database container: %v", c)
+		}
+		if c[0] == "exec" && (c[2] == "psql" || c[2] == "pg_isready") && c[1] != PreviewDBContainer {
+			t.Errorf("a database call went somewhere other than komizo's server: %v", c)
 		}
 	}
 }
 
-// DISCOVERY, the parsing: names are read one per line, sorted, blanks
-// dropped; a container on no networks is an error, not a silent preview
-// whose API can never reach its database.
-func TestPreviewDBNetworksParsing(t *testing.T) {
-	f := &fakeDocker{netAnswers: map[string]string{"db": "zeta\n\nalpha\n"}}
-	nets, err := previewDBNetworks(context.Background(), f.run, "db")
+// A host whose komizo-previews server was never provisioned refuses with an
+// instruction, rather than failing somewhere inside psql.
+func TestPreviewUpRefusesWhenKomizosDatabaseServerIsMissing(t *testing.T) {
+	f := &fakeDocker{previewDBDown: true}
+	cfg := previewTestConfig(t)
+	_, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12,
+		[]string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, previewNow)
+	if err == nil {
+		t.Fatal("a missing preview database server was accepted")
+	}
+	if !strings.Contains(err.Error(), PreviewDBContainer) || !strings.Contains(err.Error(), "komizo init") {
+		t.Errorf("the refusal does not say what to do: %v", err)
+	}
+}
+
+// GATE-ONLY products -- ctcalc, tonesplit, castledrop, prizm: one static
+// container, no API, and therefore NO DATABASE AT ALL. No role, no
+// database, no credentials in the compose file, and nothing for teardown to
+// drop. This is the case the old design could not express: it refused with
+// "no postgres container is running in ctcalc's project".
+func TestPreviewUpCreatesNoDatabaseForAGateOnlyProduct(t *testing.T) {
+	f := &fakeDocker{}
+	cfg := previewTestConfig(t)
+	rec, err := PreviewUp(context.Background(), f.run, cfg, "ctcalc", 7,
+		[]string{"ghcr.io/you/gate:pr-7"}, previewNow)
+	if err != nil {
+		t.Fatalf("a gate-only preview was refused: %v", err)
+	}
+	if rec.DBName != "" || rec.DBPassword != "" {
+		t.Errorf("a gate-only preview was given a database: %+v", rec)
+	}
+	for _, c := range f.calls {
+		if c[0] == "exec" && len(c) > 2 && (c[2] == "psql" || c[2] == "pg_isready") {
+			t.Errorf("a gate-only preview talked to postgres: %v", c)
+		}
+	}
+	compose, err := os.ReadFile(filepath.Join(previewDir(cfg.Root, "ctcalc-pr-7"), "compose.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(nets) != 2 || nets[0] != "alpha" || nets[1] != "zeta" {
-		t.Errorf("networks = %v, want [alpha zeta]", nets)
+	for _, unwanted := range []string{"PGPASSWORD", "PGUSER", "DB_NAME", "RUNTIME_DATABASE_URL", "postgres://"} {
+		if strings.Contains(string(compose), unwanted) {
+			t.Errorf("a gate-only preview's compose mentions %s:\n%s", unwanted, string(compose))
+		}
 	}
-	empty := &fakeDocker{netAnswers: map[string]string{"db": "\n"}}
-	if _, err := previewDBNetworks(context.Background(), empty.run, "db"); err == nil {
-		t.Error("a container on no networks was accepted")
+	// Teardown has nothing to drop, and must not invent something.
+	f.calls = nil
+	if err := PreviewDown(context.Background(), f.run, cfg, rec); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range f.calls {
+		if c[0] == "exec" && len(c) > 2 && c[2] == "psql" {
+			t.Errorf("teardown dropped a database a gate-only preview never had: %v", c)
+		}
+	}
+}
+
+// Teardown drops the preview's role and database from KOMIZO'S server, and
+// names nothing of the app's.
+func TestPreviewDownDropsFromKomizosOwnServer(t *testing.T) {
+	f := &fakeDocker{}
+	cfg := previewTestConfig(t)
+	rec, err := PreviewUp(context.Background(), f.run, cfg, "gdam", 12,
+		[]string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, previewNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.calls = nil
+	if err := PreviewDown(context.Background(), f.run, cfg, rec); err != nil {
+		t.Fatal(err)
+	}
+	var dropped bool
+	for _, c := range f.calls {
+		if c[0] == "exec" && len(c) > 2 && c[2] == "psql" {
+			if c[1] != PreviewDBContainer {
+				t.Errorf("teardown dropped against %s, not komizo's server: %v", c[1], c)
+			}
+			dropped = true
+		}
+	}
+	if !dropped {
+		t.Error("teardown never dropped the preview database")
 	}
 }
