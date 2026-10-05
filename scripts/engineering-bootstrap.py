@@ -18,7 +18,7 @@ def verify(root, revision, source_sha256):
         if root.is_symlink() or manifest.is_symlink() or hashlib.sha256(manifest.read_bytes()).hexdigest() != source_sha256:
             return False
         source = json.loads(manifest.read_text())
-        if source['repository'] != 'https://github.com/nicodes/cicd' or source['revision'] != revision:
+        if source['repository'] not in ('https://github.com/nicodes/cicd', 'https://github.com/nicodes/tools') or source['revision'] != revision:
             return False
         if not isinstance(source.get('files'), dict) or not source['files']:
             return False
