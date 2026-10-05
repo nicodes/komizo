@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -669,5 +670,69 @@ func TestDeployFloorsSetButReportLacksAvailableRefuses(t *testing.T) {
 	}
 	if strings.Contains(out, "fetching config") {
 		t.Errorf("pulled config despite refuse:\n%s", out)
+	}
+}
+
+// Run the generated host command with token stdin, as the deployment action does.
+// The username guard admits the literal Actions bot, but authentication remains
+// required and shell syntax never becomes an accepted username.
+func TestDeployRegistryUserAndTokenBoundary(t *testing.T) {
+	for index, tc := range []struct {
+		user  string
+		valid bool
+	}{
+		{"github-actions[bot]", true},
+		{"release-user", true},
+		{"", false},
+		{"other[bot]", false},
+		{"github-actions[bot];id", false},
+		{"user name", false},
+		{"user\nname", false},
+		{"$(id)", false},
+	} {
+		t.Run(fmt.Sprint(index), func(t *testing.T) {
+			b := newDeployBox(t)
+			b.publishes(t, "services: {}\n", "example.test\n")
+			stub, err := os.ReadFile(filepath.Join(b.bin, "docker"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			write(t, filepath.Join(b.bin, "docker-base"), 0o755, string(stub))
+			login := filepath.Join(b.root, "login")
+			write(t, filepath.Join(b.bin, "docker"), 0o755, `#!/bin/sh
+if [ "$1" = login ]; then
+  [ "$2" = ghcr.io ] && [ "$3" = -u ] && [ "$4" = "$EXPECTED_USER" ] && [ "$5" = --password-stdin ] || exit 1
+  [ "$(cat)" = fixture-token ] || exit 1
+  printf '%s' "$DOCKER_CONFIG" > "$LOGIN_RECORD"
+  exit 0
+fi
+exec docker-base "$@"
+`)
+			script := filepath.Join(b.root, "deploy")
+			write(t, script, 0o755, b.script)
+			cmd := exec.Command("sh", script, "v1", "ghcr.io", tc.user)
+			cmd.Stdin = strings.NewReader("fixture-token\n")
+			cmd.Env = append(os.Environ(), "STUB_CONFIG="+b.config, "PATH="+b.bin+":/usr/bin:/bin", "EXPECTED_USER="+tc.user, "LOGIN_RECORD="+login)
+			out, err := cmd.CombinedOutput()
+			if tc.valid {
+				if err != nil {
+					t.Fatalf("valid registry user refused: %v\n%s", err, out)
+				}
+				dir := b.read(t, login)
+				if dir == "" {
+					t.Fatal("deploy skipped token authentication")
+				}
+				if _, err := os.Stat(dir); !os.IsNotExist(err) {
+					t.Fatal("registry credential directory survived deploy")
+				}
+			} else {
+				if err == nil || !strings.Contains(string(out), "refusing registry user") {
+					t.Fatalf("unsafe username accepted: %v\n%s", err, out)
+				}
+				if _, err := os.Stat(login); !os.IsNotExist(err) {
+					t.Fatal("invalid username reached registry authentication")
+				}
+			}
+		})
 	}
 }

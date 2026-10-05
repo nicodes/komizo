@@ -1096,7 +1096,10 @@ if [ -n "$registry" ]; then
 			exit 1
 			;;
 	esac
+	# GitHub's workflow actor is this literal bot after an automated merge.
+	# Other bracketed or shell-special usernames remain invalid.
 	case "$registry_user" in
+		'github-actions[bot]') ;;
 		''|*[!A-Za-z0-9._@-]*)
 			echo "deploy: refusing registry user '$registry_user'" >&2
 			exit 1
