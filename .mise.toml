@@ -1,5 +1,5 @@
 [tools]
-"http:cicd-engineering" = { version = "0.9.1", url = "https://github.com/nicodes/cicd/releases/download/v{{ version }}/cicd-engineering-v{{ version }}.tar.gz", checksum = "sha256:98fab8c33a93b2140f240eacf6bf29026f3aac4615979c627cde64b02a21a396" }
+"http:cicd-engineering" = { version = "0.9.2", url = "https://github.com/nicodes/tools/releases/download/v{{ version }}/cicd-engineering-v{{ version }}.tar.gz", checksum = "sha256:db69ec71ce395e9920ba30277fc17f5f3930d2bd0f8ca9e05454717ca84e1f84" }
 # Must be >= the `go` directive in go.mod, which is currently 1.26.
 #
 # CI used to read the version straight out of go.mod via setup-go, so there was
