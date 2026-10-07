@@ -114,6 +114,7 @@ func TestRevikPreviewComposeParsesWithPrivateNetworksAndScopedVolumes(t *testing
 		Services map[string]struct {
 			Networks    map[string]any
 			Ports       []any
+			Tmpfs       []string
 			Environment map[string]string
 		}
 		Volumes map[string]struct{ Name string }
@@ -125,6 +126,13 @@ func TestRevikPreviewComposeParsesWithPrivateNetworksAndScopedVolumes(t *testing
 		t.Fatal("expected six preview services")
 	}
 	for name, svc := range doc.Services {
+		wantTmpfs := []string{"/tmp:rw,noexec,nosuid,size=64m,mode=1777"}
+		if name == "postgres" {
+			wantTmpfs = []string{"/tmp:rw,nosuid,size=32m,mode=1777", "/var/run/postgresql:rw,nosuid,size=16m,mode=1777"}
+		}
+		if strings.Join(svc.Tmpfs, "\n") != strings.Join(wantTmpfs, "\n") {
+			t.Fatalf("%s has invalid temporary filesystem mounts: %v", name, svc.Tmpfs)
+		}
 		_, shared := svc.Networks["shared"]
 		if shared != (name == "gate") || (name != "gate" && len(svc.Ports) != 0) {
 			t.Fatalf("%s reaches shared network or publishes a port", name)
