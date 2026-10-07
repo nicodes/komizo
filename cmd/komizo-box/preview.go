@@ -79,7 +79,7 @@ func runPreview(args []string) error {
 		if err != nil {
 			return err
 		}
-		return json.NewEncoder(os.Stdout).Encode(rec)
+		return json.NewEncoder(os.Stdout).Encode(previewUpResponse(rec, knob))
 	case "down":
 		if *app == "" || *pr == 0 {
 			return fmt.Errorf("preview down needs --app and --pr")
@@ -150,4 +150,13 @@ func previewFind(root, app string, pr int) (box.PreviewRecord, error) {
 		}
 	}
 	return box.PreviewRecord{}, fmt.Errorf("%w: no preview of %s PR #%d exists", errNoSuchPreview, app, pr)
+}
+
+// Return the domain used by the privileged route writer. Deployment accounts
+// cannot read the private knob directory, and must not guess a different URL.
+func previewUpResponse(rec box.PreviewRecord, knob box.PreviewKnob) any {
+	return struct {
+		box.PreviewRecord
+		Domain string `json:"domain"`
+	}{rec, knob.DomainFor(rec.App)}
 }
