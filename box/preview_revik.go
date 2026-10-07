@@ -88,13 +88,13 @@ x-runtime: &runtime
   pids_limit: 128
   mem_limit: {{.MemLimit}}
   cpus: {{.CPULimit}}
-  tmpfs: [/tmp:rw,noexec,nosuid,size=64m,mode=1777]
+  tmpfs: ["/tmp:rw,noexec,nosuid,size=64m,mode=1777"]
 services:
   postgres:
     <<: *runtime
     image: {{index .Images 3}}
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
-    tmpfs: [/tmp:rw,nosuid,size=32m,mode=1777, /var/run/postgresql:rw,nosuid,size=16m,mode=1777]
+    tmpfs: ["/tmp:rw,nosuid,size=32m,mode=1777", "/var/run/postgresql:rw,nosuid,size=16m,mode=1777"]
     environment:
       POSTGRES_USER: postgres
       POSTGRES_DB: postgres
