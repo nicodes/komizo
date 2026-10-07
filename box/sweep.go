@@ -205,23 +205,20 @@ func joinNote(a, b string) string {
 // --- the docker wiring -------------------------------------------------------
 
 // parseImages reads `docker images --no-trunc --format` output, fields
-// tab-separated as ID, repository, tag, created-at, size-in-bytes.
+// tab-separated as ID, repository, tag and created-at. Docker images .Size
+// is human-readable; raw byte counts are obtained with image inspect below.
 func parseImages(out string) []SweepImage {
 	var images []SweepImage
 	for _, ln := range strings.Split(out, "\n") {
 		f := strings.Split(strings.TrimRight(ln, "\r"), "\t")
-		if len(f) < 5 || f[0] == "" {
+		if len(f) != 4 || f[0] == "" {
 			continue
 		}
 		created, err := time.Parse("2006-01-02 15:04:05 -0700 MST", f[3])
 		if err != nil {
 			continue
 		}
-		size, err := strconv.ParseInt(f[4], 10, 64)
-		if err != nil {
-			continue
-		}
-		images = append(images, SweepImage{ID: f[0], Repo: f[1], Tag: f[2], Created: created, SizeBytes: size})
+		images = append(images, SweepImage{ID: f[0], Repo: f[1], Tag: f[2], Created: created})
 	}
 	return images
 }
@@ -258,12 +255,12 @@ func stateImageNames(appsDir, srvDir string) []string {
 }
 
 // DockerSweep is the production path: one docker to ask, one to remove with.
-// It only ever invokes "images", "ps" and "image rm" -- the contract test
+// It only ever invokes "images", "ps", "image inspect" and "image rm" -- the contract test
 // pins the argv, because "never touches a volume" is a claim about exactly
 // this list.
 func DockerSweep(ctx context.Context, cfg SweepKnob, appsDir, srvDir string, now time.Time, run func(ctx context.Context, args ...string) (string, error)) SweepRecord {
 	out, err := run(ctx, "images", "--no-trunc", "--format",
-		"{{.ID}}\t{{.Repository}}\t{{.Tag}}\t{{.CreatedAt}}\t{{.Size}}")
+		"{{.ID}}\t{{.Repository}}\t{{.Tag}}\t{{.CreatedAt}}")
 	if err != nil {
 		return SweepRecord{V: 1, At: now, MinAgeDays: int(cfg.MinAge / (24 * time.Hour)), Note: "could not list images (kept everything): " + err.Error()}
 	}
@@ -271,7 +268,27 @@ func DockerSweep(ctx context.Context, cfg SweepKnob, appsDir, srvDir string, now
 	if err != nil {
 		return SweepRecord{V: 1, At: now, MinAgeDays: int(cfg.MinAge / (24 * time.Hour)), Note: "could not list containers (kept everything): " + err.Error()}
 	}
-	return Sweep(cfg, now, parseImages(out), parseRefs(refs), stateImageNames(appsDir, srvDir),
+	images := parseImages(out)
+	for i := range images {
+		img := &images[i]
+		if img.Tag != "" && img.Tag != "<none>" {
+			continue
+		}
+		// The images formatter rounds sizes with units. Inspect exposes the
+		// integer byte count; refuse the entire pass before any removal if it
+		// cannot be read. This is logical image size, not measured disk savings:
+		// layers can be shared with images we retain.
+		body, err := run(ctx, "image", "inspect", "--format", "{{.Size}}", img.ID)
+		if err != nil {
+			return SweepRecord{V: 1, At: now, MinAgeDays: int(cfg.MinAge / (24 * time.Hour)), Note: "could not inspect image size (kept everything): " + err.Error()}
+		}
+		size, err := strconv.ParseInt(strings.TrimSpace(body), 10, 64)
+		if err != nil || size < 0 {
+			return SweepRecord{V: 1, At: now, MinAgeDays: int(cfg.MinAge / (24 * time.Hour)), Note: "invalid image size (kept everything)"}
+		}
+		img.SizeBytes = size
+	}
+	return Sweep(cfg, now, images, parseRefs(refs), stateImageNames(appsDir, srvDir),
 		func(id string) error {
 			_, err := run(ctx, "image", "rm", id)
 			return err
