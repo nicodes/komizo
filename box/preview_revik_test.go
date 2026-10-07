@@ -3,6 +3,7 @@ package box
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -136,5 +137,24 @@ func TestRevikPreviewComposeParsesWithPrivateNetworksAndScopedVolumes(t *testing
 		doc.Services["api"].Environment["CLERK_SECRET_KEY"] != "sk_test_fixtureonly" ||
 		doc.Services["gate"].Environment["CLERK_SECRET_KEY"] != "" {
 		t.Fatal("preview secrets crossed service boundaries")
+	}
+}
+
+func TestRevikPreviewStartupFailureCleansOnlyItsProject(t *testing.T) {
+	cfg := previewTestConfig(t)
+	dir := previewDir(cfg.Root, PreviewProject("fieldsofrevik", 322))
+	os.MkdirAll(dir, 0750)
+	os.WriteFile(filepath.Join(dir, "stack.env"), []byte("CLERK_SECRET_KEY=sk_test_fixtureonly\nCLERK_ISSUER=https://fixture.clerk.accounts.dev\nCLERK_JWKS_URL=https://fixture.clerk.accounts.dev/.well-known/jwks.json\n"), 0600)
+	f := &fakeDocker{composeUpErr: fmt.Errorf("migration failed")}
+	if _, err := PreviewUp(context.Background(), f.run, cfg, "fieldsofrevik", 322, revikImages(), previewNow); err == nil {
+		t.Fatal("startup failure was ignored")
+	}
+	for _, args := range f.calls {
+		if strings.Contains(strings.Join(args, " "), PreviewDBContainer) {
+			t.Fatal("failure recovery touched shared preview database")
+		}
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatal("failed preview left state behind")
 	}
 }
