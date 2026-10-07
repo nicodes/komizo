@@ -510,6 +510,9 @@ func previewDBEnvLines(r PreviewRecord) string {
 }
 
 func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv bool, dbEndpoint string) string {
+	if r.App == "fieldsofrevik" {
+		return revikPreviewCompose(r, k, network)
+	}
 	var b strings.Builder
 	b.WriteString("# Written by komizo preview. Re-run `komizo preview up` to change it.\n")
 	if r.DBName != "" {
@@ -812,6 +815,14 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 			return zero, fmt.Errorf("image %q contains characters that are not valid in an image reference", image)
 		}
 	}
+	if app == "fieldsofrevik" {
+		if err := validateRevikPreviewImages(images); err != nil {
+			return zero, err
+		}
+		if err := validateRevikPreviewAuth(filepath.Join(previewDir(cfg.Root, PreviewProject(app, pr)), "stack.env")); err != nil {
+			return zero, err
+		}
+	}
 	floors, present, err := ParsePreviewFloors(cfg.FloorsBody)
 	if err != nil {
 		return zero, err
@@ -834,11 +845,17 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	// for a preview that will never connect is the invasiveness this whole
 	// change exists to remove. An empty DBName is also what tells teardown
 	// there is nothing to drop.
-	if len(images) > 1 {
+	if len(images) > 1 && app != "fieldsofrevik" {
 		rec.DBName = PreviewDBName(app, pr)
 		// The password is generated NOW, before the state file is written,
 		// so the record on disk carries it from the start -- a preview.env
 		// without it is a preview that cannot be taken down cleanly.
+		rec.DBPassword = previewNewPassword()
+	}
+	if app == "fieldsofrevik" {
+		// A private seed, never exposed to containers or JSON. The profile
+		// derives distinct role passwords; its database lives in its own
+		// Compose volume, so DBName stays empty and shared DB cleanup is skipped.
 		rec.DBPassword = previewNewPassword()
 	}
 
@@ -927,7 +944,7 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	_, stackEnvErr := os.Stat(filepath.Join(previewDir(cfg.Root, project), "stack.env"))
 	rollback := func(_, _, _ string, created bool) {
 		_, _ = run(ctx, "", "compose", "-p", project, "-f", composePath, "down", "-v")
-		if created {
+		if created && rec.DBName != "" {
 			_ = dropPreviewDB(ctx, run, PreviewDBContainer, PreviewDBSuperuser, PreviewDBMaintenance, rec.DBName)
 		}
 		_ = os.Remove(filepath.Join(cfg.RoutesDir, rec.RouteFile))
