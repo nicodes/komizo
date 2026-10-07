@@ -74,6 +74,7 @@ exit 0
 		"$PROJECT_MARKER", "komizo",
 		"$CI_USER", "komizo-blog",
 		"$DEPLOY_BIN", "/usr/local/bin/deploy-blog",
+		"$PRUNE_BIN", "/usr/local/bin/prune-blog",
 		"$SECRET_BIN", "/usr/local/bin/set-secret-blog",
 		"$TASK_BIN", "/usr/local/bin/task-blog",
 		// The adoption scan names every shape of rule komizo writes, so the

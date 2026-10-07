@@ -30,3 +30,9 @@ tar xzf komizo_Linux_x86_64.tar.gz
 ```
 
 Select the matching Darwin/Linux and arm64/x86_64 archive for another platform. Verify it before provisioning a host.
+
+### Image retention
+
+After updating an app with `komizo add --keep-key`, successful deployments record the current and previous revisions for image retention. The app's deploy account can run `doas /usr/local/bin/prune-<app> --dry-run` to review candidates, then the same command without `--dry-run` to remove superseded images. The command keeps current and rollback tags, their aliases, all container-referenced images and images outside the app's family. Missing or stale deployment records prevent cleanup. A same-version deployment preserves the earlier rollback record.
+
+Re-running `komizo init` installs nightly maintenance that invokes these same app commands after preview garbage collection. It does not run a global image prune. Deploy accounts require no Docker socket access.

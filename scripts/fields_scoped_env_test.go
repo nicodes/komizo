@@ -702,7 +702,7 @@ func TestRemoveKeepDataLeavesScopedSecrets(t *testing.T) {
 	}
 	text := string(body)
 	for _, want := range []string{
-		`rm -f "$DEPLOY_BIN" "$SECRET_BIN" "$TASK_BIN" "$SCOPED_BIN" "$PROVISION_BIN" "$STATUS_BIN"`,
+		`rm -f "$DEPLOY_BIN" "$PRUNE_BIN" "$SECRET_BIN" "$TASK_BIN" "$SCOPED_BIN" "$PROVISION_BIN" "$STATUS_BIN"`,
 		"KEEP_DATA leaves $APP_DIR, including secrets/",
 		"KEEP_DATA does not keep the binaries",
 	} {
