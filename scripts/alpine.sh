@@ -663,7 +663,8 @@ mv -f "$STATE_TMP" "$STATE_FILE"
 exec 7>&-
 
 # --- 3. Deploy path --------------------------------------------------------
-# The only privileged thing the CI user may do, besides setting a secret.
+# An app-bound privileged command. Secret, image-retention and configured
+# optional task/preview commands are installed below.
 #
 # It takes one argument, the image tag to deploy. doas "cmd" without an "args"
 # clause permits ANY arguments, so the script validates the tag itself rather
@@ -2657,6 +2658,7 @@ cat <<EOF
   app dir:  $APP_DIR (root-owned)
   keys:     $KEYS_FILE (root-owned -- the account cannot add its own)
   deploy:   doas $DEPLOY_BIN
+  prune:    doas $PRUNE_BIN [--dry-run]
   secrets:  doas $SECRET_BIN <NAME>  (value on stdin)
   scoped:   ${SCOPED_HINT:-}
   config:   $CONFIG_IMAGE
@@ -2672,13 +2674,15 @@ EOF
 
 cat <<EOF
 
-NOTE on what this contains. As root, via doas, '$CI_USER' can do exactly two
-things: deploy a tag that already exists in your registry, and set a secret it
-cannot read back. It also gets an ordinary, unprivileged SSH shell session as
-itself -- deliberately, so a workflow can run a migration or a backup -- but it
-cannot run docker, write anything under $APP_DIR, or introduce new code:
-compose.yml arrives as a registry layer that root extracts, so changing the
-shape of the stack requires push access to the registry.
+The privileged commands above are scoped to this app. Image retention reads
+trusted deployment state and keeps current and rollback images; --dry-run shows
+candidates. Secret access depends on the app's configured profile. Optional
+reviewed task and preview commands may also be installed.
+
+The account also has an ordinary, unprivileged SSH shell session as itself, so
+a workflow can run a migration or a backup. It cannot access Docker directly,
+write under $APP_DIR, or change these root-owned commands. compose.yml arrives
+as a registry layer that root extracts; changing it requires registry push.
 ${SCOPED_NOTE:-}
 
 That is the real boundary: REGISTRY PUSH is root-equivalent on this box, the
