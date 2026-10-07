@@ -18,6 +18,7 @@ jobs:
     steps:
       - name: Read Dependabot metadata
         id: metadata
+        timeout-minutes: 3
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -26,6 +27,7 @@ jobs:
         if: >-
           steps.metadata.outputs.update-type == 'version-update:semver-minor' ||
           steps.metadata.outputs.update-type == 'version-update:semver-patch'
+        timeout-minutes: 3
         run: gh pr merge --auto --squash "$PR_URL"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
