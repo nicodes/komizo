@@ -5,72 +5,37 @@ import (
 	"testing"
 )
 
-// Reclaiming images no container is using.
-//
-// Nothing ever removed the image a deploy replaced. Every deploy and every
-// preview pulls one tagged by commit, so two boxes reached 162 and 172
-// images with 15 and 8 in use -- gdam alone holding fourteen copies of the
-// same 157MB gate image from a single day. The capacity floor refused a
-// preview before the disk filled, which is the only reason it surfaced as a
-// failed preview rather than an outage.
-//
-// The app script says why it is not the place for this ("Disk is a SERVER
-// concern. It belongs wherever server-wide upkeep ends up living") and this
-// is that place.
-
-func TestPruneIsServerLevelNotPerApp(t *testing.T) {
-	// A machine-wide prune must not be reachable from the per-app path: that
-	// one runs under a deploy key, and one app's deploy has no business
-	// reaching across every other app on the box.
-	//
-	// CODE only. alpine.sh discusses `docker image prune` at length in a
-	// comment explaining why it does not run one, and the first version of
-	// this test matched that comment and failed on prose.
-	for _, line := range strings.Split(AlpineScript, "\n") {
-		if strings.HasPrefix(strings.TrimLeft(line, " \t"), "#") {
-			continue
+// Tagged images accumulate after deploys and previews. Reclamation is
+// scheduled by the host but implemented by each app's fixed root-owned
+// command. A global prune would discard unreferenced rollback tags.
+func TestNeitherInstallerRunsGlobalImagePrune(t *testing.T) {
+	for name, body := range map[string]string{"app": AlpineScript, "host": AlpineInitScript} {
+		for _, line := range strings.Split(body, "\n") {
+			if strings.HasPrefix(strings.TrimLeft(line, " \t"), "#") {
+				continue
+			}
+			for _, forbidden := range []string{"docker image prune", "docker system prune", "docker volume prune", "docker image rm -f"} {
+				if strings.Contains(line, forbidden) {
+					t.Errorf("%s installer contains broad cleanup %q: %s", name, forbidden, line)
+				}
+			}
 		}
-		if strings.Contains(line, "image prune") {
-			t.Errorf("the per-app script runs a machine-wide image prune, which a "+
-				"deploy key can invoke: %s", strings.TrimSpace(line))
-		}
-	}
-	if !strings.Contains(AlpineInitScript, "docker image prune -af") {
-		t.Error("the server script does not reclaim images")
 	}
 }
 
-// -af, not -f. A bare `docker image prune` collects only DANGLING images,
-// and a komizo deploy leaves none: every image it replaces is still tagged
-// by its commit. The per-app script's own comment makes exactly this point.
-func TestPruneCollectsTaggedImagesNotJustDangling(t *testing.T) {
-	line := ""
-	for _, l := range strings.Split(AlpineInitScript, "\n") {
-		if strings.Contains(l, "docker image prune") {
-			line = l
+func TestHostDispatchesOnlyInstalledScopedPruners(t *testing.T) {
+	job := reclaimJob(t)
+	for _, required := range []string{
+		"for prune in /usr/local/bin/prune-*; do",
+		`[ -f "$prune" ] && [ ! -L "$prune" ] && [ -x "$prune" ]`,
+		`if out="$("$prune" 2>&1)"; then`,
+		"no app-scoped image retention commands installed",
+	} {
+		if !strings.Contains(job, required) {
+			t.Errorf("nightly job missing %s", required)
 		}
 	}
-	if line == "" {
-		t.Fatal("no prune line found")
-	}
-	if !strings.Contains(line, "-af") {
-		t.Errorf("prune must be -af; a bare prune collects only dangling images "+
-			"and komizo leaves none: %s", line)
-	}
-	// No `until=` filter: the rule is "referenced by a container", not an age.
-	// An age window keeps whatever happens to be recent, which is neither the
-	// thing that is needed nor the thing that is safe.
-	if strings.Contains(line, "until=") {
-		t.Errorf("prune should keep what containers reference, not what is recent: %s", line)
-	}
 }
-
-// The assumption underneath all of this -- that an image referenced by a
-// STOPPED container survives `docker image prune -af`, so an app somebody
-// stopped keeps the image it will start again with -- is Docker's documented
-// behaviour, and was verified by hand against a real daemon before this
-// landed. It is not re-tested here: doing so costs two minutes of CI to
-// assert something Docker guarantees, and a test that slow gets skipped.
 
 // Once is not a schedule.
 //
@@ -99,18 +64,8 @@ func TestReclaimIsScheduledNotJustRunOnce(t *testing.T) {
 // The scheduled job and the init-time run must be the same script. Two copies
 // of a prune drift, and the one that drifts is the one nobody watches.
 func TestInitRunsTheSameScriptItInstalls(t *testing.T) {
-	prunes := 0
-	for _, l := range strings.Split(AlpineInitScript, "\n") {
-		if strings.HasPrefix(strings.TrimLeft(l, " \t"), "#") {
-			continue
-		}
-		if strings.Contains(l, "docker image prune") {
-			prunes++
-		}
-	}
-	if prunes != 1 {
-		t.Errorf("found %d prune invocations in the init script; there must be exactly "+
-			"one definition, invoked by both the daily job and init", prunes)
+	if strings.Count(AlpineInitScript, `if out="$("$prune" 2>&1)"; then`) != 1 {
+		t.Error("app retention dispatch must have exactly one definition")
 	}
 	if !strings.Contains(AlpineInitScript, `"$RECLAIM_BIN"`) {
 		t.Error("init does not invoke the reclaim script it installed")
@@ -126,8 +81,8 @@ func TestReclaimJobNeverFails(t *testing.T) {
 		t.Error("the reclaim job uses set -e; an unattended nightly job must not " +
 			"fail on a transient docker hiccup")
 	}
-	if !strings.Contains(job, "docker image prune -af >/dev/null 2>&1 || true") {
-		t.Error("the reclaim job's prune is not guarded with || true")
+	if !strings.Contains(job, `if out="$("$prune" 2>&1)"; then`) || !strings.Contains(job, `: failed: $(printf`) {
+		t.Error("the nightly job must log scoped prune failures and continue")
 	}
 	if !strings.HasSuffix(strings.TrimSpace(job), "exit 0") {
 		t.Error("the reclaim job does not end in an explicit exit 0")
@@ -178,7 +133,7 @@ func TestPreviewGCRunsDailyBeforeThePrune(t *testing.T) {
 		t.Fatal("the daily job does not reap previews; abandoned stacks hold their " +
 			"images against the prune forever")
 	}
-	prune := strings.Index(job, "docker image prune")
+	prune := strings.Index(job, "for prune in /usr/local/bin/prune-*")
 	if prune < 0 {
 		t.Fatal("no prune in the daily job")
 	}
