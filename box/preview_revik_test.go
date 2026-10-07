@@ -166,3 +166,79 @@ func TestRevikPreviewStartupFailureCleansOnlyItsProject(t *testing.T) {
 		t.Fatal("failed preview left state behind")
 	}
 }
+
+func TestRevikPreviewRebuildPreservesPrivateDatabaseCredentials(t *testing.T) {
+	cfg := previewTestConfig(t)
+	up := func(pr int, images []string, f *fakeDocker) PreviewRecord {
+		dir := previewDir(cfg.Root, PreviewProject("fieldsofrevik", pr))
+		if err := os.MkdirAll(dir, 0750); err != nil {
+			t.Fatal(err)
+		}
+		auth := "CLERK_SECRET_KEY=sk_test_fixtureonly\nCLERK_ISSUER=https://fixture.clerk.accounts.dev\nCLERK_JWKS_URL=https://fixture.clerk.accounts.dev/.well-known/jwks.json\n"
+		if err := os.WriteFile(filepath.Join(dir, "stack.env"), []byte(auth), 0600); err != nil {
+			t.Fatal(err)
+		}
+		r, err := PreviewUp(context.Background(), f.run, cfg, "fieldsofrevik", pr, images, previewNow)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	first := up(321, revikImages(), &fakeDocker{previewDBDown: true})
+	nextImages := revikImages()
+	for i := range nextImages {
+		nextImages[i] = strings.ReplaceAll(nextImages[i], strings.Repeat("a", 40), strings.Repeat("b", 40))
+	}
+	f := &fakeDocker{previewDBDown: true}
+	rebuilt := up(321, nextImages, f)
+	if rebuilt.DBPassword != first.DBPassword || rebuilt.GatePort != first.GatePort || strings.Join(rebuilt.Images, ",") != strings.Join(nextImages, ",") {
+		t.Fatal("rebuild rotated credentials, changed its port, or kept the prior release")
+	}
+	for _, args := range f.calls {
+		call := strings.Join(args, " ")
+		if strings.Contains(call, " down") || strings.Contains(call, "psql") || strings.Contains(call, PreviewDBContainer) {
+			t.Fatal("rebuild reset or reached another database")
+		}
+	}
+	another := up(322, revikImages(), &fakeDocker{previewDBDown: true})
+	if another.DBPassword == first.DBPassword {
+		t.Fatal("another PR reused the private credential seed")
+	}
+	public, err := json.Marshal(rebuilt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(public), first.DBPassword) {
+		t.Fatal("rebuild disclosed the seed")
+	}
+}
+
+func TestRevikPreviewRefusesCorruptExistingSeedBeforeMutation(t *testing.T) {
+	for _, seed := range []string{"", "invalid", strings.Repeat("a", 23), strings.Repeat("a", 25)} {
+		cfg := previewTestConfig(t)
+		rec := PreviewRecord{V: 1, App: "fieldsofrevik", PR: 321, Project: "fieldsofrevik-pr-321", GatePort: 20001, DBPassword: seed, Images: revikImages(), CreatedAt: previewNow, LastUsed: previewNow}
+		if err := writePreviewRecord(cfg.Root, rec); err != nil {
+			t.Fatal(err)
+		}
+		dir := previewDir(cfg.Root, rec.Project)
+		auth := "CLERK_SECRET_KEY=sk_test_fixtureonly\nCLERK_ISSUER=https://fixture.clerk.accounts.dev\nCLERK_JWKS_URL=https://fixture.clerk.accounts.dev/.well-known/jwks.json\n"
+		if err := os.WriteFile(filepath.Join(dir, "stack.env"), []byte(auth), 0600); err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.ReadFile(filepath.Join(dir, "preview.env"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f := &fakeDocker{previewDBDown: true}
+		if _, err := PreviewUp(context.Background(), f.run, cfg, "fieldsofrevik", 321, revikImages(), previewNow); err == nil {
+			t.Fatal("corrupt seed was accepted")
+		}
+		after, err := os.ReadFile(filepath.Join(dir, "preview.env"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(f.calls) != 0 || string(before) != string(after) {
+			t.Fatal("corrupt seed caused mutation")
+		}
+	}
+}
