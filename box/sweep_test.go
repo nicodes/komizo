@@ -96,7 +96,7 @@ func TestTheSweepNeverRemovesWhatAContainerReferences(t *testing.T) {
 }
 
 // A VOLUME is never swept because nothing in the sweep can address one: the
-// production path's argv is pinned to images, ps and image rm. This is the
+// production path's argv is pinned to images, ps, image inspect and image rm. This is the
 // test that would catch a "while you're in there, prune the volumes too".
 func TestTheSweepNeverNamesAVolume(t *testing.T) {
 	var argv [][]string
@@ -104,8 +104,13 @@ func TestTheSweepNeverNamesAVolume(t *testing.T) {
 		argv = append(argv, args)
 		switch args[0] {
 		case "images":
-			return "sha256:dangling\t<none>\t<none>\t" + sweepDays(30).Format("2006-01-02 15:04:05 -0700 MST") + "\t1000\n", nil
+			return "sha256:dangling\t<none>\t<none>\t" + sweepDays(30).Format("2006-01-02 15:04:05 -0700 MST") + "\n", nil
 		case "ps":
+			return "", nil
+		case "image":
+			if args[1] == "inspect" {
+				return "1000\n", nil
+			}
 			return "", nil
 		default:
 			return "", nil
@@ -248,13 +253,63 @@ func TestStateImageNamesReadsTheRecords(t *testing.T) {
 
 // The listing parsers, against docker's own shapes.
 func TestTheSweepParsers(t *testing.T) {
-	images := parseImages("sha256:aaa\t<none>\t<none>\t2026-09-01 12:00:00 +0000 UTC\t1000\n" +
-		"sha256:bbb\tghcr.io/you/blog\tv1\t2026-09-20 12:00:00 +0000 UTC\t2000\n")
-	if len(images) != 2 || images[0].Repo != "<none>" || images[1].Tag != "v1" || images[1].SizeBytes != 2000 {
+	images := parseImages("sha256:aaa\t<none>\t<none>\t2026-09-01 12:00:00 +0000 UTC\n" +
+		"sha256:bbb\tghcr.io/you/blog\tv1\t2026-09-20 12:00:00 +0000 UTC\n")
+	if len(images) != 2 || images[0].Repo != "<none>" || images[1].Tag != "v1" || images[1].SizeBytes != 0 {
 		t.Errorf("parseImages = %+v", images)
 	}
 	refs := parseRefs("sha256:aaa\nghcr.io/you/blog:v1\n\n")
 	if !refs["sha256:aaa"] || !refs["ghcr.io/you/blog:v1"] || len(refs) != 2 {
 		t.Errorf("parseRefs = %+v", refs)
+	}
+}
+
+// Production listing must not ask the human-readable .Size formatter to behave
+// like an integer. Failures obtaining exact metadata keep every image.
+func TestDockerSweepReadsRawSizesAndFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		size    string
+		err     error
+		removed int
+	}{
+		{"raw bytes", "176000000\n", nil, 1},
+		{"human units refused", "176MB", nil, 0},
+		{"negative refused", "-1", nil, 0},
+		{"overflow refused", "9223372036854775808", nil, 0},
+		{"inspect unavailable", "", fmt.Errorf("daemon unavailable"), 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			removes := 0
+			run := func(_ context.Context, args ...string) (string, error) {
+				switch {
+				case args[0] == "images":
+					if strings.Contains(args[len(args)-1], ".Size") {
+						t.Fatal("listing still relies on rounded human sizes")
+					}
+					return "sha256:dangling\t<none>\t<none>\t" + sweepDays(30).Format("2006-01-02 15:04:05 -0700 MST") + "\n", nil
+				case args[0] == "ps":
+					return "", nil
+				case args[0] == "image" && args[1] == "inspect":
+					return tc.size, tc.err
+				case args[0] == "image" && args[1] == "rm":
+					removes++
+					return "", nil
+				default:
+					t.Fatalf("unexpected docker invocation: %v", args)
+					return "", nil
+				}
+			}
+			rec := DockerSweep(context.Background(), sweepCfg(), t.TempDir(), t.TempDir(), sweepNow, run)
+			if removes != tc.removed || rec.Removed != tc.removed {
+				t.Fatalf("removed %d, record %+v", removes, rec)
+			}
+			if tc.removed == 1 && rec.ReclaimedBytes != 176000000 {
+				t.Fatalf("raw logical byte count lost: %+v", rec)
+			}
+			if tc.removed == 0 && !strings.Contains(rec.Note, "kept everything") {
+				t.Fatalf("failure was not recorded: %+v", rec)
+			}
+		})
 	}
 }
