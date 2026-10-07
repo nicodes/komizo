@@ -79,6 +79,7 @@ case "$CI_USER" in
 	root) echo "error: CI_USER must not be root -- the deploy account is a separate, unprivileged user" >&2; exit 1 ;;
 esac
 DEPLOY_BIN="/usr/local/bin/deploy-$APP_NAME"
+PRUNE_BIN="/usr/local/bin/prune-$APP_NAME"
 SECRET_BIN="/usr/local/bin/set-secret-$APP_NAME"
 TASK_BIN="/usr/local/bin/task-$APP_NAME"
 PROVISION_BIN="/usr/local/bin/provision-scoped-env-$APP_NAME"
@@ -1775,6 +1776,23 @@ fi
 # old ones because nothing has recreated them yet. The `started=no` lines above
 # are what say so in words.
 docker compose ps --format 'table {{.Service}}\t{{.Image}}\t{{.Status}}'
+# Record only a completed deployment, under the shared app lock. Repeating
+# the same revision retains the earlier rollback record. An upgraded host
+# without a record cannot infer a rollback tag from a same-version redeploy.
+# --- retention record begin ---
+komizo_record_image_retention() {
+	[ "$previous" != "$version" ] || return 0
+	case "$previous" in *[!A-Za-z0-9._-]*) return 1 ;; esac
+	[ ! -L .komizo-image-retention ] || return 1
+	umask 077
+	printf 'CURRENT=%s\nPREVIOUS=%s\n' "$version" "$previous" > .komizo-image-retention.tmp || return 1
+	chmod 600 .komizo-image-retention.tmp || return 1
+	mv -f .komizo-image-retention.tmp .komizo-image-retention || return 1
+}
+# --- retention record end ---
+if ! komizo_record_image_retention; then
+	echo "deploy: WARNING -- could not record image retention; pruning remains unavailable" >&2
+fi
 KOMIZO_DEPLOY_EOF
 
 # The install-time values. Every one is charset-checked above, and none of
@@ -1796,6 +1814,103 @@ fi
 mv "$DEPLOY_BIN.tmp" "$DEPLOY_BIN"
 chown root:root "$DEPLOY_BIN"
 chmod 755 "$DEPLOY_BIN"
+
+# --- 3a1. App image retention ----------------------------------------------
+# App accounts receive this fixed command, never Docker socket access. The
+# caller cannot choose a family or tags; the deploy wrapper writes that state.
+log "Installing $PRUNE_BIN"
+cat > "$PRUNE_BIN.tmp" <<'KOMIZO_PRUNE_EOF'
+#!/bin/sh
+# Written by komizo. Only this app's trusted deployment record selects tags.
+set -eu
+set -f
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+unset DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG
+APP_DIR="__APP_DIR__"
+CONFIG_IMAGE="__CONFIG_IMAGE__"
+refuse() { echo "prune: refusing: $*" >&2; exit 1; }
+dry_run=0
+case $# in
+	0) ;;
+	1) [ "$1" = --dry-run ] || refuse "only --dry-run is accepted"; dry_run=1 ;;
+	*) refuse "unexpected arguments" ;;
+esac
+case "$CONFIG_IMAGE" in
+	*/?*-config) prefix=${CONFIG_IMAGE%config} ;;
+	*) refuse "config repository does not identify an app image family" ;;
+esac
+# Deploy and prune serialize on the same app lock. Unlike deployment, pruning
+# cannot proceed if locking is unavailable: retaining images is safe.
+command -v flock >/dev/null 2>&1 || refuse "app locking unavailable"
+mkdir -p /run/komizo
+exec 9>"/run/komizo/deploy-__APP_NAME__.lock"
+flock -w 300 9 || refuse "app lock busy"
+cd "$APP_DIR"
+record=.komizo-image-retention
+[ ! -L "$record" ] && [ -f "$record" ] || refuse "trusted deployment record unavailable"
+[ "$(wc -l < "$record" | tr -d ' ')" = 2 ] || refuse "malformed deployment record"
+[ "$(grep -c '^CURRENT=' "$record")" = 1 ] || refuse "malformed current record"
+[ "$(grep -c '^PREVIOUS=' "$record")" = 1 ] || refuse "malformed rollback record"
+current=$(sed -n 's/^CURRENT=//p' "$record")
+previous=$(sed -n 's/^PREVIOUS=//p' "$record")
+case "$current" in ''|*[!A-Za-z0-9._-]*) refuse "invalid current tag" ;; esac
+case "$previous" in *[!A-Za-z0-9._-]*) refuse "invalid rollback tag" ;; esac
+[ ! -L .env ] && [ -f .env ] || refuse "deployment identity unavailable"
+live=$(sed -n 's/^APP_VERSION=//p' .env)
+[ "$live" = "$current" ] || refuse "deployment identity differs from retention record"
+# Resolve every running/stopped container to its immutable image ID. No
+# removal is attempted if any reference cannot be established.
+containers=$(docker ps -aq) || refuse "cannot list containers"
+used_ids=$(
+	for cid in $containers; do
+		docker inspect --format '{{.Image}}' "$cid" || exit 1
+	done
+) || refuse "cannot inspect containers"
+images=$(docker images --no-trunc --format '{{.Repository}} {{.Tag}} {{.ID}}') || refuse "cannot list images"
+removed=0
+candidates=0
+failed=0
+while IFS=' ' read -r repo tag id; do
+	case "$repo" in "$prefix"*) ;; *) continue ;; esac
+	case "$tag" in ''|'<none>') continue ;; esac
+	[ "$tag" = "$current" ] && continue
+	[ -n "$previous" ] && [ "$tag" = "$previous" ] && continue
+	# IDs of current/rollback tags can also have aliases; keep all such IDs.
+	if printf '%s\n' "$images" | awk -v image="$id" -v family="$prefix" -v current="$current" -v previous="$previous" '
+		index($1, family) == 1 && $3 == image && ($2 == current || (previous != "" && $2 == previous)) { found=1 }
+		END { exit !found }
+	'; then
+		continue
+	fi
+	if printf '%s\n' "$used_ids" | grep -qxF "$id"; then continue; fi
+	candidates=$((candidates + 1))
+	if [ "$dry_run" = 1 ]; then
+		echo "prune: would remove $repo:$tag"
+	elif docker image rm "$repo:$tag" >/dev/null 2>&1; then
+		removed=$((removed + 1))
+		echo "prune: removed $repo:$tag"
+	else
+		failed=$((failed + 1))
+		echo "prune: removal refused; kept $repo:$tag" >&2
+	fi
+done <<IMAGES
+$images
+IMAGES
+echo "prune: family=$prefix current=$current previous=$previous dry-run=$dry_run candidates=$candidates removed=$removed failed=$failed"
+[ "$failed" = 0 ]
+KOMIZO_PRUNE_EOF
+sed -i \
+	-e "s|__APP_NAME__|$APP_NAME|g" \
+	-e "s|__APP_DIR__|$APP_DIR|g" \
+	-e "s|__CONFIG_IMAGE__|$CONFIG_IMAGE|g" "$PRUNE_BIN.tmp"
+if grep -q '__[A-Z_][A-Z_]*__' "$PRUNE_BIN.tmp"; then
+	rm -f "$PRUNE_BIN.tmp"
+	die "the generated prune script still has placeholders"
+fi
+mv "$PRUNE_BIN.tmp" "$PRUNE_BIN"
+chown root:root "$PRUNE_BIN"
+chmod 755 "$PRUNE_BIN"
 
 # --- 3a2. Preview path -----------------------------------------------------
 # Two root-owned helpers, installed for apps that have previews and reachable
@@ -2180,7 +2295,7 @@ adopted_file="/tmp/.komizo-adopted.$$"
 # it, so a stale grant naming it must be dropped by this scan and not carried
 # out into the adopted section, which would resurrect a privilege the rest of
 # this script exists to remove.
-recognised="$DEPLOY_BIN $SECRET_BIN $STATUS_BIN $TASK_BIN $SCOPED_BIN $PROVISION_BIN"
+recognised="$DEPLOY_BIN $PRUNE_BIN $SECRET_BIN $STATUS_BIN $TASK_BIN $SCOPED_BIN $PROVISION_BIN"
 # The preview helpers are komizo's own as of this change. Without them
 # here, the first update after it would "adopt" the very rules it had
 # just written and carry them out of the block.
@@ -2229,6 +2344,7 @@ rm -f "$adopted_file"
 cat >> /etc/doas.conf <<-EOF
 	# komizo: $CI_USER BEGIN
 	permit nopass $CI_USER as root cmd $DEPLOY_BIN
+	permit nopass $CI_USER as root cmd $PRUNE_BIN
 EOF
 if [ "$SCOPED_ENV" = "fields-postgres-v2" ]; then
 	# Status only. Provision is mode 0700 and is not in doas. set-secret is

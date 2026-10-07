@@ -122,38 +122,13 @@ EOF
 chmod 755 /etc/local.d/komizo-firewall.start
 rc-update add local default >/dev/null 2>&1 || true
 
-# --- Reclaim images no container is using --------------------------------
-#
-# Every deploy and every preview pulls an image tagged by commit, and nothing
-# had ever removed the one it replaced. Two boxes reached 92% and 84%
-# reclaimable: 162 and 172 images, of which 15 and 8 were in use. gdam alone
-# held fourteen copies of the same 157MB gate image, all from one day.
-#
-# The deploy script explains at length why it is not the place for this -- a
-# machine-wide prune does not belong in a per-app path a deploy key can
-# invoke -- and ends "Disk is a SERVER concern. It belongs wherever
-# server-wide upkeep ends up living." This is that place: server-level,
-# operator-run, and reachable by nobody's deploy key.
-#
-# KEEP WHAT A CONTAINER REFERENCES, DROP THE REST. Not "the last few
-# versions": a rollback never needs a local image. revert() in the app script
-# restores config files and deliberately restarts nothing, so the previous
-# containers are still up and still hold their images; going back to an older
-# release is an ordinary deploy of that tag, which pulls it. The worst a
-# too-eager prune can cost is one pull, and ghcr is the source of truth.
-#
-# Stopped containers count as references, so an app somebody has stopped keeps
-# the image it will start again with.
-#
-# ON A SCHEDULE, not once. The first version of this ran here and only here,
-# which meant it ran the day the box was built and never again -- and the
-# thing it defends against is accumulation over weeks. A box drifted to 92%
-# full, crossed the capacity floor the deploy script enforces, and then every
-# app on it refused to deploy with no way to recover but an operator at an SSH
-# prompt. A floor with nothing keeping the box above it converts a slow
-# problem into a hard stop. So the reclaim is installed as a daily job and
-# then invoked once, here: same script both times, so the scheduled run and
-# the init run can never drift apart.
+# --- Scheduled app image retention ----------------------------------------
+# Superseded commit-tagged images accumulate after deployments and previews.
+# Each installed app pruner keeps its trusted current and rollback revisions,
+# every container reference, all dangling images and other app families.
+# A host-wide image prune would defeat those guarantees. Missing or stale
+# app records therefore retain images; the rootd sweep separately handles old
+# dangling layers. The same reviewed maintenance script runs nightly and here.
 # --- komizo's own preview database server -------------------------------------
 #
 # ONE postgres per host, owned by komizo, for the per-PR databases previews
@@ -250,9 +225,8 @@ cat > "$RECLAIM_BIN.tmp" <<'KOMIZO_RECLAIM_EOF'
 #!/bin/sh
 # /etc/periodic/daily/komizo-reclaim - installed by `komizo init`.
 #
-# Removes Docker images no container references. See the long explanation in
-# alpine-init.sh for why this is server-level and why "referenced by a
-# container" is the right rule rather than an age window.
+# Runs app-scoped retention after preview GC. No host-wide image prune:
+# unreferenced current and rollback images must remain available locally.
 #
 # Never fails: this runs unattended out of crond, and a non-zero exit from a
 # periodic job is noise an operator cannot act on. A prune that could not run
@@ -268,7 +242,7 @@ if ! docker info >/dev/null 2>&1; then
 	exit 0
 fi
 
-# PREVIEWS FIRST, images second, and the order is the point. A preview whose
+# PREVIEWS FIRST, app retention second. A preview whose
 # PR was closed is torn down by CI, which stops its containers and so makes
 # its image collectable by the prune below -- but only if the teardown
 # actually happened. `preview gc` is the backstop for the ones where it did
@@ -288,9 +262,19 @@ if [ -x /usr/local/bin/komizo-box ]; then
 	fi
 fi
 
-before="$(docker system df --format '{{.Reclaimable}}' 2>/dev/null | head -1)"
-docker image prune -af >/dev/null 2>&1 || true
-note "reclaimed; was ${before:-unknown} reclaimable, now $(df -h / | awk 'NR==2 {print $4}') free on $(df -h / | awk 'NR==2 {print $6}')"
+found=0
+for prune in /usr/local/bin/prune-*; do
+	[ -f "$prune" ] && [ ! -L "$prune" ] && [ -x "$prune" ] || continue
+	found=$((found + 1))
+	if out="$("$prune" 2>&1)"; then
+		note "$(basename "$prune"): $(printf '%s' "$out" | tr '\n' ' ')"
+	else
+		note "$(basename "$prune"): failed: $(printf '%s' "$out" | tr '\n' ' ')"
+	fi
+done
+if [ "$found" = 0 ]; then
+	note "skipped: no app-scoped image retention commands installed"
+fi
 
 # One line a day, so a year of history is a year of lines. Trimmed rather
 # than rotated: logrotate is one more thing to install and get wrong for a
@@ -314,7 +298,7 @@ if ! rc-service crond status >/dev/null 2>&1; then
 	printf '    WARNING: crond is not running; the daily reclaim will not fire\n' >&2
 fi
 
-log "Reclaiming images no container is using"
+log "Running app-scoped image retention"
 "$RECLAIM_BIN"
 printf '    %s\n' "$(tail -n 1 /var/log/komizo-reclaim.log 2>/dev/null || echo 'no reclaim recorded')"
 printf '    next run: nightly via %s\n' "$RECLAIM_BIN"
