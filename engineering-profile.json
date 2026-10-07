@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "profile": "go-cli",
+  "commands": {
+    "install": [
+      "make",
+      "install"
+    ],
+    "lint": [
+      "make",
+      "lint"
+    ],
+    "test": [
+      "make",
+      "test"
+    ],
+    "build": [
+      "make",
+      "build"
+    ],
+    "check": [
+      "make",
+      "check"
+    ],
+    "clean": [
+      "make",
+      "clean"
+    ],
+    "dev": {
+      "unsupported": "Operator CLI; no persistent local product server"
+    },
+    "stop": {
+      "unsupported": "Operator CLI; no persistent local product server"
+    }
+  }
+}
