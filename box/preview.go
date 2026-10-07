@@ -802,6 +802,8 @@ type PreviewUpConfig struct {
 // state, compose, route. Each step before the compose up leaves nothing
 // behind on failure; the route is the last thing to change, and it carries
 // its own restore.
+var revikPreviewSeedPattern = regexp.MustCompile(`^[a-f0-9]{24}$`)
+
 func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app string, pr int, images []string, now time.Time) (PreviewRecord, error) {
 	var zero PreviewRecord
 	if err := validatePreviewArgs(app, pr); err != nil {
@@ -885,6 +887,16 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	for _, e := range existing {
 		if e.Project == project {
 			have = true
+			if app == "fieldsofrevik" {
+				// Its private PostgreSQL volume survives a re-up. Credentials
+				// initialized inside that volume must therefore survive too.
+				// Shared-database previews recreate their role and keep their
+				// existing fresh-password behavior.
+				if e.App != app || e.PR != pr || !revikPreviewSeedPattern.MatchString(e.DBPassword) {
+					return zero, fmt.Errorf("the existing private preview has no valid credential seed")
+				}
+				rec.DBPassword = e.DBPassword
+			}
 		}
 	}
 	if !have && len(existing) >= cfg.Knob.Max {
