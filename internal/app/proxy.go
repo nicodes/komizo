@@ -29,7 +29,9 @@ type proxyOpts struct {
 	// such block -- so it cannot live in a config image that a second app might
 	// also want to write.
 	tlsAsk string
-	port   int
+	// tlsConfigDir contains operator-owned wildcard policy and DNS credentials.
+	tlsConfigDir string
+	port         int
 	// See addOpts.acceptHostKey.
 	acceptHostKey bool
 }
@@ -42,6 +44,7 @@ func RunProxy(args []string) error {
 	fs.StringVar(&o.network, "network", defaultNetwork, "docker network apps join to be reachable")
 	fs.StringVar(&o.image, "image", defaultProxy, "caddy image to run")
 	fs.StringVar(&o.tlsAsk, "tls-ask", "", "URL asked before issuing an on-demand certificate (for wildcard hostnames)")
+	fs.StringVar(&o.tlsConfigDir, "tls-config-dir", "", "server-owned directory containing wildcard TLS Caddyfile and optional secrets.env")
 	fs.IntVar(&o.port, "port", 22, "SSH port")
 	fs.BoolVar(&o.acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
 	if err := fs.Parse(args); err != nil {
@@ -57,6 +60,10 @@ func RunProxy(args []string) error {
 		return fmt.Errorf("--image contains characters that are not valid in an image reference: %q", o.image)
 	}
 	if err := validateTLSAsk(o.tlsAsk); err != nil {
+		return err
+	}
+
+	if err := validateTLSConfigDir(o.tlsConfigDir); err != nil {
 		return err
 	}
 
@@ -83,12 +90,20 @@ func proxyEnv(o proxyOpts) map[string]string {
 		"SHARED_NETWORK": o.network,
 		"PROXY_IMAGE":    o.image,
 		"TLS_ASK":        o.tlsAsk,
+		"TLS_CONFIG_DIR": o.tlsConfigDir,
 		// Where komizo's own read API answers, so the proxy can reach it. From
 		// the Go constant rather than written into the shell, because the
 		// agent creates this directory from the same one -- and a second copy
 		// of a path is how the two stop agreeing.
 		"API_SOCKET_DIR": box.APISocketDir,
 	}
+}
+
+func validateTLSConfigDir(s string) error {
+	if s != "" && (!strings.HasPrefix(s, "/") || !onlyChars(s, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-") || strings.Contains(s, "//") || strings.Contains(s, "/../") || strings.HasSuffix(s, "/..") || s == "/" || strings.HasSuffix(s, "/")) {
+		return fmt.Errorf("--tls-config-dir must be an absolute server directory without spaces or parent traversal")
+	}
+	return nil
 }
 
 // validateTLSAsk constrains the value before it is interpolated into the
@@ -129,11 +144,16 @@ It holds no app's configuration and no app can write any. An app declares the
 names it answers on -- a hostnames file in its config image -- and komizo
 generates the route from it on deploy.
 
-Certificates need no configuration -- Caddy obtains and renews them on its own.
-The exception is a WILDCARD hostname, which cannot have an ordinary certificate
-and needs one issued per name on demand. --tls-ask is the endpoint asked whether
-a name is real, without which anyone pointing DNS at this box could make it
-request certificates on their behalf.
+For ordinary names, Caddy obtains and renews certificates automatically.
+For many temporary hostnames, use --tls-config-dir with a Caddy 2.10+ image
+containing your DNS provider module. Its server-owned Caddyfile defines wildcard
+sites with DNS validation; optional secrets.env supplies provider credentials.
+The directory is mounted read-only at /etc/caddy/tls. Caddy reuses each wildcard
+certificate for matching individual routes, avoiding per-preview issuance.
+The candidate configuration is validated before the running proxy is changed.
+
+Alternatively, --tls-ask gates individual certificates issued on demand. It
+limits which names can request certificates, but does not avoid CA quotas.
 
 On-demand TLS is OFF by default and is not carried in any box state: it is on
 for exactly the runs that pass --tls-ask. A re-run that would leave an

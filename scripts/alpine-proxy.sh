@@ -4,8 +4,8 @@
 # komizo embeds this and pipes it over SSH. To read it: `komizo script proxy`.
 #
 # One Caddy container per server terminates TLS and owns ports 80 and 443.
-# It holds NO per-app configuration of its own. Its Caddyfile is three lines
-# and never changes:
+# It holds NO per-app configuration of its own. Its Caddyfile imports routes
+# and optional server-owned TLS policy:
 #
 #     import /etc/caddy/routes/*.caddy
 #
@@ -14,7 +14,7 @@
 # -- which is the property that lets apps stay independent on a box they share.
 #
 # The routes live with the PROXY, at /srv/_proxy/routes, and that directory is
-# the only thing mounted into the container. They used to live beside each app
+# only app-owned material mounted into the container. They used to live beside each app
 # at /srv/<app>/caddy, which meant the proxy had to mount the whole of /srv to
 # resolve its import glob -- and every app's secrets.env, 600 and root-owned,
 # was then readable by the one process on this box that faces the internet.
@@ -27,7 +27,8 @@
 #
 # Safe to re-run: that is how you update Caddy or move it to another network.
 #
-# Certificates need no configuration at all. Caddy agrees to the CA's terms
+# Ordinary certificates need no configuration. Wildcards require DNS validation
+# through TLS_CONFIG_DIR and a DNS-enabled Caddy 2.10+ image. Caddy agrees to the CA's terms
 # when it runs non-interactively, and there is deliberately no contact address
 # to set: Let's Encrypt stopped sending expiry notices in June 2025, so an email
 # here would buy nothing but a field to fill in.
@@ -36,12 +37,14 @@
 #   SHARED_NETWORK docker network apps join                 (default: edge)
 #   PROXY_IMAGE    caddy image to run                       (default: caddy:2)
 #   TLS_ASK        on-demand-TLS gate URL                   (default: none)
+#   TLS_CONFIG_DIR root-owned wildcard Caddyfile/credentials (default: none)
 
 set -eu
 
 SHARED_NETWORK="${SHARED_NETWORK:-edge}"
 PROXY_IMAGE="${PROXY_IMAGE:-caddy:2}"
 TLS_ASK="${TLS_ASK:-}"
+TLS_CONFIG_DIR="${TLS_CONFIG_DIR:-}"
 
 # The leading underscore is reserved: komizo refuses to create an app whose name
 # starts with one, so this can never collide with /srv/<app>.
@@ -103,29 +106,32 @@ if [ -z "$TLS_ASK" ]; then
 	done
 fi
 
-# --- 1. the shared network -------------------------------------------------
-# Created here rather than by compose so it outlives any single project, and so
-# an app can join it as `external: true` before the proxy is ever started.
-
-if docker network inspect "$SHARED_NETWORK" >/dev/null 2>&1; then
-	log "Shared network '$SHARED_NETWORK' already exists"
-else
-	log "Creating shared network '$SHARED_NETWORK'"
-	docker network create "$SHARED_NETWORK" >/dev/null
+# TLS policy and credentials belong to the server operator, never to app images.
+# A flagless re-run must not quietly remove wildcard coverage and start issuing
+# individual preview certificates again. There is no implicit state carry-forward.
+if [ -z "$TLS_CONFIG_DIR" ] && [ -f "$PROXY_DIR/Caddyfile" ] && grep -q 'import /etc/caddy/tls/Caddyfile' "$PROXY_DIR/Caddyfile"; then
+	die "the proxy uses wildcard TLS configuration -- re-run with --tls-config-dir and its DNS-enabled --image; refusing to remove certificate coverage"
+fi
+if [ -n "$TLS_CONFIG_DIR" ]; then
+	case "$TLS_CONFIG_DIR" in
+		/*) ;;
+		*) die "TLS_CONFIG_DIR must be an absolute server directory" ;;
+	esac
+	case "$TLS_CONFIG_DIR" in
+		/|*/|*//*|*/../*|*/..|*[!A-Za-z0-9/._-]*) die "TLS_CONFIG_DIR contains an unsafe path" ;;
+	esac
+	[ -d "$TLS_CONFIG_DIR" ] && [ -f "$TLS_CONFIG_DIR/Caddyfile" ] || die "TLS_CONFIG_DIR must contain a Caddyfile"
+	for tls_path in "$TLS_CONFIG_DIR" "$TLS_CONFIG_DIR/Caddyfile" "$TLS_CONFIG_DIR/secrets.env"; do
+		[ -e "$tls_path" ] || continue
+		[ "$(stat -c '%u' "$tls_path")" = 0 ] || die "TLS configuration must be owned by root"
+		case "$(stat -c '%a' "$tls_path")" in
+			*[2367][0-7]|*[0-7][2367]) die "TLS configuration must not be writable by group or others" ;;
+		esac
+	done
+	[ "$(stat -c '%a' "$TLS_CONFIG_DIR")" = 700 ] || die "TLS_CONFIG_DIR must have mode 700 to protect DNS credentials"
 fi
 
-# --- 2. the Caddyfile ------------------------------------------------------
-
-log "Writing $PROXY_DIR/Caddyfile"
-mkdir -p "$ROUTES_DIR" "$PROXY_DIR/logs"
-chown root:root "$PROXY_DIR" "$ROUTES_DIR" "$PROXY_DIR/logs"
-chmod 755 "$PROXY_DIR" "$ROUTES_DIR"
-# Access logs. 750 rather than 755: they carry client IPs and request paths,
-# which is the one thing on this box that is about the people using it rather
-# than about the box.
-chmod 750 "$PROXY_DIR/logs"
-
-{
+write_caddyfile() {
 	printf '# Written by komizo. Re-run "komizo proxy" to change it.\n'
 	printf '#\n'
 	printf '# This file terminates TLS and hands each hostname to the app that\n'
@@ -159,11 +165,62 @@ chmod 750 "$PROXY_DIR/logs"
 	printf '# app published. Nothing here names an app, so adding or removing one\n'
 	printf '# never edits shared config.\n'
 	printf '#\n'
-	printf '# This directory is the whole of what this container can see of the\n'
-	printf '# host. It holds generated routes and nothing else -- no app config,\n'
+	printf '# This directory holds generated routes and nothing else -- no app config,\n'
 	printf '# no secrets, no compose files.\n'
 	printf 'import /etc/caddy/routes/*.caddy\n'
-} > "$PROXY_DIR/Caddyfile"
+	if [ -n "$TLS_CONFIG_DIR" ]; then
+		printf 'import /etc/caddy/tls/Caddyfile\n'
+	fi
+}
+
+# Validate with the selected image, credentials and all existing routes before
+# replacing either shared file or restarting the container. No production cert
+# volume is mounted: validation provisions config but must not issue certificates.
+if [ -n "$TLS_CONFIG_DIR" ]; then
+	candidate=$(mktemp)
+	trap 'rm -f "$candidate"' EXIT HUP INT TERM
+	write_caddyfile > "$candidate"
+	set -- docker run --rm --network none --read-only --cap-drop ALL \
+		--security-opt no-new-privileges --tmpfs /tmp --tmpfs /data --tmpfs /config --tmpfs /var/log/caddy \
+		-v "$candidate:/etc/caddy/Caddyfile:ro" \
+		-v "$ROUTES_DIR:/etc/caddy/routes:ro" \
+		-v "$TLS_CONFIG_DIR:/etc/caddy/tls:ro"
+	if [ -f "$TLS_CONFIG_DIR/secrets.env" ]; then
+		set -- "$@" --env-file "$TLS_CONFIG_DIR/secrets.env"
+	fi
+	version=$("$@" --entrypoint caddy "$PROXY_IMAGE" version 2>/dev/null) || die "cannot read Caddy version from PROXY_IMAGE"
+	printf '%s\n' "$version" | grep -Eq '^v(2\.[1-9][0-9]+\.|([3-9]|[1-9][0-9]+)\.)' \
+		|| die "wildcard certificate reuse requires Caddy 2.10 or newer"
+	# Provider errors can contain credentials; leave diagnostics to the operator.
+	"$@" --entrypoint caddy "$PROXY_IMAGE" validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 \
+		|| die "wildcard TLS configuration does not validate with PROXY_IMAGE -- check the DNS module, credentials and Caddyfile; running proxy was not changed"
+	rm -f "$candidate"
+	trap - EXIT HUP INT TERM
+fi
+
+# --- 1. the shared network -------------------------------------------------
+# Created here rather than by compose so it outlives any single project, and so
+# an app can join it as `external: true` before the proxy is ever started.
+
+if docker network inspect "$SHARED_NETWORK" >/dev/null 2>&1; then
+	log "Shared network '$SHARED_NETWORK' already exists"
+else
+	log "Creating shared network '$SHARED_NETWORK'"
+	docker network create "$SHARED_NETWORK" >/dev/null
+fi
+
+# --- 2. the Caddyfile ------------------------------------------------------
+
+log "Writing $PROXY_DIR/Caddyfile"
+mkdir -p "$ROUTES_DIR" "$PROXY_DIR/logs"
+chown root:root "$PROXY_DIR" "$ROUTES_DIR" "$PROXY_DIR/logs"
+chmod 755 "$PROXY_DIR" "$ROUTES_DIR"
+# Access logs. 750 rather than 755: they carry client IPs and request paths,
+# which is the one thing on this box that is about the people using it rather
+# than about the box.
+chmod 750 "$PROXY_DIR/logs"
+
+write_caddyfile > "$PROXY_DIR/Caddyfile"
 chown root:root "$PROXY_DIR/Caddyfile"
 chmod 644 "$PROXY_DIR/Caddyfile"
 
@@ -221,6 +278,11 @@ services:
   # container name; now only the latter.
   komizo-proxy:
     image: $PROXY_IMAGE
+EOF
+if [ -n "$TLS_CONFIG_DIR" ] && [ -f "$TLS_CONFIG_DIR/secrets.env" ]; then
+	printf '    env_file:\n      - %s/secrets.env\n' "$TLS_CONFIG_DIR" >> "$PROXY_DIR/compose.yml"
+fi
+cat >> "$PROXY_DIR/compose.yml" <<EOF
     container_name: $PROXY_CONTAINER
     restart: unless-stopped
     # This is the one process on the box facing the internet, so give it the
@@ -280,6 +342,11 @@ services:
       # ACME account key and issued certificates. Losing this volume means
       # every certificate is re-issued, and Let's Encrypt rate limits are per
       # domain per week -- so it is the one volume on the box worth backing up.
+EOF
+if [ -n "$TLS_CONFIG_DIR" ]; then
+	printf '      - %s:/etc/caddy/tls:ro\n' "$TLS_CONFIG_DIR" >> "$PROXY_DIR/compose.yml"
+fi
+cat >> "$PROXY_DIR/compose.yml" <<EOF
       - caddy_data:/data
       - caddy_config:/config
     networks:
