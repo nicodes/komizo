@@ -187,6 +187,9 @@ func previewKnobGet(body, key string) string {
 // NEVER refused -- a product without its own key previews on the
 // default, exactly as before per-app keys existed.
 func (k PreviewKnob) DomainFor(app string) string {
+	if domain := k.PathDomainFor(app); domain != "" {
+		return domain
+	}
 	if shared := k.SharedDomainFor(app); shared != "" {
 		return shared
 	}
@@ -278,13 +281,14 @@ func validatePreviewArgs(app string, pr int) error {
 
 // PreviewRecord is one preview's state file, key=value like the app records.
 type PreviewRecord struct {
-	V       int    `json:"v"`
-	App     string `json:"app"`
-	PR      int    `json:"pr"`
-	Project string `json:"project"`
-	Host    string `json:"host,omitempty"`
-	APIHost string `json:"api_host"`
-	DBName  string `json:"db_name"`
+	V        int    `json:"v"`
+	App      string `json:"app"`
+	PR       int    `json:"pr"`
+	Project  string `json:"project"`
+	Host     string `json:"host,omitempty"`
+	APIHost  string `json:"api_host"`
+	BasePath string `json:"base_path,omitempty"`
+	DBName   string `json:"db_name"`
 	// DBPassword is the per-preview owner role's password, recorded 600-root
 	// and injected into the preview's compose environment. The preview
 	// connects as its own role, which can touch only its own database.
@@ -315,7 +319,7 @@ func writePreviewRecord(root string, r PreviewRecord) error {
 		1, r.App, r.PR, r.Project, r.DBName, r.DBPassword, r.GatePort,
 		strings.Join(r.Images, ","),
 		r.CreatedAt.UTC().Format(time.RFC3339), r.LastUsed.UTC().Format(time.RFC3339), r.RouteFile)
-	fmt.Fprintf(&b, "HOST=%s\nAPI_HOST=%s\n", r.Host, r.APIHost)
+	fmt.Fprintf(&b, "HOST=%s\nAPI_HOST=%s\nBASE_PATH=%s\n", r.Host, r.APIHost, r.BasePath)
 	return os.WriteFile(filepath.Join(dir, "preview.env"), []byte(b.String()), 0o600)
 }
 
@@ -337,7 +341,7 @@ func readPreviewRecord(dir string) (PreviewRecord, error) {
 	r.V, _ = strconv.Atoi(kv["V"])
 	r.App, r.Project, r.DBName, r.RouteFile = kv["APP"], kv["PROJECT"], kv["DB_NAME"], kv["ROUTE_FILE"]
 	r.DBPassword = kv["DB_PASSWORD"]
-	r.Host, r.APIHost = kv["HOST"], kv["API_HOST"]
+	r.Host, r.APIHost, r.BasePath = kv["HOST"], kv["API_HOST"], kv["BASE_PATH"]
 	r.PR, _ = strconv.Atoi(kv["PR"])
 	r.GatePort, _ = strconv.Atoi(kv["GATE_PORT"])
 	if kv["IMAGES"] != "" {
@@ -574,7 +578,7 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 			fmt.Fprintf(&b, "    container_name: %s-gate\n    environment:\n", r.Project)
 			fmt.Fprintf(&b, "      PREVIEW: \"1\"\n      PR: \"%d\"\n", r.PR)
 			b.WriteString(previewDBEnvLines(r))
-			fmt.Fprintf(&b, "      BASE_URL: https://%s\n      PREVIEW_HOST: %s\n      PREVIEW_API_HOST: %s\n", r.WebHost(k), r.WebHost(k), r.PublicAPIHost(k))
+			fmt.Fprintf(&b, "      BASE_URL: https://%s%s\n      PREVIEW_HOST: %s\n      PREVIEW_API_HOST: %s\n      PREVIEW_BASE_PATH: %q\n", r.WebHost(k), r.BasePath, r.WebHost(k), r.PublicAPIHost(k), r.BasePath)
 			// The gate port, LOOPBACK only: the direct HTTP entry to the
 			// preview from the box itself, never from the network -- the
 			// public way in is the proxy route, with TLS. Publishing on all
@@ -858,7 +862,10 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 		CreatedAt: now, LastUsed: now,
 		RouteFile: "_preview-" + project + ".caddy",
 	}
-	rec.Host, rec.APIHost = target.Host, target.APIHost
+	rec.Host, rec.APIHost, rec.BasePath = target.Host, target.APIHost, target.BasePath
+	if rec.BasePath != "" {
+		rec.RouteFile = fmt.Sprintf("_preview-pr-%d.%s.route", pr, app)
+	}
 	// A gate-only product -- one static container, no API -- gets NO
 	// database: nothing in it can open a connection, and a database created
 	// for a preview that will never connect is the invasiveness this whole
@@ -902,6 +909,12 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	}
 	var have bool
 	for _, e := range existing {
+		if e.Project == project && e.BasePath != rec.BasePath {
+			return zero, fmt.Errorf("remove this preview before changing between hostname and path routing")
+		}
+		if e.App == app && e.BasePath != "" && (e.Host != rec.Host || e.APIHost != rec.APIHost) {
+			return zero, fmt.Errorf("drain the app's path previews before changing their hostnames")
+		}
 		if e.Project == project {
 			have = true
 			if app == "fieldsofrevik" {
@@ -1043,7 +1056,7 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 		rollback("", "", "", true)
 		return zero, fmt.Errorf("the preview project did not come up: %w", err)
 	}
-	if err := ApplyPreviewRoute(ctx, run, cfg.Proxy, cfg.RoutesDir, rec.RouteFile, previewRoute(rec, cfg.Knob)); err != nil {
+	if err := applyPreviewRecordRoute(ctx, run, cfg, rec); err != nil {
 		rollback("", "", "", true)
 		return zero, err
 	}

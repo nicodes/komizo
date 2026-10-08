@@ -9,6 +9,9 @@ import (
 // HostFor keeps each app/PR in one DNS label so one wildcard covers the host.
 // Without SHARED_DOMAIN, existing per-app domains and URLs are unchanged.
 func (k PreviewKnob) HostFor(app string, pr int) string {
+	if domain := k.PathDomainFor(app); domain != "" {
+		return app + "." + domain
+	}
 	if shared := k.SharedDomainFor(app); shared != "" {
 		return fmt.Sprintf("%s-pr%d.%s", app, pr, shared)
 	}
@@ -16,6 +19,9 @@ func (k PreviewKnob) HostFor(app string, pr int) string {
 }
 
 func (k PreviewKnob) APIHostFor(app string, pr int) string {
+	if domain := k.PathDomainFor(app); domain != "" {
+		return app + "-api." + domain
+	}
 	host := k.HostFor(app, pr)
 	label, domain, _ := strings.Cut(host, ".")
 	return label + "-api." + domain
@@ -45,20 +51,20 @@ var previewTLD = regexp.MustCompile(`^[a-z]{2,}$`)
 var sharedPreviewLabel = regexp.MustCompile(`^[a-z][a-z0-9-]*-pr[1-9][0-9]*(-api)?$`)
 
 func (k PreviewKnob) validateHosts(app string, pr int) error {
-	if k.SharedDomainFor(app) == "" {
+	if k.SharedDomainFor(app) == "" && k.PathDomainFor(app) == "" {
 		return nil
 	}
 	host := k.APIHostFor(app, pr)
-	if len(host) > 253 || !strings.Contains(k.SharedDomainFor(app), ".") {
-		return fmt.Errorf("SHARED_DOMAIN does not produce a valid preview hostname")
+	if len(host) > 253 || !strings.Contains(k.DomainFor(app), ".") {
+		return fmt.Errorf("preview domain does not produce a valid preview hostname")
 	}
 	labels := strings.Split(host, ".")
 	if !previewTLD.MatchString(labels[len(labels)-1]) {
-		return fmt.Errorf("SHARED_DOMAIN must have an alphabetic top-level domain")
+		return fmt.Errorf("preview domain must have an alphabetic top-level domain")
 	}
 	for _, label := range labels {
 		if len(label) > 63 || !previewDNSLabel.MatchString(label) {
-			return fmt.Errorf("SHARED_DOMAIN or app name does not produce valid DNS labels")
+			return fmt.Errorf("preview domain or app name does not produce valid DNS labels")
 		}
 	}
 	return nil
@@ -82,11 +88,12 @@ func (k PreviewKnob) SharedDomainFor(app string) string {
 // PreviewTarget is a read-only answer used before building or writing auth
 // settings. It never creates resources or claims that a preview is running.
 type PreviewTarget struct {
-	App     string `json:"app"`
-	PR      int    `json:"pr"`
-	Domain  string `json:"domain"`
-	Host    string `json:"host"`
-	APIHost string `json:"api_host"`
+	App      string `json:"app"`
+	PR       int    `json:"pr"`
+	Domain   string `json:"domain"`
+	Host     string `json:"host"`
+	APIHost  string `json:"api_host"`
+	BasePath string `json:"base_path,omitempty"`
 }
 
 func ResolvePreview(k PreviewKnob, app string, pr int, hasAPI bool) (PreviewTarget, error) {
@@ -98,6 +105,9 @@ func ResolvePreview(k PreviewKnob, app string, pr int, hasAPI bool) (PreviewTarg
 		return target, err
 	}
 	target = PreviewTarget{App: app, PR: pr, Domain: k.DomainFor(app), Host: k.HostFor(app, pr)}
+	if k.PathDomainFor(app) != "" {
+		target.BasePath = fmt.Sprintf("/%d", pr)
+	}
 	if hasAPI {
 		target.APIHost = k.APIHostFor(app, pr)
 	}
@@ -125,4 +135,12 @@ func (k PreviewKnob) SharedAskAllow(host string) bool {
 		}
 	}
 	return false
+}
+
+// PathDomainFor opts an app into stable hostnames and unique numeric PR paths.
+func (k PreviewKnob) PathDomainFor(app string) string {
+	if d := previewKnobGet(k.body, "PATH_DOMAIN."+app); d != "" {
+		return d
+	}
+	return ""
 }

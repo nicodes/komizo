@@ -22,7 +22,7 @@ func PreviewAskHandler(knob PreviewKnob) http.Handler {
 	domains := knob.Domains()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := r.URL.Query().Get("domain")
-		if knob.SharedAskAllow(host) {
+		if knob.SharedAskAllow(host) || knob.PathAskAllow(host) {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
