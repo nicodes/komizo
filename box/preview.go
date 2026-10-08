@@ -601,16 +601,19 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 	return b.String()
 }
 
-// previewRoute renders the route file: the two hostnames, both to the gate.
-// Content is deliberately thinner than an app's route -- the discipline that
-// matters (write, validate, reload, restore on failure) is in
-// ApplyPreviewRoute, not in what the file says.
+// previewRoute exposes the gate and, only for a multi-image stack, its API.
+// Avoid issuing a second certificate for static, gate-only previews.
 func previewRoute(r PreviewRecord, k PreviewKnob) string {
+	domain := k.DomainFor(r.App)
+	hosts := PreviewHost(r.PR, domain)
+	if len(r.Images) > 1 {
+		hosts += fmt.Sprintf(", pr-%d-api.%s", r.PR, domain)
+	}
 	return fmt.Sprintf(`# Written by komizo preview. %s PR #%d -- removed by 'komizo preview down'.
-%s, %s {
+%s {
 	reverse_proxy %s-gate:80
 }
-`, r.App, r.PR, PreviewHost(r.PR, k.DomainFor(r.App)), fmt.Sprintf("pr-%d-api.%s", r.PR, k.DomainFor(r.App)), r.Project)
+`, r.App, r.PR, hosts, r.Project)
 }
 
 // ApplyPreviewRoute writes a route with the same discipline as every other

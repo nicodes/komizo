@@ -645,7 +645,7 @@ func TestPreviewComposeCapsNetworksAndEnvironment(t *testing.T) {
 // The route file: both hostnames, to the gate, and nothing else.
 func TestPreviewRouteContent(t *testing.T) {
 	cfg := previewTestConfig(t)
-	rec := PreviewRecord{V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", RouteFile: "_preview-gdam-pr-12.caddy"}
+	rec := PreviewRecord{V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", RouteFile: "_preview-gdam-pr-12.caddy", Images: []string{"gate:pr-12", "api:pr-12"}}
 	route := previewRoute(rec, cfg.Knob)
 	if !strings.Contains(route, "pr-12.preview.gdam.dev, pr-12-api.preview.gdam.dev {") {
 		t.Errorf("route is missing the hostnames:\n%s", route)
@@ -799,11 +799,11 @@ func TestPreviewKnobPerAppDomainChain(t *testing.T) {
 // hosts for the same PR number.
 func TestPreviewRouteUsesTheAppsOwnDomain(t *testing.T) {
 	knob, _ := ParsePreviewKnob("DOMAIN=preview.gdam.dev\nDOMAIN.avior=preview.avior.studio\n")
-	avior := previewRoute(PreviewRecord{V: 1, App: "avior", PR: 3, Project: "avior-pr-3", RouteFile: "_preview-avior-pr-3.caddy"}, knob)
+	avior := previewRoute(PreviewRecord{V: 1, App: "avior", PR: 3, Project: "avior-pr-3", RouteFile: "_preview-avior-pr-3.caddy", Images: []string{"gate:pr-3", "api:pr-3"}}, knob)
 	if !strings.Contains(avior, "pr-3.preview.avior.studio, pr-3-api.preview.avior.studio {") {
 		t.Errorf("the route does not name the app's own domain:\n%s", avior)
 	}
-	gdam := previewRoute(PreviewRecord{V: 1, App: "gdam", PR: 3, Project: "gdam-pr-3", RouteFile: "_preview-gdam-pr-3.caddy"}, knob)
+	gdam := previewRoute(PreviewRecord{V: 1, App: "gdam", PR: 3, Project: "gdam-pr-3", RouteFile: "_preview-gdam-pr-3.caddy", Images: []string{"gate:pr-3", "api:pr-3"}}, knob)
 	if !strings.Contains(gdam, "pr-3.preview.gdam.dev, pr-3-api.preview.gdam.dev {") {
 		t.Errorf("the default app's route changed:\n%s", gdam)
 	}
@@ -1234,6 +1234,16 @@ func TestPreviewUpCreatesNoDatabaseForAGateOnlyProduct(t *testing.T) {
 		if strings.Contains(string(compose), unwanted) {
 			t.Errorf("a gate-only preview's compose mentions %s:\n%s", unwanted, string(compose))
 		}
+	}
+	route, err := os.ReadFile(filepath.Join(cfg.RoutesDir, rec.RouteFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(route), "pr-7.preview.gdam.dev {") {
+		t.Errorf("gate hostname missing: %s", route)
+	}
+	if strings.Contains(string(route), "-api.") {
+		t.Errorf("static preview requested an unused API certificate: %s", route)
 	}
 	// Teardown has nothing to drop, and must not invent something.
 	f.calls = nil
