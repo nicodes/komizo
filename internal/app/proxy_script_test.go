@@ -195,6 +195,8 @@ func (b *proxyBox) runTLS(t *testing.T, dir string) (string, error) {
 func TestWildcardTLSUsesNarrowReadOnlyMountAndPersistentCertificates(t *testing.T) {
 	b := newProxyBox(t)
 	dir := b.tlsDir(t)
+	image := "ghcr.io/example/caddy-dns@sha256:" + strings.Repeat("a", 64)
+	t.Setenv("PROXY_IMAGE", image)
 	write(t, filepath.Join(dir, "secrets.env"), 0o600, "DNS_TOKEN=test-only\n")
 	if out, err := b.runTLS(t, dir); err != nil {
 		t.Fatalf("%v: %s", err, out)
@@ -206,7 +208,7 @@ func TestWildcardTLSUsesNarrowReadOnlyMountAndPersistentCertificates(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{dir + ":/etc/caddy/tls:ro", dir + "/secrets.env", "caddy_data:/data", "caddy_config:/config"} {
+	for _, required := range []string{"image: " + image, dir + ":/etc/caddy/tls:ro", dir + "/secrets.env", "caddy_data:/data", "caddy_config:/config"} {
 		if !strings.Contains(string(data), required) {
 			t.Errorf("missing %s", required)
 		}

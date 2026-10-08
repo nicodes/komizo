@@ -155,7 +155,7 @@ func TestTheCharsetsAgreeWithTheServerScripts(t *testing.T) {
 		},
 		{
 			what:   "proxy image",
-			goSet:  imageChars,
+			goSet:  proxyImageChars,
 			script: scripts.AlpineProxyScript,
 			marker: "PROXY_IMAGE contains characters",
 			why:    "it is substituted into the generated proxy compose.yml",

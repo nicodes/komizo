@@ -13,10 +13,11 @@ import (
 // than a flag on `add`. It has no app name, no deploy account and no config
 // image: nothing from CI ever touches it.
 const (
-	proxyDir       = "/srv/_proxy"
-	proxyContainer = "komizo-proxy"
-	defaultNetwork = "edge"
-	defaultProxy   = "caddy:2"
+	proxyDir        = "/srv/_proxy"
+	proxyContainer  = "komizo-proxy"
+	defaultNetwork  = "edge"
+	defaultProxy    = "caddy:2"
+	proxyImageChars = imageChars + "@"
 )
 
 type proxyOpts struct {
@@ -56,7 +57,7 @@ func RunProxy(args []string) error {
 	if err := validateNetworkName(o.network); err != nil {
 		return err
 	}
-	if !onlyChars(o.image, imageChars) {
+	if !onlyChars(o.image, proxyImageChars) {
 		return fmt.Errorf("--image contains characters that are not valid in an image reference: %q", o.image)
 	}
 	if err := validateTLSAsk(o.tlsAsk); err != nil {
