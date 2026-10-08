@@ -20,7 +20,7 @@ import (
 
 func TestPreviewHelpersAreSplicedIntoTheShippedScript(t *testing.T) {
 	for _, want := range []string{
-		"komizo-preview: refused (preview up|down|ls|gc only)",
+		"komizo-preview: refused (preview up|down|resolve|ls|gc only)",
 		"write-preview-stackenv: refused: bad app",
 	} {
 		if !strings.Contains(scripts.AlpineScript, want) {

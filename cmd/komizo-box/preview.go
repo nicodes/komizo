@@ -22,7 +22,7 @@ import (
 
 func runPreview(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("preview what -- up, down, ls or gc")
+		return fmt.Errorf("preview what -- up, down, resolve, ls or gc")
 	}
 	sub, args := args[0], args[1:]
 
@@ -65,6 +65,12 @@ func runPreview(args []string) error {
 	ctx := context.Background()
 
 	switch sub {
+	case "resolve":
+		target, err := box.ResolvePreview(knob, *app, *pr, len(fs.Args()) > 1)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(target)
 	case "up":
 		if *app == "" || *pr == 0 {
 			return fmt.Errorf("preview up needs --app and --pr")
@@ -127,7 +133,7 @@ func runPreview(args []string) error {
 		}
 		return json.NewEncoder(os.Stdout).Encode(reap)
 	}
-	return fmt.Errorf("preview what -- up, down, ls or gc, not %q", sub)
+	return fmt.Errorf("preview what -- up, down, resolve, ls or gc, not %q", sub)
 }
 
 // errNoSuchPreview is "this preview is not recorded here", as distinct from
@@ -155,8 +161,14 @@ func previewFind(root, app string, pr int) (box.PreviewRecord, error) {
 // Return the domain used by the privileged route writer. Deployment accounts
 // cannot read the private knob directory, and must not guess a different URL.
 func previewUpResponse(rec box.PreviewRecord, knob box.PreviewKnob) any {
+	rec.Host = rec.WebHost(knob)
+	rec.APIHost = rec.PublicAPIHost(knob)
+	domain := knob.DomainFor(rec.App)
+	if _, storedDomain, ok := strings.Cut(rec.Host, "."); ok {
+		domain = storedDomain
+	}
 	return struct {
 		box.PreviewRecord
 		Domain string `json:"domain"`
-	}{rec, knob.DomainFor(rec.App)}
+	}{rec, domain}
 }

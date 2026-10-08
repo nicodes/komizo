@@ -68,8 +68,8 @@ func revikPreviewCompose(r PreviewRecord, k PreviewKnob, network string) string 
 	data := struct {
 		PreviewRecord
 		PreviewKnob
-		Network, Host, Admin, Migrator, Runtime, Backup, Bridge string
-	}{r, k, network, PreviewHost(r.PR, k.DomainFor(r.App)),
+		Network, Host, APIHost, Admin, Migrator, Runtime, Backup, Bridge string
+	}{r, k, network, r.WebHost(k), r.PublicAPIHost(k),
 		revikPreviewCredential(r.DBPassword, "admin"), revikPreviewCredential(r.DBPassword, "migrator"),
 		revikPreviewCredential(r.DBPassword, "runtime"), revikPreviewCredential(r.DBPassword, "backup"),
 		revikPreviewCredential(r.DBPassword, "bridge")}
@@ -178,7 +178,7 @@ services:
       PR: "{{.PR}}"
       BASE_URL: https://{{.Host}}
       PREVIEW_HOST: {{.Host}}
-      PREVIEW_API_HOST: pr-{{.PR}}-api.{{.DomainFor .App}}
+      PREVIEW_API_HOST: {{.APIHost}}
     ports: ["127.0.0.1:{{.GatePort}}:80"]
     networks: [app, shared]
     depends_on:

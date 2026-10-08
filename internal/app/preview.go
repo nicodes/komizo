@@ -14,7 +14,7 @@ import (
 // what runs here is resolve-the-target and ask. See box/preview.go for what a
 // preview is and may never touch.
 
-// RunPreview handles `komizo preview up|down|ls|gc`.
+// RunPreview handles `komizo preview up|down|resolve|ls|gc`.
 func RunPreview(args []string) error {
 	// The subcommand is the first NON-FLAG argument. Anything starting with a
 	// dash goes to the flag parser instead, so a bogus flag fails there --
@@ -38,15 +38,15 @@ func RunPreview(args []string) error {
 		return ErrSilent
 	}
 	switch sub {
-	case "up", "down", "ls", "gc":
+	case "up", "down", "resolve", "ls", "gc":
 	default:
-		return fmt.Errorf("preview what -- up, down, ls or gc, not %q", sub)
+		return fmt.Errorf("preview what -- up, down, resolve, ls or gc, not %q", sub)
 	}
 
 	// Checked HERE as well as on the box, so a typo fails before anything
 	// connects -- the box's check is the one that matters, this one is the
 	// one that saves the round trip.
-	if sub == "up" || sub == "down" {
+	if sub == "up" || sub == "down" || sub == "resolve" {
 		if err := validateApp(app); err != nil {
 			return err
 		}
@@ -72,7 +72,7 @@ func RunPreview(args []string) error {
 	}
 
 	remote := []string{"preview", sub}
-	if sub == "up" || sub == "down" {
+	if sub == "up" || sub == "down" || sub == "resolve" {
 		remote = append(remote, "--app", app, "--pr", strconv.Itoa(pr))
 	}
 	remote = append(remote, fs.Args()...)
@@ -94,13 +94,14 @@ func usagePreview(fs *flag.FlagSet, sub string) {
 
   komizo preview up   --host root@box --app myapp --pr 12 ghcr.io/you/web:pr-12 [more images...]
   komizo preview down --host root@box --app myapp --pr 12
+  komizo preview resolve --host root@box --app myapp --pr 12 ghcr.io/you/web:pr-12 [more images...]
   komizo preview ls   --host root@box
   komizo preview gc   --host root@box
 
 A preview is an isolated compose project per pull request -- its own
 containers, its own database inside the app's postgres (created on up,
 dropped on down, never shared, never prod data), its own route at
-pr-<N>.preview.gdam.dev, capped memory and cpu, and a ceiling on how many
+the host-configured preview domain, capped memory and cpu, and a ceiling on how many
 may exist with least-recently-used eviction. 'up' refuses below the
 capacity floors in /etc/komizo/deploy-floors, exactly like a deploy.
 
