@@ -70,7 +70,7 @@ case "$SHARED_NETWORK" in
 	''|*[!A-Za-z0-9._-]*) die "SHARED_NETWORK must be letters, digits, dot, underscore or hyphen" ;;
 esac
 case "$PROXY_IMAGE" in
-	*[!A-Za-z0-9.:/_-]*) die "PROXY_IMAGE contains characters that are not valid in an image reference" ;;
+	*[!A-Za-z0-9.:/@_-]*) die "PROXY_IMAGE contains characters that are not valid in an image reference" ;;
 esac
 # Interpolated into the Caddyfile, so it is constrained rather than trusted.
 case "$TLS_ASK" in
