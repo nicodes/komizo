@@ -180,7 +180,7 @@ if [ -n "$TLS_CONFIG_DIR" ]; then
 	candidate=$(mktemp)
 	trap 'rm -f "$candidate"' EXIT HUP INT TERM
 	write_caddyfile > "$candidate"
-	set -- docker run --rm --network none --read-only --cap-drop ALL \
+	set -- docker run --rm --network none --read-only --cap-drop ALL --cap-add NET_BIND_SERVICE \
 		--security-opt no-new-privileges --tmpfs /tmp --tmpfs /data --tmpfs /config --tmpfs /var/log/caddy \
 		-v "$candidate:/etc/caddy/Caddyfile:ro" \
 		-v "$ROUTES_DIR:/etc/caddy/routes:ro" \
