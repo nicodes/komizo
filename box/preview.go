@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/mail"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -89,7 +90,10 @@ const (
 
 // PreviewKnob is the parsed knob file.
 type PreviewKnob struct {
-	Domain    string
+	Domain string
+	// ACMEEmail opts preview routes into Caddy's default issuer fallback.
+	// Caddy only enables ZeroSSL alongside Let's Encrypt with a contact email.
+	ACMEEmail string
 	TTL       time.Duration
 	Max       int
 	MemLimit  string
@@ -112,6 +116,7 @@ func ParsePreviewKnob(body string) (PreviewKnob, string) {
 		body: body,
 	}
 	get := func(key string) string { return previewKnobGet(body, key) }
+	k.ACMEEmail = get("ACME_EMAIL")
 	var bad []string
 	if v := get("DOMAIN"); v != "" {
 		k.Domain = v
@@ -606,11 +611,15 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 // matters (write, validate, reload, restore on failure) is in
 // ApplyPreviewRoute, not in what the file says.
 func previewRoute(r PreviewRecord, k PreviewKnob) string {
+	tls := ""
+	if k.ACMEEmail != "" {
+		tls = fmt.Sprintf("\ttls %q\n", k.ACMEEmail)
+	}
 	return fmt.Sprintf(`# Written by komizo preview. %s PR #%d -- removed by 'komizo preview down'.
 %s, %s {
-	reverse_proxy %s-gate:80
+%s	reverse_proxy %s-gate:80
 }
-`, r.App, r.PR, PreviewHost(r.PR, k.DomainFor(r.App)), fmt.Sprintf("pr-%d-api.%s", r.PR, k.DomainFor(r.App)), r.Project)
+`, r.App, r.PR, PreviewHost(r.PR, k.DomainFor(r.App)), fmt.Sprintf("pr-%d-api.%s", r.PR, k.DomainFor(r.App)), tls, r.Project)
 }
 
 // ApplyPreviewRoute writes a route with the same discipline as every other
@@ -808,6 +817,12 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	var zero PreviewRecord
 	if err := validatePreviewArgs(app, pr); err != nil {
 		return zero, err
+	}
+	if email := cfg.Knob.ACMEEmail; email != "" {
+		address, err := mail.ParseAddress(email)
+		if err != nil || address.Address != email || strings.ContainsAny(email, "\r\n\x00") {
+			return zero, fmt.Errorf("preview ACME_EMAIL must be a single email address without a display name")
+		}
 	}
 	if len(images) == 0 {
 		return zero, fmt.Errorf("no images given -- a preview is images and nothing else")
