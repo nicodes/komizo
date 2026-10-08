@@ -89,13 +89,15 @@ const (
 
 // PreviewKnob is the parsed knob file.
 type PreviewKnob struct {
-	Domain    string
-	TTL       time.Duration
-	Max       int
-	MemLimit  string
-	CPULimit  string
-	AskPort   int
-	PortRange string
+	// SharedDomain opts this host into flat, app-qualified preview names.
+	SharedDomain string
+	Domain       string
+	TTL          time.Duration
+	Max          int
+	MemLimit     string
+	CPULimit     string
+	AskPort      int
+	PortRange    string
 	// body is the raw knob, so DomainFor reuses the same lookup that
 	// ParsePreviewKnob used -- there is one get, not two parsers that
 	// could drift.
@@ -109,7 +111,7 @@ func ParsePreviewKnob(body string) (PreviewKnob, string) {
 		Domain: PreviewDomainDefault, TTL: PreviewTTLDefault, Max: PreviewMaxDefault,
 		MemLimit: PreviewMemLimitDefault, CPULimit: PreviewCPULimitDefault,
 		AskPort: PreviewAskPortDefault, PortRange: PreviewPortRangeDefault,
-		body: body,
+		body: body, SharedDomain: previewKnobGet(body, "SHARED_DOMAIN"),
 	}
 	get := func(key string) string { return previewKnobGet(body, key) }
 	var bad []string
@@ -178,12 +180,20 @@ func previewKnobGet(body, key string) string {
 }
 
 // DomainFor is the per-app resolution chain, exactly:
+// SHARED_DOMAIN.<app> / SHARED_DOMAIN take priority when enabled; otherwise
 // get("DOMAIN."+app) → get("DOMAIN") → PreviewDomainDefault.
 // An empty DOMAIN.<app>= falls through to the bare DOMAIN; an empty
 // DOMAIN= falls through to the compiled default. An unknown app is
 // NEVER refused -- a product without its own key previews on the
 // default, exactly as before per-app keys existed.
 func (k PreviewKnob) DomainFor(app string) string {
+	if shared := k.SharedDomainFor(app); shared != "" {
+		return shared
+	}
+	return k.legacyDomainFor(app)
+}
+
+func (k PreviewKnob) legacyDomainFor(app string) string {
 	if v := previewKnobGet(k.body, "DOMAIN."+app); v != "" {
 		return v
 	}
@@ -193,10 +203,9 @@ func (k PreviewKnob) DomainFor(app string) string {
 	return PreviewDomainDefault
 }
 
-// Domains is the union the TLS ask approves under: the default domain
-// plus every resolved DOMAIN.<app> value, deduped. Values come from
-// the same get() DomainFor uses -- empty keys fall through and are
-// not a separate domain. The default is first, the rest sorted.
+// Domains preserves legacy TLS authorization during migration: the default
+// and nonempty DOMAIN.<app> values, deduped and sorted after the default.
+// Shared-domain names are authorized separately by SharedAskAllow.
 func (k PreviewKnob) Domains() []string {
 	def := k.Domain
 	if def == "" {
@@ -273,6 +282,8 @@ type PreviewRecord struct {
 	App     string `json:"app"`
 	PR      int    `json:"pr"`
 	Project string `json:"project"`
+	Host    string `json:"host,omitempty"`
+	APIHost string `json:"api_host"`
 	DBName  string `json:"db_name"`
 	// DBPassword is the per-preview owner role's password, recorded 600-root
 	// and injected into the preview's compose environment. The preview
@@ -304,6 +315,7 @@ func writePreviewRecord(root string, r PreviewRecord) error {
 		1, r.App, r.PR, r.Project, r.DBName, r.DBPassword, r.GatePort,
 		strings.Join(r.Images, ","),
 		r.CreatedAt.UTC().Format(time.RFC3339), r.LastUsed.UTC().Format(time.RFC3339), r.RouteFile)
+	fmt.Fprintf(&b, "HOST=%s\nAPI_HOST=%s\n", r.Host, r.APIHost)
 	return os.WriteFile(filepath.Join(dir, "preview.env"), []byte(b.String()), 0o600)
 }
 
@@ -325,6 +337,7 @@ func readPreviewRecord(dir string) (PreviewRecord, error) {
 	r.V, _ = strconv.Atoi(kv["V"])
 	r.App, r.Project, r.DBName, r.RouteFile = kv["APP"], kv["PROJECT"], kv["DB_NAME"], kv["ROUTE_FILE"]
 	r.DBPassword = kv["DB_PASSWORD"]
+	r.Host, r.APIHost = kv["HOST"], kv["API_HOST"]
 	r.PR, _ = strconv.Atoi(kv["PR"])
 	r.GatePort, _ = strconv.Atoi(kv["GATE_PORT"])
 	if kv["IMAGES"] != "" {
@@ -561,7 +574,7 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 			fmt.Fprintf(&b, "    container_name: %s-gate\n    environment:\n", r.Project)
 			fmt.Fprintf(&b, "      PREVIEW: \"1\"\n      PR: \"%d\"\n", r.PR)
 			b.WriteString(previewDBEnvLines(r))
-			fmt.Fprintf(&b, "      BASE_URL: https://%s\n", PreviewHost(r.PR, k.DomainFor(r.App)))
+			fmt.Fprintf(&b, "      BASE_URL: https://%s\n      PREVIEW_HOST: %s\n      PREVIEW_API_HOST: %s\n", r.WebHost(k), r.WebHost(k), r.PublicAPIHost(k))
 			// The gate port, LOOPBACK only: the direct HTTP entry to the
 			// preview from the box itself, never from the network -- the
 			// public way in is the proxy route, with TLS. Publishing on all
@@ -604,10 +617,9 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 // previewRoute exposes the gate and, only for a multi-image stack, its API.
 // Avoid issuing a second certificate for static, gate-only previews.
 func previewRoute(r PreviewRecord, k PreviewKnob) string {
-	domain := k.DomainFor(r.App)
-	hosts := PreviewHost(r.PR, domain)
+	hosts := r.WebHost(k)
 	if len(r.Images) > 1 {
-		hosts += fmt.Sprintf(", pr-%d-api.%s", r.PR, domain)
+		hosts += ", " + r.PublicAPIHost(k)
 	}
 	return fmt.Sprintf(`# Written by komizo preview. %s PR #%d -- removed by 'komizo preview down'.
 %s {
@@ -809,7 +821,8 @@ var revikPreviewSeedPattern = regexp.MustCompile(`^[a-f0-9]{24}$`)
 
 func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app string, pr int, images []string, now time.Time) (PreviewRecord, error) {
 	var zero PreviewRecord
-	if err := validatePreviewArgs(app, pr); err != nil {
+	target, err := ResolvePreview(cfg.Knob, app, pr, len(images) > 1)
+	if err != nil {
 		return zero, err
 	}
 	if len(images) == 0 {
@@ -845,6 +858,7 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 		CreatedAt: now, LastUsed: now,
 		RouteFile: "_preview-" + project + ".caddy",
 	}
+	rec.Host, rec.APIHost = target.Host, target.APIHost
 	// A gate-only product -- one static container, no API -- gets NO
 	// database: nothing in it can open a connection, and a database created
 	// for a preview that will never connect is the invasiveness this whole
