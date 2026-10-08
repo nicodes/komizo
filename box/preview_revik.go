@@ -176,7 +176,8 @@ services:
     environment:
       PREVIEW: "1"
       PR: "{{.PR}}"
-      BASE_URL: https://{{.Host}}
+      BASE_URL: https://{{.Host}}{{.BasePath}}
+      PREVIEW_BASE_PATH: "{{.BasePath}}"
       PREVIEW_HOST: {{.Host}}
       PREVIEW_API_HOST: {{.APIHost}}
     ports: ["127.0.0.1:{{.GatePort}}:80"]
