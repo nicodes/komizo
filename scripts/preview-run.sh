@@ -6,7 +6,7 @@
 #
 # WHY A WRAPPER RATHER THAN A DOAS RULE ON komizo-box. komizo-box does
 # everything on this server; granting it would grant all of it. This narrows
-# the account to four preview subcommands and locks every one of them to the
+# the account to the preview subcommands and locks every one of them to the
 # caller's own app.
 #
 # POSIX sh, not bash. The version this replaces began `#!/bin/bash` and used
@@ -24,8 +24,8 @@ set -eu
 
 sub="${1:-}"
 case "$sub" in
-	up|down|ls|gc) : ;;
-	*) echo "komizo-preview: refused (preview up|down|ls|gc only)" >&2; exit 2 ;;
+	up|down|resolve|ls|gc) : ;;
+	*) echo "komizo-preview: refused (preview up|down|resolve|ls|gc only)" >&2; exit 2 ;;
 esac
 
 # One account, one app: komizo names every deploy account komizo-<app>, so the
