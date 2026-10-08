@@ -168,3 +168,119 @@ func TestAnOnDemandRouteWithAGateIsWritten(t *testing.T) {
 		t.Errorf("the gate did not reach the Caddyfile:\n%s", got)
 	}
 }
+
+func (b *proxyBox) tlsDir(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(b.root, "tls")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "Caddyfile"), 0o600, "*.preview.example.com {\n tls internal\n respond 404\n}\n")
+	// Fake root ownership like the existing id/chown stubs; actual file modes
+	// still come from the filesystem, so unsafe permissions are exercised.
+	write(t, filepath.Join(b.bin, "docker"), 0o755, "#!/bin/sh\ncase \"$*\" in *version) echo v2.10.2;; esac\nexit 0\n")
+	write(t, filepath.Join(b.bin, "stat"), 0o755, "#!/bin/sh\nif [ \"$2\" = '%u' ]; then echo 0; else exec /usr/bin/stat \"$@\"; fi\n")
+	return dir
+}
+
+func (b *proxyBox) runTLS(t *testing.T, dir string) (string, error) {
+	t.Helper()
+	cmd := exec.Command("sh", "-s")
+	cmd.Stdin = strings.NewReader(b.script)
+	cmd.Env = append(os.Environ(), "PATH="+b.bin+":/usr/bin:/bin", "TLS_ASK=", "TLS_CONFIG_DIR="+dir, "API_SOCKET_DIR="+filepath.Join(b.root, "run", "komizo", "api"))
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func TestWildcardTLSUsesNarrowReadOnlyMountAndPersistentCertificates(t *testing.T) {
+	b := newProxyBox(t)
+	dir := b.tlsDir(t)
+	write(t, filepath.Join(dir, "secrets.env"), 0o600, "DNS_TOKEN=test-only\n")
+	if out, err := b.runTLS(t, dir); err != nil {
+		t.Fatalf("%v: %s", err, out)
+	}
+	if !strings.Contains(b.caddyfile(t), "import /etc/caddy/tls/Caddyfile") {
+		t.Fatal("missing TLS policy import")
+	}
+	data, err := os.ReadFile(filepath.Join(b.proxyDir, "compose.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{dir + ":/etc/caddy/tls:ro", dir + "/secrets.env", "caddy_data:/data", "caddy_config:/config"} {
+		if !strings.Contains(string(data), required) {
+			t.Errorf("missing %s", required)
+		}
+	}
+	if strings.Contains(string(data), "DNS_TOKEN") {
+		t.Fatal("credential copied into generated compose")
+	}
+	old := b.caddyfile(t)
+	if out, err := b.runTLS(t, ""); err == nil || !strings.Contains(out, "--tls-config-dir") {
+		t.Fatalf("coverage silently removed: %v %s", err, out)
+	}
+	if b.caddyfile(t) != old {
+		t.Fatal("refused rerun changed Caddyfile")
+	}
+}
+
+func TestWildcardTLSValidationFailureLeavesRunningConfigurationUntouched(t *testing.T) {
+	b := newProxyBox(t)
+	dir := b.tlsDir(t)
+	write(t, filepath.Join(b.proxyDir, "Caddyfile"), 0o644, "original config\n")
+	write(t, filepath.Join(b.proxyDir, "compose.yml"), 0o644, "original compose\n")
+	write(t, filepath.Join(b.bin, "docker"), 0o755, "#!/bin/sh\ncase \"$*\" in *version) echo v2.10.2; exit 0;; esac\nif [ \"$1\" = run ]; then echo DO_NOT_LEAK_CREDENTIAL >&2; exit 1; fi\necho unexpected docker mutation >&2\nexit 99\n")
+	out, err := b.runTLS(t, dir)
+	if err == nil || !strings.Contains(out, "running proxy was not changed") {
+		t.Fatalf("%v: %s", err, out)
+	}
+	if strings.Contains(out, "DO_NOT_LEAK") || strings.Contains(out, "unexpected docker") {
+		t.Fatalf("unsafe failure: %s", out)
+	}
+	if b.caddyfile(t) != "original config\n" {
+		t.Fatal("Caddyfile overwritten before validation")
+	}
+	data, _ := os.ReadFile(filepath.Join(b.proxyDir, "compose.yml"))
+	if string(data) != "original compose\n" {
+		t.Fatal("compose overwritten before validation")
+	}
+}
+
+func TestWildcardTLSRejectsAppWritableConfiguration(t *testing.T) {
+	b := newProxyBox(t)
+	dir := b.tlsDir(t)
+	if err := os.Chmod(dir, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := b.runTLS(t, dir); err == nil || !strings.Contains(out, "must not be writable") {
+		t.Fatalf("%v: %s", err, out)
+	}
+	if b.caddyfile(t) != "" {
+		t.Fatal("unsafe configuration was installed")
+	}
+}
+
+func TestTLSConfigDirectoryValidation(t *testing.T) {
+	for _, path := range []string{"", "/etc/komizo/tls", "/srv/_proxy/tls"} {
+		if err := validateTLSConfigDir(path); err != nil {
+			t.Errorf("%s: %v", path, err)
+		}
+	}
+	for _, path := range []string{"/", "relative", "/etc//tls", "/etc/../tls", "/etc/..", "/etc/tls/", "/etc/tls\nsite", "/etc/$(id)"} {
+		if validateTLSConfigDir(path) == nil {
+			t.Errorf("accepted %q", path)
+		}
+	}
+}
+
+func TestWildcardTLSRejectsCaddyWithoutWildcardReuse(t *testing.T) {
+	b := newProxyBox(t)
+	dir := b.tlsDir(t)
+	write(t, filepath.Join(b.bin, "docker"), 0o755, "#!/bin/sh\necho v2.9.1\nexit 0\n")
+	out, err := b.runTLS(t, dir)
+	if err == nil || !strings.Contains(out, "Caddy 2.10 or newer") {
+		t.Fatalf("%v: %s", err, out)
+	}
+	if b.caddyfile(t) != "" {
+		t.Fatal("old Caddy configuration was installed")
+	}
+}
