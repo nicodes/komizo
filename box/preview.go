@@ -171,6 +171,43 @@ func ParsePreviewKnob(body string) (PreviewKnob, string) {
 }
 
 var previewMemoryPattern = regexp.MustCompile(`(?i)^([1-9][0-9]*)([kmgt]?)(?:b)?$`)
+
+// App limits override the host default; Revik may also size its six services
+// separately. Admission and Compose use this same lookup so the recorded
+// reservation is the sum of enforceable limits, including migration startup.
+func previewServiceMemory(k PreviewKnob, app, service string) string {
+	if service != "" {
+		if value := previewKnobGet(k.body, "MEM_LIMIT."+app+"."+service); value != "" {
+			return value
+		}
+	}
+	if value := previewKnobGet(k.body, "MEM_LIMIT."+app); value != "" {
+		return value
+	}
+	return k.MemLimit
+}
+
+var revikPreviewServices = []string{"gate", "api", "godot-api", "postgres", "redis", "migrate"}
+
+func previewMemoryReservation(k PreviewKnob, app string, images int) (int64, error) {
+	services := []string{""}
+	if app == "fieldsofrevik" {
+		services = revikPreviewServices
+	}
+	var reserved int64
+	for _, service := range services {
+		memory, err := previewMemoryBytes(previewServiceMemory(k, app, service))
+		if err != nil {
+			return 0, fmt.Errorf("preview up refused: invalid memory limit for %s %s", app, service)
+		}
+		reserved += memory
+	}
+	if app != "fieldsofrevik" {
+		reserved *= int64(images)
+	}
+	return reserved, nil
+}
+
 var previewCPUPattern = regexp.MustCompile(`^[0-9]+(?:\.[0-9]+)?$`)
 
 func previewMemoryBytes(value string) (int64, error) {
@@ -603,7 +640,8 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 		if i == 0 {
 			name = r.Project + "-gate"
 		}
-		fmt.Fprintf(&b, "  %s:\n    image: %s\n    mem_limit: %s\n    cpus: %s\n    restart: unless-stopped\n", name, image, k.MemLimit, k.CPULimit)
+		limit := previewServiceMemory(k, r.App, "")
+		fmt.Fprintf(&b, "  %s:\n    image: %s\n    mem_limit: %s\n    memswap_limit: %s\n    cpu_shares: 128\n    cpus: %s\n    restart: unless-stopped\n", name, image, limit, limit, k.CPULimit)
 		// A writable /tmp, because the fleet's images are scratch or
 		// distroless and run as an unprivileged uid.
 		//
@@ -886,7 +924,7 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	if cfg.Knob.InvalidBudget {
 		return zero, fmt.Errorf("preview up refused: invalid MEM_BUDGET")
 	}
-	memory, err := previewMemoryBytes(cfg.Knob.MemLimit)
+	_, err := previewMemoryBytes(cfg.Knob.MemLimit)
 	if err != nil || !validPreviewCPU(cfg.Knob.CPULimit) {
 		return zero, fmt.Errorf("preview up requires positive bounded memory and CPU limits")
 	}
@@ -925,12 +963,11 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 		V: 1, App: app, PR: pr, Project: project,
 		Images:    images,
 		CreatedAt: now, LastUsed: now,
-		RouteFile:           "_preview-" + project + ".caddy",
-		MemoryReservedBytes: memory * int64(len(images)),
+		RouteFile: "_preview-" + project + ".caddy",
 	}
-	if app == "fieldsofrevik" {
-		// Includes migration's startup peak, Redis and the four supplied images.
-		rec.MemoryReservedBytes = memory * 6
+	rec.MemoryReservedBytes, err = previewMemoryReservation(cfg.Knob, app, len(images))
+	if err != nil {
+		return zero, err
 	}
 	rec.Host, rec.APIHost, rec.BasePath = target.Host, target.APIHost, target.BasePath
 	if rec.BasePath != "" {
