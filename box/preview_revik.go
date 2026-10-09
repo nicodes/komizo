@@ -69,10 +69,14 @@ func revikPreviewCompose(r PreviewRecord, k PreviewKnob, network string) string 
 		PreviewRecord
 		PreviewKnob
 		Network, Host, APIHost, Admin, Migrator, Runtime, Backup, Bridge string
+		Limits                                                           map[string]string
 	}{r, k, network, r.WebHost(k), r.PublicAPIHost(k),
 		revikPreviewCredential(r.DBPassword, "admin"), revikPreviewCredential(r.DBPassword, "migrator"),
 		revikPreviewCredential(r.DBPassword, "runtime"), revikPreviewCredential(r.DBPassword, "backup"),
-		revikPreviewCredential(r.DBPassword, "bridge")}
+		revikPreviewCredential(r.DBPassword, "bridge"), map[string]string{}}
+	for _, service := range revikPreviewServices {
+		data.Limits[service] = previewServiceMemory(k, r.App, service)
+	}
 	var b strings.Builder
 	_ = revikPreviewTemplate.Execute(&b, data) // Static template, string fields only.
 	return b.String()
@@ -86,12 +90,14 @@ x-runtime: &runtime
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
   pids_limit: 128
-  mem_limit: {{.MemLimit}}
+  cpu_shares: 128
   cpus: {{.CPULimit}}
   tmpfs: ["/tmp:rw,noexec,nosuid,size=64m,mode=1777"]
 services:
   postgres:
     <<: *runtime
+    mem_limit: {{index .Limits "postgres"}}
+    memswap_limit: {{index .Limits "postgres"}}
     image: {{index .Images 3}}
     cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     tmpfs: ["/tmp:rw,nosuid,size=32m,mode=1777", "/var/run/postgresql:rw,nosuid,size=16m,mode=1777"]
@@ -113,6 +119,8 @@ services:
       start_period: 20s
   migrate:
     <<: *runtime
+    mem_limit: {{index .Limits "migrate"}}
+    memswap_limit: {{index .Limits "migrate"}}
     image: {{index .Images 1}}
     restart: "no"
     entrypoint: [/app/server, migrate]
@@ -123,6 +131,8 @@ services:
       postgres: {condition: service_healthy}
   api:
     <<: *runtime
+    mem_limit: {{index .Limits "api"}}
+    memswap_limit: {{index .Limits "api"}}
     image: {{index .Images 1}}
     env_file: [stack.env]
     environment:
@@ -143,6 +153,8 @@ services:
       retries: 24
   godot-api:
     <<: *runtime
+    mem_limit: {{index .Limits "godot-api"}}
+    memswap_limit: {{index .Limits "godot-api"}}
     image: {{index .Images 2}}
     environment:
       PORT: "3110"
@@ -159,6 +171,8 @@ services:
       redis: {condition: service_healthy}
   redis:
     <<: *runtime
+    mem_limit: {{index .Limits "redis"}}
+    memswap_limit: {{index .Limits "redis"}}
     image: redis:7-alpine@sha256:520775a41a63e77e06c73e35d2fd9cc15921a609516818796b4ecbb813078bc7
     user: "999:999"
     volumes: [redis_data:/data]
@@ -171,6 +185,8 @@ services:
       retries: 12
   {{.Project}}-gate:
     <<: *runtime
+    mem_limit: {{index .Limits "gate"}}
+    memswap_limit: {{index .Limits "gate"}}
     image: {{index .Images 0}}
     container_name: {{.Project}}-gate
     environment:

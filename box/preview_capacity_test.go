@@ -30,6 +30,53 @@ func TestPreviewLimitsCannotDisableCgroupsOrInjectCompose(t *testing.T) {
 	}
 }
 
+func TestPreviewServiceLimitsMatchAdmissionAndDoNotAllowSwapGrowth(t *testing.T) {
+	knob, _ := ParsePreviewKnob("MEM_LIMIT=64m\nMEM_LIMIT.fieldsofrevik.api=32m\nMEM_LIMIT.fieldsofrevik.migrate=32m\nMEM_LIMIT.fieldsofrevik.godot-api=160m\nMEM_LIMIT.prizm=96m")
+	reserved, err := previewMemoryReservation(knob, "fieldsofrevik", 4)
+	if err != nil || reserved != 416<<20 {
+		t.Fatalf("Revik reservation: %d %v", reserved, err)
+	}
+	reserved, err = previewMemoryReservation(knob, "prizm", 1)
+	if err != nil || reserved != 96<<20 {
+		t.Fatalf("app reservation: %d %v", reserved, err)
+	}
+	for _, app := range []string{"prizm", "fieldsofrevik"} {
+		r := PreviewRecord{App: app, PR: 1, Project: PreviewProject(app, 1), Images: []string{"gate:head"}}
+		if app == "fieldsofrevik" {
+			r.Images = revikImages()
+		}
+		body := previewCompose(r, knob, "edge", false, "")
+		if app == "fieldsofrevik" {
+			for _, service := range revikPreviewServices {
+				limit := previewServiceMemory(knob, app, service)
+				if !strings.Contains(body, "mem_limit: "+limit+"\n    memswap_limit: "+limit) {
+					t.Fatalf("missing enforced service limit: %s", service)
+				}
+			}
+		} else if !strings.Contains(body, "mem_limit: 96m\n    memswap_limit: 96m") {
+			t.Fatal("app override was not enforced")
+		}
+		if !strings.Contains(body, "cpu_shares: 128") {
+			t.Fatal("preview has default production CPU priority")
+		}
+	}
+}
+
+func TestPreviewInvalidAppLimitRefusesBeforeMutation(t *testing.T) {
+	for _, value := range []string{"0", "unlimited", "32m\"", "999999999999999999g"} {
+		cfg := previewTestConfig(t)
+		cfg.Knob, _ = ParsePreviewKnob("MEM_LIMIT.prizm=" + value)
+		f := &fakeDocker{}
+		if _, err := PreviewUp(context.Background(), f.run, cfg, "prizm", 1, []string{"gate:head"}, previewNow); err == nil || len(f.calls) != 0 {
+			t.Fatalf("invalid app limit performed work: %s %v", value, err)
+		}
+		knob, _ := ParsePreviewKnob("MEM_LIMIT.fieldsofrevik.godot-api=" + value)
+		if _, err := previewMemoryReservation(knob, "fieldsofrevik", 4); err == nil {
+			t.Fatalf("invalid Revik override accepted: %s", value)
+		}
+	}
+}
+
 func TestPreviewBudgetRefusalPreservesExistingResources(t *testing.T) {
 	cfg := previewTestConfig(t)
 	cfg.Knob.MemoryBudget = 768 << 20
@@ -157,6 +204,10 @@ func TestPreviewGateAliasMigrationWithRealCompose(t *testing.T) {
 			}
 		}
 		writeAndStart(compose)
+		limits, err := exec.Command("docker", "inspect", record.Project+"-gate", "--format", "{{.HostConfig.Memory}} {{.HostConfig.MemorySwap}} {{.HostConfig.CpuShares}}").Output()
+		if err != nil || strings.TrimSpace(string(limits)) != "67108864 67108864 128" {
+			t.Fatalf("real Docker did not enforce preview memory/swap/priority: %s %v", limits, err)
+		}
 		body, err := exec.Command("docker", "inspect", record.Project+"-gate", "--format", "{{json .NetworkSettings.Networks}}").Output()
 		if err != nil {
 			t.Fatal(err)
