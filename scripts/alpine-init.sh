@@ -25,6 +25,41 @@ SHARED_NETWORK="${SHARED_NETWORK:-edge}"
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
+# BEGIN preview database memory policy
+# Validate before any host mutation. A configured cap applies both when the
+# container is created and on re-init; no volume or production database changes.
+PREVIEW_DB_MEMORY=256m
+PREVIEW_DB_MEMORY_CONFIGURED=false
+if [ -e /etc/komizo/preview ]; then
+	PREVIEW_DB_MEMORY=$(awk '
+		/^DB_MEM_LIMIT=/ {
+			if (++count > 1) exit 1
+			value = substr($0, 14)
+			sub(/\r$/, "", value)
+		}
+		END {
+			if (count > 1) exit 1
+			if (!count) { print ""; exit }
+			value = tolower(value)
+			if (length(value) > 14 || value !~ /^[1-9][0-9]*([kmg]b?|b)?$/) exit 1
+			n = value; sub(/[^0-9].*$/, "", n)
+			unit = value; sub(/^[0-9]+/, "", unit)
+			factor = 1
+			if (unit ~ /^k/) factor = 1024
+			if (unit ~ /^m/) factor = 1048576
+			if (unit ~ /^g/) factor = 1073741824
+			bytes = n * factor
+			if (bytes < 6291456 || bytes > 68719476736) exit 1
+			print value
+		}' /etc/komizo/preview) || die "invalid or duplicate DB_MEM_LIMIT in preview knob"
+	if [ -n "$PREVIEW_DB_MEMORY" ]; then
+		PREVIEW_DB_MEMORY_CONFIGURED=true
+	else
+		PREVIEW_DB_MEMORY=256m
+	fi
+fi
+# END preview database memory policy
+
 [ "$(id -u)" -eq 0 ] || die "must run as root"
 
 case "$SHARED_NETWORK" in
@@ -198,10 +233,19 @@ else
 		-e POSTGRES_USER=postgres \
 		-e POSTGRES_DB=postgres \
 		-v komizo-previews-data:/var/lib/postgresql \
-		--memory 256m \
+		--memory "$PREVIEW_DB_MEMORY" \
+		--memory-swap "$PREVIEW_DB_MEMORY" \
+		--cpu-shares 128 \
+		--cpus 0.25 \
 		"$PREVIEW_DB_IMAGE" >/dev/null ||
 		die "could not start $PREVIEW_DB_NAME"
 	printf '    started %s on %s\n' "$PREVIEW_DB_NAME" "$SHARED_NETWORK"
+fi
+
+if [ "$PREVIEW_DB_MEMORY_CONFIGURED" = true ]; then
+	docker update --memory "$PREVIEW_DB_MEMORY" --memory-swap "$PREVIEW_DB_MEMORY" \
+		--cpu-shares 128 --cpus 0.25 "$PREVIEW_DB_NAME" >/dev/null ||
+		die "could not apply preview database resource policy"
 fi
 
 # Running is not accepting connections. Wait here, once, so the first
