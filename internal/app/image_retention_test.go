@@ -83,6 +83,8 @@ cp)
 	unreadable) exit 1 ;;
 	symlink) ln -s /etc/passwd "$3" ;;
 	variable) printf 'services:\n  gate:\n    image: ghcr.io/you/blog-gate:${GATE_TAG}\n' > "$3" ;;
+	oneline) printf 'services:\n  gate:\n    image: ghcr.io/you/blog-gate@sha256:gaterollback\n  ops: { image: "ghcr.io/you/blog-gate@sha256:gateold", profiles: [ops] }\n' > "$3" ;;
+	json) printf '{"services": {"gate": {"image": "ghcr.io/you/blog-gate@sha256:gaterollback"}}}\n' > "$3" ;;
 	*) printf 'services:\n  gate:\n    image: "ghcr.io/you/blog-gate@sha256:gaterollback" # pinned\n  api:\n    image: ghcr.io/you/blog-api:${APP_VERSION:?release}\n' > "$3" ;;
 	esac ;;
 rm) [ "$*" = 'rm -v reader' ] || exit 2 ;;
@@ -110,6 +112,12 @@ func TestAppImagePruneUsesOnlyTrustedTagsAndKeepsReferences(t *testing.T) {
 		{name: "rollback compose unreadable", record: record, live: "current", rollback: "unreadable", wantError: true},
 		{name: "rollback compose symlink", record: record, live: "current", rollback: "symlink", wantError: true},
 		{name: "rollback compose unresolvable", record: record, live: "current", rollback: "variable", wantError: true},
+		{name: "rollback one-line service refused", record: record, live: "current", rollback: "oneline", wantError: true},
+		{name: "rollback JSON compose refused", record: record, live: "current", rollback: "json", wantError: true},
+		{name: "current one-line service refused", record: record, live: "current", compose: pinned + "  ops: { image: ghcr.io/you/blog-gate@sha256:gateold, profiles: [ops] }\n", wantError: true},
+		{name: "current JSON compose refused", record: record, live: "current", compose: `{"services": {"gate": {"image": "ghcr.io/you/blog-gate@sha256:gatecurrent"}}}`, wantError: true},
+		{name: "current compose names no image", record: record, live: "current", compose: "services: {}\n", wantError: true},
+		{name: "comments and labels are not image keys", record: record, live: "current", compose: "# the gate image: pinned by digest\n" + pinned + "    labels:\n      org.opencontainers.image.source: x\n", args: []string{"--dry-run"}, wantOutput: "candidates=2"},
 		{name: "current compose unresolvable", record: record, live: "current", compose: "services:\n  gate:\n    image: ${GATE}\n", wantError: true},
 		{name: "current compose missing", record: record, live: "current", compose: "missing", wantError: true},
 		{name: "caller tags refused", record: record, live: "current", args: []string{"other", "old"}, wantError: true},

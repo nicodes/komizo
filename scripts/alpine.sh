@@ -1879,8 +1879,13 @@ trap 'exit 1' INT TERM HUP PIPE
 # Prints one image reference per line from a compose file, with the
 # deployment's APP_VERSION substituted. Fails if any reference still holds a
 # variable or anything else that is not a plain image reference, so a compose
-# this cannot read retains everything rather than guessing.
+# this cannot read retains everything rather than guessing. That includes an
+# image key anywhere but at the start of its own line (a one-line service, a
+# JSON compose) and a compose that names no image at all.
 compose_refs() {
+	if grep -v '^[[:space:]]*#' "$1" | grep -v '^[[:space:]]*image:' | grep -q "image[\"']*[[:space:]]*:"; then
+		return 1
+	fi
 	sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$1" | sed \
 		-e 's/[[:space:]]#.*$//' -e 's/[[:space:]]*$//' \
 		-e 's/^"\(.*\)"$/\1/' -e "s/^'\\(.*\\)'\$/\\1/" \
@@ -1890,6 +1895,7 @@ compose_refs() {
 		case "$ref" in ''|*[!A-Za-z0-9._/:@-]*) return 1 ;; esac
 		printf '%s\n' "$ref"
 	done < "$work/refs"
+	[ -s "$work/refs" ]
 }
 # Resolve every running/stopped container to its immutable image ID. No
 # removal is attempted if any reference cannot be established.
