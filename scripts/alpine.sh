@@ -1819,6 +1819,13 @@ chmod 755 "$DEPLOY_BIN"
 # --- 3a1. App image retention ----------------------------------------------
 # App accounts receive this fixed command, never Docker socket access. The
 # caller cannot choose a family or tags; the deploy wrapper writes that state.
+#
+# Config images pin service images BY DIGEST, and Docker stores a digest pull
+# with no tag. Retention therefore works on image IDs: it keeps every image a
+# container uses, the current and rollback config tags, and every image the
+# current and rollback compose files name, and removes the rest of the family
+# whether tagged or not. Skipping untagged images, as an earlier version did,
+# left every superseded digest-pinned gate image on disk forever.
 log "Installing $PRUNE_BIN"
 cat > "$PRUNE_BIN.tmp" <<'KOMIZO_PRUNE_EOF'
 #!/bin/sh
@@ -1860,23 +1867,118 @@ case "$previous" in *[!A-Za-z0-9._-]*) refuse "invalid rollback tag" ;; esac
 [ ! -L .env ] && [ -f .env ] || refuse "deployment identity unavailable"
 live=$(sed -n 's/^APP_VERSION=//p' .env)
 [ "$live" = "$current" ] || refuse "deployment identity differs from retention record"
+[ ! -L compose.yml ] && [ -f compose.yml ] || refuse "current compose unavailable"
+work=$(mktemp -d) || refuse "no scratch directory"
+cid=""
+cleanup() {
+	[ -z "$cid" ] || docker rm -v "$cid" >/dev/null 2>&1 || :
+	rm -rf "$work"
+}
+trap cleanup EXIT
+trap 'exit 1' INT TERM HUP PIPE
+# Prints one image reference per line from a compose file, with the
+# deployment's APP_VERSION substituted. Fails if any reference still holds a
+# variable or anything else that is not a plain image reference, so a compose
+# this cannot read retains everything rather than guessing. That includes an
+# image key anywhere but at the start of its own line (a one-line service, a
+# JSON compose) and a compose that names no image at all.
+compose_refs() {
+	if grep -v '^[[:space:]]*#' "$1" | grep -v '^[[:space:]]*image:' | grep -q "image[\"']*[[:space:]]*:"; then
+		return 1
+	fi
+	sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$1" | sed \
+		-e 's/[[:space:]]#.*$//' -e 's/[[:space:]]*$//' \
+		-e 's/^"\(.*\)"$/\1/' -e "s/^'\\(.*\\)'\$/\\1/" \
+		-e "s|\\\${APP_VERSION\\(:[?-][^}]*\\)\\{0,1\\}}|$2|g" \
+		-e "s|\\\$APP_VERSION|$2|g" > "$work/refs" || return 1
+	while IFS= read -r ref; do
+		case "$ref" in ''|*[!A-Za-z0-9._/:@-]*) return 1 ;; esac
+		printf '%s\n' "$ref"
+	done < "$work/refs"
+	[ -s "$work/refs" ]
+}
 # Resolve every running/stopped container to its immutable image ID. No
 # removal is attempted if any reference cannot be established.
 containers=$(docker ps -aq) || refuse "cannot list containers"
 used_ids=$(
-	for cid in $containers; do
-		docker inspect --format '{{.Image}}' "$cid" || exit 1
+	for container in $containers; do
+		docker inspect --format '{{.Image}}' "$container" || exit 1
 	done
 ) || refuse "cannot inspect containers"
 images=$(docker images --no-trunc --format '{{.Repository}} {{.Tag}} {{.ID}}') || refuse "cannot list images"
+ids=$(printf '%s\n' "$images" | awk 'NF == 3 { print $3 }' | sort -u)
+: > "$work/names"
+if [ -n "$ids" ]; then
+	# shellcheck disable=SC2086 # IDs are split on purpose; globbing is off.
+	docker image inspect --format '{{.Id}} {{join .RepoTags " "}} {{join .RepoDigests " "}}' $ids > "$work/names" || refuse "cannot inspect images"
+fi
+# The images both deployments need, named by their compose files: the live
+# one on disk (its identity is checked above) and the rollback one read from
+# its retained config image.
+refs=$(compose_refs compose.yml "$current") || refuse "current compose names an image this cannot resolve"
+untagged=1
+if [ -n "$previous" ]; then
+	if printf '%s\n' "$images" | awk -v repo="$CONFIG_IMAGE" -v tag="$previous" '$1 == repo && $2 == tag { found=1 } END { exit !found }'; then
+		cid=$(docker create --pull never --entrypoint /nonexistent "$CONFIG_IMAGE:$previous") || refuse "cannot open rollback config $CONFIG_IMAGE:$previous"
+		docker cp "$cid:/config/compose.yml" "$work/previous.yml" >/dev/null 2>&1 || refuse "rollback config $CONFIG_IMAGE:$previous has no readable compose.yml"
+		docker rm -v "$cid" >/dev/null 2>&1 || refuse "cannot remove the rollback config reader"
+		cid=""
+		[ ! -L "$work/previous.yml" ] && [ -f "$work/previous.yml" ] || refuse "rollback compose.yml is not a regular file"
+		prev_refs=$(compose_refs "$work/previous.yml" "$previous") || refuse "rollback compose names an image this cannot resolve"
+		refs="$refs
+$prev_refs"
+	else
+		# Nothing can say which untagged images the rollback needs, so all of
+		# them stay. Tagged images keep their tag-based rules.
+		untagged=0
+		echo "prune: rollback config $CONFIG_IMAGE:$previous is not on this host; untagged images retained"
+	fi
+fi
+printf '%s\n' "$refs" > "$work/refs"
+# Maps each reference to a local image ID through RepoTags/RepoDigests.
+# A digest also matches an image whose ID is that digest (containerd store).
+compose_ids=$(awk '
+	NR == FNR { known[$1] = 1; for (i = 2; i <= NF; i++) name[$i] = $1; next }
+	$0 == "" { next }
+	{
+		ref = $0
+		at = index(ref, "@")
+		if (at) {
+			repo = substr(ref, 1, at - 1); digest = substr(ref, at + 1)
+			sub(/:[^\/]*$/, "", repo)
+			ref = repo "@" digest
+			if (digest in known) print digest
+		} else if (ref !~ /:[^\/]*$/) {
+			ref = ref ":latest"
+		}
+		if (ref in name) print name[ref]
+	}' "$work/names" "$work/refs") || refuse "cannot resolve compose image references"
+keep=$(printf '%s\n%s\n' "$used_ids" "$compose_ids")
 removed=0
 candidates=0
 failed=0
+seen=" "
 while IFS=' ' read -r repo tag id; do
 	case "$repo" in "$prefix"*) ;; *) continue ;; esac
-	case "$tag" in ''|'<none>') continue ;; esac
-	[ "$tag" = "$current" ] && continue
-	[ -n "$previous" ] && [ "$tag" = "$previous" ] && continue
+	case "$tag" in
+		''|'<none>')
+			[ "$untagged" = 1 ] || continue
+			# Already handled through its tag, or referenced outside the family.
+			if printf '%s\n' "$images" | awk -v image="$id" '$3 == image && $2 != "" && $2 != "<none>" { found=1 } END { exit !found }'; then
+				continue
+			fi
+			case "$seen" in *" $id "*) continue ;; esac
+			seen="$seen$id "
+			target=$id
+			label="$repo (untagged $id)"
+			;;
+		*)
+			[ "$tag" = "$current" ] && continue
+			[ -n "$previous" ] && [ "$tag" = "$previous" ] && continue
+			target=$repo:$tag
+			label=$repo:$tag
+			;;
+	esac
 	# IDs of current/rollback tags can also have aliases; keep all such IDs.
 	if printf '%s\n' "$images" | awk -v image="$id" -v family="$prefix" -v current="$current" -v previous="$previous" '
 		index($1, family) == 1 && $3 == image && ($2 == current || (previous != "" && $2 == previous)) { found=1 }
@@ -1884,16 +1986,16 @@ while IFS=' ' read -r repo tag id; do
 	'; then
 		continue
 	fi
-	if printf '%s\n' "$used_ids" | grep -qxF "$id"; then continue; fi
+	if printf '%s\n' "$keep" | grep -qxF "$id"; then continue; fi
 	candidates=$((candidates + 1))
 	if [ "$dry_run" = 1 ]; then
-		echo "prune: would remove $repo:$tag"
-	elif docker image rm "$repo:$tag" >/dev/null 2>&1; then
+		echo "prune: would remove $label"
+	elif docker image rm "$target" >/dev/null 2>&1; then
 		removed=$((removed + 1))
-		echo "prune: removed $repo:$tag"
+		echo "prune: removed $label"
 	else
 		failed=$((failed + 1))
-		echo "prune: removal refused; kept $repo:$tag" >&2
+		echo "prune: removal refused; kept $label" >&2
 	fi
 done <<IMAGES
 $images

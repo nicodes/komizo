@@ -11,7 +11,7 @@
 #
 # The "Toolchain pins agree" step in ci.yml is what stops that happening again.
 # If you bump go.mod, bump this too; CI will tell you if you forget.
-go = "1.27.0"
+go = "1.27.2"
 
 # govulncheck, the fleet baseline's vulnerability scanner. Pinned like the
 # other tools: a scan run by whatever version apt had is not the scan anybody
