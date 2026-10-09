@@ -169,7 +169,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 12
-  gate:
+  {{.Project}}-gate:
     <<: *runtime
     image: {{index .Images 0}}
     container_name: {{.Project}}-gate

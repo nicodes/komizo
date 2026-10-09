@@ -42,7 +42,7 @@ func (f *fakeDocker) run(_ context.Context, stdin string, args ...string) (strin
 		}
 		return "gdam-db-1\tpostgres:16\n", nil
 	case "compose":
-		if args[len(args)-1] == "-d" && f.composeUpErr != nil {
+		if strings.Contains(" "+strings.Join(args, " ")+" ", " up ") && f.composeUpErr != nil {
 			return "", f.composeUpErr
 		}
 		return "", nil
