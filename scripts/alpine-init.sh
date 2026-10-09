@@ -237,7 +237,7 @@ LOG=/var/log/komizo-reclaim.log
 
 note() { printf '%s %s\n' "$(date -u '+%FT%TZ')" "$*" >> "$LOG"; }
 
-if ! docker info >/dev/null 2>&1; then
+if ! docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)"; then
 	note "skipped: docker is not responding"
 	exit 0
 fi
@@ -275,6 +275,21 @@ done
 if [ "$found" = 0 ]; then
 	note "skipped: no app-scoped image retention commands installed"
 fi
+
+# Retention keeps what deployments need, so a disk can still fill. Say so
+# while there is room to act: deploys refuse below their own free-space floor.
+# Logged here and to syslog; there is no notifier configured on the box.
+free_kb="$(df -Pk "${docker_root:-/var/lib/docker}" 2>/dev/null | awk 'NR == 2 { print $4 }')"
+case "$free_kb" in
+	''|*[!0-9]*) note "WARNING: could not read free disk under ${docker_root:-/var/lib/docker}" ;;
+	*)
+		if [ "$free_kb" -lt 4194304 ]; then
+			warning="WARNING: low disk: $((free_kb / 1024)) MiB free under ${docker_root:-/var/lib/docker} after retention (under 4096 MiB)"
+			note "$warning"
+			logger -p daemon.warning -t komizo-reclaim "$warning" 2>/dev/null || :
+		fi
+		;;
+esac
 
 # One line a day, so a year of history is a year of lines. Trimmed rather
 # than rotated: logrotate is one more thing to install and get wrong for a
