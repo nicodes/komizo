@@ -61,7 +61,7 @@ func TestRevikPreviewOwnsItsServicesAndNeverTouchesSharedDatabase(t *testing.T) 
 		t.Fatal(err)
 	}
 	text := string(compose)
-	for _, want := range []string{"  postgres:", "  migrate:", "  api:", "  godot-api:", "  redis:", "  gate:", "db: {internal: true}", "networks: [app, shared]", "127.0.0.1:", "env_file: [stack.env]", "TEST_MODE: \"false\""} {
+	for _, want := range []string{"  postgres:", "  migrate:", "  api:", "  godot-api:", "  redis:", "  " + r.Project + "-gate:", "db: {internal: true}", "networks: [app, shared]", "127.0.0.1:", "env_file: [stack.env]", "TEST_MODE: \"false\""} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %s", want)
 		}
@@ -134,7 +134,7 @@ func TestRevikPreviewComposeParsesWithPrivateNetworksAndScopedVolumes(t *testing
 			t.Fatalf("%s has invalid temporary filesystem mounts: %v", name, svc.Tmpfs)
 		}
 		_, shared := svc.Networks["shared"]
-		if shared != (name == "gate") || (name != "gate" && len(svc.Ports) != 0) {
+		if shared != (name == r.Project+"-gate") || (name != r.Project+"-gate" && len(svc.Ports) != 0) {
 			t.Fatalf("%s reaches shared network or publishes a port", name)
 		}
 	}
@@ -143,7 +143,7 @@ func TestRevikPreviewComposeParsesWithPrivateNetworksAndScopedVolumes(t *testing
 	}
 	if strings.Contains(doc.Services["api"].Environment["DATABASE_URL"], "revik_migrator") ||
 		doc.Services["api"].Environment["CLERK_SECRET_KEY"] != "sk_test_fixtureonly" ||
-		doc.Services["gate"].Environment["CLERK_SECRET_KEY"] != "" {
+		doc.Services[r.Project+"-gate"].Environment["CLERK_SECRET_KEY"] != "" {
 		t.Fatal("preview secrets crossed service boundaries")
 	}
 }
