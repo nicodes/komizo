@@ -172,3 +172,12 @@ func previewUpResponse(rec box.PreviewRecord, knob box.PreviewKnob) any {
 		Domain string `json:"domain"`
 	}{rec, domain}
 }
+
+// Read-only feature detection: products must fail closed on older host agents
+// before passing a credential-free runtime image to the preview primitive.
+func runPreviewCapabilities(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("preview-capabilities takes no arguments")
+	}
+	return json.NewEncoder(os.Stdout).Encode(map[string]any{"private_runtimes": true, "version": version})
+}
