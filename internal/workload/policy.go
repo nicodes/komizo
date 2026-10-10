@@ -21,16 +21,17 @@ import (
 const MaxBytes = 1 << 20
 
 type Policy struct {
-	Version          int              `json:"version"`
-	App              string           `json:"app"`
-	AppDir           string           `json:"app_dir"`
-	ImagePrefix      string           `json:"image_prefix"`
-	SharedNetwork    string           `json:"shared_network"`
-	SourceRepository string           `json:"source_repository,omitempty"`
-	RepositoryID     string           `json:"repository_id,omitempty"`
-	Resources        *ResourcePolicy  `json:"resources,omitempty"`
-	Readiness        *ReadinessPolicy `json:"readiness,omitempty"`
-	IngressNetwork   string           `json:"ingress_network,omitempty"`
+	Version                 int              `json:"version"`
+	App                     string           `json:"app"`
+	AppDir                  string           `json:"app_dir"`
+	ImagePrefix             string           `json:"image_prefix"`
+	SharedNetwork           string           `json:"shared_network"`
+	SourceRepository        string           `json:"source_repository,omitempty"`
+	RepositoryID            string           `json:"repository_id,omitempty"`
+	Resources               *ResourcePolicy  `json:"resources,omitempty"`
+	Readiness               *ReadinessPolicy `json:"readiness,omitempty"`
+	IngressNetwork          string           `json:"ingress_network,omitempty"`
+	RequireStatefulContract bool             `json:"require_stateful_contract,omitempty"`
 }
 
 var identifier = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}$`)
@@ -39,6 +40,9 @@ var revision = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 var digest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
 func (p Policy) Check() error {
+	if p.RequireStatefulContract && p.SourceRepository == "" {
+		return errors.New("stateful contracts require authenticated release source authority")
+	}
 	if p.IngressNetwork != "" && p.IngressNetwork != IsolatedIngress(p.App) {
 		return errors.New("ingress network must belong to this app")
 	}

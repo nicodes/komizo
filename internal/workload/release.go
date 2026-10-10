@@ -29,13 +29,14 @@ var numericID = regexp.MustCompile(`^[1-9][0-9]{0,19}$`)
 // ReleaseManifest binds the exact Docker configuration IDs validated by CI.
 // The Actions identity authenticates this entire document through its audience.
 type ReleaseManifest struct {
-	Version      int               `json:"version"`
-	Repository   string            `json:"repository"`
-	RepositoryID string            `json:"repository_id"`
-	Revision     string            `json:"revision"`
-	TestedCommit string            `json:"tested_commit"`
-	RunID        string            `json:"run_id"`
-	Images       map[string]string `json:"images"`
+	Version          int               `json:"version"`
+	Repository       string            `json:"repository"`
+	RepositoryID     string            `json:"repository_id"`
+	Revision         string            `json:"revision"`
+	TestedCommit     string            `json:"tested_commit"`
+	RunID            string            `json:"run_id"`
+	Images           map[string]string `json:"images"`
+	StatefulContract *StatefulContract `json:"stateful_contract,omitempty"`
 }
 
 type ReleaseEnvelope struct {
@@ -52,6 +53,14 @@ type ReleaseAcceptance struct {
 
 func (m ReleaseManifest) Check(p Policy, version string) error { return m.check(p, version, true) }
 func (m ReleaseManifest) check(p Policy, version string, actions bool) error {
+	if p.RequireStatefulContract && m.StatefulContract == nil {
+		return errors.New("stateful workload requires an audience-bound data and credential contract")
+	}
+	if m.StatefulContract != nil {
+		if err := m.StatefulContract.Check(version); err != nil {
+			return err
+		}
+	}
 	if m.Version != 1 || m.Repository != p.SourceRepository || m.RepositoryID != p.RepositoryID || m.Revision != version ||
 		!commitID.MatchString(version) || len(m.Images) < 2 || len(m.Images) > 16 {
 		return errors.New("release identity does not match host policy and tested source")
