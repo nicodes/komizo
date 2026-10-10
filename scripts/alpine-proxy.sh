@@ -106,6 +106,25 @@ if [ -z "$TLS_ASK" ]; then
 	done
 fi
 
+# A proxy recreation must retain every ingress granted by protected app policy.
+# An app's next deployment can create its network later, so create empty approved
+# networks here too. Never join a network merely because it exists on the host.
+isolated_networks=""
+for policy in /etc/komizo/workloads/*.json; do
+ [ -f "$policy" ] || continue
+ ingress="$(komizo-box workload ingress-name --policy "$policy")" || die "invalid protected ingress policy"
+ [ "$ingress" != "$SHARED_NETWORK" ] || continue
+ app=${policy##*/}
+ app=${app%.json}
+ if docker network inspect "$ingress" >/dev/null 2>&1; then
+  ownership="$(docker network inspect "$ingress" --format '{{.Internal}}|{{index .Labels "io.komizo.app"}}')"
+  [ "$ownership" = "true|$app" ] || die "isolated ingress has no matching protected owner"
+ else
+  docker network create --internal --label "io.komizo.app=$app" "$ingress" >/dev/null
+ fi
+ isolated_networks="$isolated_networks $ingress"
+done
+
 # TLS policy and credentials belong to the server operator, never to app images.
 # A flagless re-run must not quietly remove wildcard coverage and start issuing
 # individual preview certificates again. There is no implicit state carry-forward.
@@ -355,6 +374,11 @@ cat >> "$PROXY_DIR/compose.yml" <<EOF
       - caddy_config:/config
     networks:
       - shared
+EOF
+for ingress in $isolated_networks; do
+ printf '      - %s\n' "$ingress" >> "$PROXY_DIR/compose.yml"
+done
+cat >> "$PROXY_DIR/compose.yml" <<EOF
     # Unbounded by default, which is a disk filling up slowly enough that
     # nobody notices until it has. This is Caddy's RUNTIME log -- TLS renewals,
     # ACME, startup. The access log is a separate file under the logs volume,
@@ -375,6 +399,9 @@ networks:
     external: true
     name: $SHARED_NETWORK
 EOF
+for ingress in $isolated_networks; do
+ printf '  %s:\n    external: true\n    name: %s\n' "$ingress" "$ingress" >> "$PROXY_DIR/compose.yml"
+done
 chown root:root "$PROXY_DIR/compose.yml"
 chmod 644 "$PROXY_DIR/compose.yml"
 

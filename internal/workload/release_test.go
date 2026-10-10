@@ -169,6 +169,39 @@ func TestContainerdBindingUsesImmutableLocalConfiguration(t *testing.T) {
 	}
 }
 
+func TestLocalBindingRejectsMissingOrChangedImagesWithoutNetwork(t *testing.T) {
+	p, manifest, _, _ := releaseFixture(t)
+	accepted := ReleaseAcceptance{Manifest: manifest, Authority: actionsIssuer}
+	compose := []byte(`{"services":{"api":{"image":"` + p.ImagePrefix + "api:" + manifest.Revision + `"}}}`)
+	for _, outcome := range []string{"present", "missing", "changed"} {
+		t.Run(outcome, func(t *testing.T) {
+			run := func(_ context.Context, args ...string) (string, error) {
+				if args[0] != "image" || args[1] != "inspect" {
+					t.Fatalf("local binding attempted external/mutating operation: %v", args)
+				}
+				ref := args[2]
+				if outcome == "missing" && strings.Contains(ref, "-api:") {
+					return "", fmt.Errorf("not cached")
+				}
+				id := manifest.Images[ref]
+				if outcome == "changed" && strings.Contains(ref, "-api:") {
+					id = "sha256:" + strings.Repeat("f", 64)
+				}
+				body, _ := json.Marshal([]map[string]any{{"Id": id, "RepoDigests": []string{strings.TrimSuffix(ref, ":"+manifest.Revision) + "@sha256:" + strings.Repeat("9", 64)}}})
+				return string(body), nil
+			}
+			bound, err := BindLocalRelease(context.Background(), run, p, accepted, manifest.Revision, p.ImagePrefix+"config:"+manifest.Revision, compose)
+			if outcome == "present" {
+				if err != nil || !strings.Contains(string(bound), "api@sha256:") {
+					t.Fatalf("accepted cache refused: %v", err)
+				}
+			} else if err == nil {
+				t.Fatalf("%s local image accepted", outcome)
+			}
+		})
+	}
+}
+
 func TestInterruptedActivationIsDurableAndRequiresReconciliation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "operation.json")
 	now := time.Now().UTC()
