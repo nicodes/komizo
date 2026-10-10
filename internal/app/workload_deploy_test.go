@@ -33,6 +33,11 @@ func TestDeployWorkloadHelper(t *testing.T) {
 			}
 		}
 		switch args[1] {
+		case "activation-idle":
+		case "activation-submit":
+			fmt.Println("01234567890123456789012345678901")
+		case "activation-wait":
+			fmt.Println("deploy: started=yes")
 		case "ingress-name":
 			fmt.Println("edge")
 		case "ready": // fixture policies deliberately have no product probes
