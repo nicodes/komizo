@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nicodes/komizo/internal/workload"
 	"github.com/nicodes/komizo/scripts"
 )
 
@@ -83,6 +85,19 @@ case "$1" in
 esac
 exit 0
 `)
+	// The helper executes the real workload validator. Only host file ownership
+	// is simulated here; the CLI tests cover ownership independently.
+	write(t, filepath.Join(b.bin, "komizo-box"), 0755, "#!/bin/sh\nKOMIZO_WORKLOAD_TEST_HELPER=1\nexport KOMIZO_WORKLOAD_TEST_HELPER\nexec "+scripts.ShQuote(os.Args[0])+" -test.run=^TestDeployWorkloadHelper$ -- \"$@\"\n")
+	policy, err := workload.NewPolicy("blog", b.appDir, "ghcr.io/you/blog-config", "edge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(b.root, "workload-policy.json"), 0600, string(data))
+
 	// The test does not run as root, and the script chowns what it writes.
 	write(t, filepath.Join(b.bin, "chown"), 0o755, "#!/bin/sh\nexit 0\n")
 
@@ -108,6 +123,7 @@ exit 0
 		strings.Contains(b.script, "__STATE") {
 		t.Fatal("the deploy template has a placeholder this test does not substitute")
 	}
+	b.script = strings.ReplaceAll(b.script, `WORKLOAD_POLICY="/etc/komizo/workloads/blog.json"`, `WORKLOAD_POLICY="`+filepath.Join(b.root, "workload-policy.json")+`"`)
 	b.script = strings.ReplaceAll(b.script,
 		`FLOORS_FILE="/etc/komizo/deploy-floors"`,
 		`FLOORS_FILE="`+b.floors+`"`)
@@ -200,7 +216,7 @@ func write(t *testing.T, path string, mode os.FileMode, body string) {
 
 func TestADeployWritesTheRouteBesideTheProxyAndNotBesideTheApp(t *testing.T) {
 	b := newDeployBox(t)
-	b.publishes(t, "services:\n  web:\n    image: x\n",
+	b.publishes(t, "services:\n  web:\n    image: ghcr.io/you/blog-x:${APP_VERSION}\n",
 		"blog.example.com -> web\nwww.blog.example.com\n")
 
 	out, err := b.deploy(t, "abc123")
@@ -244,7 +260,7 @@ func TestADeployWritesTheRouteBesideTheProxyAndNotBesideTheApp(t *testing.T) {
 // two apps.
 func TestAHostnameAnotherAppAnnotatedStillCollides(t *testing.T) {
 	b := newDeployBox(t)
-	b.publishes(t, "services:\n  web:\n    image: x\n", "blog.example.com\n")
+	b.publishes(t, "services:\n  web:\n    image: ghcr.io/you/blog-x:${APP_VERSION}\n", "blog.example.com\n")
 	if out, err := b.deploy(t, "abc123"); err != nil {
 		t.Fatalf("first deploy failed: %v\n%s", err, out)
 	}
@@ -270,14 +286,14 @@ func TestAHostnameAnotherAppAnnotatedStillCollides(t *testing.T) {
 // config takes down an app that was working.
 func TestARefusedDeployLeavesTheBoxOnItsPreviousConfig(t *testing.T) {
 	b := newDeployBox(t)
-	b.publishes(t, "services:\n  web:\n    image: good\n", "blog.example.com\n")
+	b.publishes(t, "services:\n  web:\n    image: ghcr.io/you/blog-good:${APP_VERSION}\n", "blog.example.com\n")
 	if out, err := b.deploy(t, "abc123"); err != nil {
 		t.Fatalf("first deploy failed: %v\n%s", err, out)
 	}
 	before := b.route(t)
 
 	// A hostname Caddy would never accept.
-	b.publishes(t, "services:\n  web:\n    image: bad\n", "not a hostname!\n")
+	b.publishes(t, "services:\n  web:\n    image: ghcr.io/you/blog-bad:${APP_VERSION}\n", "not a hostname!\n")
 	out, err := b.deploy(t, "def456")
 	if err == nil {
 		t.Fatalf("an invalid hostname should have been refused:\n%s", out)
@@ -307,7 +323,7 @@ func TestARefusedDeployLeavesTheBoxOnItsPreviousConfig(t *testing.T) {
 
 func TestAnAppThatPublishesNoHostnamesGetsNoRoute(t *testing.T) {
 	b := newDeployBox(t)
-	b.publishes(t, "services:\n  worker:\n    image: x\n", "")
+	b.publishes(t, "services:\n  worker:\n    image: ghcr.io/you/blog-x:${APP_VERSION}\n", "")
 
 	out, err := b.deploy(t, "abc123")
 	if err != nil {
@@ -336,7 +352,7 @@ func TestTheDeployRefusesAVersionItCannotSafelyUse(t *testing.T) {
 // of them.
 func TestAHostnameMaySayHowItsCertificateIsObtained(t *testing.T) {
 	b := newDeployBox(t)
-	b.publishes(t, "services:\n  web:\n    image: x\n",
+	b.publishes(t, "services:\n  web:\n    image: ghcr.io/you/blog-x:${APP_VERSION}\n",
 		"blog.example.com -> web\n*.preview.blog.example.com -> web on-demand\nother.example.com on-demand\n")
 
 	out, err := b.deploy(t, "abc123")
@@ -363,7 +379,7 @@ func TestAHostnameMaySayHowItsCertificateIsObtained(t *testing.T) {
 func TestAWildcardWithoutATLSGateIsRefused(t *testing.T) {
 	b := newDeployBox(t)
 	b.ungateProxy(t)
-	b.publishes(t, "services:\n  web:\n    image: x\n",
+	b.publishes(t, "services:\n  web:\n    image: ghcr.io/you/blog-x:${APP_VERSION}\n",
 		"*.preview.blog.example.com -> web\n")
 
 	out, err := b.deploy(t, "abc123")
@@ -385,7 +401,7 @@ func TestAWildcardWithoutATLSGateIsRefused(t *testing.T) {
 func TestAModeKomizoCannotServeIsRefusedRatherThanIgnored(t *testing.T) {
 	for _, mode := range []string{"dns", "passthrough"} {
 		b := newDeployBox(t)
-		b.publishes(t, "services:\n  web:\n    image: x\n",
+		b.publishes(t, "services:\n  web:\n    image: ghcr.io/you/blog-x:${APP_VERSION}\n",
 			"blog.example.com -> web\n*.preview.blog.example.com -> web "+mode+"\n")
 
 		out, err := b.deploy(t, "abc123")
@@ -406,7 +422,7 @@ func TestAModeKomizoCannotServeIsRefusedRatherThanIgnored(t *testing.T) {
 // what a line may say; it does not make the file free-form.
 func TestSomethingThatIsNeitherAnArrowNorAModeIsStillRefused(t *testing.T) {
 	b := newDeployBox(t)
-	b.publishes(t, "services:\n  web:\n    image: x\n",
+	b.publishes(t, "services:\n  web:\n    image: ghcr.io/you/blog-x:${APP_VERSION}\n",
 		"blog.example.com -> web nonsense\n")
 	if out, err := b.deploy(t, "abc123"); err == nil {
 		t.Fatalf("junk after the arrow was accepted:\n%s", out)
@@ -430,7 +446,7 @@ func TestSomethingThatIsNeitherAnArrowNorAModeIsStillRefused(t *testing.T) {
 // nothing connecting the two.
 func TestAFailedPullLeavesNothingPublished(t *testing.T) {
 	b := newDeployBox(t)
-	b.publishes(t, "services:\n  web:\n    image: good\n", "blog.example.com\n")
+	b.publishes(t, "services:\n  web:\n    image: ghcr.io/you/blog-good:${APP_VERSION}\n", "blog.example.com\n")
 	if out, err := b.deploy(t, "abc123"); err != nil {
 		t.Fatalf("first deploy failed: %v\n%s", err, out)
 	}
@@ -442,7 +458,7 @@ func TestAFailedPullLeavesNothingPublished(t *testing.T) {
 	// A second version that is fine in every way this script can check, and
 	// whose images do not exist.
 	b.env = []string{"STUB_PULL_FAILS=1"}
-	b.publishes(t, "services:\n  web:\n    image: missing\n",
+	b.publishes(t, "services:\n  web:\n    image: ghcr.io/you/blog-missing:${APP_VERSION}\n",
 		"blog.example.com\nnew.example.com\n")
 	out, err := b.deploy(t, "def456")
 	if err == nil {
@@ -494,7 +510,7 @@ func TestAFailedPullLeavesNothingPublished(t *testing.T) {
 // which would be a test that passes for timing reasons.
 func TestTheHostnameClaimIsTakenUnderALock(t *testing.T) {
 	b := newDeployBox(t)
-	b.publishes(t, "services:\n  web:\n    image: x\n", "blog.example.com\n")
+	b.publishes(t, "services:\n  web:\n    image: ghcr.io/you/blog-x:${APP_VERSION}\n", "blog.example.com\n")
 	if out, err := b.deploy(t, "abc123"); err != nil {
 		t.Fatalf("deploy failed: %v\n%s", err, out)
 	}
@@ -537,7 +553,7 @@ func TestTheHostnameClaimIsTakenUnderALock(t *testing.T) {
 
 func TestDeployWithoutFloorsWarnsAndContinues(t *testing.T) {
 	b := newDeployBox(t)
-	b.publishes(t, "services:\n  web:\n    image: x\n", "blog.example.com\n")
+	b.publishes(t, "services:\n  web:\n    image: ghcr.io/you/blog-x:${APP_VERSION}\n", "blog.example.com\n")
 	out, err := b.deploy(t, "abc123")
 	if err != nil {
 		t.Fatalf("deploy failed: %v\n%s", err, out)
@@ -560,7 +576,7 @@ func TestDeployFloorsBelowRefuseWithoutComposeUp(t *testing.T) {
 	b := newDeployBox(t)
 	b.writeFloors(t, "DISK_AVAILABLE_FLOOR_BYTES=1000\nMEM_AVAILABLE_FLOOR_BYTES=1000\n")
 	b.writeReportJSON(t, `{"system":{"mem":{"total":2000,"used":1500,"available":500},"disks":[{"mount":"/","used":100,"size":600,"available":500}]}}`)
-	b.publishes(t, "services:\n  web:\n    image: x\n", "blog.example.com\n")
+	b.publishes(t, "services:\n  web:\n    image: ghcr.io/you/blog-x:${APP_VERSION}\n", "blog.example.com\n")
 	out, err := b.deploy(t, "abc123")
 	if err == nil {
 		t.Fatalf("deploy should have been refused:\n%s", out)
@@ -580,7 +596,7 @@ func TestDeployFloorsAboveProceeds(t *testing.T) {
 	b := newDeployBox(t)
 	b.writeFloors(t, "DISK_AVAILABLE_FLOOR_BYTES=100\nMEM_AVAILABLE_FLOOR_BYTES=100\n")
 	b.writeReportJSON(t, `{"system":{"mem":{"total":2000,"used":500,"available":1500},"disks":[{"mount":"/","used":100,"size":1600,"available":1500}]}}`)
-	b.publishes(t, "services:\n  web:\n    image: x\n", "blog.example.com\n")
+	b.publishes(t, "services:\n  web:\n    image: ghcr.io/you/blog-x:${APP_VERSION}\n", "blog.example.com\n")
 	out, err := b.deploy(t, "abc123")
 	if err != nil {
 		t.Fatalf("deploy failed: %v\n%s", err, out)
@@ -600,7 +616,7 @@ func TestDeployFloorsBelowTwiceWarnsAndProceeds(t *testing.T) {
 	b := newDeployBox(t)
 	b.writeFloors(t, "DISK_AVAILABLE_FLOOR_BYTES=100\nMEM_AVAILABLE_FLOOR_BYTES=100\n")
 	b.writeReportJSON(t, `{"system":{"mem":{"total":2000,"used":500,"available":150},"disks":[{"mount":"/","used":100,"size":1600,"available":150}]}}`)
-	b.publishes(t, "services:\n  web:\n    image: x\n", "blog.example.com\n")
+	b.publishes(t, "services:\n  web:\n    image: ghcr.io/you/blog-x:${APP_VERSION}\n", "blog.example.com\n")
 	out, err := b.deploy(t, "abc123")
 	if err != nil {
 		t.Fatalf("deploy failed: %v\n%s", err, out)
@@ -627,7 +643,7 @@ func TestDeployFloorsAboveTwiceIsQuiet(t *testing.T) {
 	b := newDeployBox(t)
 	b.writeFloors(t, "DISK_AVAILABLE_FLOOR_BYTES=100\nMEM_AVAILABLE_FLOOR_BYTES=100\n")
 	b.writeReportJSON(t, `{"system":{"mem":{"total":2000,"used":500,"available":1500},"disks":[{"mount":"/","used":100,"size":1600,"available":1500}]}}`)
-	b.publishes(t, "services:\n  web:\n    image: x\n", "blog.example.com\n")
+	b.publishes(t, "services:\n  web:\n    image: ghcr.io/you/blog-x:${APP_VERSION}\n", "blog.example.com\n")
 	out, err := b.deploy(t, "abc123")
 	if err != nil {
 		t.Fatalf("deploy failed: %v\n%s", err, out)
@@ -643,7 +659,7 @@ func TestDeployFloorsAboveTwiceIsQuiet(t *testing.T) {
 func TestDeployFloorsSetButReportMissingRefuses(t *testing.T) {
 	b := newDeployBox(t)
 	b.writeFloors(t, "MEM_AVAILABLE_FLOOR_BYTES=100\n")
-	b.publishes(t, "services:\n  web:\n    image: x\n", "blog.example.com\n")
+	b.publishes(t, "services:\n  web:\n    image: ghcr.io/you/blog-x:${APP_VERSION}\n", "blog.example.com\n")
 	out, err := b.deploy(t, "abc123")
 	if err == nil {
 		t.Fatalf("deploy should have been refused:\n%s", out)
@@ -660,7 +676,7 @@ func TestDeployFloorsSetButReportLacksAvailableRefuses(t *testing.T) {
 	b := newDeployBox(t)
 	b.writeFloors(t, "DISK_AVAILABLE_FLOOR_BYTES=100\nMEM_AVAILABLE_FLOOR_BYTES=100\n")
 	b.writeReportJSON(t, `{"system":{"mem":{"total":2000,"used":500},"disks":[{"mount":"/","used":100,"size":1600}]}}`)
-	b.publishes(t, "services:\n  web:\n    image: x\n", "blog.example.com\n")
+	b.publishes(t, "services:\n  web:\n    image: ghcr.io/you/blog-x:${APP_VERSION}\n", "blog.example.com\n")
 	out, err := b.deploy(t, "abc123")
 	if err == nil {
 		t.Fatalf("deploy should have been refused:\n%s", out)
