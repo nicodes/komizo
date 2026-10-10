@@ -635,6 +635,56 @@ func previewDBEnvLines(r PreviewRecord) string {
 		r.DBName, r.DBName, r.DBName, r.DBPassword)
 }
 
+// Components named renderer or runtime are credential-free private services.
+// This is a generic component contract, independent of application names.
+func previewRuntimeRole(image string) string {
+	name := image[strings.LastIndex(image, "/")+1:]
+	name, _, _ = strings.Cut(name, "@")
+	name, _, _ = strings.Cut(name, ":")
+	for _, role := range []string{"renderer", "runtime"} {
+		if name == role || strings.HasSuffix(name, "-"+role) {
+			return role
+		}
+	}
+	return ""
+}
+func previewHasRuntime(images []string) bool {
+	if len(images) < 2 {
+		return false
+	}
+	for _, image := range images[1:] {
+		if previewRuntimeRole(image) != "" {
+			return true
+		}
+	}
+	return false
+}
+func previewImagesMemoryReservation(k PreviewKnob, app string, images []string) (int64, error) {
+	if len(images) == 0 {
+		return 0, fmt.Errorf("no preview images")
+	}
+	reserved, err := previewMemoryReservation(k, app, len(images))
+	if err != nil || app == "fieldsofrevik" {
+		return reserved, err
+	}
+	base, err := previewMemoryBytes(previewServiceMemory(k, app, ""))
+	if err != nil {
+		return 0, err
+	}
+	for _, image := range images[1:] {
+		role := previewRuntimeRole(image)
+		if role == "" {
+			continue
+		}
+		limit, err := previewMemoryBytes(previewServiceMemory(k, app, role))
+		if err != nil {
+			return 0, fmt.Errorf("invalid private runtime memory limit: %w", err)
+		}
+		reserved += limit - base
+	}
+	return reserved, nil
+}
+
 func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv bool, dbEndpoint string) string {
 	if r.App == "fieldsofrevik" {
 		return revikPreviewCompose(r, k, network)
@@ -654,7 +704,11 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 		if i == 0 {
 			name = r.Project + "-gate"
 		}
-		limit := previewServiceMemory(k, r.App, "")
+		role := ""
+		if i > 0 {
+			role = previewRuntimeRole(image)
+		}
+		limit := previewServiceMemory(k, r.App, role)
 		fmt.Fprintf(&b, "  %s:\n    image: %s\n    mem_limit: %s\n    memswap_limit: %s\n    cpu_shares: 128\n    cpus: %s\n    restart: unless-stopped\n", name, image, limit, limit, k.CPULimit)
 		// A writable /tmp, because the fleet's images are scratch or
 		// distroless and run as an unprivileged uid.
@@ -700,6 +754,8 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 			if len(r.Images) > 1 {
 				b.WriteString("      - backend\n")
 			}
+		} else if role != "" {
+			b.WriteString("    read_only: true\n    cap_drop: [ALL]\n    security_opt: [no-new-privileges:true]\n    init: true\n    pids_limit: 128\n    networks:\n      - runtime\n")
 		} else {
 			fmt.Fprintf(&b, "    environment:\n      PREVIEW: \"1\"\n      PR: \"%d\"\n", r.PR)
 			b.WriteString(previewDBEnvLines(r))
@@ -710,6 +766,9 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 				b.WriteString("    env_file:\n      - stack.env\n")
 			}
 			b.WriteString("    networks:\n      - backend\n")
+			if previewHasRuntime(r.Images) {
+				b.WriteString("      - runtime\n")
+			}
 		}
 	}
 	// ONE network, the shared one, and never the app's <app>_default.
@@ -730,6 +789,9 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 	fmt.Fprintf(&b, "networks:\n  shared:\n    external: true\n    name: %s\n", network)
 	if len(r.Images) > 1 {
 		fmt.Fprintf(&b, "  backend:\n    external: true\n    name: %s-backend\n", r.Project)
+	}
+	if previewHasRuntime(r.Images) {
+		fmt.Fprintf(&b, "  runtime:\n    name: %s-runtime\n    internal: true\n", r.Project)
 	}
 	return b.String()
 }
@@ -1000,7 +1062,7 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 		CreatedAt: now, LastUsed: now,
 		RouteFile: "_preview-" + project + ".caddy",
 	}
-	rec.MemoryReservedBytes, err = previewMemoryReservation(cfg.Knob, app, len(images))
+	rec.MemoryReservedBytes, err = previewImagesMemoryReservation(cfg.Knob, app, images)
 	if err != nil {
 		return zero, err
 	}
