@@ -91,12 +91,7 @@ func runWorkloadRelease(args []string) error {
 		if err != nil {
 			return err
 		}
-		run := func(ctx context.Context, args ...string) (string, error) {
-			cmd := exec.CommandContext(ctx, "docker", args...)
-			out, err := cmd.Output()
-			return string(out), err
-		}
-		pinned, err := workload.BindRelease(context.Background(), run, p, accepted, *version, *configImage, body)
+		pinned, err := workload.BindRelease(context.Background(), dockerReleaseRun, p, accepted, *version, *configImage, body)
 		if err != nil {
 			return err
 		}
@@ -200,6 +195,27 @@ func admitWorkloadRelease(p workload.Policy, version, dir, output string) error 
 func bytesTrim(body []byte) []byte { return []byte(strings.TrimSpace(string(body))) }
 
 func dockerReleaseRun(ctx context.Context, args ...string) (string, error) {
+	if len(args) == 2 && args[0] == "config-digest" {
+		ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, "docker", "image", "save", args[1])
+		stdout, err := cmd.StdoutPipe()
+		if err != nil {
+			return "", err
+		}
+		if err := cmd.Start(); err != nil {
+			return "", err
+		}
+		id, readErr := workload.DockerArchiveConfigDigest(stdout)
+		if readErr != nil {
+			cancel()
+		}
+		waitErr := cmd.Wait()
+		if readErr != nil {
+			return "", readErr
+		}
+		return id, waitErr
+	}
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	out, err := cmd.Output()
 	return string(out), err
