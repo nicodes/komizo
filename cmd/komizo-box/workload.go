@@ -15,6 +15,18 @@ import (
 func runWorkload(args []string) error {
 	if len(args) > 0 {
 		switch args[0] {
+		case "image-refs":
+			if len(args) != 1 {
+				return errors.New("image-refs reads only standard input")
+			}
+			refs, err := workload.JSONImageReferences(os.Stdin)
+			if err != nil {
+				return err
+			}
+			for _, ref := range refs {
+				fmt.Println(ref)
+			}
+			return nil
 		case "capacity":
 			return runWorkloadCapacity(args[1:])
 		case "trust", "release-admit", "release-bind", "release-bootstrap", "operation":
