@@ -38,7 +38,7 @@ func (f *fakeDocker) run(_ context.Context, stdin string, args ...string) (strin
 	switch args[0] {
 	case "network":
 		if args[1] == "inspect" {
-			return strings.TrimSuffix(args[2], "-backend"), nil
+			return strings.TrimSuffix(strings.TrimSuffix(args[2], "-backend"), "-ingress"), nil
 		}
 		return "", nil
 	case "ps":

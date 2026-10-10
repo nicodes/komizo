@@ -56,9 +56,20 @@ func Diagnose(r Report) []Problem {
 	}
 
 	for _, a := range r.Apps {
+		appAttached, network := attached, r.Network
+		if a.Ingress != nil {
+			network = a.Ingress
+			appAttached = map[string]bool{}
+			for _, member := range network.Members {
+				appAttached[member.Container] = true
+			}
+			if r.Proxy != nil && r.Proxy.Running() && !appAttached["komizo-proxy"] && a.Running() > 0 && len(a.Hosts) > 0 {
+				out = append(out, Problem{Kind: ProblemDetached, App: a.Name, Detail: fmt.Sprintf("%s ingress %q is detached from the shared proxy", a.Name, network.Name)})
+			}
+		}
 		if op := a.Deployment; op != nil {
 			switch op.Phase {
-			case "failed", "activation_failed":
+			case "failed", "activation_failed", "readiness_failed":
 				out = append(out, Problem{Kind: ProblemDeploymentIncomplete, App: a.Name, Detail: fmt.Sprintf("%s deployment %s ended in %s; inspect its journal before changing versions", a.Name, op.Candidate, op.Phase)})
 			case "admitted", "configured", "activating":
 				if r.At.Sub(op.At) > 10*time.Minute {
@@ -75,10 +86,10 @@ func Diagnose(r Report) []Problem {
 		// Only when something is actually running: an app that is entirely down
 		// is a different problem, reported below, and saying both would be two
 		// alerts for one fault.
-		if len(a.Hosts) > 0 && a.Running() > 0 && r.Network != nil {
+		if len(a.Hosts) > 0 && a.Running() > 0 && network != nil {
 			any := false
 			for _, c := range a.Containers {
-				if c.State == "running" && attached[c.Name] {
+				if c.State == "running" && appAttached[c.Name] {
 					any = true
 					break
 				}
@@ -88,7 +99,7 @@ func Diagnose(r Report) []Problem {
 					Kind: ProblemDetached,
 					App:  a.Name,
 					Detail: fmt.Sprintf("%s publishes %d hostname(s) but no running container is attached to network %q",
-						a.Name, len(a.Hosts), r.Network.Name),
+						a.Name, len(a.Hosts), network.Name),
 				})
 			}
 		}

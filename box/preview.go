@@ -1281,7 +1281,16 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 			return zero, fmt.Errorf("migrating this preview's gate alias: %w", err)
 		}
 	}
-	if err := os.WriteFile(composePath, []byte(previewCompose(rec, cfg.Knob, cfg.Network, stackEnvErr == nil, dbEndpoint)), 0o600); err != nil {
+	ingress, err := ensurePreviewIngress(ctx, run, project, cfg.Proxy)
+	if err != nil {
+		return zero, err
+	}
+	body := previewCompose(rec, cfg.Knob, ingress, stackEnvErr == nil, dbEndpoint)
+	if info, err := os.Lstat(filepath.Join(cfg.Root, "/etc/komizo/resources.json")); err == nil && info.Mode().IsRegular() {
+		body = strings.ReplaceAll(body, "    restart: unless-stopped\n", "    cgroup_parent: /komizo-previews\n    restart: unless-stopped\n")
+		body = strings.Replace(body, "\n  restart: unless-stopped\n", "\n  cgroup_parent: /komizo-previews\n  restart: unless-stopped\n", 1)
+	}
+	if err := os.WriteFile(composePath, []byte(body), 0o600); err != nil {
 		return zero, err
 	}
 
@@ -1322,6 +1331,9 @@ func PreviewDown(ctx context.Context, run previewRun, cfg PreviewUpConfig, rec P
 		}
 	}
 	if err := RemovePreviewRoute(ctx, run, cfg.Proxy, cfg.RoutesDir, rec.RouteFile); err != nil {
+		return err
+	}
+	if err := removePreviewIngress(ctx, run, rec.Project, cfg.Proxy); err != nil {
 		return err
 	}
 	if rec.App != "fieldsofrevik" && len(rec.Images) > 1 {

@@ -92,6 +92,7 @@ exit 0
 	if err != nil {
 		t.Fatal(err)
 	}
+	policy.Resources = &workload.ResourcePolicy{Default: workload.ServiceBudget{MemoryBytes: 128 << 20, MemorySwapBytes: 128 << 20, MilliCPUs: 500}, MaxMemoryBytes: 512 << 20, MaxMemorySwapBytes: 512 << 20, MaxMilliCPUs: 2000}
 	data, err := json.Marshal(policy)
 	if err != nil {
 		t.Fatal(err)

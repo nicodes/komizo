@@ -33,6 +33,9 @@ func TestDeployWorkloadHelper(t *testing.T) {
 			}
 		}
 		switch args[1] {
+		case "ingress-name":
+			fmt.Println("edge")
+		case "ready": // fixture policies deliberately have no product probes
 		case "release-admit":
 			if err := os.WriteFile(output, []byte(`{}`), 0600); err != nil {
 				os.Exit(1)

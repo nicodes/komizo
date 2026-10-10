@@ -97,6 +97,36 @@ else
 	log "Docker, compose, openssh and doas are already installed"
 fi
 
+# BEGIN host resources boot policy
+# The dependency prevents Docker from starting if a protected policy cannot be
+# applied. Stopping this oneshot leaves active controllers and limits intact.
+mkdir -p /etc/init.d /etc/conf.d
+cat > /etc/init.d/komizo-resources <<'KOMIZO_RESOURCES_EOF'
+#!/sbin/openrc-run
+# shellcheck disable=SC2034 # OpenRC reads this service metadata.
+description="Apply Komizo operator resource ceilings"
+depend() {
+ need cgroups
+ before docker
+}
+start() {
+ [ -e /etc/komizo/resources.json ] || return 0
+ /usr/local/bin/komizo-box workload host-resources --apply
+}
+stop() { return 0; }
+KOMIZO_RESOURCES_EOF
+chmod 755 /etc/init.d/komizo-resources
+# shellcheck disable=SC2016 # OpenRC expands this when loading its protected config.
+resource_dependency='rc_need="${rc_need} komizo-resources"'
+if ! grep -Fx "$resource_dependency" /etc/conf.d/docker >/dev/null 2>&1; then
+ printf '\n%s\n' "$resource_dependency" >> /etc/conf.d/docker
+fi
+rc-update add komizo-resources default
+if [ -e /etc/komizo/resources.json ]; then
+ /usr/local/bin/komizo-box workload host-resources --apply
+fi
+# END host resources boot policy
+
 log "Enabling Docker at boot"
 rc-update add docker default
 rc-service docker start || true   # already running on re-run
@@ -164,6 +194,13 @@ rc-update add local default >/dev/null 2>&1 || true
 # A host-wide image prune would defeat those guarantees. Missing or stale
 # app records therefore retain images; the rootd sweep separately handles old
 # dangling layers. The same reviewed maintenance script runs nightly and here.
+# A protected host envelope is applied before infrastructure starts. The OpenRC
+# service installed with it restores controllers and ceilings before Docker.
+preview_cgroup=""
+if [ -f /etc/komizo/resources.json ]; then
+ komizo-box workload host-resources --apply
+ preview_cgroup=/komizo-preview-database
+fi
 # --- komizo's own preview database server -------------------------------------
 #
 # ONE postgres per host, owned by komizo, for the per-PR databases previews
@@ -233,6 +270,7 @@ else
 	# matches. (The comment lives here rather than beside the flag: a
 	# comment inside a \-continued command is SC2215.)
 	docker run -d \
+		--cgroup-parent "${preview_cgroup:-/}" \
 		--name "$PREVIEW_DB_NAME" \
 		--restart unless-stopped \
 		--network "$PREVIEW_DB_NETWORK" \

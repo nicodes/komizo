@@ -60,6 +60,8 @@ func runWorkloadRelease(args []string) error {
 		return admitWorkloadRelease(p, *version, dir, *output)
 	case "operation":
 		return workload.RecordOperation(filepath.Join(dir, "operation.json"), p.App, *version, *previous, *phase, time.Now().UTC())
+	case "ready":
+		return readyWorkload(p, *version, *previous, dir, *compose)
 	case "release-bootstrap":
 		if *compose == "" || *configImage == "" {
 			return errors.New("bootstrap needs local compose and configuration image")
