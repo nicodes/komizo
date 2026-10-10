@@ -15,6 +15,8 @@ import (
 func runWorkload(args []string) error {
 	if len(args) > 0 {
 		switch args[0] {
+		case "host-resources":
+			return runHostResources(args[1:])
 		case "image-refs":
 			if len(args) != 1 {
 				return errors.New("image-refs reads only standard input")
@@ -29,7 +31,13 @@ func runWorkload(args []string) error {
 			return nil
 		case "capacity":
 			return runWorkloadCapacity(args[1:])
-		case "trust", "release-admit", "release-bind", "release-bootstrap", "operation":
+		case "budgets":
+			return runWorkloadBudgets(args[1:])
+		case "ingress-name", "isolate-ingress":
+			return runWorkloadIngress(args[1:], args[0] == "isolate-ingress")
+		case "readiness":
+			return runWorkloadReadinessPolicy(args[1:])
+		case "trust", "release-admit", "release-bind", "release-bootstrap", "operation", "ready":
 			return runWorkloadRelease(args)
 		}
 	}
@@ -66,6 +74,9 @@ func runWorkload(args []string) error {
 			authority := old
 			authority.SourceRepository = ""
 			authority.RepositoryID = ""
+			authority.Resources = nil // provisioning retains the operator's envelope
+			authority.Readiness = nil
+			authority.IngressNetwork = ""
 			if authority != p {
 				return errors.New("existing workload policy differs; review an operator policy update")
 			}

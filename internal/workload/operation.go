@@ -52,7 +52,7 @@ func RecordOperation(path, app, candidate, previous, phase string, now time.Time
 		return errors.New("invalid deployment operation identity")
 	}
 	switch phase {
-	case "admitted", "configured", "activating", "activated", "prepared_stopped", "failed", "activation_failed", "reconciled":
+	case "admitted", "configured", "activating", "activated", "ready", "readiness_failed", "prepared_stopped", "failed", "activation_failed", "reconciled":
 	default:
 		return errors.New("invalid deployment operation phase")
 	}

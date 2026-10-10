@@ -194,6 +194,7 @@ type App struct {
 
 	// Deployment is root-owned durable activation state, including failures.
 	Deployment *Deployment `json:"deployment,omitempty"`
+	Ingress    *Network    `json:"ingress,omitempty"`
 	Containers []Container `json:"containers,omitempty"`
 	// Hosts is every name this app answers on, with the container the app said
 	// serves it. The service is empty when the app did not say -- which is the

@@ -7,6 +7,7 @@
 import { useParams } from "@solidjs/router";
 import { createResource, createSignal, For, Show } from "solid-js";
 import { readReport, runAction } from "@/lib/api";
+import { deploymentStatus } from "@/lib/deployment";
 import { ago } from "@/lib/format";
 import { Badge, Dim, Row, Section } from "@/components";
 const ACTIONS = ["restart", "start", "stop"] as const;
@@ -58,6 +59,8 @@ export default function AppDetail() {
                     }
                   />
                 </Row>
+                <Row label="last deployment check">{deploymentStatus(a())}</Row>
+                <Show when={a().deployment}><Row label="checked">{ago(a().deployment!.at)}</Row></Show>
                 <Row label="deployed">{a().version ?? "none"}</Row>
                 <Row label="config">{a().config_image ?? "—"}</Row>
                 <Show when={a().stopped && a().stopped_at}>
@@ -83,7 +86,7 @@ export default function AppDetail() {
                   <Dim>{answer()}</Dim>
                 </Show>
                 <Dim>
-                  These three and no others: the allowlist is enforced by the CLI that serves this page, not by it.
+                  Start, stop or restart this app. A restart does not verify public readiness.
                 </Dim>
               </Section>
 
