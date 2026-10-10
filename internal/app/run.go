@@ -245,7 +245,7 @@ hand.
   komizo add     --host root@HOST --app NAME --config REF
   komizo list    --host root@HOST
   komizo report  --host root@HOST
-  komizo enrol   --host root@HOST --token kmz_enr_... --api https://service-you-run
+  komizo enrol   --host root@HOST --remove (retire a legacy registration)
   komizo remove  --host root@HOST --app NAME --yes
   komizo set-secret   --host root@HOST --app NAME --name SECRET [--file]
   komizo unset-secret --host root@HOST --app NAME [--list | --name NAME --yes]
@@ -260,10 +260,9 @@ hand.
 
 THE SERVICE IS DECOMMISSIONED. komizo-be is gone (board decision) and this CLI
 is the whole product: you manage your servers from it directly, over SSH, with
-nothing to sign in to. "komizo login" and "komizo enrol" without a token talked
-to that service, so they now refuse -- plainly, and without touching the
-network. "komizo enrol --token" and "komizo enrol --remove" stay: the exchange
-happens on the box, so they work against a service you run yourself.
+nothing to sign in to. Login and new hosted enrolment now refuse before
+credentials or network access. "komizo enrol --remove" retains cleanup of an
+existing registration. Direct setup and local device authority stay supported.
 
 Nothing else ever needed the service. Adding an app, starting or stopping one,
 reading a report, setting up or repairing a box -- that is you and your server,
