@@ -997,6 +997,7 @@ fi
 #
 # Both locks are mandatory. A host operation serializes pulls, Compose startup
 # and pruning across products; the app lock also coordinates scoped secrets.
+komizo-box workload activation-idle
 komizo_lock="/run/komizo/deploy-__APP_NAME__.lock"
 command -v flock >/dev/null 2>&1 || { echo "deploy: refusing: locking unavailable" >&2; exit 1; }
 mkdir -p /run/komizo || { echo "deploy: refusing: lock directory unavailable" >&2; exit 1; }
@@ -1004,6 +1005,7 @@ exec 9>"$komizo_lock"
 flock -w 300 9 || { echo "deploy: refusing: app lock busy" >&2; exit 1; }
 exec 6>/run/komizo/operation.lock
 flock -w 300 6 || { echo "deploy: refusing: host operation busy" >&2; exit 1; }
+komizo-box workload activation-idle
 
 # Resource floors, if the operator set any. Until they do, fail-open with a
 # loud warning that prints the reported available bytes. No sample sizes are
@@ -1633,226 +1635,20 @@ if ! docker compose --profile '*' pull; then
 fi
 rm -f .env.komizo.bak
 
-# A DEPLOY MUST NOT START AN APP SOMEBODY STOPPED.
-#
-# architecture.md §6 keeps STOPPED as durable state on the box for two reasons.
-# One is that a stopped app pages nobody. The other is this one -- "a deploy
-# while stopped pulls the image without starting it" -- and until now this line
-# was `docker compose up -d` with nothing in front of it, so a CI deploy brought
-# an app back up that a person had deliberately taken down. Nobody ran a
-# command; a merge to main did it.
-#
-# The failure that makes it urgent rather than untidy is what it does to PAGING.
-# `komizo stop` writes STOPPED into this record (komizo#48), and box/diagnose.go
-# keys the app_down problem on exactly that marker. An unconditional `up -d`
-# therefore leaves the app RUNNING with STOPPED=1 still set: nothing reconciles
-# the marker against the containers that are actually up, `komizo start` is a
-# different path and never runs, and the only thing that clears it is somebody
-# starting an app they can plainly see is already started. From that moment the
-# app never pages again -- for a real outage, indefinitely, with nothing
-# anywhere saying that alerting was switched off. A deliberate stop reported as
-# a fault is loud and wrong in the safe direction; this is silent and wrong in
-# the other one.
-#
-# READ AS LATE AS POSSIBLE, and this is the last thing decided before any
-# container moves. Everything above -- the pull of the config image, the
-# validation, the route claim, `docker compose pull` -- can take minutes on a
-# slow link, and a stop that arrives during it is a decision made with full
-# knowledge that a deploy is running. Reading the record at the top of the
-# script would answer with what was true before the operator acted, which is the
-# same window, merely wider.
-#
-# No lock, and this is a read rather than a rewrite. Both writers of this record
-# replace it by rename and take the per-app lock around it -- box/stopped.go on
-# the Go side, and the block in the provisioning script that installed THIS one
-# (`komizo add` rewrites the record; it is not part of the deploy script), both
-# from komizo#48. So a single read always sees one complete file and never a
-# half-written one. Taking the lock here would buy nothing and would make a
-# deploy wait out a `komizo add`.
-#
-# `[ -f ]` rather than a `2>/dev/null` over the read, and the difference is what
-# happens to a record that exists and cannot be read. Suppressing stderr treats
-# "no such app record" and "this box's state directory is broken" as the same
-# silent empty answer, and both come out as "not stopped" -- so the one case
-# where somebody needs to be told is the one that says nothing. A missing record
-# is ordinary and asks nothing; anything else now prints sed's complaint into
-# the deploy log. The direction is unchanged either way: an unreadable record
-# starts the app, because refusing to deploy on a box whose state directory has
-# gone is a much wider failure than the one it would prevent, and an app with no
-# readable record is not in the report and cannot page in the first place.
-#
-# `tr -d '\r'` because a CR is invisible and this is a comparison against a
-# literal. A record that picked up CRLF makes this read "1\r", which is not "1",
-# and the deploy would decide the app was never stopped and start it -- the
-# whole defect back, from a difference nobody can see in the file. `head -n 1`
-# because every other reader of these records is first-wins, and a reader that
-# took the last line would disagree with all of them about the same file.
-#
-# The marker is left ALONE either way. A deploy is not a decision about whether
-# an app should be running; it is a decision about what it should run when it
-# is. Clearing the marker here would be this same bug spelled differently -- CI
-# overruling a person -- and setting one would stop an app nobody asked to stop.
-stopped=""
-if [ -f "$STATE_FILE" ]; then
-	stopped="$(sed -n 's/^STOPPED=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)"
-fi
-if [ "$stopped" = "1" ]; then
-	# SAID OUT LOUD, in both a machine-readable form and a human one. Without
-	# this, a deploy that deliberately leaves an app down is indistinguishable
-	# in a CI log from a deploy that started it -- both are green, and the only
-	# difference is a `docker compose ps` further down that a person has to
-	# already suspect something to go and read. `started=` is printed on BOTH
-	# branches so a caller can tell "this deploy did not start the app" from
-	# "this deploy ran an older script that could not tell you", which one line
-	# printed only in the unusual case cannot express.
-	echo "deploy: started=no"
-	echo "deploy: $APP_NAME is recorded as stopped, so $ref was pulled and APP_VERSION=$version committed, but nothing was started."
-	echo "deploy: 'komizo start --host <this box> --app $APP_NAME' brings up $version."
-else
-	komizo-box workload operation --policy "$WORKLOAD_POLICY" --version "$version" --previous "$previous" --phase activating
-	docker compose up -d --remove-orphans --pull never
-
-	# AND READ THE MARKER AGAIN, because a stop can land between the read above
-	# and the `up -d` that just ran. komizo#62.
-	#
-	# The interleaving: this deploy reads the marker and sees nothing; `komizo
-	# stop` arrives and writes STOPPED=1 FIRST (komizo#48 chose that ordering
-	# deliberately, so the marker is on the record before containers exit); its
-	# `compose stop` brings them down; and the `up -d` above brings them back.
-	# End state: running, with STOPPED=1 recorded.
-	#
-	# WHY THAT END STATE IS WORTH A SECOND READ. box/diagnose.go keys app_down
-	# on the marker, so an app in it never pages again -- for a real outage,
-	# indefinitely, with nothing anywhere saying alerting was switched off.
-	# Nothing else reconciles the marker against the containers that are
-	# actually up, and `komizo start` is the only thing that clears it, which
-	# nobody runs against an app they can see is running. A narrow window is
-	# fine; a narrow window onto "alerting silently off forever" is not.
-	#
-	# NOT A LOCK. lockRecord in box/stopped.go is best-effort with a timeout and
-	# proceeds anyway, so it is explicitly not a barrier -- and holding one
-	# across `up -d` would make every deploy wait out a stop while moving the
-	# race rather than removing it. This is the cheap direction: do the work,
-	# look again, and undo if the world changed underneath.
-	#
-	# THE STOP WINS, NOT THE DEPLOY. Somebody asked for this app to be down and
-	# said so on the record; a deploy is a decision about WHAT an app runs, not
-	# whether it should be running -- the same argument the comment above makes
-	# for leaving the marker alone. So the containers go back down and the
-	# marker stays. Restarting them instead would be CI overruling a person,
-	# which is the defect komizo#56 exists to prevent.
-	stopped_after=""
-	if [ -f "$STATE_FILE" ]; then
-		stopped_after="$(sed -n 's/^STOPPED=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)"
-	fi
-	if [ "$stopped_after" = "1" ]; then
-		docker compose stop
-		echo "deploy: started=no"
-		echo "deploy: $APP_NAME was stopped while this deploy was running, so it has been brought back down and stays recorded as stopped."
-		echo "deploy: 'komizo start --host <this box> --app $APP_NAME' brings up $version."
-	else
-		# AFTER the start AND after the re-read, not before either. `set -e` ends
-		# the script on a failed `up -d`, so an echo above it would claim the app
-		# started immediately before the output showing it did not -- and the
-		# machine-readable half would be the last `started=` a caller parsed.
-		#
-		# EXACTLY ONE `started=` LINE IS PRINTED on every path through this
-		# script, which is why the undo above prints its own rather than
-		# correcting this one afterwards. A caller parsing `started=` takes the
-		# last it sees, so yes-then-no would be right by accident and wrong the
-		# moment anybody reads the first match instead -- and the test that
-		# forbids both lines appearing is asserting exactly that invariant.
-		echo "deploy: started=yes"
-	fi
-fi
-
-# Now the deploy has happened, so there is nothing left to go back to. Dropped
-# here rather than before the pull, which is the bug described above.
-rm -f compose.yml.prev hostnames.prev "$ROUTE_FILE.prev"
-
-# Deliberately NOT pruning images here. 'docker image prune' is machine-wide,
-# and this script is per-app: every other step targets this app's own name, so
-# one command that reaches across every app on the box does not belong in it.
-#
-# It also would not do the job. Images are tagged by commit, so the version we
-# just replaced is still TAGGED and never dangling -- almost nothing a komizo
-# deploy leaves behind is what a bare prune collects. What actually fills the
-# disk is old tagged images, and reclaiming those needs '-a --filter until=...',
-# which is far too blunt to run unattended in the middle of a deploy.
-#
-# Disk is a SERVER concern. It belongs wherever server-wide upkeep ends up
-# living, not in the one path a leaked deploy key is allowed to invoke.
-
-# Reload AFTER the containers are up, so the upstream the route names is
-# already resolvable when Caddy re-reads its config. Caddy does not watch the
-# imported files, so without this the route sits on disk doing nothing.
-#
-# Validated above, so a failure here is unexpected -- but Caddy keeps its
-# previous config when a reload fails, so the other apps on this box keep
-# serving either way. Reported rather than fatal: by now this app's containers
-# are up -- or deliberately are not, see the start decision above -- and failing
-# the deploy would misreport whichever it is.
-#
-# Reloaded EVEN WHEN nothing was started, because the alternative is worse. A
-# stopped app's hostnames already resolve to a gate that is not running -- that
-# is what stopping it did, and this deploy changed nothing about it. What this
-# deploy may have changed is WHICH hostnames it claims, and that is now written
-# to disk in a directory the shared proxy imports. Skipping the reload does not
-# withhold it; it defers it to whenever the next deploy of any OTHER app on the
-# box reloads Caddy, at which point somebody else's pipeline publishes this
-# app's route change. That is the same trap the .prev files above describe, and
-# the fix is the same: let the change land where the log for it is.
-if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$PROXY_CONTAINER"; then
-	if docker exec "$PROXY_CONTAINER" caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
-		echo "deploy: reverse proxy reloaded"
-	else
-		echo "deploy: the proxy would not reload; candidate routing failed" >&2
-		exit 1
-	fi
-fi
-
-# Show the resulting topology. Without this a compose.yml that silently drops
-# or renames a service looks identical in the log to one that changed nothing.
-#
-# For an app left down this lists what was there BEFORE the deploy -- exited
-# containers on the previous version, beside an APP_VERSION that has moved on.
-# That is the true state of the box and it is worth reading as one: the config
-# is the new version's, the images are pulled, and the containers are still the
-# old ones because nothing has recreated them yet. The `started=no` lines above
-# are what say so in words.
-docker compose ps --format 'table {{.Service}}\t{{.Image}}\t{{.Status}}'
-# Record only a completed deployment, under the shared app lock. Repeating
-# the same revision retains the earlier rollback record. An upgraded host
-# without a record cannot infer a rollback tag from a same-version redeploy.
-# --- retention record begin ---
-komizo_record_image_retention() {
-	[ "$previous" != "$version" ] || return 0
-	case "$previous" in *[!A-Za-z0-9._-]*) return 1 ;; esac
-	[ ! -L .komizo-image-retention ] || return 1
-	umask 077
-	printf 'CURRENT=%s\nPREVIOUS=%s\n' "$version" "$previous" > .komizo-image-retention.tmp || return 1
-	chmod 600 .komizo-image-retention.tmp || return 1
-	mv -f .komizo-image-retention.tmp .komizo-image-retention || return 1
-}
-# --- retention record end ---
-if ! komizo_record_image_retention; then
-	echo "deploy: WARNING -- could not record image retention; pruning remains unavailable" >&2
-fi
-if [ "$stopped" = 1 ] || [ "${stopped_after:-}" = 1 ]; then
-	operation_phase=prepared_stopped
-else
-	operation_phase=activated
-fi
-komizo-box workload operation --policy "$WORKLOAD_POLICY" --version "$version" --previous "$previous" --phase "$operation_phase"
-if [ "$operation_phase" = activated ]; then
-	if ! komizo-box workload ready --policy "$WORKLOAD_POLICY" --version "$version" --previous "$previous" --compose "$APP_DIR/compose.yml"; then
-		# Record failures that occur before the readiness checker can journal.
-		komizo-box workload operation --policy "$WORKLOAD_POLICY" --version "$version" --previous "$previous" --phase readiness_failed
-		journal_finished=1
-		exit 1
-	fi
-fi
+# Rootd owns activation after durable submission. Disconnection only stops this
+# read-only waiter; the local worker keeps its locks, deadline and journal.
+# Mark the shell journal delegated BEFORE submission so a signal arriving after
+# the pending file is committed cannot rewrite it out from under rootd.
 journal_finished=1
+if ! activation_id=$(komizo-box workload activation-submit --policy "$WORKLOAD_POLICY" --version "$version" --previous "$previous" --route "$ROUTE_FILE" --proxy "$PROXY_CONTAINER"); then
+	komizo-box workload operation --policy "$WORKLOAD_POLICY" --version "$version" --previous "$previous" --phase failed >/dev/null 2>&1 || true
+	exit 1
+fi
+flock -u 6
+exec 6>&-
+flock -u 9
+exec 9>&-
+komizo-box workload activation-wait --id "$activation_id"
 
 KOMIZO_DEPLOY_EOF
 

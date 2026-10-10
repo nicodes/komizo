@@ -14,7 +14,7 @@ func TestForwardRestorationKeepsTheEstablishedComposeDeployAuthority(t *testing.
 			t.Fatalf("abandoned journaled rollout authority remains: %q", abandoned)
 		}
 	}
-	if !strings.Contains(source, "docker compose up -d --remove-orphans") || !strings.Contains(source, "/run/komizo/deploy-__APP_NAME__.lock") {
+	if !strings.Contains(source, "komizo-box workload activation-submit --policy") || !strings.Contains(source, "komizo-box workload activation-wait --id") || !strings.Contains(source, "/run/komizo/deploy-__APP_NAME__.lock") {
 		t.Fatal("established app-scoped Compose deployment path is not reachable")
 	}
 }

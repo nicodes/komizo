@@ -1,6 +1,8 @@
 package workload
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"github.com/nicodes/komizo/box"
@@ -56,6 +58,7 @@ func RecordOperation(path, app, candidate, previous, phase string, now time.Time
 	default:
 		return errors.New("invalid deployment operation phase")
 	}
+	operation := Operation{Version: 1, App: app, Candidate: candidate, Previous: previous, Phase: phase, At: now}
 	if body, err := os.ReadFile(path); err == nil {
 		var old Operation
 		if strictJSON(body, &old) != nil || old.Version != 1 || old.App != app {
@@ -67,11 +70,58 @@ func RecordOperation(path, app, candidate, previous, phase string, now time.Time
 		if phase != "admitted" && old.Candidate != candidate {
 			return errors.New("deployment operation candidate changed")
 		}
-		if phase == "admitted" && (old.Phase == "activating" || old.Phase == "activation_failed") && old.Candidate != candidate {
+		if phase == "admitted" && (old.Phase == "activating" || old.Phase == "activation_failed") {
 			return errors.New("interrupted activation needs reconciliation before another version")
+		}
+		if phase != "admitted" {
+			if previous != old.Previous || !legalOperationTransition(old.Phase, phase) {
+				return errors.New("invalid deployment operation transition")
+			}
+			if !old.Deadline.IsZero() && now.After(old.Deadline) && phase != "failed" && phase != "activation_failed" && phase != "readiness_failed" && phase != "reconciled" {
+				return errors.New("deployment operation deadline expired")
+			}
+			operation.ID, operation.StartedAt, operation.Deadline = old.ID, old.StartedAt, old.Deadline
 		}
 	} else if !os.IsNotExist(err) {
 		return err
+	} else if phase != "admitted" {
+		return errors.New("deployment operation must start with admission")
 	}
-	return WritePrivateJSON(path, Operation{Version: 1, App: app, Candidate: candidate, Previous: previous, Phase: phase, At: now})
+	if phase == "admitted" {
+		var identity [16]byte
+		if _, err := rand.Read(identity[:]); err != nil {
+			return err
+		}
+		operation.ID, operation.StartedAt, operation.Deadline = hex.EncodeToString(identity[:]), now, now.Add(25*time.Minute)
+	}
+	operation.Phase = phase
+	return WritePrivateJSON(path, operation)
+}
+
+func legalOperationTransition(from, to string) bool {
+	if from == to {
+		return true
+	} // An identical phase acknowledgement is idempotent.
+	if to == "reconciled" {
+		return from == "activating" || from == "activation_failed" || from == "readiness_failed" || from == "failed"
+	}
+	if to == "failed" {
+		return from != "ready" && from != "prepared_stopped" && from != "reconciled"
+	}
+	if to == "activation_failed" {
+		return from == "activating"
+	}
+	switch from {
+	case "admitted":
+		return to == "configured"
+	case "configured":
+		return to == "activating" || to == "prepared_stopped"
+	case "activating":
+		return to == "activated" || to == "prepared_stopped"
+	case "activated":
+		return to == "ready" || to == "readiness_failed" || to == "prepared_stopped"
+	case "readiness_failed":
+		return to == "ready"
+	}
+	return false
 }

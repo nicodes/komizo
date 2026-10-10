@@ -15,6 +15,8 @@ import (
 func runWorkload(args []string) error {
 	if len(args) > 0 {
 		switch args[0] {
+		case "activation-idle", "activation-submit", "activation-wait":
+			return runWorkloadActivation(args)
 		case "host-resources":
 			return runHostResources(args[1:])
 		case "image-refs":
