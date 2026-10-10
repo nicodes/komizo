@@ -1294,10 +1294,6 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 		return zero, err
 	}
 	body := previewCompose(rec, cfg.Knob, ingress, stackEnvErr == nil, dbEndpoint)
-	if info, err := os.Lstat(filepath.Join(cfg.Root, "/etc/komizo/resources.json")); err == nil && info.Mode().IsRegular() {
-		body = strings.ReplaceAll(body, "    restart: unless-stopped\n", "    cgroup_parent: /komizo-previews\n    restart: unless-stopped\n")
-		body = strings.Replace(body, "\n  restart: unless-stopped\n", "\n  cgroup_parent: /komizo-previews\n  restart: unless-stopped\n", 1)
-	}
 	if err := os.WriteFile(composePath, []byte(body), 0o600); err != nil {
 		return zero, err
 	}
