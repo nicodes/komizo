@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -90,16 +91,18 @@ const (
 // PreviewKnob is the parsed knob file.
 type PreviewKnob struct {
 	// SharedDomain opts this host into flat, app-qualified preview names.
-	SharedDomain  string
-	Domain        string
-	TTL           time.Duration
-	Max           int
-	MemLimit      string
-	CPULimit      string
-	MemoryBudget  int64
-	InvalidBudget bool
-	AskPort       int
-	PortRange     string
+	SharedDomain      string
+	Domain            string
+	TTL               time.Duration
+	Max               int
+	MemLimit          string
+	CPULimit          string
+	ProductionReserve int64
+	DatabaseReserve   int64
+	MemoryBudget      int64
+	InvalidBudget     bool
+	AskPort           int
+	PortRange         string
 	// body is the raw knob, so DomainFor reuses the same lookup that
 	// ParsePreviewKnob used -- there is one get, not two parsers that
 	// could drift.
@@ -154,6 +157,17 @@ func ParsePreviewKnob(body string) (PreviewKnob, string) {
 		k.InvalidBudget = err != nil
 		if err != nil {
 			bad = append(bad, "MEM_BUDGET="+v)
+		}
+	}
+	for key, target := range map[string]*int64{"PRODUCTION_RESERVE": &k.ProductionReserve, "DB_MEM_LIMIT": &k.DatabaseReserve} {
+		if value := get(key); value != "" {
+			parsed, err := previewMemoryBytes(value)
+			if err != nil {
+				k.InvalidBudget = true
+				bad = append(bad, key+"="+value)
+			} else {
+				*target = parsed
+			}
 		}
 	}
 	if v := get("ASK_PORT"); v != "" {
@@ -673,7 +687,7 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 		if i == 0 {
 			fmt.Fprintf(&b, "    container_name: %s-gate\n    environment:\n", r.Project)
 			fmt.Fprintf(&b, "      PREVIEW: \"1\"\n      PR: \"%d\"\n", r.PR)
-			b.WriteString(previewDBEnvLines(r))
+
 			fmt.Fprintf(&b, "      BASE_URL: https://%s%s\n      PREVIEW_HOST: %s\n      PREVIEW_API_HOST: %s\n      PREVIEW_BASE_PATH: %q\n", r.WebHost(k), r.BasePath, r.WebHost(k), r.PublicAPIHost(k), r.BasePath)
 			// The gate port, LOOPBACK only: the direct HTTP entry to the
 			// preview from the box itself, never from the network -- the
@@ -683,6 +697,9 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 			b.WriteString("    ports:\n")
 			fmt.Fprintf(&b, "      - \"127.0.0.1:%d:80\"\n", r.GatePort)
 			b.WriteString("    networks:\n      - shared\n")
+			if len(r.Images) > 1 {
+				b.WriteString("      - backend\n")
+			}
 		} else {
 			fmt.Fprintf(&b, "    environment:\n      PREVIEW: \"1\"\n      PR: \"%d\"\n", r.PR)
 			b.WriteString(previewDBEnvLines(r))
@@ -692,7 +709,7 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 			if stackEnv {
 				b.WriteString("    env_file:\n      - stack.env\n")
 			}
-			b.WriteString("    networks:\n      - shared\n")
+			b.WriteString("    networks:\n      - backend\n")
 		}
 	}
 	// ONE network, the shared one, and never the app's <app>_default.
@@ -711,6 +728,9 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 	//
 	//	network ctcalc_default declared as external, but could not be found
 	fmt.Fprintf(&b, "networks:\n  shared:\n    external: true\n    name: %s\n", network)
+	if len(r.Images) > 1 {
+		fmt.Fprintf(&b, "  backend:\n    external: true\n    name: %s-backend\n", r.Project)
+	}
 	return b.String()
 }
 
@@ -911,6 +931,7 @@ type PreviewUpConfig struct {
 	Network    string
 	FloorsBody string
 	ReportJSON []byte
+	ReportPath string
 }
 
 // PreviewUp brings a preview up: validate, floors, evict if full, database,
@@ -919,12 +940,26 @@ type PreviewUpConfig struct {
 // its own restore.
 var revikPreviewSeedPattern = regexp.MustCompile(`^[a-f0-9]{24}$`)
 
-func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app string, pr int, images []string, now time.Time) (PreviewRecord, error) {
+func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app string, pr int, images []string, now time.Time) (result PreviewRecord, resultErr error) {
 	var zero PreviewRecord
-	if cfg.Knob.InvalidBudget {
-		return zero, fmt.Errorf("preview up refused: invalid MEM_BUDGET")
+	ctx, releaseOperation, err := previewOperation(ctx, cfg.Root)
+	if err != nil {
+		return zero, err
 	}
-	_, err := previewMemoryBytes(cfg.Knob.MemLimit)
+	defer releaseOperation()
+	if cfg.ReportPath != "" {
+		cfg.ReportJSON, err = os.ReadFile(cfg.ReportPath)
+		if err != nil {
+			return zero, fmt.Errorf("cannot read current capacity report: %w", err)
+		}
+		if err := previewReportFresh(cfg.ReportJSON, time.Now()); err != nil {
+			return zero, err
+		}
+	}
+	if cfg.Knob.InvalidBudget {
+		return zero, fmt.Errorf("preview up refused: invalid capacity reservation")
+	}
+	_, err = previewMemoryBytes(cfg.Knob.MemLimit)
 	if err != nil || !validPreviewCPU(cfg.Knob.CPULimit) {
 		return zero, fmt.Errorf("preview up requires positive bounded memory and CPU limits")
 	}
@@ -1014,6 +1049,9 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	// and come back under: the least-recently-used preview goes first.
 	existing, err := ListPreviews(cfg.Root)
 	if err != nil {
+		return zero, err
+	}
+	if err := previewProductionReserve(cfg.Knob, cfg.ReportJSON); err != nil {
 		return zero, err
 	}
 	if cfg.Knob.MemoryBudget > 0 {
@@ -1111,14 +1149,13 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	// and only its EXISTENCE is asked, so the compose render can reference
 	// the path without the contents ever passing through komizo.
 	_, stackEnvErr := os.Stat(filepath.Join(previewDir(cfg.Root, project), "stack.env"))
-	rollback := func(_, _, _ string, created bool) {
-		_, _ = run(ctx, "", "compose", "-p", project, "-f", composePath, "down", "-v")
-		if created && rec.DBName != "" {
-			_ = dropPreviewDB(ctx, run, PreviewDBContainer, PreviewDBSuperuser, PreviewDBMaintenance, rec.DBName)
+	defer func() {
+		if resultErr != nil {
+			if cleanupErr := PreviewDown(ctx, run, cfg, rec); cleanupErr != nil {
+				resultErr = errors.Join(resultErr, fmt.Errorf("preview cleanup incomplete; state retained for retry: %w", cleanupErr))
+			}
 		}
-		_ = os.Remove(filepath.Join(cfg.RoutesDir, rec.RouteFile))
-		_ = os.RemoveAll(previewDir(cfg.Root, project))
-	}
+	}()
 
 	// The database, before anything runs: a new role and database named for
 	// the PR, in KOMIZO'S OWN postgres, and nothing of the app's touched.
@@ -1129,9 +1166,13 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	// kind of thing this change exists to stop doing.
 	needsDB := rec.DBName != ""
 	dbEndpoint := ""
+	if app != "fieldsofrevik" && len(images) > 1 {
+		if err := ensurePreviewBackend(ctx, run, project, needsDB); err != nil {
+			return zero, err
+		}
+	}
 	if needsDB {
 		if err := ensurePreviewDBReady(ctx, run); err != nil {
-			rollback("", "", "", false)
 			return zero, err
 		}
 		dbEndpoint = PreviewDBContainer
@@ -1143,18 +1184,15 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 		// could do about it from CI. Only this app's and this PR's names are
 		// touched.
 		if err := dropPreviewDB(ctx, run, PreviewDBContainer, PreviewDBSuperuser, PreviewDBMaintenance, rec.DBName); err != nil {
-			rollback("", "", "", false)
 			return zero, fmt.Errorf("could not reclaim a leftover preview database in %s: %w", PreviewDBContainer, err)
 		}
 		if err := previewSQL(ctx, run, PreviewDBContainer, PreviewDBSuperuser, PreviewDBMaintenance,
 			"CREATE ROLE "+rec.DBName+" LOGIN PASSWORD :'pw';",
 			"-v", "pw="+rec.DBPassword); err != nil {
-			rollback("", "", "", false)
 			return zero, fmt.Errorf("could not create the preview role %s in %s: %w", rec.DBName, PreviewDBContainer, err)
 		}
 		if _, err := run(ctx, "", "exec", PreviewDBContainer, "psql", "-U", PreviewDBSuperuser, "-d", PreviewDBMaintenance, "-c",
 			"CREATE DATABASE "+rec.DBName+" OWNER "+rec.DBName); err != nil {
-			rollback("", "", "", false)
 			return zero, fmt.Errorf("could not create the preview database %s in %s: %w", rec.DBName, PreviewDBContainer, err)
 		}
 		// Every preview shares one server now, so "its own database" has to
@@ -1166,14 +1204,12 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 		if err := previewSQL(ctx, run, PreviewDBContainer, PreviewDBSuperuser, PreviewDBMaintenance,
 			"REVOKE CONNECT ON DATABASE "+rec.DBName+" FROM PUBLIC;\n"+
 				"GRANT CONNECT ON DATABASE "+rec.DBName+" TO "+rec.DBName+";"); err != nil {
-			rollback("", "", "", true)
 			return zero, fmt.Errorf("could not isolate the preview database %s from the other previews on %s: %w", rec.DBName, PreviewDBContainer, err)
 		}
 	}
 
-	// No extra networks: komizo's postgres sits on the shared network the
-	// preview already joins, so docker DNS answers PreviewDBContainer
-	// without the preview being attached to anything of the app's.
+	// The API reaches the preview database through its private backend.
+	// Only its gateway joins the shared ingress network.
 	// Compose cannot rename a service while preserving its explicit container
 	// name: it tries to create the new service before removing the old orphan.
 	// Stop/remove only this preview's legacy gate, without volumes, using its
@@ -1184,16 +1220,13 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 		}
 	}
 	if err := os.WriteFile(composePath, []byte(previewCompose(rec, cfg.Knob, cfg.Network, stackEnvErr == nil, dbEndpoint)), 0o600); err != nil {
-		rollback("", "", "", false)
 		return zero, err
 	}
 
 	if _, err := run(ctx, "", "compose", "-p", project, "-f", composePath, "up", "-d", "--remove-orphans"); err != nil {
-		rollback("", "", "", true)
 		return zero, fmt.Errorf("the preview project did not come up: %w", err)
 	}
 	if err := applyPreviewRecordRoute(ctx, run, cfg, rec); err != nil {
-		rollback("", "", "", true)
 		return zero, err
 	}
 	return rec, nil
@@ -1203,6 +1236,11 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 // dropped, ITS route removed with the validate discipline, ITS state
 // directory gone. Nothing else is named.
 func PreviewDown(ctx context.Context, run previewRun, cfg PreviewUpConfig, rec PreviewRecord) error {
+	ctx, release, err := previewOperation(ctx, cfg.Root)
+	if err != nil {
+		return err
+	}
+	defer release()
 	composeFile := filepath.Join(previewDir(cfg.Root, rec.Project), "compose.yml")
 	if _, err := run(ctx, "", "compose", "-p", rec.Project, "-f", composeFile, "down", "-v"); err != nil {
 		// A missing project is already down; anything else is reported.
@@ -1210,18 +1248,24 @@ func PreviewDown(ctx context.Context, run previewRun, cfg PreviewUpConfig, rec P
 			return fmt.Errorf("could not take the preview project down: %w", err)
 		}
 	}
-	// The database, in komizo's own server. A server that is not running
-	// is not an error here: teardown's job is to leave nothing behind, and
-	// if the server is gone so is everything it held.
+	// A stopped shared database still retains its volume. Keep the cleanup
+	// record until its role and database can actually be removed.
 	if rec.DBName != "" {
-		if out, err := run(ctx, "", "inspect", PreviewDBContainer, "--format", "{{.State.Running}}"); err == nil && strings.TrimSpace(out) == "true" {
-			if err := dropPreviewDB(ctx, run, PreviewDBContainer, PreviewDBSuperuser, PreviewDBMaintenance, rec.DBName); err != nil {
-				return err
-			}
+		out, err := run(ctx, "", "inspect", PreviewDBContainer, "--format", "{{.State.Running}}")
+		if err != nil || strings.TrimSpace(out) != "true" {
+			return fmt.Errorf("preview database cleanup pending: shared server unavailable")
+		}
+		if err := dropPreviewDB(ctx, run, PreviewDBContainer, PreviewDBSuperuser, PreviewDBMaintenance, rec.DBName); err != nil {
+			return err
 		}
 	}
 	if err := RemovePreviewRoute(ctx, run, cfg.Proxy, cfg.RoutesDir, rec.RouteFile); err != nil {
 		return err
+	}
+	if rec.App != "fieldsofrevik" && len(rec.Images) > 1 {
+		if err := removePreviewBackend(ctx, run, rec.Project, rec.DBName != ""); err != nil {
+			return err
+		}
 	}
 	return os.RemoveAll(previewDir(cfg.Root, rec.Project))
 }
@@ -1248,6 +1292,11 @@ func PreviewReapPath() string { return ServedDir + "/preview-reap.json" }
 // pins it.
 func PreviewGC(ctx context.Context, run previewRun, cfg PreviewUpConfig, now time.Time) (PreviewReap, error) {
 	reap := PreviewReap{V: 1, At: now}
+	ctx, release, err := previewOperation(ctx, cfg.Root)
+	if err != nil {
+		return reap, err
+	}
+	defer release()
 	existing, err := ListPreviews(cfg.Root)
 	if err != nil {
 		return reap, err
@@ -1331,6 +1380,10 @@ func onlyCharsPreview(s, chars string) bool {
 // until reboot and a record's is not. A lock failure refuses the operation;
 // running without exclusion would make both admission and port allocation false.
 func lockPreviews(ctx context.Context, root string) (func(), error) {
+	return lockHostFile(ctx, root, "previews.lock")
+}
+
+func lockHostFile(ctx context.Context, root, name string) (func(), error) {
 	directory := RunDir
 	if root != "" {
 		directory = filepath.Join(root, "run")
@@ -1338,7 +1391,7 @@ func lockPreviews(ctx context.Context, root string) (func(), error) {
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return nil, fmt.Errorf("preview lock directory unavailable: %w", err)
 	}
-	f, err := os.OpenFile(filepath.Join(directory, "previews.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(filepath.Join(directory, name), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("preview lock unavailable: %w", err)
 	}
