@@ -188,13 +188,21 @@ rc-update add local default >/dev/null 2>&1 || true
 # 16GB of. Growth is bounded by teardown dropping each preview's database
 # and by the TTL reaper, and the capacity floors still guard the rest.
 #
-# NO PUBLISHED PORT. It is reachable only over the shared network, by the
-# preview containers attached to it, by container name.
+# NO PUBLISHED PORT. The database stays off shared ingress. Each admitted
+# preview API reaches it through its own backend network.
 #
 # Same digest the products pin, so the host holds one postgres image rather
 # than two, and a preview runs the server version production runs.
 PREVIEW_DB_IMAGE="postgres@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280"
 PREVIEW_DB_NAME="komizo-previews"
+PREVIEW_DB_NETWORK="komizo-preview-store"
+if docker network inspect "$PREVIEW_DB_NETWORK" >/dev/null 2>&1; then
+	[ "$(docker network inspect "$PREVIEW_DB_NETWORK" --format '{{index .Labels "io.komizo.role"}}')" = preview-database ] ||
+		die "preview database network has no approved ownership label"
+else
+	docker network create --internal --label io.komizo.role=preview-database "$PREVIEW_DB_NETWORK" >/dev/null ||
+		die "could not create preview database network"
+fi
 
 log "Provisioning komizo's preview database server"
 if [ "$(docker inspect -f '{{.State.Running}}' "$PREVIEW_DB_NAME" 2>/dev/null || echo false)" = "true" ]; then
@@ -227,7 +235,7 @@ else
 	docker run -d \
 		--name "$PREVIEW_DB_NAME" \
 		--restart unless-stopped \
-		--network "$SHARED_NETWORK" \
+		--network "$PREVIEW_DB_NETWORK" \
 		-e POSTGRES_PASSWORD="$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')" \
 		-e POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 \
 		-e POSTGRES_USER=postgres \
@@ -239,7 +247,18 @@ else
 		--cpus 0.25 \
 		"$PREVIEW_DB_IMAGE" >/dev/null ||
 		die "could not start $PREVIEW_DB_NAME"
-	printf '    started %s on %s\n' "$PREVIEW_DB_NAME" "$SHARED_NETWORK"
+	printf '    started %s on %s\n' "$PREVIEW_DB_NAME" "$PREVIEW_DB_NETWORK"
+fi
+
+# Re-init migrates only the platform's preview database. Preview stacks must
+# use private backends before disconnecting legacy ingress attachment.
+preview_db_networks=$(docker inspect "$PREVIEW_DB_NAME" --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}') ||
+	die "cannot read preview database network attachments"
+if ! printf '%s\n' "$preview_db_networks" | grep -Fxq "$PREVIEW_DB_NETWORK"; then
+	docker network connect "$PREVIEW_DB_NETWORK" "$PREVIEW_DB_NAME" || die "cannot attach preview database network"
+fi
+if printf '%s\n' "$preview_db_networks" | grep -Fxq "$SHARED_NETWORK"; then
+	docker network disconnect "$SHARED_NETWORK" "$PREVIEW_DB_NAME" || die "cannot remove preview database from ingress"
 fi
 
 if [ "$PREVIEW_DB_MEMORY_CONFIGURED" = true ]; then

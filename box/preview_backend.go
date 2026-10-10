@@ -44,8 +44,16 @@ func removePreviewBackend(ctx context.Context, run previewRun, project string, d
 		return fmt.Errorf("preview backend removal refused: ownership differs")
 	}
 	if database {
-		if _, err = run(ctx, "", "network", "disconnect", "--force", network, PreviewDBContainer); err != nil {
-			return err
+		attached, inspectErr := run(ctx, "", "inspect", PreviewDBContainer, "--format", `{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}`)
+		if inspectErr != nil {
+			return inspectErr
+		}
+		for _, name := range strings.Fields(attached) {
+			if name == network {
+				if _, err = run(ctx, "", "network", "disconnect", "--force", network, PreviewDBContainer); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	_, err = run(ctx, "", "network", "rm", network)

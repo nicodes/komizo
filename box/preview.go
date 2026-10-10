@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -930,6 +931,7 @@ type PreviewUpConfig struct {
 	Network    string
 	FloorsBody string
 	ReportJSON []byte
+	ReportPath string
 }
 
 // PreviewUp brings a preview up: validate, floors, evict if full, database,
@@ -938,13 +940,22 @@ type PreviewUpConfig struct {
 // its own restore.
 var revikPreviewSeedPattern = regexp.MustCompile(`^[a-f0-9]{24}$`)
 
-func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app string, pr int, images []string, now time.Time) (PreviewRecord, error) {
+func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app string, pr int, images []string, now time.Time) (result PreviewRecord, resultErr error) {
 	var zero PreviewRecord
 	ctx, releaseOperation, err := previewOperation(ctx, cfg.Root)
 	if err != nil {
 		return zero, err
 	}
 	defer releaseOperation()
+	if cfg.ReportPath != "" {
+		cfg.ReportJSON, err = os.ReadFile(cfg.ReportPath)
+		if err != nil {
+			return zero, fmt.Errorf("cannot read current capacity report: %w", err)
+		}
+		if err := previewReportFresh(cfg.ReportJSON, time.Now()); err != nil {
+			return zero, err
+		}
+	}
 	if cfg.Knob.InvalidBudget {
 		return zero, fmt.Errorf("preview up refused: invalid capacity reservation")
 	}
@@ -1138,14 +1149,13 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	// and only its EXISTENCE is asked, so the compose render can reference
 	// the path without the contents ever passing through komizo.
 	_, stackEnvErr := os.Stat(filepath.Join(previewDir(cfg.Root, project), "stack.env"))
-	rollback := func(_, _, _ string, created bool) {
-		_, _ = run(ctx, "", "compose", "-p", project, "-f", composePath, "down", "-v")
-		if created && rec.DBName != "" {
-			_ = dropPreviewDB(ctx, run, PreviewDBContainer, PreviewDBSuperuser, PreviewDBMaintenance, rec.DBName)
+	defer func() {
+		if resultErr != nil {
+			if cleanupErr := PreviewDown(ctx, run, cfg, rec); cleanupErr != nil {
+				resultErr = errors.Join(resultErr, fmt.Errorf("preview cleanup incomplete; state retained for retry: %w", cleanupErr))
+			}
 		}
-		_ = os.Remove(filepath.Join(cfg.RoutesDir, rec.RouteFile))
-		_ = os.RemoveAll(previewDir(cfg.Root, project))
-	}
+	}()
 
 	// The database, before anything runs: a new role and database named for
 	// the PR, in KOMIZO'S OWN postgres, and nothing of the app's touched.
@@ -1158,13 +1168,11 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	dbEndpoint := ""
 	if app != "fieldsofrevik" && len(images) > 1 {
 		if err := ensurePreviewBackend(ctx, run, project, needsDB); err != nil {
-			rollback("", "", "", false)
 			return zero, err
 		}
 	}
 	if needsDB {
 		if err := ensurePreviewDBReady(ctx, run); err != nil {
-			rollback("", "", "", false)
 			return zero, err
 		}
 		dbEndpoint = PreviewDBContainer
@@ -1176,18 +1184,15 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 		// could do about it from CI. Only this app's and this PR's names are
 		// touched.
 		if err := dropPreviewDB(ctx, run, PreviewDBContainer, PreviewDBSuperuser, PreviewDBMaintenance, rec.DBName); err != nil {
-			rollback("", "", "", false)
 			return zero, fmt.Errorf("could not reclaim a leftover preview database in %s: %w", PreviewDBContainer, err)
 		}
 		if err := previewSQL(ctx, run, PreviewDBContainer, PreviewDBSuperuser, PreviewDBMaintenance,
 			"CREATE ROLE "+rec.DBName+" LOGIN PASSWORD :'pw';",
 			"-v", "pw="+rec.DBPassword); err != nil {
-			rollback("", "", "", false)
 			return zero, fmt.Errorf("could not create the preview role %s in %s: %w", rec.DBName, PreviewDBContainer, err)
 		}
 		if _, err := run(ctx, "", "exec", PreviewDBContainer, "psql", "-U", PreviewDBSuperuser, "-d", PreviewDBMaintenance, "-c",
 			"CREATE DATABASE "+rec.DBName+" OWNER "+rec.DBName); err != nil {
-			rollback("", "", "", false)
 			return zero, fmt.Errorf("could not create the preview database %s in %s: %w", rec.DBName, PreviewDBContainer, err)
 		}
 		// Every preview shares one server now, so "its own database" has to
@@ -1199,14 +1204,12 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 		if err := previewSQL(ctx, run, PreviewDBContainer, PreviewDBSuperuser, PreviewDBMaintenance,
 			"REVOKE CONNECT ON DATABASE "+rec.DBName+" FROM PUBLIC;\n"+
 				"GRANT CONNECT ON DATABASE "+rec.DBName+" TO "+rec.DBName+";"); err != nil {
-			rollback("", "", "", true)
 			return zero, fmt.Errorf("could not isolate the preview database %s from the other previews on %s: %w", rec.DBName, PreviewDBContainer, err)
 		}
 	}
 
-	// No extra networks: komizo's postgres sits on the shared network the
-	// preview already joins, so docker DNS answers PreviewDBContainer
-	// without the preview being attached to anything of the app's.
+	// The API reaches the preview database through its private backend.
+	// Only its gateway joins the shared ingress network.
 	// Compose cannot rename a service while preserving its explicit container
 	// name: it tries to create the new service before removing the old orphan.
 	// Stop/remove only this preview's legacy gate, without volumes, using its
@@ -1217,16 +1220,13 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 		}
 	}
 	if err := os.WriteFile(composePath, []byte(previewCompose(rec, cfg.Knob, cfg.Network, stackEnvErr == nil, dbEndpoint)), 0o600); err != nil {
-		rollback("", "", "", false)
 		return zero, err
 	}
 
 	if _, err := run(ctx, "", "compose", "-p", project, "-f", composePath, "up", "-d", "--remove-orphans"); err != nil {
-		rollback("", "", "", true)
 		return zero, fmt.Errorf("the preview project did not come up: %w", err)
 	}
 	if err := applyPreviewRecordRoute(ctx, run, cfg, rec); err != nil {
-		rollback("", "", "", true)
 		return zero, err
 	}
 	return rec, nil
@@ -1248,14 +1248,15 @@ func PreviewDown(ctx context.Context, run previewRun, cfg PreviewUpConfig, rec P
 			return fmt.Errorf("could not take the preview project down: %w", err)
 		}
 	}
-	// The database, in komizo's own server. A server that is not running
-	// is not an error here: teardown's job is to leave nothing behind, and
-	// if the server is gone so is everything it held.
+	// A stopped shared database still retains its volume. Keep the cleanup
+	// record until its role and database can actually be removed.
 	if rec.DBName != "" {
-		if out, err := run(ctx, "", "inspect", PreviewDBContainer, "--format", "{{.State.Running}}"); err == nil && strings.TrimSpace(out) == "true" {
-			if err := dropPreviewDB(ctx, run, PreviewDBContainer, PreviewDBSuperuser, PreviewDBMaintenance, rec.DBName); err != nil {
-				return err
-			}
+		out, err := run(ctx, "", "inspect", PreviewDBContainer, "--format", "{{.State.Running}}")
+		if err != nil || strings.TrimSpace(out) != "true" {
+			return fmt.Errorf("preview database cleanup pending: shared server unavailable")
+		}
+		if err := dropPreviewDB(ctx, run, PreviewDBContainer, PreviewDBSuperuser, PreviewDBMaintenance, rec.DBName); err != nil {
+			return err
 		}
 	}
 	if err := RemovePreviewRoute(ctx, run, cfg.Proxy, cfg.RoutesDir, rec.RouteFile); err != nil {
@@ -1291,6 +1292,11 @@ func PreviewReapPath() string { return ServedDir + "/preview-reap.json" }
 // pins it.
 func PreviewGC(ctx context.Context, run previewRun, cfg PreviewUpConfig, now time.Time) (PreviewReap, error) {
 	reap := PreviewReap{V: 1, At: now}
+	ctx, release, err := previewOperation(ctx, cfg.Root)
+	if err != nil {
+		return reap, err
+	}
+	defer release()
 	existing, err := ListPreviews(cfg.Root)
 	if err != nil {
 		return reap, err

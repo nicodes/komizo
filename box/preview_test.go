@@ -1265,3 +1265,45 @@ func TestPreviewDownDropsFromKomizosOwnServer(t *testing.T) {
 		t.Error("teardown never dropped the preview database")
 	}
 }
+
+func TestFailedPreviewCleanupKeepsItsRecordForRetry(t *testing.T) {
+	f := &fakeDocker{composeUpErr: fmt.Errorf("image unavailable")}
+	cfg := previewTestConfig(t)
+	run := func(ctx context.Context, stdin string, args ...string) (string, error) {
+		if args[0] == "network" && args[1] == "rm" {
+			return "", fmt.Errorf("network still has an endpoint")
+		}
+		return f.run(ctx, stdin, args...)
+	}
+	_, err := PreviewUp(context.Background(), run, cfg, "gdam", 12, []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, previewNow)
+	if err == nil || !strings.Contains(err.Error(), "state retained") {
+		t.Fatalf("cleanup failure hidden: %v", err)
+	}
+	records, err := ListPreviews(cfg.Root)
+	if err != nil || len(records) != 1 {
+		t.Fatalf("lost retry record: %v", err)
+	}
+	f.composeUpErr = nil
+	if err := PreviewDown(context.Background(), f.run, cfg, records[0]); err != nil {
+		t.Fatal(err)
+	}
+	records, err = ListPreviews(cfg.Root)
+	if err != nil || len(records) != 0 {
+		t.Fatal("successful cleanup retained state")
+	}
+}
+func TestPreviewDownDoesNotForgetDatabaseOnStoppedServer(t *testing.T) {
+	cfg := previewTestConfig(t)
+	rec := PreviewRecord{V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", CreatedAt: previewNow, LastUsed: previewNow, DBName: "gdam_pr_12"}
+	if err := writePreviewRecord(cfg.Root, rec); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeDocker{previewDBDown: true}
+	if err := PreviewDown(context.Background(), f.run, cfg, rec); err == nil {
+		t.Fatal("stopped database treated as deleted")
+	}
+	records, err := ListPreviews(cfg.Root)
+	if err != nil || len(records) != 1 {
+		t.Fatal("database cleanup record lost")
+	}
+}

@@ -3,6 +3,7 @@ package box
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // A host budget is meaningful only after production and the shared database
@@ -24,6 +25,16 @@ func previewProductionReserve(k PreviewKnob, report []byte) error {
 	total := r.System.Mem.Total
 	if k.MemoryBudget <= 0 || k.DatabaseReserve <= 0 || k.ProductionReserve >= total || k.DatabaseReserve > total-k.ProductionReserve || k.MemoryBudget > total-k.ProductionReserve-k.DatabaseReserve {
 		return fmt.Errorf("preview up refused: preview/database budgets would consume the production reserve")
+	}
+	return nil
+}
+
+func previewReportFresh(body []byte, now time.Time) error {
+	var r struct {
+		At time.Time `json:"at"`
+	}
+	if err := json.Unmarshal(body, &r); err != nil || r.At.IsZero() || now.Sub(r.At) > 2*time.Minute || r.At.After(now.Add(5*time.Second)) {
+		return fmt.Errorf("preview up requires a capacity report observed within two minutes")
 	}
 	return nil
 }
