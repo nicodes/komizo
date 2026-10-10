@@ -121,7 +121,7 @@ func (p *Probe) dockerInventory(ctx context.Context) dockerInventory {
 		`{{range $n, $c := .NetworkSettings.Networks}}{{$n}}` + dassign +
 			`{{range $c.Aliases}}{{.}},{{end}}` + dlist + `{{end}}`,
 		`{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}` + dassign + `{{.Source}}` + dlist + `{{end}}{{end}}`,
-		`{{if .State.Health}}{{.State.Health.Status}}{{end}}`,
+		`{{with index .State "Health"}}{{.Status}}{{end}}`,
 	}, dsep)}, ids...)
 	out, err = p.docker(ctx, args...)
 	if err != nil {
