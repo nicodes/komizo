@@ -90,16 +90,18 @@ const (
 // PreviewKnob is the parsed knob file.
 type PreviewKnob struct {
 	// SharedDomain opts this host into flat, app-qualified preview names.
-	SharedDomain  string
-	Domain        string
-	TTL           time.Duration
-	Max           int
-	MemLimit      string
-	CPULimit      string
-	MemoryBudget  int64
-	InvalidBudget bool
-	AskPort       int
-	PortRange     string
+	SharedDomain      string
+	Domain            string
+	TTL               time.Duration
+	Max               int
+	MemLimit          string
+	CPULimit          string
+	ProductionReserve int64
+	DatabaseReserve   int64
+	MemoryBudget      int64
+	InvalidBudget     bool
+	AskPort           int
+	PortRange         string
 	// body is the raw knob, so DomainFor reuses the same lookup that
 	// ParsePreviewKnob used -- there is one get, not two parsers that
 	// could drift.
@@ -154,6 +156,17 @@ func ParsePreviewKnob(body string) (PreviewKnob, string) {
 		k.InvalidBudget = err != nil
 		if err != nil {
 			bad = append(bad, "MEM_BUDGET="+v)
+		}
+	}
+	for key, target := range map[string]*int64{"PRODUCTION_RESERVE": &k.ProductionReserve, "DB_MEM_LIMIT": &k.DatabaseReserve} {
+		if value := get(key); value != "" {
+			parsed, err := previewMemoryBytes(value)
+			if err != nil {
+				k.InvalidBudget = true
+				bad = append(bad, key+"="+value)
+			} else {
+				*target = parsed
+			}
 		}
 	}
 	if v := get("ASK_PORT"); v != "" {
@@ -673,7 +686,7 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 		if i == 0 {
 			fmt.Fprintf(&b, "    container_name: %s-gate\n    environment:\n", r.Project)
 			fmt.Fprintf(&b, "      PREVIEW: \"1\"\n      PR: \"%d\"\n", r.PR)
-			b.WriteString(previewDBEnvLines(r))
+
 			fmt.Fprintf(&b, "      BASE_URL: https://%s%s\n      PREVIEW_HOST: %s\n      PREVIEW_API_HOST: %s\n      PREVIEW_BASE_PATH: %q\n", r.WebHost(k), r.BasePath, r.WebHost(k), r.PublicAPIHost(k), r.BasePath)
 			// The gate port, LOOPBACK only: the direct HTTP entry to the
 			// preview from the box itself, never from the network -- the
@@ -683,6 +696,9 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 			b.WriteString("    ports:\n")
 			fmt.Fprintf(&b, "      - \"127.0.0.1:%d:80\"\n", r.GatePort)
 			b.WriteString("    networks:\n      - shared\n")
+			if len(r.Images) > 1 {
+				b.WriteString("      - backend\n")
+			}
 		} else {
 			fmt.Fprintf(&b, "    environment:\n      PREVIEW: \"1\"\n      PR: \"%d\"\n", r.PR)
 			b.WriteString(previewDBEnvLines(r))
@@ -692,7 +708,7 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 			if stackEnv {
 				b.WriteString("    env_file:\n      - stack.env\n")
 			}
-			b.WriteString("    networks:\n      - shared\n")
+			b.WriteString("    networks:\n      - backend\n")
 		}
 	}
 	// ONE network, the shared one, and never the app's <app>_default.
@@ -711,6 +727,9 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 	//
 	//	network ctcalc_default declared as external, but could not be found
 	fmt.Fprintf(&b, "networks:\n  shared:\n    external: true\n    name: %s\n", network)
+	if len(r.Images) > 1 {
+		fmt.Fprintf(&b, "  backend:\n    external: true\n    name: %s-backend\n", r.Project)
+	}
 	return b.String()
 }
 
@@ -921,10 +940,15 @@ var revikPreviewSeedPattern = regexp.MustCompile(`^[a-f0-9]{24}$`)
 
 func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app string, pr int, images []string, now time.Time) (PreviewRecord, error) {
 	var zero PreviewRecord
-	if cfg.Knob.InvalidBudget {
-		return zero, fmt.Errorf("preview up refused: invalid MEM_BUDGET")
+	ctx, releaseOperation, err := previewOperation(ctx, cfg.Root)
+	if err != nil {
+		return zero, err
 	}
-	_, err := previewMemoryBytes(cfg.Knob.MemLimit)
+	defer releaseOperation()
+	if cfg.Knob.InvalidBudget {
+		return zero, fmt.Errorf("preview up refused: invalid capacity reservation")
+	}
+	_, err = previewMemoryBytes(cfg.Knob.MemLimit)
 	if err != nil || !validPreviewCPU(cfg.Knob.CPULimit) {
 		return zero, fmt.Errorf("preview up requires positive bounded memory and CPU limits")
 	}
@@ -1014,6 +1038,9 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	// and come back under: the least-recently-used preview goes first.
 	existing, err := ListPreviews(cfg.Root)
 	if err != nil {
+		return zero, err
+	}
+	if err := previewProductionReserve(cfg.Knob, cfg.ReportJSON); err != nil {
 		return zero, err
 	}
 	if cfg.Knob.MemoryBudget > 0 {
@@ -1129,6 +1156,12 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	// kind of thing this change exists to stop doing.
 	needsDB := rec.DBName != ""
 	dbEndpoint := ""
+	if app != "fieldsofrevik" && len(images) > 1 {
+		if err := ensurePreviewBackend(ctx, run, project, needsDB); err != nil {
+			rollback("", "", "", false)
+			return zero, err
+		}
+	}
 	if needsDB {
 		if err := ensurePreviewDBReady(ctx, run); err != nil {
 			rollback("", "", "", false)
@@ -1203,6 +1236,11 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 // dropped, ITS route removed with the validate discipline, ITS state
 // directory gone. Nothing else is named.
 func PreviewDown(ctx context.Context, run previewRun, cfg PreviewUpConfig, rec PreviewRecord) error {
+	ctx, release, err := previewOperation(ctx, cfg.Root)
+	if err != nil {
+		return err
+	}
+	defer release()
 	composeFile := filepath.Join(previewDir(cfg.Root, rec.Project), "compose.yml")
 	if _, err := run(ctx, "", "compose", "-p", rec.Project, "-f", composeFile, "down", "-v"); err != nil {
 		// A missing project is already down; anything else is reported.
@@ -1222,6 +1260,11 @@ func PreviewDown(ctx context.Context, run previewRun, cfg PreviewUpConfig, rec P
 	}
 	if err := RemovePreviewRoute(ctx, run, cfg.Proxy, cfg.RoutesDir, rec.RouteFile); err != nil {
 		return err
+	}
+	if rec.App != "fieldsofrevik" && len(rec.Images) > 1 {
+		if err := removePreviewBackend(ctx, run, rec.Project, rec.DBName != ""); err != nil {
+			return err
+		}
 	}
 	return os.RemoveAll(previewDir(cfg.Root, rec.Project))
 }
@@ -1331,6 +1374,10 @@ func onlyCharsPreview(s, chars string) bool {
 // until reboot and a record's is not. A lock failure refuses the operation;
 // running without exclusion would make both admission and port allocation false.
 func lockPreviews(ctx context.Context, root string) (func(), error) {
+	return lockHostFile(ctx, root, "previews.lock")
+}
+
+func lockHostFile(ctx context.Context, root, name string) (func(), error) {
 	directory := RunDir
 	if root != "" {
 		directory = filepath.Join(root, "run")
@@ -1338,7 +1385,7 @@ func lockPreviews(ctx context.Context, root string) (func(), error) {
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return nil, fmt.Errorf("preview lock directory unavailable: %w", err)
 	}
-	f, err := os.OpenFile(filepath.Join(directory, "previews.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	f, err := os.OpenFile(filepath.Join(directory, name), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("preview lock unavailable: %w", err)
 	}
