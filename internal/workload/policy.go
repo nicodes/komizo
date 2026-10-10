@@ -21,13 +21,16 @@ import (
 const MaxBytes = 1 << 20
 
 type Policy struct {
-	Version          int    `json:"version"`
-	App              string `json:"app"`
-	AppDir           string `json:"app_dir"`
-	ImagePrefix      string `json:"image_prefix"`
-	SharedNetwork    string `json:"shared_network"`
-	SourceRepository string `json:"source_repository,omitempty"`
-	RepositoryID     string `json:"repository_id,omitempty"`
+	Version          int              `json:"version"`
+	App              string           `json:"app"`
+	AppDir           string           `json:"app_dir"`
+	ImagePrefix      string           `json:"image_prefix"`
+	SharedNetwork    string           `json:"shared_network"`
+	SourceRepository string           `json:"source_repository,omitempty"`
+	RepositoryID     string           `json:"repository_id,omitempty"`
+	Resources        *ResourcePolicy  `json:"resources,omitempty"`
+	Readiness        *ReadinessPolicy `json:"readiness,omitempty"`
+	IngressNetwork   string           `json:"ingress_network,omitempty"`
 }
 
 var identifier = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}$`)
@@ -36,6 +39,19 @@ var revision = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 var digest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
 func (p Policy) Check() error {
+	if p.IngressNetwork != "" && p.IngressNetwork != IsolatedIngress(p.App) {
+		return errors.New("ingress network must belong to this app")
+	}
+	if p.Readiness != nil {
+		if err := p.Readiness.Check(); err != nil {
+			return err
+		}
+	}
+	if p.Resources != nil {
+		if err := p.Resources.Check(); err != nil {
+			return err
+		}
+	}
 	if (p.SourceRepository != "" || p.RepositoryID != "") && (!repositoryName.MatchString(p.SourceRepository) || !numericID.MatchString(p.RepositoryID)) {
 		return errors.New("invalid workload source identity")
 	}
@@ -120,6 +136,9 @@ func Validate(r io.Reader, p Policy, version string) ([]byte, error) {
 		if err := validateService(name, s, doc, p, version); err != nil {
 			return nil, err
 		}
+	}
+	if err := boundResources(services, p.Resources); err != nil {
+		return nil, err
 	}
 	doc["name"] = p.App
 	return json.MarshalIndent(doc, "", "  ")
@@ -242,6 +261,9 @@ func validateResources(doc map[string]any, p Policy) error {
 					netName = strings.ReplaceAll(netName, "${SHARED_NETWORK:-edge}", p.SharedNetwork)
 					if netName != p.SharedNetwork {
 						return errors.New("foreign external network refused")
+					}
+					if p.IngressNetwork != "" {
+						netName = p.IngressNetwork
 					}
 					cfg["name"] = netName
 				} else if _, exists := cfg["name"]; exists {

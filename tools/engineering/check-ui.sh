@@ -6,6 +6,8 @@ if ! command -v node >/dev/null 2>&1; then
 fi
 cd ui
 npm ci --no-audit --no-fund
+npm run typecheck
+node --test tests/*.test.mjs
 npm run build
 cd ..
 if ! git diff --exit-code --stat internal/ui/dist; then

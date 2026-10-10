@@ -1481,6 +1481,7 @@ if [ -n "$hostnames" ]; then
 		# for allowlisting and rate limiting -- i.e. a spoofable one.
 		site() {
 			printf '\theader Strict-Transport-Security "max-age=31536000"\n'
+			printf '\theader >X-Komizo-Revision "%s"\n' "$version"
 			access_log
 			printf '\treverse_proxy %s-gate:80 {\n' "$APP_NAME"
 			printf '\t\theader_up X-Forwarded-For {remote_host}\n'
@@ -1529,6 +1530,17 @@ fi
 proxy_up=0
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$PROXY_CONTAINER"; then
 	proxy_up=1
+fi
+ingress_network="$(komizo-box workload ingress-name --policy "$WORKLOAD_POLICY")"
+if [ "$proxy_up" = 1 ] && [ "$ingress_network" != "${SHARED_NETWORK:-edge}" ]; then
+ if docker network inspect "$ingress_network" >/dev/null 2>&1; then
+  [ "$(docker network inspect "$ingress_network" --format '{{index .Labels "io.komizo.app"}}')" = "$APP_NAME" ] || die "app ingress has no approved ownership label"
+ else
+  docker network create --internal --label "io.komizo.app=$APP_NAME" "$ingress_network" >/dev/null
+ fi
+ if ! docker inspect --format '{{range $name, $cfg := .NetworkSettings.Networks}}{{$name}}{{println}}{{end}}' "$PROXY_CONTAINER" | grep -qxF "$ingress_network"; then
+  docker network connect "$ingress_network" "$PROXY_CONTAINER"
+ fi
 fi
 
 if [ -f "$ROUTE_FILE" ] && [ "$proxy_up" = 0 ]; then
@@ -1794,7 +1806,8 @@ if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$PROXY_CONTAINER"; th
 	if docker exec "$PROXY_CONTAINER" caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
 		echo "deploy: reverse proxy reloaded"
 	else
-		echo "deploy: WARNING -- the proxy would not reload; it is still serving its previous routes" >&2
+		echo "deploy: the proxy would not reload; candidate routing failed" >&2
+		exit 1
 	fi
 fi
 
@@ -1831,6 +1844,14 @@ else
 	operation_phase=activated
 fi
 komizo-box workload operation --policy "$WORKLOAD_POLICY" --version "$version" --previous "$previous" --phase "$operation_phase"
+if [ "$operation_phase" = activated ]; then
+	if ! komizo-box workload ready --policy "$WORKLOAD_POLICY" --version "$version" --previous "$previous" --compose "$APP_DIR/compose.yml"; then
+		# Record failures that occur before the readiness checker can journal.
+		komizo-box workload operation --policy "$WORKLOAD_POLICY" --version "$version" --previous "$previous" --phase readiness_failed
+		journal_finished=1
+		exit 1
+	fi
+fi
 journal_finished=1
 
 KOMIZO_DEPLOY_EOF

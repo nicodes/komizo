@@ -1,0 +1,72 @@
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"flag"
+	"io"
+	"os"
+	"runtime"
+	"strconv"
+	"strings"
+
+	"github.com/nicodes/komizo/internal/workload"
+)
+
+func runHostResources(args []string) error {
+	fs := flag.NewFlagSet("host-resources", flag.ContinueOnError)
+	apply := fs.Bool("apply", false, "apply the installed operator policy")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if os.Geteuid() != 0 || fs.NArg() != 0 {
+		return errors.New("host resources require the root operator")
+	}
+	const path = "/etc/komizo/resources.json"
+	var body []byte
+	var err error
+	if *apply {
+		info, statErr := os.Lstat(path)
+		if statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || !workloadRootOwner(info) {
+			return errors.New("host resource policy must be a root-owned private regular file")
+		}
+		body, err = os.ReadFile(path)
+	} else {
+		body, err = io.ReadAll(io.LimitReader(os.Stdin, workload.MaxBytes+1))
+	}
+	if err != nil || len(body) > workload.MaxBytes {
+		return errors.New("host resource policy unavailable or oversized")
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(body)))
+	decoder.DisallowUnknownFields()
+	var policy workload.HostResources
+	if err := decoder.Decode(&policy); err != nil {
+		return err
+	}
+	var extra any
+	if decoder.Decode(&extra) != io.EOF {
+		return errors.New("one host resource document is required")
+	}
+	mem, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return err
+	}
+	var total int64
+	for _, line := range strings.Split(string(mem), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 3 && fields[0] == "MemTotal:" && fields[2] == "kB" {
+			n, e := strconv.ParseInt(fields[1], 10, 64)
+			if e == nil {
+				total = n * 1024
+			}
+			break
+		}
+	}
+	if err := policy.Apply("/sys/fs/cgroup", total, int64(runtime.NumCPU())*1000); err != nil {
+		return err
+	}
+	if !*apply {
+		return workload.WritePrivateJSON(path, policy)
+	}
+	return nil
+}
