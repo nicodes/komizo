@@ -60,6 +60,8 @@ func main() {
 	}
 	var err error
 	switch os.Args[1] {
+	case "workload":
+		err = runWorkload(os.Args[2:])
 	case "rootd":
 		err = runRootd(os.Args[2:])
 	case "report":
@@ -110,6 +112,8 @@ func usage() {
   komizo-box enrol --api URL --token kmz_enr_...    as root
   komizo-box agent                                  as komizo_monitor
   komizo-box unenrol                                as root
+
+  komizo-box workload init|validate --policy PATH    as root
 
   komizo-box version
 `)
