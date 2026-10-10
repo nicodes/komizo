@@ -17,6 +17,7 @@ func previewPathSite(r PreviewRecord, k PreviewKnob) string {
 	}
 	return fmt.Sprintf(`# Written by komizo preview. Stable hostname for %s.
 %s {
+ header >Strict-Transport-Security "max-age=31536000"
  import /etc/caddy/routes/_preview-pr-*.%s.route
  respond "no preview is configured for this path" 404
 }
