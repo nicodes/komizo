@@ -662,6 +662,15 @@ mv -f "$STATE_TMP" "$STATE_FILE"
 # for work it has nothing to do with.
 exec 7>&-
 
+# Host-owned authority is separate from repository-supplied configuration.
+# Existing policies are retained verbatim; a new config image cannot widen one.
+if ! command -v komizo-box >/dev/null 2>&1; then
+	die "komizo-box is required; initialize/update the host before adding apps"
+fi
+komizo-box workload init --policy "/etc/komizo/workloads/$APP_NAME.json" \
+	--app "$APP_NAME" --app-dir "$APP_DIR" --config-image "$CONFIG_IMAGE" \
+	--network "${SHARED_NETWORK:-edge}"
+
 # --- 3. Deploy path --------------------------------------------------------
 # An app-bound privileged command. Secret, image-retention and configured
 # optional task/preview commands are installed below.
@@ -710,6 +719,7 @@ APP_NAME="__APP_NAME__"
 APP_DIR="__APP_DIR__"
 ROUTE_FILE="__ROUTES_DIR__/__APP_NAME__.caddy"
 SCOPED_ENV="__SCOPED_ENV__"
+WORKLOAD_POLICY="/etc/komizo/workloads/__APP_NAME__.json"
 
 # This app's own record, which is where a DELIBERATE STOP is written down.
 #
@@ -1158,6 +1168,17 @@ if [ -L "$staging/hostnames" ]; then
 	echo "deploy: hostnames in $ref is a symlink, which is not allowed" >&2
 	exit 1
 fi
+
+# Parse and restrict untrusted YAML before Compose can read an env_file,
+# include, provider or external configuration. Only canonical, host-approved
+# JSON reaches Compose; validation failure leaves all installed files alone.
+if ! komizo-box workload validate --policy "$WORKLOAD_POLICY" \
+	--app "$APP_NAME" --app-dir "$APP_DIR" --version "$version" \
+	--compose "$staging/compose.yml" --output "$staging/approved.json"; then
+	echo "deploy: refusing: host workload policy" >&2
+	exit 1
+fi
+mv "$staging/approved.json" "$staging/compose.yml"
 
 # The hostnames this app claims, one per line. This is the whole of what the
 # app tells the reverse proxy: komizo writes the routes itself, so an app can
