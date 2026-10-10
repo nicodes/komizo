@@ -64,6 +64,7 @@ export type Network = {
 };
 
 export type App = {
+  runtime_state?: string;
   name: string;
   user?: string;
   dir?: string;
@@ -88,6 +89,8 @@ export type Container = {
   service: string;
   name: string;
   state: string;
+  health?: string;
+  exit_code?: number;
   status?: string;
   image?: string;
   started_at?: string;
@@ -103,10 +106,26 @@ export type Problem = {
 export type System = {
   cores?: number;
   cpu?: { total: number; idle: number };
+  pressure?: Pressure;
+  groups?: {name: string; stat: ContainerStat}[];
   mem?: { total: number; used: number; available: number; swap?: { total: number; used: number } };
   disks?: { mount: string; dev?: string; used: number; size: number; available: number }[];
-  containers?: { app: string; service: string; cpu_usec?: number; mem?: number; limit?: number }[];
+  containers?: ContainerStat[];
   volumes?: { app: string; service: string; name: string; bytes: number }[];
+};
+
+export type Pressure = {
+  cpu?: PressureResource;
+  memory?: PressureResource;
+  io?: PressureResource;
+};
+export type PressureResource = {some?: PressureLine; full?: PressureLine};
+export type PressureLine = {avg10: number; avg60: number; avg300: number; total_usec: number};
+export type ContainerStat = {
+  app: string; service: string; cpu_usec?: number; mem?: number; limit?: number;
+  cpu_periods?: number; cpu_throttled_periods?: number; cpu_throttled_usec?: number;
+  memory_current?: number; memory_max_events?: number; oom_kills?: number;
+  swap?: number; pressure?: Pressure;
 };
 
 export type Sample = {

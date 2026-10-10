@@ -40,6 +40,7 @@ type containerInfo struct {
 	id      string
 	name    string
 	state   string
+	health  string
 	status  string
 	service string
 	image   string
@@ -120,6 +121,7 @@ func (p *Probe) dockerInventory(ctx context.Context) dockerInventory {
 		`{{range $n, $c := .NetworkSettings.Networks}}{{$n}}` + dassign +
 			`{{range $c.Aliases}}{{.}},{{end}}` + dlist + `{{end}}`,
 		`{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}` + dassign + `{{.Source}}` + dlist + `{{end}}{{end}}`,
+		`{{if .State.Health}}{{.State.Health.Status}}{{end}}`,
 	}, dsep)}, ids...)
 	out, err = p.docker(ctx, args...)
 	if err != nil {
@@ -140,6 +142,9 @@ func (p *Probe) dockerInventory(ctx context.Context) dockerInventory {
 		c.pid, _ = strconv.Atoi(f[4])
 		c.networks = parseNetworks(f[5])
 		c.mounts = parseMounts(f[6])
+		if len(f) > 7 {
+			c.health = f[7]
+		}
 	}
 	return inv
 }
@@ -210,6 +215,7 @@ func (p *Probe) containers(dir string, inv dockerInventory) []Container {
 			Service:    ci.service,
 			Name:       ci.name,
 			State:      ci.state,
+			Health:     ci.health,
 			Status:     ci.status,
 			Image:      ci.image,
 			StartedAt:  ci.startedAt,

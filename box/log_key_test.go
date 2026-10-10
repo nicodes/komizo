@@ -13,16 +13,8 @@ import (
 	"time"
 )
 
-// THE ASSERTION THE WHOLE EPIC RESTS ON.
-//
-// komizo-be#187. The registry key commands this box -- that is komizo-be#180 and
-// it is what lets any signed-in device work -- and it must not read a log. Both
-// halves are checked, because asserting only the refusal would pass against a
-// box that refuses everything, which is exactly the failure this codebase keeps
-// finding: the passing result indistinguishable from the not-running result.
-//
-// One key, one box, two routes, opposite answers. Nothing else varies.
-func TestTheRegistryKeyCommandsThisBoxAndCannotReadItsLogs(t *testing.T) {
+// Registry observations, root commands and account logs have distinct authority.
+func TestTheRegistryKeyReadsReportsButCannotCommandOrReadLogs(t *testing.T) {
 	regPub, regPriv, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -92,8 +84,10 @@ func TestTheRegistryKeyCommandsThisBoxAndCannotReadItsLogs(t *testing.T) {
 	// THE HALF THAT PROVES THE BOX IS ANSWERING AT ALL. Without it, everything
 	// below passes against a box that is simply broken.
 	if code := post("/v1/report", regPriv, OpReportRead, nil); code != http.StatusOK {
-		t.Fatalf("the registry key could not read the report (%d) -- "+
-			"komizo-be#180 is broken, and the log check below proves nothing", code)
+		t.Fatalf("the registry key could not read the report (%d)", code)
+	}
+	if code := post("/v1/commands", regPriv, OpAppStop, map[string]string{"app": "web"}); code != http.StatusConflict && code != http.StatusForbidden {
+		t.Fatal("registry read authority commanded this box")
 	}
 
 	// AND THE HALF THIS EPIC EXISTS FOR.
@@ -185,7 +179,7 @@ func TestNoSignedCommandCanPlantALogKey(t *testing.T) {
 // a log passphrase, and it will be the state of the user's own box the moment
 // this ships. Reporting it as a fault would send somebody to the machine to fix
 // something that is working exactly as designed.
-func TestAnEnrolledBoxWithNoLogKeyCommandsButServesNoLogs(t *testing.T) {
+func TestEnrollmentAloneCannotCommandOrReadLogs(t *testing.T) {
 	pub, _, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -193,8 +187,8 @@ func TestAnEnrolledBoxWithNoLogKeyCommandsButServesNoLogs(t *testing.T) {
 	conf := AgentConf{ServerID: "srv_mine", API: "https://api.example.com", Token: "kmz_agt_x",
 		RegistryKey: base64.RawURLEncoding.EncodeToString(pub)}
 
-	if !conf.CanCommand() {
-		t.Error("an enrolled box will not take orders, so komizo-be#180 is broken")
+	if conf.CanCommand() {
+		t.Error("read enrollment granted command authority")
 	}
 	if conf.CanReadLogs() {
 		t.Error("a box with no log keys claims its logs are readable")

@@ -13,6 +13,8 @@ func (p *Probe) System(inv dockerInventory) System {
 	return System{
 		Cores:      p.cores(),
 		CPU:        p.cpu(),
+		Pressure:   readPressure(p.path("/proc/pressure"), ""),
+		Groups:     p.groupStats(),
 		Mem:        p.mem(),
 		Disks:      p.disks(),
 		Containers: p.containerStats(inv),
@@ -241,6 +243,7 @@ func (p *Probe) cgroupStat(pid int) ContainerStat {
 		if v, ok := fieldFrom(filepath.Join(d, "cpu.stat"), "usage_usec"); ok {
 			cs.CPUUsec = &v
 		}
+		cgroupPressureStats(d, &cs)
 		if cur, ok := numFrom(filepath.Join(d, "memory.current")); ok {
 			ina, _ := fieldFrom(filepath.Join(d, "memory.stat"), "inactive_file")
 			m := saturatingSub(cur, ina)

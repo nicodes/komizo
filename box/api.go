@@ -47,44 +47,12 @@ type APIConfig struct {
 	// RegistryKey verifies read tokens. Planted at enrolment; see token.go.
 	RegistryKey ed25519.PublicKey
 
-	// OperatorKeys are the devices this box takes orders from, from the same
-	// credential -- see operator.go. PUBLIC, so this process holding them grants
-	// it nothing: verifying with a public key is not signing.
-	//
-	// Empty on a box nobody has given a device to, which is every box until an
-	// operator plants one. Since komizo-be#72 took away the token-only reads,
-	// such a box answers NOTHING -- every route below wants an envelope signed
-	// by a key in here, and there are none. It says so at startup rather than
-	// leaving the app to show an empty screen.
+	// OperatorKeys are locally planted public keys for root commands. Registry
+	// enrollment never populates this set. Empty means root commands refuse.
 	OperatorKeys []ed25519.PublicKey
 
-	// LogKeys is what MAY READ A LOG, and it is a different set on purpose.
-	//
-	// komizo-be#187. OperatorKeys above contains the registry key since
-	// komizo-be#180 -- that is what lets any signed-in device command this box,
-	// and it is correct for every route here except one. Logs are the only bytes
-	// on this machine that never leave it any other way: reports, history and
-	// metrics are PUSHED to the service by the agent, so it holds them already
-	// and a signature changes nothing about who can see them. A log is different
-	// and app-only.md §5 said so in as many words --
-	//
-	//	putting the most sensitive bytes on the machine behind the same single
-	//	env var, and then calling the protection structural, would be false.
-	//
-	// So this set is operator keys plus ACCOUNT LOG KEYS, and the registry key
-	// is not in it. The account's key is derived from a passphrase the person
-	// holds and komizo stores only encrypted, so a breached service cannot read
-	// a log even though it can command the box.
-	//
-	// A SEPARATE FIELD RATHER THAN A FILTER. Deriving this by removing the
-	// registry key from OperatorKeys would be one line and would break silently
-	// the day the derivation is refactored -- and it would break OPEN, which is
-	// the direction that does not announce itself. Two sets, built separately in
-	// AgentConf, and each route names the one it uses.
-	//
-	// Empty means logs are refused. That is a box nobody has given a log key to,
-	// and it is said plainly rather than answered with an empty log -- "this box
-	// has no logs" and "you may not read them" are different sentences.
+	// LogKeys is local operator keys plus separately planted account log keys.
+	// Registry keys cannot access logs, even though they authenticate reports.
 	LogKeys []ed25519.PublicKey
 
 	// ReportPath and HistoryPath are the files rootd writes.
@@ -178,7 +146,7 @@ func Handler(cfg APIConfig) http.Handler {
 			refuse(w)
 			return
 		}
-		if _, ok := verifiedRead(cfg, cfg.OperatorKeys, w, r, OpReportRead); !ok {
+		if _, ok := verifiedRead(cfg, cfg.reportKeys(), w, r, OpReportRead); !ok {
 			return
 		}
 		rep, err := ReadReport(cfg.ReportPath)
@@ -194,7 +162,7 @@ func Handler(cfg APIConfig) http.Handler {
 			refuse(w)
 			return
 		}
-		c, ok := verifiedRead(cfg, cfg.OperatorKeys, w, r, OpHistoryRead)
+		c, ok := verifiedRead(cfg, cfg.reportKeys(), w, r, OpHistoryRead)
 		if !ok {
 			return
 		}
@@ -224,7 +192,7 @@ func Handler(cfg APIConfig) http.Handler {
 			refuse(w)
 			return
 		}
-		c, ok := verifiedRead(cfg, cfg.OperatorKeys, w, r, OpMetricsRead)
+		c, ok := verifiedRead(cfg, cfg.reportKeys(), w, r, OpMetricsRead)
 		if !ok {
 			return
 		}

@@ -89,17 +89,7 @@ func TestOneUnreadableKeyFailsTheWholeSet(t *testing.T) {
 	}
 }
 
-// Reading and commanding are separate questions with, since komizo-be#180, the
-// same answer on an ordinary box.
-//
-// This test USED to assert the opposite of its first case -- that a box with a
-// registry key and no operator key takes orders from nobody. That was the
-// property #180 reversed on purpose, and it is inverted here rather than
-// deleted so the reversal is visible to whoever reads this file next.
-//
-// The cases that did NOT change are the ones that matter most: an enrolled box
-// still cannot be commanded without a server id, and a box with neither kind of
-// key is still inert.
+// Read enrollment never grants command authority.
 func TestServingAndCommandingAreIndependent(t *testing.T) {
 	_, k := testKey(t)
 	reg := base64.RawURLEncoding.EncodeToString(make([]byte, ed25519.PublicKeySize))
@@ -108,8 +98,8 @@ func TestServingAndCommandingAreIndependent(t *testing.T) {
 	if !serves.CanServe() {
 		t.Error("a box with a registry key and an id cannot serve")
 	}
-	if !serves.CanCommand() {
-		t.Error("an enrolled box would not take orders from its owner, which is the whole of komizo-be#180")
+	if serves.CanCommand() {
+		t.Error("read enrollment granted command authority")
 	}
 
 	commands := AgentConf{ServerID: "srv_x", OperatorKeys: []string{k}}
@@ -136,55 +126,26 @@ func TestServingAndCommandingAreIndependent(t *testing.T) {
 	}
 }
 
-// The registry key is an authority to command, and an unrelated key is not.
-//
-// THE PROPERTY THAT HAD TO SURVIVE komizo-be#180. The alternative design deleted
-// verification outright, and with it every assertion of this shape; the whole
-// argument for signing at the service instead was that this stays true and stays
-// checkable. So it is checked at the level that decides it -- the key set -- and
-// again in service_signs_test.go at the level that spends it.
-func TestTheRegistryKeyIsTrustedAndAStrangerIsNot(t *testing.T) {
+func TestRegistryKeyIsReadAuthorityOnly(t *testing.T) {
 	pub, _, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stranger, _, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	c := AgentConf{ServerID: "srv_x", RegistryKey: base64.RawURLEncoding.EncodeToString(pub)}
 	keys, err := c.TrustedKeys()
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("registry acquired command authority: %v", err)
 	}
-	if len(keys) != 1 || !keys[0].Equal(pub) {
-		t.Fatalf("trusted keys = %v, want just the registry key", keys)
-	}
-	for _, k := range keys {
-		if k.Equal(stranger) {
-			t.Error("a key nobody planted is in the trusted set")
-		}
-	}
-
-	// Carried ALONGSIDE the operator keys rather than instead of them. A box
-	// that had devices planted keeps trusting them; that is what makes this
-	// additive rather than a replacement.
-	_, dev := testKey(t)
+	devPub, dev := testKey(t)
 	c.OperatorKeys = []string{dev}
 	keys, err = c.TrustedKeys()
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || len(keys) != 1 || !keys[0].Equal(devPub) {
+		t.Fatalf("local authority lost: %v", err)
 	}
-	if len(keys) != 2 {
-		t.Fatalf("got %d keys, want the device and the registry key", len(keys))
-	}
-
-	// And all-or-nothing covers the registry key too. A box whose credential
-	// carries an unreadable one refuses everything rather than quietly falling
-	// back to device-only, which would be a box in a mode nobody chose.
-	c.RegistryKey = "not base64 at all!!"
-	if _, err := c.TrustedKeys(); err == nil {
-		t.Error("an unreadable registry key was skipped instead of failing the set")
+	c.RegistryKey = "invalid registry key"
+	keys, err = c.TrustedKeys()
+	if err != nil || len(keys) != 1 {
+		t.Fatalf("read credential altered local command authority: %v", err)
 	}
 }
 

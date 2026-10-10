@@ -6,21 +6,28 @@
 // results it leaves. There is no account, no registry, no second service in
 // the path.
 import { A } from "@solidjs/router";
-import { createResource, For, Show } from "solid-js";
+import { createResource, createSignal, For, Show } from "solid-js";
 import { readBackups, readEvents, readMetrics, readReport } from "@/lib/api";
 import { deploymentStatus } from "@/lib/deployment";
+import { collectOverview } from "@/lib/overview";
 import { ago, formatBytes, formatDuration } from "@/lib/format";
 import { Badge, Bar, Dim, Row, Section } from "@/components";
 export default function Overview() {
   // One load on open and one per refresh click. No polling loop: the report
   // itself is written on a timer, and a page that re-asks faster than the box
   // re-measures is reading the same file twice.
-  const [report, { refetch }] = createResource(async () => (await readReport()).report);
-  const [events] = createResource(async () => (await readEvents()).events);
-  const [metrics] = createResource(async () => await readMetrics());
-  const [backups] = createResource(async () => await readBackups());
-  const requestTotal = () =>
-    (metrics()?.metrics.rows ?? []).reduce((n, r) => n + (r.c2 ?? 0) + (r.c3 ?? 0) + (r.c4 ?? 0) + (r.c5 ?? 0), 0);
+  const [generation, setGeneration] = createSignal(1);
+  const [snapshot] = createResource(generation, () => collectOverview({
+    report: readReport, events: readEvents, metrics: readMetrics, backups: readBackups,
+  }));
+  const report = () => snapshot()?.report;
+  const events = () => snapshot()?.events;
+  const metrics = () => snapshot()?.metrics;
+  const backups = () => snapshot()?.backups;
+  const reportError = () => snapshot()?.errors.report;
+  const requestTotal = () => metrics()
+    ? metrics()!.metrics.rows.reduce((n, r) => n + (r.c2 ?? 0) + (r.c3 ?? 0) + (r.c4 ?? 0) + (r.c5 ?? 0), 0)
+    : "unavailable";
   return (
     <main class="min-h-screen bg-bg">
       <div class="mx-auto max-w-3xl p-4">
@@ -28,18 +35,22 @@ export default function Overview() {
           <h1 class="text-ink text-lg font-semibold">komizo</h1>
           <button
             class="text-accent text-sm hover:underline"
-            onClick={() => void refetch()}
+            onClick={() => setGeneration((value) => value + 1)}
             type="button">
             refresh
           </button>
         </header>
 
-        <Show when={report.error}>
+        <Show when={reportError()}>
           <Section title="could not read this box">
-            <Dim>{String(report.error)}</Dim>
+            <Dim>{reportError()}</Dim>
             <Dim>komizo ui serves what the box wrote -- a box that has never reported has nothing to show yet.</Dim>
           </Section>
         </Show>
+
+        <For each={[snapshot()?.errors.events, snapshot()?.errors.metrics, snapshot()?.errors.backups].filter(Boolean)}>
+          {(error) => <Dim>Some box evidence could not be refreshed: {String(error)}</Dim>}
+        </For>
 
         <Show when={report()} fallback={<Dim>reading the box…</Dim>}>
           {(rep) => {
@@ -120,11 +131,7 @@ export default function Overview() {
                         </span>
                         <Badge
                           word={
-                            a.stopped
-                              ? "stopped"
-                              : (a.containers ?? []).some((c) => c.state === "running")
-                                ? "running"
-                                : "down"
+                            a.runtime_state ?? "unknown"
                           }
                         />
                       </A>
@@ -159,7 +166,7 @@ export default function Overview() {
 
                 <Section title="events">
                   <Show when={(events() ?? []).length === 0}>
-                    <Dim>Nothing has been told to this box yet.</Dim>
+                    <Dim>{events() === undefined ? "Events unavailable." : "Nothing has been told to this box yet."}</Dim>
                   </Show>
                   <For each={events() ?? []}>
                     {(e) => (

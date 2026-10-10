@@ -885,10 +885,18 @@ func RemovePreviewRoute(ctx context.Context, run previewRun, proxy, routesDir, f
 // Provisioning is komizo init's job (see scripts/alpine-init.sh). Here we
 // only check, because a preview that creates infrastructure on demand is a
 // preview that can leave a half-built host behind when it fails.
-func ensurePreviewDBReady(ctx context.Context, run previewRun) error {
+func ensurePreviewDBReady(ctx context.Context, run previewRun, allowStart bool) error {
 	out, err := run(ctx, "", "inspect", PreviewDBContainer, "--format", "{{.State.Running}}")
-	if err != nil || strings.TrimSpace(out) != "true" {
+	if err != nil {
 		return fmt.Errorf("komizo's preview database server (%s) is not running -- run komizo init on this host to provision it", PreviewDBContainer)
+	}
+	if strings.TrimSpace(out) != "true" {
+		if !allowStart || strings.TrimSpace(out) != "false" {
+			return fmt.Errorf("komizo's preview database server (%s) is not running -- run komizo init on this host to provision it", PreviewDBContainer)
+		}
+		if _, err := run(ctx, "", "start", PreviewDBContainer); err != nil {
+			return fmt.Errorf("could not start the provisioned preview database: %w", err)
+		}
 	}
 	// Running is not the same as accepting connections: the container comes
 	// back before postgres finishes recovery, and a CREATE ROLE issued in
@@ -991,15 +999,16 @@ func previewSQL(ctx context.Context, run previewRun, container, user, db, sql st
 // else is paths and the knob, so a test drives the whole lifecycle with
 // fakes and a temp root.
 type PreviewUpConfig struct {
-	Knob          PreviewKnob
-	Root          string // previews state root ("" = the box's)
-	RoutesDir     string
-	Proxy         string
-	Network       string
-	FloorsBody    string
-	ReportJSON    []byte
-	ReportPath    string
-	HostResources *PreviewHostResources
+	Knob               PreviewKnob
+	Root               string // previews state root ("" = the box's)
+	RoutesDir          string
+	Proxy              string
+	Network            string
+	FloorsBody         string
+	ReportJSON         []byte
+	ReportPath         string
+	HostResources      *PreviewHostResources
+	ManageIdleDatabase bool // root host lifecycle; never provisions or deletes a volume
 }
 
 // PreviewUp brings a preview up: validate, floors, evict if full, database,
@@ -1243,7 +1252,7 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 		}
 	}
 	if needsDB {
-		if err := ensurePreviewDBReady(ctx, run); err != nil {
+		if err := ensurePreviewDBReady(ctx, run, cfg.ManageIdleDatabase); err != nil {
 			return zero, err
 		}
 		dbEndpoint = PreviewDBContainer
@@ -1327,6 +1336,11 @@ func PreviewDown(ctx context.Context, run previewRun, cfg PreviewUpConfig, rec P
 	// A stopped shared database still retains its volume. Keep the cleanup
 	// record until its role and database can actually be removed.
 	if rec.DBName != "" {
+		if cfg.ManageIdleDatabase {
+			if err := ensurePreviewDBReady(ctx, run, true); err != nil {
+				return fmt.Errorf("preview database cleanup pending: %w", err)
+			}
+		}
 		out, err := run(ctx, "", "inspect", PreviewDBContainer, "--format", "{{.State.Running}}")
 		if err != nil || strings.TrimSpace(out) != "true" {
 			return fmt.Errorf("preview database cleanup pending: shared server unavailable")
@@ -1346,7 +1360,10 @@ func PreviewDown(ctx context.Context, run previewRun, cfg PreviewUpConfig, rec P
 			return err
 		}
 	}
-	return os.RemoveAll(previewDir(cfg.Root, rec.Project))
+	if err := os.RemoveAll(previewDir(cfg.Root, rec.Project)); err != nil {
+		return err
+	}
+	return stopUnusedPreviewDB(ctx, run, cfg)
 }
 
 // PreviewReap is what a gc pass did, written to the served directory so the
@@ -1405,10 +1422,41 @@ func PreviewGC(ctx context.Context, run previewRun, cfg PreviewUpConfig, now tim
 		live = live[1:]
 	}
 	reap.Kept = len(live)
+	if err := stopUnusedPreviewDB(ctx, run, cfg); err != nil {
+		reap.Note = joinNotePreview(reap.Note, err.Error())
+	}
 	if len(reap.Reaped) == 0 && reap.Note == "" {
 		reap.Note = "nothing to reap"
 	}
 	return reap, nil
+}
+
+// Called only inside the host preview operation lock. Retained cleanup records
+// keep the database awake. Stopping releases RAM and never removes its volume.
+func stopUnusedPreviewDB(ctx context.Context, run previewRun, cfg PreviewUpConfig) error {
+	if !cfg.ManageIdleDatabase {
+		return nil
+	}
+	records, err := ListPreviews(cfg.Root)
+	if err != nil {
+		return err
+	}
+	for _, rec := range records {
+		if rec.DBName != "" {
+			return nil
+		}
+	}
+	out, err := run(ctx, "", "inspect", PreviewDBContainer, "--format", "{{.State.Running}}")
+	if err != nil || strings.TrimSpace(out) == "false" {
+		return nil
+	}
+	if strings.TrimSpace(out) != "true" {
+		return fmt.Errorf("could not determine preview database state")
+	}
+	if _, err := run(ctx, "", "stop", "--time", "30", PreviewDBContainer); err != nil {
+		return fmt.Errorf("could not stop idle preview database: %w", err)
+	}
+	return nil
 }
 
 // WritePreviewReap leaves the gc record where the probe reads it.
