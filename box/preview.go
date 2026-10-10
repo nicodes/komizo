@@ -809,6 +809,7 @@ func previewRoute(r PreviewRecord, k PreviewKnob) string {
 	}
 	return fmt.Sprintf(`# Written by komizo preview. %s PR #%d -- removed by 'komizo preview down'.
 %s {
+	header >Strict-Transport-Security "max-age=31536000"
 	reverse_proxy %s-gate:80
 }
 `, r.App, r.PR, hosts, r.Project)
