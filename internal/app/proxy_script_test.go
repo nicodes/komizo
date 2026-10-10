@@ -55,8 +55,60 @@ func newProxyBox(t *testing.T) *proxyBox {
 	b.script = strings.NewReplacer(
 		"/srv/_proxy", b.proxyDir,
 		"/run/komizo", filepath.Join(root, "run", "komizo"),
+		"/etc/komizo/workloads", filepath.Join(root, "workloads"),
 	).Replace(scripts.AlpineProxyScript)
 	return b
+}
+
+func TestProxyRecreationRetainsProtectedPrivateIngress(t *testing.T) {
+	b := newProxyBox(t)
+	policyDir := filepath.Join(b.root, "workloads")
+	if err := os.Mkdir(policyDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, app := range []string{"alpha", "beta"} {
+		write(t, filepath.Join(policyDir, app+".json"), 0600, "{}")
+	}
+	write(t, filepath.Join(b.bin, "komizo-box"), 0755, "#!/bin/sh\napp=$(basename \"$4\" .json)\nprintf 'komizo-%s-ingress\\n' \"$app\"\n")
+	write(t, filepath.Join(b.bin, "docker"), 0755, `#!/bin/sh
+if [ "$1 $2" = 'network inspect' ] && [ "$4" = '--format' ]; then
+ case "$3" in
+  komizo-alpha-ingress) echo 'true|alpha' ;;
+  komizo-beta-ingress) echo 'true|beta' ;;
+  *) exit 1 ;;
+ esac
+fi
+`)
+	if out, err := b.run(t, ""); err != nil {
+		t.Fatalf("proxy failed: %v\n%s", err, out)
+	}
+	body, err := os.ReadFile(filepath.Join(b.proxyDir, "compose.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"komizo-alpha-ingress", "komizo-beta-ingress"} {
+		if !strings.Contains(string(body), "      - "+name+"\n") || !strings.Contains(string(body), "  "+name+":\n    external: true\n    name: "+name+"\n") {
+			t.Fatalf("proxy lost protected ingress %s:\n%s", name, body)
+		}
+	}
+}
+
+func TestProxyRefusesForeignPrivateIngressBeforeChangingConfiguration(t *testing.T) {
+	b := newProxyBox(t)
+	policyDir := filepath.Join(b.root, "workloads")
+	if err := os.Mkdir(policyDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(policyDir, "alpha.json"), 0600, "{}")
+	write(t, filepath.Join(b.bin, "komizo-box"), 0755, "#!/bin/sh\necho komizo-alpha-ingress\n")
+	write(t, filepath.Join(b.bin, "docker"), 0755, "#!/bin/sh\nif [ \"$1 $2\" = 'network inspect' ] && [ \"$4\" = '--format' ]; then echo 'true|other'; fi\n")
+	write(t, filepath.Join(b.proxyDir, "Caddyfile"), 0644, "original")
+	if out, err := b.run(t, ""); err == nil || !strings.Contains(out, "protected owner") {
+		t.Fatalf("foreign ingress accepted: %v\n%s", err, out)
+	}
+	if got := b.caddyfile(t); got != "original" {
+		t.Fatalf("configuration changed: %s", got)
+	}
 }
 
 func (b *proxyBox) run(t *testing.T, tlsAsk string) (string, error) {
