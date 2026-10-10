@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Diagnose is what is wrong with a box, worked out from one reading of it.
@@ -55,6 +56,17 @@ func Diagnose(r Report) []Problem {
 	}
 
 	for _, a := range r.Apps {
+		if op := a.Deployment; op != nil {
+			switch op.Phase {
+			case "failed", "activation_failed":
+				out = append(out, Problem{Kind: ProblemDeploymentIncomplete, App: a.Name, Detail: fmt.Sprintf("%s deployment %s ended in %s; inspect its journal before changing versions", a.Name, op.Candidate, op.Phase)})
+			case "admitted", "configured", "activating":
+				if r.At.Sub(op.At) > 10*time.Minute {
+					out = append(out, Problem{Kind: ProblemDeploymentIncomplete, App: a.Name, Detail: fmt.Sprintf("%s deployment %s has remained %s for over ten minutes; inspect its journal", a.Name, op.Candidate, op.Phase)})
+				}
+			}
+		}
+
 		// An app publishing hostnames with nothing of its own on the shared
 		// network. The proxy has routes pointing at an alias that resolves to
 		// nothing, so every one of those names 502s while the containers

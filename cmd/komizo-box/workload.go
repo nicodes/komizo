@@ -13,6 +13,14 @@ import (
 )
 
 func runWorkload(args []string) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "capacity":
+			return runWorkloadCapacity(args[1:])
+		case "trust", "release-admit", "release-bind", "release-bootstrap", "operation":
+			return runWorkloadRelease(args)
+		}
+	}
 	if len(args) == 0 || (args[0] != "init" && args[0] != "validate") {
 		return errors.New("workload requires init or validate")
 	}
@@ -43,7 +51,10 @@ func runWorkload(args []string) error {
 			if err != nil {
 				return err
 			}
-			if old != p {
+			authority := old
+			authority.SourceRepository = ""
+			authority.RepositoryID = ""
+			if authority != p {
 				return errors.New("existing workload policy differs; review an operator policy update")
 			}
 			return nil

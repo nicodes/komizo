@@ -2,6 +2,7 @@ package box
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -184,6 +185,12 @@ func (p *Probe) apps(inv dockerInventory) []App {
 			ConfigImage: as.st["CONFIG_IMAGE"],
 			KnownAs:     splitList(as.st["KNOWN_AS"]),
 			Version:     "none",
+		}
+		if body, err := os.ReadFile(p.path(filepath.Join("/var/lib/komizo/releases", a.Name, "operation.json"))); err == nil && len(body) <= 65536 {
+			var op Deployment
+			if json.Unmarshal(body, &op) == nil && op.Version == 1 && op.App == a.Name {
+				a.Deployment = &op
+			}
 		}
 		if a.User == "" {
 			a.User = "?"

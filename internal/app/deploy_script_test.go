@@ -123,6 +123,7 @@ exit 0
 		strings.Contains(b.script, "__STATE") {
 		t.Fatal("the deploy template has a placeholder this test does not substitute")
 	}
+	b.script = strings.ReplaceAll(b.script, "/var/lib/komizo/releases", filepath.Join(b.root, "releases"))
 	b.script = strings.ReplaceAll(b.script, "/run/komizo", filepath.Join(b.root, "run", "komizo"))
 	b.script = strings.ReplaceAll(b.script, `WORKLOAD_POLICY="/etc/komizo/workloads/blog.json"`, `WORKLOAD_POLICY="`+filepath.Join(b.root, "workload-policy.json")+`"`)
 	b.script = strings.ReplaceAll(b.script,
@@ -150,6 +151,14 @@ func (b *deployBox) writeReportJSON(t *testing.T, body string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(b.report), 0o755); err != nil {
 		t.Fatal(err)
+	}
+	var doc map[string]any
+	if json.Unmarshal([]byte(body), &doc) == nil {
+		if _, exists := doc["at"]; !exists {
+			doc["at"] = time.Now().UTC().Format(time.RFC3339Nano)
+		}
+		encoded, _ := json.Marshal(doc)
+		body = string(encoded)
 	}
 	write(t, b.report, 0o644, body)
 }

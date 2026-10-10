@@ -192,6 +192,8 @@ type App struct {
 	StoppedBy string    `json:"stopped_by,omitempty"`
 	StoppedAt time.Time `json:"stopped_at,omitzero"`
 
+	// Deployment is root-owned durable activation state, including failures.
+	Deployment *Deployment `json:"deployment,omitempty"`
 	Containers []Container `json:"containers,omitempty"`
 	// Hosts is every name this app answers on, with the container the app said
 	// serves it. The service is empty when the app did not say -- which is the
@@ -310,12 +312,13 @@ type Problem struct {
 // The problem kinds. Named constants because an alert rule matches on these,
 // and a typo in a string literal produces a rule that silently never fires.
 const (
-	ProblemAliasClash   = "alias_clash"
-	ProblemProxyStopped = "proxy_stopped"
-	ProblemDetached     = "detached"
-	ProblemOrphanDir    = "orphan_dir"
-	ProblemNoTLSGate    = "no_tls_gate"
-	ProblemAppDown      = "app_down"
+	ProblemAliasClash           = "alias_clash"
+	ProblemProxyStopped         = "proxy_stopped"
+	ProblemDetached             = "detached"
+	ProblemOrphanDir            = "orphan_dir"
+	ProblemNoTLSGate            = "no_tls_gate"
+	ProblemAppDown              = "app_down"
+	ProblemDeploymentIncomplete = "deployment_incomplete"
 	// An app running under a record that says it was stopped. komizo#57.
 	//
 	// The one problem here that is about the REPORT rather than about the box:
@@ -325,3 +328,13 @@ const (
 	// app_down keys on the marker, so an app in this state cannot page.
 	ProblemStoppedButRunning = "stopped_but_running"
 )
+
+// Deployment is the durable host-side activation journal.
+type Deployment struct {
+	Version   int       `json:"version"`
+	App       string    `json:"app"`
+	Candidate string    `json:"candidate"`
+	Previous  string    `json:"previous,omitempty"`
+	Phase     string    `json:"phase"`
+	At        time.Time `json:"at"`
+}

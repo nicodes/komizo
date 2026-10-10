@@ -272,7 +272,7 @@ var (
 // one leading space, an indented reassignment inside a column-zero `if`, and a
 // `;`-joined one -- and none is equivalent: run the shipped decision against a
 // record that says `STOPPED=1` with any of them repointing the path and it
-// prints `started=yes` and runs `docker compose up -d --remove-orphans`. That
+// prints `started=yes` and runs `docker compose up -d --remove-orphans --pull never`. That
 // is Review 1's blocking finding back in full, reached through the helper
 // written to prevent it. The indented form is the most plausible real edit: a
 // `KNOWN_AS` alias fallback is two lines and lands inside an `if`.
@@ -384,12 +384,13 @@ func runDecision(t *testing.T, body, block string, h how) (out string, dockerRan
 	}
 	prelude := "set -euf\n" +
 		"APP_NAME=web\n" +
+		"WORKLOAD_POLICY=fixture previous=previous\n" +
 		"version=abc1234\n" +
 		"ref=registry.example/web-config:abc1234\n" +
 		stateFileLine(t, body, dir, "web") + "\n" +
 		"docker() { printf '%s\\n' \"docker $*\" >> " + log + ";" + race + fail + " }\n"
 
-	cmd := exec.Command("sh", "-c", prelude+block)
+	cmd := exec.Command("sh", "-c", prelude+strings.ReplaceAll(block, "komizo-box workload operation", ": workload operation"))
 	b, err := cmd.CombinedOutput()
 	ran, _ := os.ReadFile(log)
 	for _, ln := range strings.Split(strings.TrimSpace(string(ran)), "\n") {
@@ -541,8 +542,8 @@ func TestADeployDoesNotStartAnAppThatWasStopped(t *testing.T) {
 			// silent wrong version this whole change is about -- see
 			// composeArgs in cmd/komizo-box/app.go, which makes the argument
 			// for the other path that starts an app.
-			if tc.start && (len(ran) != 1 || ran[0] != "docker compose up -d --remove-orphans") {
-				t.Errorf("started with %v, want exactly `docker compose up -d --remove-orphans`", ran)
+			if tc.start && (len(ran) != 1 || ran[0] != "docker compose up -d --remove-orphans --pull never") {
+				t.Errorf("started with %v, want exactly `docker compose up -d --remove-orphans --pull never`", ran)
 			}
 			// Nothing at all is run when the app stays down. Not even a
 			// `compose start` of one service: the app is down on purpose.
@@ -782,7 +783,7 @@ func TestTheDeployedVersionIsRecordedOnEveryDeploy(t *testing.T) {
 				"ref=registry.example/web-config:abc1234\n" +
 				"cd " + dir + "\n"
 
-			cmd := exec.Command("sh", "-c", prelude+block)
+			cmd := exec.Command("sh", "-c", prelude+strings.ReplaceAll(block, "komizo-box workload operation", ": workload operation"))
 			out, err := cmd.CombinedOutput()
 			if err != nil {
 				t.Fatalf("the APP_VERSION commit failed to run: %v\n%s", err, out)
