@@ -79,6 +79,7 @@ func runWorkload(args []string) error {
 			authority.Resources = nil // provisioning retains the operator's envelope
 			authority.Readiness = nil
 			authority.IngressNetwork = ""
+			authority.RequireStatefulContract = false // provisioning retains root's requirement
 			if authority != p {
 				return errors.New("existing workload policy differs; review an operator policy update")
 			}
