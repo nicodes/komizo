@@ -56,11 +56,12 @@ func runPreview(args []string) error {
 		fmt.Fprintln(os.Stderr, "komizo-box preview:", note)
 	}
 	cfg := box.PreviewUpConfig{
-		Knob:      knob,
-		Root:      *root,
-		RoutesDir: *routes,
-		Proxy:     *proxy,
-		Network:   *network,
+		ManageIdleDatabase: true,
+		Knob:               knob,
+		Root:               *root,
+		RoutesDir:          *routes,
+		Proxy:              *proxy,
+		Network:            *network,
 	}
 	ctx := context.Background()
 

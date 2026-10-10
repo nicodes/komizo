@@ -13,9 +13,9 @@ import { Badge, Dim, Row, Section } from "@/components";
 const ACTIONS = ["restart", "start", "stop"] as const;
 export default function AppDetail() {
   const params = useParams<{ name: string }>();
-  const [app, { refetch }] = createResource(async () => {
+  const [app, { refetch }] = createResource(() => params.name, async (name) => {
     const rep = await readReport();
-    return rep.report.apps.find((a) => a.name === params.name) ?? null;
+    return rep.report.apps.find((a) => a.name === name) ?? null;
   });
   const [busy, setBusy] = createSignal<string | null>(null);
   // What the box said when it acted. Shown rather than toasted: a command
@@ -40,7 +40,7 @@ export default function AppDetail() {
   return (
     <main class="min-h-screen bg-bg">
       <div class="mx-auto max-w-3xl p-4">
-        <Show when={app()} fallback={<Dim>{app.error ? `${params.name} is not an app on this box.` : "reading the box…"}</Dim>}>
+        <Show when={!app.error && app()?.name === params.name && app()} fallback={<Dim>{app.error ? `Could not read this box: ${String(app.error)}` : app.loading ? "reading the box…" : `${params.name} is not an app on this box.`}</Dim>}>
           {(a) => (
             <>
               <header class="mb-4">
@@ -51,11 +51,7 @@ export default function AppDetail() {
                 <Row label="state">
                   <Badge
                     word={
-                      a().stopped
-                        ? "stopped"
-                        : (a().containers ?? []).some((c) => c.state === "running")
-                          ? "running"
-                          : "down"
+                      a().runtime_state ?? "unknown"
                     }
                   />
                 </Row>

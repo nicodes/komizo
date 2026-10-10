@@ -18,7 +18,9 @@ type System struct {
 	// CPU is cumulative jiffies since boot. Idle counts iowait with it: waiting
 	// on a disk is not work, and counting it as busy makes a box that is merely
 	// reading from a slow disk look loaded.
-	CPU *CPU `json:"cpu,omitempty"`
+	CPU      *CPU        `json:"cpu,omitempty"`
+	Pressure *Pressure   `json:"pressure,omitempty"`
+	Groups   []GroupStat `json:"groups,omitempty"`
 	// Mem is measured from MemAvailable, never MemFree. Free memory on a healthy
 	// box is near zero -- the kernel spends everything spare on cache and hands
 	// it back on demand -- so reporting free as used is the classic way to make
@@ -105,7 +107,15 @@ type ContainerStat struct {
 	// CPUUsec is microseconds, normalised here. cgroup v1 reports nanoseconds
 	// and v2 microseconds; converting at the source means no reader ever has to
 	// know which kind of box it is talking to.
-	CPUUsec *uint64 `json:"cpu_usec,omitempty"`
+	CPUUsec             *uint64   `json:"cpu_usec,omitempty"`
+	CPUPeriods          *uint64   `json:"cpu_periods,omitempty"`
+	CPUThrottledPeriods *uint64   `json:"cpu_throttled_periods,omitempty"`
+	CPUThrottledUsec    *uint64   `json:"cpu_throttled_usec,omitempty"`
+	MemoryCurrent       *uint64   `json:"memory_current,omitempty"`
+	MemoryMaxEvents     *uint64   `json:"memory_max_events,omitempty"`
+	OOMKills            *uint64   `json:"oom_kills,omitempty"`
+	Swap                *uint64   `json:"swap,omitempty"`
+	Pressure            *Pressure `json:"pressure,omitempty"`
 	// Mem excludes inactive page cache, the convention `docker stats` follows
 	// and the honest one: cache is memory the container is BORROWING and the
 	// kernel will take straight back under pressure. Counting it makes anything
@@ -113,6 +123,31 @@ type ContainerStat struct {
 	Mem *uint64 `json:"mem,omitempty"`
 	// Limit is the container's memory cap, absent when it is not capped.
 	Limit *uint64 `json:"limit,omitempty"`
+}
+
+// GroupStat exposes the fixed host envelopes with the same cumulative counters
+// as containers. Missing measurements stay absent, including on cgroup v1.
+type GroupStat struct {
+	Name string        `json:"name"`
+	Stat ContainerStat `json:"stat"`
+}
+
+type Pressure struct {
+	CPU    *PressureResource `json:"cpu,omitempty"`
+	Memory *PressureResource `json:"memory,omitempty"`
+	IO     *PressureResource `json:"io,omitempty"`
+}
+
+type PressureResource struct {
+	Some *PressureLine `json:"some,omitempty"`
+	Full *PressureLine `json:"full,omitempty"`
+}
+
+type PressureLine struct {
+	Avg10     float64 `json:"avg10"`
+	Avg60     float64 `json:"avg60"`
+	Avg300    float64 `json:"avg300"`
+	TotalUsec uint64  `json:"total_usec"`
 }
 
 // Volume is one docker volume's size on disk, attributed to the service that
