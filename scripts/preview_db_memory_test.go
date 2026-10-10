@@ -71,7 +71,7 @@ func TestPreviewDatabaseCapAppliesOnCreationAndReinit(t *testing.T) {
 			if !ok {
 				t.Fatal("missing provisioner end")
 			}
-			harness := "set -eu\ndie() { exit 19; }\nlog() { :; }\nSHARED_NETWORK=edge\n" + previewDBPolicyBody(t, knob) + "\ndocker() { printf '%s\\n' \"$*\" >> \"$CALLS\"; if [ \"$1\" = inspect ]; then echo \"$RUNNING\"; fi; }\n" + body
+			harness := "set -eu\ndie() { exit 19; }\nlog() { :; }\nSHARED_NETWORK=edge\n" + previewDBPolicyBody(t, knob) + "\ndocker() { printf '%s\\n' \"$*\" >> \"$CALLS\"; if [ \"$1\" = network ] && [ \"$2\" = inspect ]; then echo preview-database; elif [ \"$1\" = inspect ]; then echo \"$RUNNING\"; fi; }\n" + body
 			cmd := exec.Command("sh", "-c", harness)
 			cmd.Env = append(os.Environ(), "CALLS="+calls, "RUNNING="+running)
 			if out, err := cmd.CombinedOutput(); err != nil {

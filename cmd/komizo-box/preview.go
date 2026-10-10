@@ -80,7 +80,7 @@ func runPreview(args []string) error {
 		} else if !os.IsNotExist(err) {
 			return fmt.Errorf("cannot read %s", *floors)
 		}
-		cfg.ReportJSON, _ = os.ReadFile(*reportPath)
+		cfg.ReportPath = *reportPath
 		rec, err := box.PreviewUp(ctx, run, cfg, *app, *pr, fs.Args(), time.Now())
 		if err != nil {
 			return err
