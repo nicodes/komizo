@@ -48,20 +48,9 @@ func runHostResources(args []string) error {
 	if decoder.Decode(&extra) != io.EOF {
 		return errors.New("one host resource document is required")
 	}
-	mem, err := os.ReadFile("/proc/meminfo")
+	total, err := hostMemoryBytes()
 	if err != nil {
 		return err
-	}
-	var total int64
-	for _, line := range strings.Split(string(mem), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 3 && fields[0] == "MemTotal:" && fields[2] == "kB" {
-			n, e := strconv.ParseInt(fields[1], 10, 64)
-			if e == nil {
-				total = n * 1024
-			}
-			break
-		}
 	}
 	if *check {
 		return policy.Check(total, int64(runtime.NumCPU())*1000)
@@ -73,4 +62,22 @@ func runHostResources(args []string) error {
 		return workload.WritePrivateJSON(path, policy)
 	}
 	return nil
+}
+
+func hostMemoryBytes() (int64, error) {
+	mem, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, err
+	}
+	for _, line := range strings.Split(string(mem), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 3 && fields[0] == "MemTotal:" && fields[2] == "kB" {
+			n, err := strconv.ParseInt(fields[1], 10, 64)
+			if err != nil || n <= 0 || n > 1<<50 {
+				return 0, errors.New("measured host memory unavailable")
+			}
+			return n * 1024, nil
+		}
+	}
+	return 0, errors.New("measured host memory unavailable")
 }

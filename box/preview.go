@@ -90,6 +90,7 @@ const (
 
 // PreviewKnob is the parsed knob file.
 type PreviewKnob struct {
+	cgroupParent string // assigned only from protected host resources, never knob text
 	// SharedDomain opts this host into flat, app-qualified preview names.
 	SharedDomain      string
 	Domain            string
@@ -710,6 +711,9 @@ func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv boo
 		}
 		limit := previewServiceMemory(k, r.App, role)
 		fmt.Fprintf(&b, "  %s:\n    image: %s\n    mem_limit: %s\n    memswap_limit: %s\n    cpu_shares: 128\n    cpus: %s\n    restart: unless-stopped\n", name, image, limit, limit, k.CPULimit)
+		if k.cgroupParent != "" {
+			fmt.Fprintf(&b, "    cgroup_parent: %s\n", k.cgroupParent)
+		}
 		// A writable /tmp, because the fleet's images are scratch or
 		// distroless and run as an unprivileged uid.
 		//
@@ -986,14 +990,15 @@ func previewSQL(ctx context.Context, run previewRun, container, user, db, sql st
 // else is paths and the knob, so a test drives the whole lifecycle with
 // fakes and a temp root.
 type PreviewUpConfig struct {
-	Knob       PreviewKnob
-	Root       string // previews state root ("" = the box's)
-	RoutesDir  string
-	Proxy      string
-	Network    string
-	FloorsBody string
-	ReportJSON []byte
-	ReportPath string
+	Knob          PreviewKnob
+	Root          string // previews state root ("" = the box's)
+	RoutesDir     string
+	Proxy         string
+	Network       string
+	FloorsBody    string
+	ReportJSON    []byte
+	ReportPath    string
+	HostResources *PreviewHostResources
 }
 
 // PreviewUp brings a preview up: validate, floors, evict if full, database,
@@ -1020,6 +1025,9 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	}
 	if cfg.Knob.InvalidBudget {
 		return zero, fmt.Errorf("preview up refused: invalid capacity reservation")
+	}
+	if err := protectPreviewEnvelope(&cfg); err != nil {
+		return zero, err
 	}
 	_, err = previewMemoryBytes(cfg.Knob.MemLimit)
 	if err != nil || !validPreviewCPU(cfg.Knob.CPULimit) {

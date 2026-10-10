@@ -16,6 +16,19 @@ type ImageRun func(context.Context, ...string) (string, error)
 // configuration IDs to the authenticated Build evidence, then freezes Compose
 // to locally resolved registry digests. No service is started here.
 func BindRelease(ctx context.Context, run ImageRun, p Policy, accepted ReleaseAcceptance, version, configImage string, compose []byte) ([]byte, error) {
+	return bindRelease(ctx, run, p, accepted, version, configImage, compose, true)
+}
+
+// BindLocalRelease checks the same accepted bytes using only immutable local
+// images. It never substitutes a tag, downloads an image or creates CI evidence.
+func BindLocalRelease(ctx context.Context, run ImageRun, p Policy, accepted ReleaseAcceptance, version, configImage string, compose []byte) ([]byte, error) {
+	if p.SourceRepository == "" {
+		return nil, errors.New("local binding requires an authenticated source policy")
+	}
+	return bindRelease(ctx, run, p, accepted, version, configImage, compose, false)
+}
+
+func bindRelease(ctx context.Context, run ImageRun, p Policy, accepted ReleaseAcceptance, version, configImage string, compose []byte, pull bool) ([]byte, error) {
 	if p.SourceRepository == "" {
 		return compose, nil
 	}
@@ -51,7 +64,7 @@ func BindRelease(ctx context.Context, run ImageRun, p Policy, accepted ReleaseAc
 			repository = repository[:colon]
 		}
 		expectedRef := repository + ":" + version
-		pinned, err := bindReleaseImage(ctx, run, m, image, expectedRef)
+		pinned, err := inspectReleaseImage(ctx, run, m, image, expectedRef, pull)
 		if err != nil {
 			return nil, err
 		}
@@ -118,9 +131,6 @@ func inspectReleaseImage(ctx context.Context, run ImageRun, m ReleaseManifest, i
 func checkReleaseImage(ctx context.Context, run ImageRun, m ReleaseManifest, image, expectedRef string, pull bool) error {
 	_, err := inspectReleaseImage(ctx, run, m, image, expectedRef, pull)
 	return err
-}
-func bindReleaseImage(ctx context.Context, run ImageRun, m ReleaseManifest, image, expectedRef string) (string, error) {
-	return inspectReleaseImage(ctx, run, m, image, expectedRef, true)
 }
 
 // BootstrapRelease is operator-only migration of known local artifacts. It
