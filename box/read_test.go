@@ -124,11 +124,8 @@ func TestASignedReadNeedsATokenAndASignature(t *testing.T) {
 	}
 }
 
-// A BOX THAT TAKES ORDERS FROM NOBODY SAYS SO.
-//
-// Which is every box until an operator plants a key. Answering with an empty
-// document would send somebody to look at a machine that is fine.
-func TestASignedReadOnABoxWithNoDevicesIsToldWhy(t *testing.T) {
+// A registry read credential does not grant an unrelated device signing authority.
+func TestUnplantedDeviceCannotReadThroughRegistryAuthority(t *testing.T) {
 	cfg, tok, dev := readFixture(t)
 	cfg.OperatorKeys = nil
 	// Each path signed for ITS OWN op. This used to sign report.read for both,
@@ -144,15 +141,15 @@ func TestASignedReadOnABoxWithNoDevicesIsToldWhy(t *testing.T) {
 		{"/v1/history", OpHistoryRead},
 	} {
 		w := signedRead(t, cfg, tok, dev, tc.path, tc.op, nil)
-		if w.Code != http.StatusConflict {
-			t.Errorf("%s = %d, want 409", tc.path, w.Code)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("%s = %d, want 403", tc.path, w.Code)
 		}
 	}
 	// AND THE ORDER IS DELIBERATE: "nobody may read this" is answered before
 	// the op is looked at, so a box with no devices says the same thing however
 	// the envelope was addressed rather than leaking which ops it knows.
-	if w := signedRead(t, cfg, tok, dev, "/v1/history", OpReportRead, nil); w.Code != http.StatusConflict {
-		t.Errorf("wrong op on a box with no devices = %d, want the same 409", w.Code)
+	if w := signedRead(t, cfg, tok, dev, "/v1/history", OpReportRead, nil); w.Code != http.StatusForbidden {
+		t.Errorf("wrong op on a box with no devices = %d, want the same 403", w.Code)
 	}
 }
 

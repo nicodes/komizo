@@ -143,29 +143,12 @@ func runEnrol(args []string) error {
 	}
 	switch {
 	case len(conf.OperatorKeys) > 0:
-		// PRINTED, so the person who pasted the command can see that what landed
-		// here is what their app showed them. That comparison is the only step in
-		// this design that depends on somebody looking, and it costs one line.
-		//
-		// "AS WELL AS" is the whole correction. These keys used to be the only
-		// way in, so listing them was a complete account of who could command
-		// this box; after komizo-be#180 it is a partial one, and a partial
-		// account that reads like a complete one is how somebody concludes that
-		// removing the last device key locks komizo out. It does not.
-		fmt.Printf("it will take orders from your komizo account, and from %d device(s) as well:\n",
-			len(conf.OperatorKeys))
+		fmt.Printf("root actions require one of these %d locally planted device(s):\n", len(conf.OperatorKeys))
 		for _, k := range conf.OperatorKeys {
 			fmt.Printf("    %s\n", box.Fingerprint(k))
 		}
-	case conf.CanCommand():
-		// The ordinary box now, and the flow komizo-be#180 exists for: sign in on
-		// any device, and it works. Said out loud because it is ALSO the sentence
-		// that discloses what was traded for it -- komizo holds the key that
-		// signs for you, and the operator is entitled to learn that here rather
-		// than from a design doc.
-		fmt.Println("it will take orders from anyone signed into your komizo account, on any device")
 	default:
-		fmt.Println("this box is not enrolled with a registry, so it will take orders from nobody")
+		fmt.Println("no local command keys: observations only; manage root actions over SSH")
 	}
 
 	// LOGS ARE A SEPARATE SENTENCE, because they are a separate authority and
