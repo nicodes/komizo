@@ -989,30 +989,15 @@ fi
 # green pipelines. The wait is bounded so a stuck deploy fails the second run
 # with a message rather than hanging CI until it times out.
 #
-# Per app, so two DIFFERENT apps still deploy concurrently: they share nothing
-# but the daemon.
-# Skipped, not fatal, wherever it cannot be taken -- a busybox built without the
-# flock applet, or a /run this cannot write. Refusing to deploy at all in those
-# cases would trade a race for an outage, and the race is the smaller problem.
-#
-# Every step is proved before the redirection, because `exec 9>` on a path that
-# cannot be opened takes the whole shell down with it under set -e.
+# Both locks are mandatory. A host operation serializes pulls, Compose startup
+# and pruning across products; the app lock also coordinates scoped secrets.
 komizo_lock="/run/komizo/deploy-__APP_NAME__.lock"
-if command -v flock >/dev/null 2>&1 &&
-	mkdir -p /run/komizo 2>/dev/null &&
-	: > "$komizo_lock" 2>/dev/null
-then
-	exec 9>"$komizo_lock"
-	if ! flock -w 300 9; then
-		echo "deploy: another deploy of __APP_NAME__ has been running for over 5 minutes" >&2
-		exit 1
-	fi
-	komizo_locked=1
-fi
-if [ "$SCOPED_ENV" = "fields-postgres-v2" ] && [ "${komizo_locked:-0}" != 1 ]; then
-	echo "deploy: refusing: fields-postgres-v2 requires the shared app lock" >&2
-	exit 1
-fi
+command -v flock >/dev/null 2>&1 || { echo "deploy: refusing: locking unavailable" >&2; exit 1; }
+mkdir -p /run/komizo || { echo "deploy: refusing: lock directory unavailable" >&2; exit 1; }
+exec 9>"$komizo_lock"
+flock -w 300 9 || { echo "deploy: refusing: app lock busy" >&2; exit 1; }
+exec 6>/run/komizo/operation.lock
+flock -w 300 6 || { echo "deploy: refusing: host operation busy" >&2; exit 1; }
 
 # Resource floors, if the operator set any. Until they do, fail-open with a
 # loud warning that prints the reported available bytes. No sample sizes are
@@ -1875,6 +1860,8 @@ command -v flock >/dev/null 2>&1 || refuse "app locking unavailable"
 mkdir -p /run/komizo
 exec 9>"/run/komizo/deploy-__APP_NAME__.lock"
 flock -w 300 9 || refuse "app lock busy"
+exec 6>/run/komizo/operation.lock
+flock -w 300 6 || refuse "host operation busy"
 cd "$APP_DIR"
 record=.komizo-image-retention
 [ ! -L "$record" ] && [ -f "$record" ] || refuse "trusted deployment record unavailable"

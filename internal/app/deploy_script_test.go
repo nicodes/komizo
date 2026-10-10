@@ -123,12 +123,13 @@ exit 0
 		strings.Contains(b.script, "__STATE") {
 		t.Fatal("the deploy template has a placeholder this test does not substitute")
 	}
+	b.script = strings.ReplaceAll(b.script, "/run/komizo", filepath.Join(b.root, "run", "komizo"))
 	b.script = strings.ReplaceAll(b.script, `WORKLOAD_POLICY="/etc/komizo/workloads/blog.json"`, `WORKLOAD_POLICY="`+filepath.Join(b.root, "workload-policy.json")+`"`)
 	b.script = strings.ReplaceAll(b.script,
 		`FLOORS_FILE="/etc/komizo/deploy-floors"`,
 		`FLOORS_FILE="`+b.floors+`"`)
 	b.script = strings.ReplaceAll(b.script,
-		`REPORT_JSON="/run/komizo/report.json"`,
+		`REPORT_JSON="`+filepath.Join(b.root, "run", "komizo", "report.json")+`"`,
 		`REPORT_JSON="`+b.report+`"`)
 	if strings.Contains(b.script, `FLOORS_FILE="/etc/komizo/deploy-floors"`) ||
 		strings.Contains(b.script, `REPORT_JSON="/run/komizo/report.json"`) {
