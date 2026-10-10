@@ -1,14 +1,30 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/nicodes/komizo/internal/workload"
 	"github.com/nicodes/komizo/scripts"
 )
+
+func TestImageRefsSubprocess(t *testing.T) {
+	if os.Getenv("KOMIZO_IMAGE_REFS_TEST_HELPER") != "1" {
+		return
+	}
+	refs, err := workload.JSONImageReferences(os.Stdin)
+	if err != nil {
+		os.Exit(1)
+	}
+	for _, ref := range refs {
+		fmt.Println(ref)
+	}
+	os.Exit(0)
+}
 
 // pruneFakeDocker answers the prune script's Docker calls for a family with
 // tagged service images, retained config images and digest-pinned gate
@@ -104,6 +120,7 @@ func TestAppImagePruneUsesOnlyTrustedTagsAndKeepsReferences(t *testing.T) {
 		wantRemoved                                 []string
 		wantError                                   bool
 		wantOutput                                  string
+		noJSONReader                                bool
 	}{
 		{name: "normal", record: record, live: "current", wantRemoved: []string{tagged, untagged}, wantOutput: "candidates=2 removed=2"},
 		{name: "dry run lists untagged", record: record, live: "current", args: []string{"--dry-run"}, wantOutput: "prune: would remove ghcr.io/you/blog-gate (untagged sha256:gateold)"},
@@ -113,9 +130,12 @@ func TestAppImagePruneUsesOnlyTrustedTagsAndKeepsReferences(t *testing.T) {
 		{name: "rollback compose symlink", record: record, live: "current", rollback: "symlink", wantError: true},
 		{name: "rollback compose unresolvable", record: record, live: "current", rollback: "variable", wantError: true},
 		{name: "rollback one-line service refused", record: record, live: "current", rollback: "oneline", wantError: true},
-		{name: "rollback JSON compose refused", record: record, live: "current", rollback: "json", wantError: true},
+		{name: "rollback JSON compose retains images", record: record, live: "current", rollback: "json", wantRemoved: []string{tagged, untagged}},
 		{name: "current one-line service refused", record: record, live: "current", compose: pinned + "  ops: { image: ghcr.io/you/blog-gate@sha256:gateold, profiles: [ops] }\n", wantError: true},
-		{name: "current JSON compose refused", record: record, live: "current", compose: `{"services": {"gate": {"image": "ghcr.io/you/blog-gate@sha256:gatecurrent"}}}`, wantError: true},
+		{name: "current JSON compose retains images", record: record, live: "current", compose: `{"services": {"gate": {"image": "ghcr.io/you/blog-gate@sha256:gatecurrent"}}}`, wantRemoved: []string{tagged, untagged}},
+		{name: "JSON profiled service retains its image", record: record, live: "current", compose: `{"services":{"gate":{"image":"ghcr.io/you/blog-gate@sha256:gatecurrent"},"ops":{"image":"ghcr.io/you/blog-gate@sha256:gateold","profiles":["ops"]}}}`, wantRemoved: []string{tagged}},
+		{name: "JSON reader unavailable retains everything", record: record, live: "current", compose: `{"services":{"gate":{"image":"ghcr.io/you/blog-gate@sha256:gatecurrent"}}}`, noJSONReader: true, wantError: true},
+		{name: "ambiguous JSON retains everything", record: record, live: "current", compose: `{"services":{"gate":{"image":"one","image":"two"}}}`, wantError: true},
 		{name: "current compose names no image", record: record, live: "current", compose: "services: {}\n", wantError: true},
 		{name: "comments and labels are not image keys", record: record, live: "current", compose: "# the gate image: pinned by digest\n" + pinned + "    labels:\n      org.opencontainers.image.source: x\n", args: []string{"--dry-run"}, wantOutput: "candidates=2"},
 		{name: "current compose unresolvable", record: record, live: "current", compose: "services:\n  gate:\n    image: ${GATE}\n", wantError: true},
@@ -141,6 +161,9 @@ func TestAppImagePruneUsesOnlyTrustedTagsAndKeepsReferences(t *testing.T) {
 			}
 			log := filepath.Join(root, "docker.log")
 			write(t, filepath.Join(bin, "docker"), 0o755, pruneFakeDocker)
+			if !tc.noJSONReader {
+				write(t, filepath.Join(bin, "komizo-box"), 0o755, "#!/bin/sh\n[ \"$*\" = 'workload image-refs' ] || exit 1\nexec \"$KOMIZO_TEST_EXECUTABLE\" -test.run=TestImageRefsSubprocess\n")
+			}
 			write(t, filepath.Join(root, ".env"), 0o600, "APP_VERSION="+tc.live+"\n")
 			switch tc.compose {
 			case "":
@@ -158,11 +181,11 @@ func TestAppImagePruneUsesOnlyTrustedTagsAndKeepsReferences(t *testing.T) {
 				write(t, filepath.Join(root, ".komizo-image-retention"), 0o600, tc.record)
 			}
 			body := between(t, scripts.AlpineScript, "<<'KOMIZO_PRUNE_EOF'\n", "KOMIZO_PRUNE_EOF\n")
-			body = strings.NewReplacer("__APP_DIR__", root, "__CONFIG_IMAGE__", "ghcr.io/you/blog-config", "__APP_NAME__", "blog", "/run/komizo", filepath.Join(root, "run"), "PATH=/usr/sbin:/usr/bin:/sbin:/bin", "PATH="+bin+":/usr/bin:/bin").Replace(body)
+			body = strings.NewReplacer("__APP_DIR__", root, "__CONFIG_IMAGE__", "ghcr.io/you/blog-config", "__APP_NAME__", "blog", "/usr/local/bin/komizo-box", filepath.Join(bin, "komizo-box"), "/run/komizo", filepath.Join(root, "run"), "PATH=/usr/sbin:/usr/bin:/sbin:/bin", "PATH="+bin+":/usr/bin:/bin").Replace(body)
 			program := filepath.Join(root, "prune-blog")
 			write(t, program, 0o755, body)
 			cmd := exec.Command("sh", append([]string{program}, tc.args...)...)
-			cmd.Env = append(os.Environ(), "DOCKER_LOG="+log, "FAIL_DOCKER="+tc.fail, "ROLLBACK_CONFIG="+tc.rollback, "DOCKER_HOST=untrusted", "DOCKER_CONTEXT=untrusted", "DOCKER_CONFIG=untrusted")
+			cmd.Env = append(os.Environ(), "KOMIZO_IMAGE_REFS_TEST_HELPER=1", "KOMIZO_TEST_EXECUTABLE="+os.Args[0], "DOCKER_LOG="+log, "FAIL_DOCKER="+tc.fail, "ROLLBACK_CONFIG="+tc.rollback, "DOCKER_HOST=untrusted", "DOCKER_CONTEXT=untrusted", "DOCKER_CONFIG=untrusted")
 			out, err := cmd.CombinedOutput()
 			if (err != nil) != tc.wantError {
 				t.Fatalf("error %v, output %s", err, out)
