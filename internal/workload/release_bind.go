@@ -87,9 +87,22 @@ func inspectReleaseImage(ctx context.Context, run ImageRun, m ReleaseManifest, i
 	var images []struct {
 		ID          string `json:"Id"`
 		RepoDigests []string
+		Descriptor  struct{ Digest string }
 	}
-	if json.Unmarshal([]byte(body), &images) != nil || len(images) != 1 || images[0].ID != expected {
+	if json.Unmarshal([]byte(body), &images) != nil || len(images) != 1 {
 		return "", errors.New("pulled image differs from authenticated Build evidence")
+	}
+	if images[0].ID != expected {
+		// The containerd image store reports the manifest digest as Id. Read
+		// the configuration from that immutable LOCAL image; checking a tag
+		// or trusting a registry's claimed config digest would allow substitution.
+		if !digest.MatchString(images[0].ID) || images[0].Descriptor.Digest != images[0].ID {
+			return "", errors.New("pulled image differs from authenticated Build evidence")
+		}
+		actual, err := run(ctx, "config-digest", images[0].ID)
+		if err != nil || strings.TrimSpace(actual) != expected {
+			return "", errors.New("pulled image differs from authenticated Build evidence")
+		}
 	}
 	repository := strings.TrimSuffix(expectedRef, ":"+m.Revision)
 	for _, ref := range images[0].RepoDigests {
