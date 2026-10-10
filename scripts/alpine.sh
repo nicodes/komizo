@@ -1922,8 +1922,14 @@ trap 'exit 1' INT TERM HUP PIPE
 # variable or anything else that is not a plain image reference, so a compose
 # this cannot read retains everything rather than guessing. That includes an
 # image key anywhere but at the start of its own line (a one-line service, a
-# JSON compose) and a compose that names no image at all.
+# JSON without the bounded host reader) and a compose naming no image at all.
 compose_refs() {
+	# Host admission writes canonical JSON. Do not ask Compose to evaluate
+	# includes or env files just to discover retention references.
+	first=$(sed -n '/[^[:space:]]/{s/^[[:space:]]*//;p;q;}' "$1")
+	case "$first" in
+	\{*) /usr/local/bin/komizo-box workload image-refs < "$1"; return $? ;;
+	esac
 	if grep -v '^[[:space:]]*#' "$1" | grep -v '^[[:space:]]*image:' | grep -q "image[\"']*[[:space:]]*:"; then
 		return 1
 	fi
