@@ -174,6 +174,9 @@ func (t target) sshArgs(extra ...string) []string {
 	args := []string{
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
+		// Box operations need only this connection's authentication. Never
+		// expose the operator's signing agent through inherited SSH settings.
+		"-o", "ForwardAgent=no",
 
 		// Never inherit a looser policy from the user's ssh config. With
 		// StrictHostKeyChecking left at the default, an operator who set
