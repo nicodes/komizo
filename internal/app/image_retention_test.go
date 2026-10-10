@@ -258,7 +258,7 @@ func TestNightlyReclaimCallsScopedCommandsWithoutGlobalPrune(t *testing.T) {
 	write(t, filepath.Join(bin, "prune-ready"), 0o755, "#!/bin/sh\n[ $# = 0 ] || exit 1\necho 'retained current and rollback; removed one old image'\n")
 	write(t, filepath.Join(bin, "prune-unready"), 0o755, "#!/bin/sh\necho 'trusted deployment record unavailable' >&2\nexit 1\n")
 	body := between(t, scripts.AlpineInitScript, "<<'KOMIZO_RECLAIM_EOF'\n", "KOMIZO_RECLAIM_EOF\n")
-	body = strings.NewReplacer("/var/log/komizo-reclaim.log", log, "/usr/local/bin", bin).Replace(body)
+	body = strings.NewReplacer("/var/log/komizo-reclaim.log", log, "/usr/local/bin", bin, "/run/komizo", filepath.Join(root, "run", "komizo")).Replace(body)
 	cmd := exec.Command("sh", "-s")
 	syslog := filepath.Join(root, "syslog")
 	cmd.Env = append(os.Environ(), "PATH="+bin+":/usr/bin:/bin", "DOCKER_LOG="+calls, "SYSLOG="+syslog)
