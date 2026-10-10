@@ -103,6 +103,7 @@ fi
 mkdir -p /etc/init.d /etc/conf.d
 cat > /etc/init.d/komizo-resources <<'KOMIZO_RESOURCES_EOF'
 #!/sbin/openrc-run
+# shellcheck disable=SC2034 # OpenRC reads this service metadata.
 description="Apply Komizo operator resource ceilings"
 depend() {
  need cgroups
