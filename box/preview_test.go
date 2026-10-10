@@ -36,6 +36,11 @@ func (f *fakeDocker) run(_ context.Context, stdin string, args ...string) (strin
 	f.calls = append(f.calls, append([]string{}, args...))
 	f.stdins = append(f.stdins, stdin)
 	switch args[0] {
+	case "network":
+		if args[1] == "inspect" {
+			return strings.TrimSuffix(args[2], "-backend"), nil
+		}
+		return "", nil
 	case "ps":
 		if f.psOut != "" {
 			return f.psOut, nil
@@ -259,7 +264,7 @@ func TestPreviewComposeCarriesTheOwnerRole(t *testing.T) {
 	cfg := previewTestConfig(t)
 	rec := PreviewRecord{
 		V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
-		DBPassword: "abc123", Images: []string{"ghcr.io/you/web:pr-12"}, RouteFile: "_preview-gdam-pr-12.caddy",
+		DBPassword: "abc123", Images: []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}, RouteFile: "_preview-gdam-pr-12.caddy",
 	}
 	compose := previewCompose(rec, cfg.Knob, "edge", false, "")
 	for _, want := range []string{"PGUSER: gdam_pr_12", "PGPASSWORD: abc123", "PGDATABASE: gdam_pr_12"} {
@@ -980,51 +985,27 @@ func TestPreviewComposeRendersRuntimeDatabaseURLIntoAPIServicesOnly(t *testing.T
 	}
 }
 
-// NETWORKS: one network, the shared one, for every service -- and NEVER
-// the app's <app>_default.
-//
-// Everything a preview must reach is on it: the proxy finds the gate, the
-// gate finds the API, the API finds komizo's preview postgres. The app's
-// own network was needed only while the preview's database lived inside the
-// app's postgres container, and joining a product's production network to
-// serve a pull request is the same invasiveness in a different costume.
-//
-// It was also a hard failure for any product that has no such network. A
-// gate-only product's stack is one container on the shared network, so
-// compose creates no <app>_default at all and every preview of one died at
-// "network ctcalc_default declared as external, but could not be found" --
-// which is how this was found, on the host, after the database half was
-// already fixed.
-func TestPreviewComposeJoinsTheSharedNetworkAndNothingElse(t *testing.T) {
+// Only the gateway joins shared ingress. Backends and the shared preview
+// database meet on a root-owned network named for this one preview.
+func TestPreviewComposeUsesPrivateBackend(t *testing.T) {
 	cfg := previewTestConfig(t)
-	for _, tc := range []struct {
-		name   string
-		images []string
-	}{
-		{"api product", []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}},
-		{"gate only", []string{"ghcr.io/you/web:pr-12"}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			rec := PreviewRecord{
-				V: 1, App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12",
-				Images:    tc.images,
-				RouteFile: "_preview-gdam-pr-12.caddy",
-			}
-			compose := previewCompose(rec, cfg.Knob, "edge", false, PreviewDBContainer)
-			if n := strings.Count(compose, "    networks:\n      - shared\n"); n != len(tc.images) {
-				t.Errorf("%d of %d services join shared alone:\n%s", n, len(tc.images), compose)
-			}
-			// Exactly one external network is declared. A second would mean
-			// komizo went looking at the app's stack again.
-			if n := strings.Count(compose, "external: true"); n != 1 {
-				t.Errorf("%d external networks declared, want exactly shared:\n%s", n, compose)
-			}
-			for _, unwanted := range []string{"appnet", "gdam_default"} {
-				if strings.Contains(compose, unwanted) {
-					t.Errorf("the preview references %s:\n%s", unwanted, compose)
-				}
-			}
-		})
+	rec := PreviewRecord{App: "gdam", PR: 12, Project: "gdam-pr-12", DBName: "gdam_pr_12", Images: []string{"ghcr.io/you/web:pr-12", "ghcr.io/you/api:pr-12"}}
+	compose := previewCompose(rec, cfg.Knob, "edge", false, PreviewDBContainer)
+	if strings.Count(compose, "      - shared\n") != 1 || strings.Count(compose, "      - backend\n") != 2 {
+		t.Fatal(compose)
+	}
+	if !strings.Contains(compose, "name: gdam-pr-12-backend") || strings.Contains(compose, "gdam_default") {
+		t.Fatal(compose)
+	}
+	gate := compose[:strings.Index(compose, "  api:")]
+	if strings.Contains(gate, "PGPASSWORD") {
+		t.Fatal("database credentials leaked to the gateway")
+	}
+	rec.Images = rec.Images[:1]
+	rec.DBName = ""
+	compose = previewCompose(rec, cfg.Knob, "edge", false, "")
+	if strings.Contains(compose, "backend") {
+		t.Fatal("static preview created a needless backend")
 	}
 }
 

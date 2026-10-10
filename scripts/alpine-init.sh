@@ -280,6 +280,12 @@ set -u
 LOG=/var/log/komizo-reclaim.log
 
 note() { printf '%s %s\n' "$(date -u '+%FT%TZ')" "$*" >> "$LOG"; }
+# An update and the daily job may arrive together. Retention is optional;
+# duplicating every image inspection on a one-core host is not useful work.
+command -v flock >/dev/null 2>&1 || { note "skipped: reclaim locking unavailable"; exit 0; }
+mkdir -p /run/komizo || exit 0
+exec 5>/run/komizo/reclaim.lock
+flock -n 5 || { note "skipped: reclaim already running"; exit 0; }
 
 if ! docker_root="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)"; then
 	note "skipped: docker is not responding"
