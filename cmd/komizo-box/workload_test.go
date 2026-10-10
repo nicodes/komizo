@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/nicodes/komizo/internal/workload"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,5 +60,29 @@ func TestWorkloadValidationDoesNotReadOrExposeExternalFiles(t *testing.T) {
 	}
 	if err := runWorkload(args); err == nil {
 		t.Fatal("writable policy trusted")
+	}
+}
+
+func TestCachedRollbackRequiresProtectedCurrentOrPrevious(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("protected root-owned retention requires root")
+	}
+	dir := t.TempDir()
+	p, err := workload.NewPolicy("demo", dir, "ghcr.io/owner/demo-config", "edge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, ".komizo-image-retention")
+	if err := os.WriteFile(path, []byte("CURRENT=current\nPREVIOUS=previous\nOTHER=older\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if !cachedRollbackAllowed(p, "current") || !cachedRollbackAllowed(p, "previous") || cachedRollbackAllowed(p, "older") {
+		t.Fatal("wrong rollback authority")
+	}
+	if err := os.Chmod(path, 0666); err != nil {
+		t.Fatal(err)
+	}
+	if cachedRollbackAllowed(p, "current") {
+		t.Fatal("writable retention granted rollback")
 	}
 }

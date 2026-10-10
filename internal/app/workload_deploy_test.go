@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nicodes/komizo/internal/workload"
 )
@@ -17,6 +19,46 @@ func TestDeployWorkloadHelper(t *testing.T) {
 		return
 	}
 	args := os.Args[slices.Index(os.Args, "--")+1:]
+	if len(args) > 1 && args[0] == "workload" && args[1] != "validate" {
+		var output, compose, report string
+		for i := 2; i < len(args)-1; i++ {
+			if args[i] == "--output" {
+				output = args[i+1]
+			}
+			if args[i] == "--report" {
+				report = args[i+1]
+			}
+			if args[i] == "--compose" {
+				compose = args[i+1]
+			}
+		}
+		switch args[1] {
+		case "release-admit":
+			if err := os.WriteFile(output, []byte(`{}`), 0600); err != nil {
+				os.Exit(1)
+			}
+		case "release-bind":
+			body, err := os.ReadFile(compose)
+			if err != nil {
+				os.Exit(1)
+			}
+			if err := os.WriteFile(output, body, 0600); err != nil {
+				os.Exit(1)
+			}
+		case "capacity":
+			body, err := os.ReadFile(report)
+			var r struct {
+				At time.Time `json:"at"`
+			}
+			if err != nil || json.Unmarshal(body, &r) != nil || r.At.IsZero() || r.At.After(time.Now()) || time.Since(r.At) > 2*time.Minute {
+				os.Exit(1)
+			}
+		case "operation":
+		default:
+			os.Exit(2)
+		}
+		os.Exit(0)
+	}
 	if len(args) < 2 || args[0] != "workload" || args[1] != "validate" {
 		os.Exit(2)
 	}
