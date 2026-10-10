@@ -30,11 +30,15 @@ func runWorkloadRelease(args []string) error {
 	releaseFile := fs.String("release", "", "root-accepted release document")
 	configImage := fs.String("config-image", "", "configuration image reference")
 	compose := fs.String("compose", "", "host-approved canonical Compose JSON")
+	localOnly := fs.Bool("local-only", false, "bind an accepted current/previous release using exact local images without network")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 || *policyPath == "" {
 		return errors.New("workload release command needs a policy")
+	}
+	if *localOnly && args[0] != "release-bind" {
+		return errors.New("local-only applies only to release-bind")
 	}
 	p, err := readWorkloadPolicy(*policyPath)
 	if err != nil {
@@ -93,7 +97,14 @@ func runWorkloadRelease(args []string) error {
 		if err != nil {
 			return err
 		}
-		pinned, err := workload.BindRelease(context.Background(), dockerReleaseRun, p, accepted, *version, *configImage, body)
+		bind := workload.BindRelease
+		if *localOnly {
+			if os.Geteuid() != 0 || !cachedRollbackAllowed(p, *version) {
+				return errors.New("local binding requires the root operator's current/previous accepted revision")
+			}
+			bind = workload.BindLocalRelease
+		}
+		pinned, err := bind(context.Background(), dockerReleaseRun, p, accepted, *version, *configImage, body)
 		if err != nil {
 			return err
 		}

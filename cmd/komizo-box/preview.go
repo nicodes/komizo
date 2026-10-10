@@ -75,6 +75,16 @@ func runPreview(args []string) error {
 		if *app == "" || *pr == 0 {
 			return fmt.Errorf("preview up needs --app and --pr")
 		}
+		resources, err := previewHostResources("/etc/komizo/resources.json")
+		if err != nil {
+			return err
+		}
+		if err := verifyPreviewControllers(resources, "/sys/fs/cgroup"); err != nil {
+			return err
+		}
+		cfg.HostResources = &box.PreviewHostResources{MemoryBytes: resources.Previews.MemoryBytes, MilliCPUs: resources.Previews.MilliCPUs,
+			ProductionReserveBytes: resources.Production.MemoryBytes + resources.Proxy.MemoryBytes + resources.OSReserveBytes,
+			DatabaseReserveBytes:   resources.PreviewDatabase.MemoryBytes, PhysicalMemoryBytes: resources.PhysicalMemoryBytes}
 		if b, err := os.ReadFile(*floors); err == nil {
 			cfg.FloorsBody = string(b)
 		} else if !os.IsNotExist(err) {

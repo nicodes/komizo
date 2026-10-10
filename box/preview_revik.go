@@ -69,11 +69,12 @@ func revikPreviewCompose(r PreviewRecord, k PreviewKnob, network string) string 
 		PreviewRecord
 		PreviewKnob
 		Network, Host, APIHost, Admin, Migrator, Runtime, Backup, Bridge string
+		CgroupParent                                                     string
 		Limits                                                           map[string]string
 	}{r, k, network, r.WebHost(k), r.PublicAPIHost(k),
 		revikPreviewCredential(r.DBPassword, "admin"), revikPreviewCredential(r.DBPassword, "migrator"),
 		revikPreviewCredential(r.DBPassword, "runtime"), revikPreviewCredential(r.DBPassword, "backup"),
-		revikPreviewCredential(r.DBPassword, "bridge"), map[string]string{}}
+		revikPreviewCredential(r.DBPassword, "bridge"), k.cgroupParent, map[string]string{}}
 	for _, service := range revikPreviewServices {
 		data.Limits[service] = previewServiceMemory(k, r.App, service)
 	}
@@ -85,7 +86,8 @@ func revikPreviewCompose(r PreviewRecord, k PreviewKnob, network string) string 
 var revikPreviewTemplate = template.Must(template.New("revik-preview").Parse(`
 # Written by komizo preview. Every volume and private network belongs to this PR.
 x-runtime: &runtime
-  restart: unless-stopped
+{{if .CgroupParent}}  cgroup_parent: {{.CgroupParent}}
+{{end}}  restart: unless-stopped
   read_only: true
   cap_drop: [ALL]
   security_opt: [no-new-privileges:true]
