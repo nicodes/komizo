@@ -69,6 +69,8 @@ export type App = {
   dir?: string;
   version?: string;
   config_image?: string;
+  deployment?: { version: number; app: string; candidate: string; previous?: string; phase: string; at: string };
+  ingress?: Network;
   known_as?: string[];
   stopped?: boolean;
   stopped_by?: string;

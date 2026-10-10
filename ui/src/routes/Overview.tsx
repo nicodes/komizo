@@ -8,6 +8,7 @@
 import { A } from "@solidjs/router";
 import { createResource, For, Show } from "solid-js";
 import { readBackups, readEvents, readMetrics, readReport } from "@/lib/api";
+import { deploymentStatus } from "@/lib/deployment";
 import { ago, formatBytes, formatDuration } from "@/lib/format";
 import { Badge, Bar, Dim, Row, Section } from "@/components";
 export default function Overview() {
@@ -113,7 +114,7 @@ export default function Overview() {
                         <span class="min-w-0">
                           <span class="text-ink text-sm group-hover:text-accent">{a.name}</span>
                           <Dim>
-                            {a.version ?? "none"}
+                            {a.version ?? "none"} · {deploymentStatus(a)}
                             {(a.hosts ?? []).length > 0 ? ` · ${(a.hosts ?? []).map((h) => h.name).join(", ")}` : ""}
                           </Dim>
                         </span>
@@ -215,6 +216,7 @@ export default function Overview() {
 
                 <Section title="backups">
                   <Dim>{backups()?.note ?? "—"}</Dim>
+                  <Dim>Recovery is unverified here. A backup export alone does not prove it can be restored.</Dim>
                 </Section>
               </>
             );

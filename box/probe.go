@@ -195,6 +195,17 @@ func (p *Probe) apps(inv dockerInventory) []App {
 		if a.User == "" {
 			a.User = "?"
 		}
+		var authority struct {
+			Ingress string `json:"ingress_network"`
+		}
+		if body, err := os.ReadFile(p.path(filepath.Join("/etc/komizo/workloads", a.Name+".json"))); err == nil && len(body) <= 1<<20 && json.Unmarshal(body, &authority) == nil && authority.Ingress != "" {
+			a.Ingress = &Network{Name: authority.Ingress}
+			for _, container := range inv.sorted() {
+				if aliases, ok := container.networks[authority.Ingress]; ok {
+					a.Ingress.Members = append(a.Ingress.Members, NetworkMember{Container: container.name, Aliases: aliases})
+				}
+			}
+		}
 		// STOPPED lives beside the app's own record so the deploy path can read
 		// it without asking anything off the box.
 		if as.st["STOPPED"] == "1" {

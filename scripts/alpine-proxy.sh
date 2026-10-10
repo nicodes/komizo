@@ -279,6 +279,10 @@ services:
   komizo-proxy:
     image: $PROXY_IMAGE
 EOF
+if [ -f /etc/komizo/resources.json ]; then
+ komizo-box workload host-resources --apply
+ printf '    cgroup_parent: /komizo-proxy\n' >> "$PROXY_DIR/compose.yml"
+fi
 if [ -n "$TLS_CONFIG_DIR" ] && [ -f "$TLS_CONFIG_DIR/secrets.env" ]; then
 	printf '    env_file:\n      - %s/secrets.env\n' "$TLS_CONFIG_DIR" >> "$PROXY_DIR/compose.yml"
 fi

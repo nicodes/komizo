@@ -14,6 +14,7 @@ func testPolicy(t *testing.T) Policy {
 	if err != nil {
 		t.Fatal(err)
 	}
+	p.Resources = &ResourcePolicy{Default: ServiceBudget{MemoryBytes: 128 << 20, MemorySwapBytes: 128 << 20, MilliCPUs: 500}, MaxMemoryBytes: 512 << 20, MaxMemorySwapBytes: 512 << 20, MaxMilliCPUs: 2000}
 	return p
 }
 
