@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -141,7 +142,12 @@ func readPrivateRelease(path string, out any) error {
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0022 != 0 || !workloadRootOwner(info) {
 		return errors.New("accepted release must be a protected root-owned regular file")
 	}
-	body, err := os.ReadFile(path)
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	body, err := io.ReadAll(io.LimitReader(f, workload.ReleaseMaxBytes+1))
 	if err != nil || len(body) > workload.ReleaseMaxBytes {
 		return errors.New("accepted release is unreadable or oversized")
 	}
@@ -212,6 +218,7 @@ func dockerReleaseRun(ctx context.Context, args ...string) (string, error) {
 		ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "docker", "image", "save", args[1])
+		cmd.WaitDelay = 2 * time.Second
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
 			return "", err
@@ -229,9 +236,31 @@ func dockerReleaseRun(ctx context.Context, args ...string) (string, error) {
 		}
 		return id, waitErr
 	}
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "docker", args...)
-	out, err := cmd.Output()
-	return string(out), err
+	cmd.WaitDelay = 2 * time.Second
+	output := &boundedDockerOutput{limit: 2 << 20}
+	cmd.Stdout = output
+	cmd.Stderr = io.Discard
+	if err := cmd.Run(); err != nil {
+		return "", errors.New("bounded Docker operation failed or timed out")
+	}
+	return output.String(), nil
+}
+
+type boundedDockerOutput struct {
+	buffer bytes.Buffer
+	limit  int
+}
+
+func (b *boundedDockerOutput) String() string { return b.buffer.String() }
+
+func (b *boundedDockerOutput) Write(p []byte) (int, error) {
+	if len(p) > b.limit-b.buffer.Len() {
+		return 0, errors.New("Docker output exceeded its bound")
+	}
+	return b.buffer.Write(p)
 }
 func cachedRollbackAllowed(p workload.Policy, version string) bool {
 	// Only root's current/previous deployment record authorizes an unsigned
