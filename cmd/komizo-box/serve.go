@@ -99,26 +99,10 @@ func runServe(args []string) error {
 		fmt.Fprintln(os.Stderr, "set a log passphrase in the app, then re-run:")
 		fmt.Fprintln(os.Stderr, "    komizo enrol --host <this box> --log-key kmz_log_...")
 	}
-	// THE WARNING THAT USED TO BE HERE IS GONE BECAUSE IT COULD NO LONGER FIRE,
-	// and that is worth a paragraph rather than a silent deletion.
-	//
-	// It said: "this box has no device keys, so it answers nothing -- not reads,
-	// not commands", and it was correct twice over. The first version said such
-	// a box "serves reads and refuses commands", which was true until
-	// komizo-be#72 took away the route that read with the registry's token
-	// alone; the second said it answered nothing, which was true until
-	// komizo-be#180 made the registry key an authority to command.
-	//
-	// It is now UNREACHABLE. CanServe above requires a registry key and a server
-	// id, and returns early without them. CanCommand requires a server id and
-	// EITHER kind of key. So anything that gets past CanServe satisfies
-	// CanCommand by construction, and the branch could only ever be skipped.
-	//
-	// Dead code that prints a false sentence is worse than dead code, because
-	// the way it is found is somebody reading it and believing it. The pair of
-	// conditions is asserted in serve_test.go instead, where a future change
-	// that pulls them apart shows up as a failure rather than as a warning
-	// nobody has seen since it was written.
+	// Read enrollment is independent of locally planted command authority.
+	if !conf.CanCommand() {
+		fmt.Fprintln(os.Stderr, "this box serves observations only; root actions require a locally planted operator key or SSH")
+	}
 
 	ln, err := listenUnix(*sock)
 	if err != nil {

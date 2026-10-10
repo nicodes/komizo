@@ -38,18 +38,18 @@ import (
 // on the path of every screen refresh. What bounds a captured read envelope is
 // its expiry -- and a caller holding one also needs the token that came with it.
 
-// verifiedRead checks the envelope on a signed read, and answers the caller
-// itself when it refuses.
-//
-// Returns ok=false when it has already written a response, so a handler is
-// three lines rather than thirty repeated four times -- which is how the log
-// route came to read c.Args["app"] directly while every other path used AppOf.
-// keys is passed rather than read from cfg, and that is komizo-be#187's whole
-// mechanism. There are now TWO trust sets -- OperatorKeys, which contains the
-// registry key so any signed-in device can command this box, and LogKeys, which
-// does not. A default would mean a route that forgot to choose got the wider
-// one, silently, in the direction that does not announce itself. So every call
-// site names its set and a new route cannot avoid the decision.
+// reportKeys preserves registry-signed observations without granting command
+// or log access. It is used only by the three explicit non-log read routes.
+func (cfg APIConfig) reportKeys() []ed25519.PublicKey {
+	keys := append([]ed25519.PublicKey(nil), cfg.OperatorKeys...)
+	if len(cfg.RegistryKey) == ed25519.PublicKeySize {
+		keys = append(keys, cfg.RegistryKey)
+	}
+	return keys
+}
+
+// verifiedRead checks the explicit route trust set and writes its refusal.
+// Report observations, root commands and logs use separately selected sets.
 func verifiedRead(cfg APIConfig, keys []ed25519.PublicKey, w http.ResponseWriter, r *http.Request, op string) (Command, bool) {
 	if len(keys) == 0 {
 		// Nobody may read this, because nobody has been given the means to ask.

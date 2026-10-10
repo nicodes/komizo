@@ -470,10 +470,11 @@ func runRootdAt(root string, args []string) error {
 		pass := func() {
 			knob, _ := box.ReadPreviewKnob(box.PreviewKnobPath)
 			cfg := box.PreviewUpConfig{
-				Knob:      knob,
-				RoutesDir: "/srv/_proxy/routes",
-				Proxy:     ProxyProject,
-				Network:   *network,
+				ManageIdleDatabase: true,
+				Knob:               knob,
+				RoutesDir:          "/srv/_proxy/routes",
+				Proxy:              ProxyProject,
+				Network:            *network,
 			}
 			if b, err := os.ReadFile(box.DeployFloorsPath); err == nil {
 				cfg.FloorsBody = string(b)

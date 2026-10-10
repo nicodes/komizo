@@ -9,42 +9,28 @@ import (
 	"time"
 )
 
-// The flow komizo-be#180 exists for, asserted end to end at this layer.
-//
-//  1. somebody runs `komizo login`
-//  2. somebody runs `komizo init`, which enrols the box and plants a registry key
-//  3. any device signed into that account commands it
-//
-// Step 3 is what this checks, and the box it checks it on is the one the flow
-// actually produces: ZERO OPERATOR KEYS. Every other test in this package
-// arranges a device key first, so all of them would have gone on passing with
-// the registry key ignored entirely -- which is the failure mode this file is
-// here to make impossible.
-func TestABoxWithNoDeviceKeysTakesOrdersFromItsRegistry(t *testing.T) {
+// Enrollment authenticates reads but cannot grant root command authority.
+func TestRegistryCannotCommandAndLocalKeyCan(t *testing.T) {
 	regPub, regPriv := device(t)
+	localPub, localPriv := device(t)
 	now := time.Now()
-
-	conf := AgentConf{ServerID: "srv_mine",
-		RegistryKey: base64.RawURLEncoding.EncodeToString(regPub)}
-	if !conf.CanCommand() {
-		t.Fatal("a freshly enrolled box will not take orders, so the flow is broken at step 2")
+	conf := AgentConf{ServerID: "srv_mine", RegistryKey: base64.RawURLEncoding.EncodeToString(regPub)}
+	if conf.CanCommand() {
+		t.Fatal("enrollment granted root authority")
 	}
+	conf.OperatorKeys = []string{FormatDeviceKey(localPub)}
 	keys, err := conf.TrustedKeys()
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	c := stopWeb(now.Add(time.Minute))
 	c.Sub = "u1234567890abcd"
-	got, signer, err := VerifyCommand(keys, signed(t, regPriv, c), "srv_mine", now)
-	if err != nil {
-		t.Fatalf("the service could not command a box it enrolled: %v", err)
+	if _, _, err := VerifyCommand(keys, signed(t, regPriv, c), "srv_mine", now); err == nil {
+		t.Fatal("registry command accepted")
 	}
-	if !signer.Equal(regPub) {
-		t.Error("the registry key verified but was not reported as the signer")
-	}
-	if got.Sub != "u1234567890abcd" {
-		t.Errorf("sub = %q, want the account the service signed for", got.Sub)
+	got, signer, err := VerifyCommand(keys, signed(t, localPriv, c), "srv_mine", now)
+	if err != nil || !signer.Equal(localPub) || got.Sub != c.Sub {
+		t.Fatalf("local command rejected: %v", err)
 	}
 }
 
@@ -75,7 +61,7 @@ func TestAnEnrolledBoxStillRefusesAKeyItWasNeverGiven(t *testing.T) {
 	// widening the key set must not have widened the spend.
 	regPub2, regPriv2 := device(t)
 	conf2 := AgentConf{ServerID: "srv_theirs",
-		RegistryKey: base64.RawURLEncoding.EncodeToString(regPub2)}
+		RegistryKey: base64.RawURLEncoding.EncodeToString(regPub2), OperatorKeys: []string{FormatDeviceKey(regPub2)}}
 	keys2, err := conf2.TrustedKeys()
 	if err != nil {
 		t.Fatal(err)

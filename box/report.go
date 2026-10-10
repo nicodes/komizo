@@ -170,7 +170,8 @@ type HostKey struct {
 
 // App is one deployed application.
 type App struct {
-	Name string `json:"name"`
+	RuntimeState string `json:"runtime_state,omitempty"`
+	Name         string `json:"name"`
 	// User is the account CI deploys as -- komizo-<name>.
 	User string `json:"user,omitempty"`
 	Dir  string `json:"dir,omitempty"`
@@ -238,6 +239,7 @@ type Container struct {
 	// Status is docker's own prose ("Up 3 hours"), which is what a person
 	// actually wants to read.
 	State  string `json:"state"`
+	Health string `json:"health,omitempty"`
 	Status string `json:"status,omitempty"`
 	Image  string `json:"image,omitempty"`
 

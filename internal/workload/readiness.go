@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/nicodes/komizo/internal/servicehealth"
 	"io"
 	"net/http"
 	"net/url"
@@ -37,9 +38,8 @@ func (p ReadinessPolicy) Check() error {
 var containerID = regexp.MustCompile(`^[a-f0-9]{12,64}$`)
 
 type readyService struct {
-	Image    string   `json:"image"`
-	Profiles []string `json:"profiles"`
-	Restart  string   `json:"restart"`
+	Image string `json:"image"`
+	servicehealth.Desired
 }
 type readyContainer struct {
 	Service  string
@@ -101,8 +101,7 @@ func VerifyReadiness(ctx context.Context, run ImageRun, client *http.Client, p P
 		if err != nil || strings.TrimSpace(id) != container.Image {
 			return fmt.Errorf("candidate service %s serves a different image", name)
 		}
-		completed := service.Restart == "no" && container.Status == "exited" && container.ExitCode == 0
-		if !completed && (container.Status != "running" || (container.Health != "" && container.Health != "healthy")) {
+		if !servicehealth.Ready(service.Desired, container.Status, container.ExitCode, container.Health) {
 			return fmt.Errorf("candidate service %s is unready", name)
 		}
 	}
