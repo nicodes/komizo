@@ -367,6 +367,10 @@ func runRootdAt(root string, args []string) error {
 	// half-second timer's justification is that a stat on tmpfs costs nothing;
 	// that is true of the poll and not of the work it dispatches.
 	go commandLoop(ctx, *confPath, *inboxDir, *resultsDir)
+	// Local root-authorized deployments have a durable, separate worker. A
+	// disconnected CI client cannot abandon activation, and owner commands
+	// remain responsive while Docker or readiness probes run.
+	go activationLoop(ctx)
 
 	// Logs on their own timer too, and for the opposite reason to commands:
 	// this runs a docker command per app, where the command loop stats a

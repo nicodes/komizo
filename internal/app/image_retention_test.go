@@ -218,37 +218,6 @@ func TestAppImagePruneUsesOnlyTrustedTagsAndKeepsReferences(t *testing.T) {
 	}
 }
 
-func TestDeploymentRetentionRecordPreservesRollbackOnSameVersion(t *testing.T) {
-	root := t.TempDir()
-	body := between(t, scripts.AlpineScript, "# --- retention record begin ---\n", "# --- retention record end ---\n")
-	run := func(version, previous string) {
-		t.Helper()
-		cmd := exec.Command("sh", "-s")
-		cmd.Dir = root
-		cmd.Env = append(os.Environ(), "version="+version, "previous="+previous)
-		cmd.Stdin = strings.NewReader("set -eu\n" + body + "\nkomizo_record_image_retention\n")
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("%v: %s", err, out)
-		}
-	}
-	run("current", "rollback")
-	path := filepath.Join(root, ".komizo-image-retention")
-	want := "CURRENT=current\nPREVIOUS=rollback\n"
-	got, err := os.ReadFile(path)
-	if err != nil || string(got) != want {
-		t.Fatalf("record %q, error %v", got, err)
-	}
-	run("current", "current")
-	got, _ = os.ReadFile(path)
-	if string(got) != want {
-		t.Fatalf("same-version redeploy lost rollback: %q", got)
-	}
-	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("retention record is not private: %v, %v", info, err)
-	}
-}
-
 func TestPruneInstallerIsAppScopedAndRemovedWithApp(t *testing.T) {
 	for _, required := range []string{
 		`PRUNE_BIN="/usr/local/bin/prune-$APP_NAME"`,

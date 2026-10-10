@@ -334,6 +334,9 @@ const (
 
 // Deployment is the durable host-side activation journal.
 type Deployment struct {
+	ID        string    `json:"operation_id,omitempty"`
+	StartedAt time.Time `json:"started_at,omitzero"`
+	Deadline  time.Time `json:"deadline,omitzero"`
 	Version   int       `json:"version"`
 	App       string    `json:"app"`
 	Candidate string    `json:"candidate"`
