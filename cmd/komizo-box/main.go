@@ -78,6 +78,8 @@ func main() {
 		err = runApp(os.Args[2:])
 	case "preview":
 		err = runPreview(os.Args[2:])
+	case "preview-capabilities":
+		err = runPreviewCapabilities(os.Args[2:])
 	case "enrol":
 		err = runEnrol(os.Args[2:])
 	case "unenrol":
@@ -115,6 +117,7 @@ func usage() {
 
   komizo-box workload init|validate --policy PATH    as root
 
+  komizo-box preview-capabilities  credential-free preview runtime support
   komizo-box version
 `)
 }
