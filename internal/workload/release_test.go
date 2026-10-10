@@ -128,6 +128,47 @@ func TestReleaseBindingRejectsSubstitutionBeforeStartingAndPinsDigest(t *testing
 		}
 	}
 }
+func TestContainerdBindingUsesImmutableLocalConfiguration(t *testing.T) {
+	p, m, _, _ := releaseFixture(t)
+	compose := []byte(`{"services":{"api":{"image":"` + p.ImagePrefix + `api:` + m.Revision + `"}}}`)
+	actual := ""
+	target := "sha256:" + strings.Repeat("8", 64)
+	descriptor := target
+	run := func(_ context.Context, args ...string) (string, error) {
+		if args[0] == "pull" {
+			return "", nil
+		}
+		if args[0] == "config-digest" {
+			if args[1] != target {
+				t.Fatal("configuration looked up through mutable tag")
+			}
+			return actual, nil
+		}
+		ref := args[2]
+		// Only the service uses the newer store for this fixture.
+		id := m.Images[ref]
+		if strings.Contains(ref, "-api:") {
+			id = target
+		}
+		repo := strings.TrimSuffix(ref, ":"+m.Revision)
+		b, _ := json.Marshal([]map[string]any{{"Id": id, "Descriptor": map[string]string{"digest": descriptor}, "RepoDigests": []string{repo + "@" + target}}})
+		return string(b), nil
+	}
+	actual = m.Images[p.ImagePrefix+"api:"+m.Revision]
+	if _, err := BindRelease(context.Background(), run, p, ReleaseAcceptance{Manifest: m, Authority: actionsIssuer}, m.Revision, p.ImagePrefix+"config:"+m.Revision, compose); err != nil {
+		t.Fatal(err)
+	}
+	actual = "sha256:" + strings.Repeat("f", 64)
+	if _, err := BindRelease(context.Background(), run, p, ReleaseAcceptance{Manifest: m, Authority: actionsIssuer}, m.Revision, p.ImagePrefix+"config:"+m.Revision, compose); err == nil {
+		t.Fatal("changed local configuration accepted")
+	}
+	actual = m.Images[p.ImagePrefix+"api:"+m.Revision]
+	descriptor = ""
+	if _, err := BindRelease(context.Background(), run, p, ReleaseAcceptance{Manifest: m, Authority: actionsIssuer}, m.Revision, p.ImagePrefix+"config:"+m.Revision, compose); err == nil {
+		t.Fatal("unexplained image mismatch accepted")
+	}
+}
+
 func TestInterruptedActivationIsDurableAndRequiresReconciliation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "operation.json")
 	now := time.Now().UTC()
