@@ -21,11 +21,13 @@ import (
 const MaxBytes = 1 << 20
 
 type Policy struct {
-	Version       int    `json:"version"`
-	App           string `json:"app"`
-	AppDir        string `json:"app_dir"`
-	ImagePrefix   string `json:"image_prefix"`
-	SharedNetwork string `json:"shared_network"`
+	Version          int    `json:"version"`
+	App              string `json:"app"`
+	AppDir           string `json:"app_dir"`
+	ImagePrefix      string `json:"image_prefix"`
+	SharedNetwork    string `json:"shared_network"`
+	SourceRepository string `json:"source_repository,omitempty"`
+	RepositoryID     string `json:"repository_id,omitempty"`
 }
 
 var identifier = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}$`)
@@ -34,6 +36,9 @@ var revision = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 var digest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
 func (p Policy) Check() error {
+	if (p.SourceRepository != "" || p.RepositoryID != "") && (!repositoryName.MatchString(p.SourceRepository) || !numericID.MatchString(p.RepositoryID)) {
+		return errors.New("invalid workload source identity")
+	}
 	if p.Version != 1 || !identifier.MatchString(p.App) || !identifier.MatchString(p.SharedNetwork) ||
 		!filepath.IsAbs(p.AppDir) || filepath.Clean(p.AppDir) != p.AppDir || p.AppDir == "/" ||
 		!imageRepository.MatchString(p.ImagePrefix) || !strings.HasSuffix(p.ImagePrefix, "-") {

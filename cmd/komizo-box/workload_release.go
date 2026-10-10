@@ -1,0 +1,226 @@
+package main
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"flag"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"time"
+
+	"github.com/nicodes/komizo/internal/workload"
+)
+
+func runWorkloadRelease(args []string) error {
+	fs := flag.NewFlagSet("workload "+args[0], flag.ContinueOnError)
+	policyPath := fs.String("policy", "", "root-owned workload policy")
+	source := fs.String("source-repository", "", "operator-approved GitHub repository")
+	repoID := fs.String("repository-id", "", "immutable GitHub repository ID")
+	version := fs.String("version", "", "release source revision")
+	previous := fs.String("previous", "", "previous deployed revision")
+	phase := fs.String("phase", "", "durable operation phase")
+	store := fs.String("store", "/var/lib/komizo/releases", "root-owned release store")
+	output := fs.String("output", "", "private result destination")
+	releaseFile := fs.String("release", "", "root-accepted release document")
+	configImage := fs.String("config-image", "", "configuration image reference")
+	compose := fs.String("compose", "", "host-approved canonical Compose JSON")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 || *policyPath == "" {
+		return errors.New("workload release command needs a policy")
+	}
+	p, err := readWorkloadPolicy(*policyPath)
+	if err != nil {
+		return err
+	}
+	if args[0] == "trust" {
+		p.SourceRepository = *source
+		p.RepositoryID = *repoID
+		if err := p.Check(); err != nil {
+			return err
+		}
+		if p.SourceRepository == "" {
+			return errors.New("source identity is required")
+		}
+		return workload.WritePrivateJSON(*policyPath, p)
+	}
+	dir := filepath.Join(*store, p.App)
+	if err := protectedReleaseDirectory(dir); err != nil {
+		return err
+	}
+	switch args[0] {
+	case "release-admit":
+		return admitWorkloadRelease(p, *version, dir, *output)
+	case "operation":
+		return workload.RecordOperation(filepath.Join(dir, "operation.json"), p.App, *version, *previous, *phase, time.Now().UTC())
+	case "release-bootstrap":
+		if *compose == "" || *configImage == "" {
+			return errors.New("bootstrap needs local compose and configuration image")
+		}
+		body, err := os.ReadFile(*compose)
+		if err != nil {
+			return err
+		}
+		accepted, err := workload.BootstrapRelease(context.Background(), dockerReleaseRun, p, *version, *configImage, body, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		path := filepath.Join(dir, *version+".json")
+		if _, err := os.Lstat(path); err == nil {
+			return errors.New("existing accepted release cannot be replaced by bootstrap")
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		return workload.WritePrivateJSON(path, accepted)
+	case "release-bind":
+		if *output == "" || *compose == "" || *releaseFile == "" {
+			return errors.New("release binding needs accepted release, compose and output")
+		}
+		var accepted workload.ReleaseAcceptance
+		if err := readPrivateRelease(*releaseFile, &accepted); err != nil {
+			return err
+		}
+		body, err := os.ReadFile(*compose)
+		if err != nil {
+			return err
+		}
+		run := func(ctx context.Context, args ...string) (string, error) {
+			cmd := exec.CommandContext(ctx, "docker", args...)
+			out, err := cmd.Output()
+			return string(out), err
+		}
+		pinned, err := workload.BindRelease(context.Background(), run, p, accepted, *version, *configImage, body)
+		if err != nil {
+			return err
+		}
+		out, err := os.OpenFile(*output, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+		if err != nil {
+			return err
+		}
+		_, writeErr := out.Write(pinned)
+		closeErr := out.Close()
+		if writeErr != nil {
+			return writeErr
+		}
+		return closeErr
+	default:
+		return errors.New("unknown workload release command")
+	}
+}
+
+func protectedReleaseDirectory(dir string) error {
+	if !filepath.IsAbs(dir) || filepath.Clean(dir) != dir {
+		return errors.New("release store must be absolute and canonical")
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	info, err := os.Lstat(dir)
+	if err != nil || !info.IsDir() || info.Mode().Perm()&0022 != 0 || !workloadRootOwner(info) {
+		return errors.New("release store must be a protected root-owned directory")
+	}
+	return nil
+}
+func readPrivateRelease(path string, out any) error {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0022 != 0 || !workloadRootOwner(info) {
+		return errors.New("accepted release must be a protected root-owned regular file")
+	}
+	body, err := os.ReadFile(path)
+	if err != nil || len(body) > workload.ReleaseMaxBytes {
+		return errors.New("accepted release is unreadable or oversized")
+	}
+	return json.Unmarshal(body, out)
+}
+func admitWorkloadRelease(p workload.Policy, version, dir, output string) error {
+	if output == "" {
+		return errors.New("release admission needs a private output")
+	}
+	if p.SourceRepository == "" {
+		return workload.WritePrivateJSON(output, workload.ReleaseAcceptance{})
+	}
+	if len(version) != 40 || strings.ContainsAny(version, "/.") {
+		return errors.New("authenticated releases require a full commit revision")
+	}
+	path := filepath.Join(dir, version+".json")
+	var existing workload.ReleaseAcceptance
+	have := false
+	if _, err := os.Lstat(path); err == nil {
+		if err := readPrivateRelease(path, &existing); err != nil {
+			return err
+		}
+		if err := existing.Check(p, version); err != nil {
+			return err
+		}
+		have = true
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	wire, err := io.ReadAll(io.LimitReader(os.Stdin, 128<<10+1))
+	if err != nil || len(wire) > 128<<10 {
+		return errors.New("release proof exceeds wire limit")
+	}
+	if len(bytesTrim(wire)) == 0 {
+		if !have || !cachedRollbackAllowed(p, version) {
+			return errors.New("release requires authenticated Actions proof or the current/previous accepted revision")
+		}
+		return workload.WritePrivateJSON(output, existing)
+	}
+	const frame = "komizo-release/v1:"
+	if !strings.HasPrefix(string(wire), frame) {
+		return errors.New("invalid release proof frame")
+	}
+	body, err := base64.StdEncoding.DecodeString(strings.TrimSpace(strings.TrimPrefix(string(wire), frame)))
+	if err != nil {
+		return errors.New("invalid release proof encoding")
+	}
+	accepted, err := workload.VerifyRelease(context.Background(), body, p, version, time.Now().UTC(), workload.GitHubReleaseKey)
+	if err != nil {
+		return err
+	}
+	if have && !reflect.DeepEqual(existing.Manifest.Images, accepted.Manifest.Images) {
+		return errors.New("release revision was already accepted with different images")
+	}
+	if !have {
+		if err := workload.WritePrivateJSON(path, accepted); err != nil {
+			return err
+		}
+	} else {
+		accepted = existing
+	}
+	return workload.WritePrivateJSON(output, accepted)
+}
+func bytesTrim(body []byte) []byte { return []byte(strings.TrimSpace(string(body))) }
+
+func dockerReleaseRun(ctx context.Context, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	out, err := cmd.Output()
+	return string(out), err
+}
+func cachedRollbackAllowed(p workload.Policy, version string) bool {
+	// Only root's current/previous deployment record authorizes an unsigned
+	// retry or rollback. Older accepted receipts alone confer no authority.
+	path := filepath.Join(p.AppDir, ".komizo-image-retention")
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0022 != 0 || !workloadRootOwner(info) {
+		return false
+	}
+	body, err := os.ReadFile(path)
+	if err != nil || len(body) > 4096 {
+		return false
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if ok && (key == "CURRENT" || key == "PREVIOUS") && value == version {
+			return true
+		}
+	}
+	return false
+}

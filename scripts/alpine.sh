@@ -917,6 +917,9 @@ cd "$APP_DIR"
 # either would leave a copy of this app's environment sitting in its directory
 # until something happened to overwrite it.
 staging=""
+release_dir=""
+journal_started=0
+journal_finished=0
 #
 # AND IT STOPS, rather than only tidying. A handler for a non-EXIT signal in
 # POSIX sh RESUMES at the interruption point when it returns, so `EXIT INT TERM`
@@ -929,7 +932,10 @@ staging=""
 #
 # `exit` from a handler runs the EXIT trap too, so the cleanup is written once.
 cleanup_staging() {
-	rm -rf "$staging" "${DOCKER_CONFIG:-}" 2>/dev/null || true
+	if [ "$journal_started" = 1 ] && [ "$journal_finished" = 0 ]; then
+		komizo-box workload operation --policy "$WORKLOAD_POLICY" --version "$version" --previous "$previous" --phase failed >/dev/null 2>&1 || true
+	fi
+	rm -rf "$staging" "$release_dir" "${DOCKER_CONFIG:-}" 2>/dev/null || true
 	rm -f "$APP_DIR/.env.komizo.bak" 2>/dev/null || true
 }
 trap cleanup_staging EXIT
@@ -1049,6 +1055,7 @@ if [ -n "$disk_floor" ] || [ -n "$mem_floor" ]; then
 		echo "deploy: refusing: $FLOORS_FILE sets floors but $REPORT_JSON lacks available fields" >&2
 		exit 1
 	fi
+	komizo-box workload capacity --report "$REPORT_JSON" || { echo "deploy: refusing: stale capacity report" >&2; exit 1; }
 	if [ -n "$mem_floor" ] && below_bytes "$mem_avail" "$mem_floor"; then
 		echo "deploy: refusing: mem available ${mem_avail} bytes is below floor ${mem_floor} bytes" >&2
 		exit 1
@@ -1073,6 +1080,7 @@ else
 	echo "deploy: WARNING -- reported available bytes: mem=${mem_avail:-unknown} disk=${disk_avail:-unknown}" >&2
 fi
 
+release_wire=""
 # Registry authentication happens HERE, as root, and not over the deploy user's
 # SSH session. It has to: this script pulls as root, so a 'docker login' run as
 # the deploy user would write to that user's home instead and the pull below
@@ -1106,7 +1114,10 @@ if [ -n "$registry" ]; then
 	export DOCKER_CONFIG
 	# Credentials must not outlive the deploy; the EXIT trap set above drops both
 	# this directory and the staging dir however we leave.
-	if ! docker login "$registry" -u "$registry_user" --password-stdin >/dev/null; then
+	registry_password=""
+	IFS= read -r registry_password || true
+	release_wire=$(head -c 131073)
+	if ! printf '%s' "$registry_password" | docker login "$registry" -u "$registry_user" --password-stdin >/dev/null; then
 		echo "deploy: could not authenticate to $registry as $registry_user" >&2
 		exit 1
 	fi
@@ -1120,6 +1131,13 @@ fi
 # parses this line.
 previous="$(sed -n 's/^APP_VERSION=//p' .env 2>/dev/null | head -n 1)"
 echo "deploy: previous-version=${previous:-}"
+release_dir=$(mktemp -d)
+if ! printf '%s' "$release_wire" | komizo-box workload release-admit --policy "$WORKLOAD_POLICY" --version "$version" --output "$release_dir/accepted.json"; then
+	echo "deploy: refusing: host release verification failed" >&2
+	exit 1
+fi
+komizo-box workload operation --policy "$WORKLOAD_POLICY" --version "$version" --previous "$previous" --phase admitted
+journal_started=1
 
 ref="$CONFIG_IMAGE:$version"
 echo "deploy: fetching config from $ref"
@@ -1163,7 +1181,12 @@ if ! komizo-box workload validate --policy "$WORKLOAD_POLICY" \
 	echo "deploy: refusing: host workload policy" >&2
 	exit 1
 fi
-mv "$staging/approved.json" "$staging/compose.yml"
+if ! komizo-box workload release-bind --policy "$WORKLOAD_POLICY" --version "$version" --config-image "$ref" \
+	--release "$release_dir/accepted.json" --compose "$staging/approved.json" --output "$staging/bound.json"; then
+	echo "deploy: refusing: image identity differs from the authenticated release" >&2
+	exit 1
+fi
+mv "$staging/bound.json" "$staging/compose.yml"
 
 # The hostnames this app claims, one per line. This is the whole of what the
 # app tells the reverse proxy: komizo writes the routes itself, so an app can
@@ -1577,6 +1600,7 @@ fi
 # to be written first -- but a pull that then fails would leave .env claiming a
 # version that never started. Back it up and put it back on failure.
 cp .env .env.komizo.bak 2>/dev/null || true
+komizo-box workload operation --policy "$WORKLOAD_POLICY" --version "$version" --previous "$previous" --phase configured
 if grep -q '^APP_VERSION=' .env; then
 	sed -i "s|^APP_VERSION=.*|APP_VERSION=$version|" .env
 else
@@ -1673,7 +1697,8 @@ if [ "$stopped" = "1" ]; then
 	echo "deploy: $APP_NAME is recorded as stopped, so $ref was pulled and APP_VERSION=$version committed, but nothing was started."
 	echo "deploy: 'komizo start --host <this box> --app $APP_NAME' brings up $version."
 else
-	docker compose up -d --remove-orphans
+	komizo-box workload operation --policy "$WORKLOAD_POLICY" --version "$version" --previous "$previous" --phase activating
+	docker compose up -d --remove-orphans --pull never
 
 	# AND READ THE MARKER AGAIN, because a stop can land between the read above
 	# and the `up -d` that just ran. komizo#62.
@@ -1800,6 +1825,14 @@ komizo_record_image_retention() {
 if ! komizo_record_image_retention; then
 	echo "deploy: WARNING -- could not record image retention; pruning remains unavailable" >&2
 fi
+if [ "$stopped" = 1 ] || [ "${stopped_after:-}" = 1 ]; then
+	operation_phase=prepared_stopped
+else
+	operation_phase=activated
+fi
+komizo-box workload operation --policy "$WORKLOAD_POLICY" --version "$version" --previous "$previous" --phase "$operation_phase"
+journal_finished=1
+
 KOMIZO_DEPLOY_EOF
 
 # The install-time values. Every one is charset-checked above, and none of
@@ -2795,8 +2828,10 @@ write under $APP_DIR, or change these root-owned commands. compose.yml arrives
 as a registry layer that root extracts; changing it requires registry push.
 ${SCOPED_NOTE:-}
 
-That is the real boundary: REGISTRY PUSH is root-equivalent on this box, the
-deploy key is not. A leaked deploy key lets an attacker roll the stack back to
+The host validates workload privileges before activation. When source identity
+is configured in its workload policy, it also authenticates the release workflow
+and pins every application image to verified content. The deploy key is confined
+to this app's installed commands. A leaked deploy key lets an attacker roll the stack back to
 any tag you have already published -- including one with a known bug -- and
 overwrite (not read) secrets. It does not let them run code of their own, and
 it cannot authorise a second key: the key list is root's, so rotating removes
