@@ -10,7 +10,7 @@ import (
 // whole product. The three backend-coupled paths are GATED, not ripped out:
 // each refuses with one sentence and exits nonzero BEFORE the network is
 // touched -- a dead domain must never be dialled. What stays service-free
-// (enrol --token, enrol --remove, the whole of init's box setup) is asserted
+// (enrol --remove and init's box setup) is asserted
 // to still run.
 
 // login's every path reached the service, so the gate is the whole body. A
@@ -44,25 +44,23 @@ func TestTokenlessEnrolRefusesBeforeResolvingATarget(t *testing.T) {
 	}
 }
 
-// enrol --token stays, but there is no default service to point a box at:
-// --api is required, because a default that names a dead domain is a silent
-// network call to nothing.
-func TestEnrolWithTokenNeedsAnExplicitService(t *testing.T) {
-	err := RunEnrol([]string{"--host", "root@box.example.com", "--token", "kmz_enr_x"})
-	if err == nil || !strings.Contains(err.Error(), "--api is required") {
-		t.Errorf("enrol --token without --api = %v, want the required-flag refusal", err)
-	}
-	if errors.Is(err, errServiceDecommissioned) {
-		t.Errorf("enrol --token was refused as decommissioned -- that path STAYS")
+// Explicit tokens cannot revive an unsupported hosted registration.
+func TestTokenEnrolRefusesBeforeResolvingATarget(t *testing.T) {
+	for _, args := range [][]string{
+		{"--token", "kmz_enr_x"},
+		{"--host", "root@box.example.com", "--token", "kmz_enr_x", "--api", "not a url"},
+	} {
+		if err := RunEnrol(args); !errors.Is(err, errServiceDecommissioned) {
+			t.Fatalf("token enrolment must refuse before target resolution: %v", err)
+		}
 	}
 }
 
-// And both service-free forms still run: past the gate, failing where a bad
+// Legacy removal still runs: past the gate, failing where a bad
 // host should fail -- on target validation, which is proof the refusal did
 // not fire and no account was asked for.
 func TestTheServiceFreeEnrolFormsStillRun(t *testing.T) {
 	for _, args := range [][]string{
-		{"--host", "root@not a host", "--token", "kmz_enr_x", "--api", "https://service.example.com"},
 		{"--host", "root@not a host", "--remove"},
 	} {
 		err := RunEnrol(args)

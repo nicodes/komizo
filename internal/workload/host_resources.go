@@ -78,10 +78,21 @@ func (p HostResources) Apply(root string, measuredMemory, measuredCPU int64) err
 		if info, err := os.Lstat(dir); err == nil && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
 			return errors.New("host cgroup path is not a real directory")
 		}
-		if body, err := os.ReadFile(filepath.Join(dir, "memory.current")); err == nil {
-			current, e := strconv.ParseInt(strings.TrimSpace(string(body)), 10, 64)
-			if e != nil || current > group.MemoryBytes {
-				return errors.New("host resource change would reduce memory below current usage; measure and drain first")
+		if _, err := os.Lstat(dir); os.IsNotExist(err) {
+			continue
+		}
+		for file, ceiling := range map[string]int64{
+			"memory.current":      group.MemoryBytes,
+			"memory.swap.current": group.SwapBytes,
+			"pids.current":        group.PIDs,
+		} {
+			body, err := os.ReadFile(filepath.Join(dir, file))
+			if err != nil {
+				return fmt.Errorf("host usage unavailable for %s/%s: %w", name, file, err)
+			}
+			current, err := strconv.ParseInt(strings.TrimSpace(string(body)), 10, 64)
+			if err != nil || current < 0 || current > ceiling {
+				return fmt.Errorf("host resource change would reduce %s/%s below current usage; measure and drain first", name, file)
 			}
 		}
 	}

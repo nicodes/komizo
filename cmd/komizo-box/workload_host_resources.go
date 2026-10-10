@@ -16,10 +16,11 @@ import (
 func runHostResources(args []string) error {
 	fs := flag.NewFlagSet("host-resources", flag.ContinueOnError)
 	apply := fs.Bool("apply", false, "apply the installed operator policy")
+	check := fs.Bool("check", false, "validate stdin against measured capacity without changing policy or controllers")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if os.Geteuid() != 0 || fs.NArg() != 0 {
+	if os.Geteuid() != 0 || fs.NArg() != 0 || (*apply && *check) {
 		return errors.New("host resources require the root operator")
 	}
 	const path = "/etc/komizo/resources.json"
@@ -61,6 +62,9 @@ func runHostResources(args []string) error {
 			}
 			break
 		}
+	}
+	if *check {
+		return policy.Check(total, int64(runtime.NumCPU())*1000)
 	}
 	if err := policy.Apply("/sys/fs/cgroup", total, int64(runtime.NumCPU())*1000); err != nil {
 		return err
