@@ -250,12 +250,12 @@ func TestTypedDeploymentScopedGenerationAndNeighborClaims(t *testing.T) {
 				t.Fatal(err)
 			}
 			if fault == "none" {
-				if !result.OK || checks != 1 {
+				if !result.OK || checks != 1 || result.ScopedGeneration != generation {
 					t.Fatal("valid scoped metadata rejected", result, checks)
 				}
 			} else {
 				after, _ := os.ReadFile(f.r.RoutePath)
-				if result.OK || string(before) != string(after) {
+				if result.OK || result.ScopedGeneration != "" || string(before) != string(after) {
 					t.Fatal("invalid staged authority changed the installed route", fault, result)
 				}
 			}
