@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestWorkloadInitializationNeverWidensExistingPolicy(t *testing.T) {
@@ -84,5 +85,50 @@ func TestCachedRollbackRequiresProtectedCurrentOrPrevious(t *testing.T) {
 	}
 	if cachedRollbackAllowed(p, "current") {
 		t.Fatal("writable retention granted rollback")
+	}
+}
+
+func TestStatefulHistoricalRecoveryCannotUseFreshProofOrCachedReceipt(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("protected records require root")
+	}
+	dir := t.TempDir()
+	p, err := workload.NewPolicy("demo", dir, "ghcr.io/owner/demo-config", "edge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.SourceRepository = "owner/demo"
+	p.RepositoryID = "123"
+	p.RequireStatefulContract = true
+	current := strings.Repeat("a", 40)
+	old := strings.Repeat("b", 40)
+	if err := os.WriteFile(filepath.Join(dir, ".komizo-image-retention"), []byte("CURRENT="+current+"\nPREVIOUS="+old+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if !cachedRollbackAllowed(p, current) || cachedRollbackAllowed(p, old) {
+		t.Fatal("unproven stateful rollback authorized")
+	}
+	now := time.Now().UTC()
+	c := &workload.StatefulContract{Version: 1, SourceRevision: current, Schema: workload.SchemaRange{Minimum: 1, Maximum: 1, Write: 1}, DataRevision: "v1", CredentialRevision: "grants-v1", Migrations: []workload.MigrationIdentity{{Identity: "001", SHA256: strings.Repeat("c", 64)}}, RecoveryAction: "forward_only"}
+	installed := workload.ReleaseAcceptance{Authority: "operator-bootstrap", VerifiedAt: now, Manifest: workload.ReleaseManifest{Version: 1, Repository: p.SourceRepository, RepositoryID: p.RepositoryID, Revision: current, StatefulContract: c, Images: map[string]string{p.ImagePrefix + "config:" + current: "sha256:" + strings.Repeat("d", 64), p.ImagePrefix + "api:" + current: "sha256:" + strings.Repeat("e", 64)}}}
+	if err := workload.WritePrivateJSON(filepath.Join(dir, current+".json"), installed); err != nil {
+		t.Fatal(err)
+	}
+	for _, offset := range []time.Duration{-time.Hour, 0} {
+		if err := statefulRetryAllowed(p, old, dir, workload.ReleaseAcceptance{VerifiedAt: now.Add(offset)}); err == nil {
+			t.Fatal("historical acceptance authorized", offset)
+		}
+	}
+	if err := statefulRetryAllowed(p, current, dir, installed); err != nil {
+		t.Fatal(err)
+	}
+	if err := statefulRetryAllowed(p, old, dir, workload.ReleaseAcceptance{VerifiedAt: now.Add(time.Second)}); err != nil {
+		t.Fatal("newer failed candidate retry refused", err)
+	}
+	if err := os.Chmod(filepath.Join(dir, current+".json"), 0666); err != nil {
+		t.Fatal(err)
+	}
+	if err := statefulRetryAllowed(p, old, dir, workload.ReleaseAcceptance{VerifiedAt: now.Add(time.Second)}); err == nil {
+		t.Fatal("writable installed receipt authorized recovery")
 	}
 }
