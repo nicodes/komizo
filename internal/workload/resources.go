@@ -18,19 +18,21 @@ type ResourcePolicy struct {
 	Default               ServiceBudget            `json:"default"`
 	Services              map[string]ServiceBudget `json:"services,omitempty"`
 	MaxMemoryBytes        int64                    `json:"max_memory_bytes"`
+	MaxMemoryReserveBytes int64                    `json:"max_memory_reserve_bytes,omitempty"`
 	MaxMemorySwapBytes    int64                    `json:"max_memory_swap_bytes"`
 	MaxMilliCPUs          int64                    `json:"max_milli_cpus"`
 	StartupAllowanceBytes int64                    `json:"startup_allowance_bytes"`
 }
 
 type ServiceBudget struct {
-	MemoryBytes     int64 `json:"memory_bytes"`
-	MemorySwapBytes int64 `json:"memory_swap_bytes"`
-	MilliCPUs       int64 `json:"milli_cpus"`
+	MemoryBytes        int64 `json:"memory_bytes"`
+	MemoryReserveBytes int64 `json:"memory_reserve_bytes,omitempty"`
+	MemorySwapBytes    int64 `json:"memory_swap_bytes"`
+	MilliCPUs          int64 `json:"milli_cpus"`
 }
 
 func (b ServiceBudget) check() error {
-	if b.MemoryBytes < 4<<20 || b.MemoryBytes > 64<<30 || b.MemorySwapBytes < b.MemoryBytes || b.MemorySwapBytes > 128<<30 || b.MilliCPUs < 1 || b.MilliCPUs > 64000 {
+	if b.MemoryBytes < 4<<20 || b.MemoryBytes > 64<<30 || b.MemoryReserveBytes < 0 || b.MemoryReserveBytes > b.MemoryBytes || b.MemorySwapBytes < b.MemoryBytes || b.MemorySwapBytes > 128<<30 || b.MilliCPUs < 1 || b.MilliCPUs > 64000 {
 		return errors.New("service budget requires finite memory, CPU and explicit bounded swap")
 	}
 	return nil
@@ -43,6 +45,12 @@ func (p ResourcePolicy) Check() error {
 	if err := p.Default.check(); err != nil {
 		return err
 	}
+	if p.MaxMemoryReserveBytes < 0 || p.MaxMemoryReserveBytes > p.MaxMemoryBytes || p.Default.MemoryReserveBytes > p.MaxMemoryReserveBytes {
+		return errors.New("service reserves need a finite protected parent reserve")
+	}
+	if strings.HasPrefix(p.CgroupParent, "/komizo-production/") && (p.MaxMemoryReserveBytes <= 0 || p.Default.MemoryReserveBytes <= 0) {
+		return errors.New("per-application serving budgets require explicit leaf and parent reserves")
+	}
 	if p.MaxMemoryBytes < p.Default.MemoryBytes || p.MaxMemoryBytes > 128<<30 || p.MaxMemorySwapBytes < p.MaxMemoryBytes || p.MaxMemorySwapBytes > 256<<30 || p.MaxMilliCPUs < p.Default.MilliCPUs || p.MaxMilliCPUs > 128000 || p.StartupAllowanceBytes < 0 || p.StartupAllowanceBytes > p.MaxMemoryBytes || len(p.Services) > 32 {
 		return errors.New("invalid aggregate resource envelope")
 	}
@@ -52,6 +60,9 @@ func (p ResourcePolicy) Check() error {
 		}
 		if err := budget.check(); err != nil {
 			return err
+		}
+		if budget.MemoryReserveBytes > p.MaxMemoryReserveBytes {
+			return errors.New("service reserve exceeds its protected parent reserve")
 		}
 	}
 	return nil
@@ -87,7 +98,7 @@ func boundResources(services map[string]any, policy *ResourcePolicy) error {
 	if policy == nil {
 		return errors.New("operator must configure a protected resource envelope before deployment")
 	}
-	var memory, swap, cpus int64
+	var memory, reserve, swap, cpus int64
 	for name, raw := range services {
 		service := raw.(map[string]any)
 		if policy.CgroupParent != "" {
@@ -102,10 +113,11 @@ func boundResources(services map[string]any, policy *ResourcePolicy) error {
 			return fmt.Errorf("%s: %w", name, err)
 		}
 		memory += m
+		reserve += budget.MemoryReserveBytes
 		swap += ms
 		cpus += cpu
 	}
-	if memory+policy.StartupAllowanceBytes > policy.MaxMemoryBytes || swap+policy.StartupAllowanceBytes > policy.MaxMemorySwapBytes || cpus > policy.MaxMilliCPUs {
+	if memory+policy.StartupAllowanceBytes > policy.MaxMemoryBytes || reserve > policy.MaxMemoryReserveBytes || swap+policy.StartupAllowanceBytes > policy.MaxMemorySwapBytes || cpus > policy.MaxMilliCPUs {
 		return errors.New("aggregate deployment resource demand exceeds protected envelope")
 	}
 	return nil
@@ -133,10 +145,15 @@ func boundServiceResources(service map[string]any, budget ServiceBudget) (int64,
 		}
 		cpus = int64(math.Ceil(value * 1000))
 	}
-	if memory > budget.MemoryBytes || swap > budget.MemorySwapBytes || swap < memory || cpus > budget.MilliCPUs {
+	if memory > budget.MemoryBytes || memory < budget.MemoryReserveBytes || swap > budget.MemorySwapBytes || swap < memory || cpus > budget.MilliCPUs {
 		return 0, 0, 0, errors.New("service resource demand exceeds protected budget")
 	}
 	service["mem_limit"] = memory
+	// Docker maps this host-owned reservation to memory.low at the service
+	// leaf. Parent protection alone does not declare the children's reserves.
+	if budget.MemoryReserveBytes > 0 {
+		service["mem_reservation"] = budget.MemoryReserveBytes
+	}
 	service["memswap_limit"] = swap
 	service["cpus"] = float64(cpus) / 1000
 	return memory, swap, cpus, nil

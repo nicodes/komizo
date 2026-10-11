@@ -210,3 +210,29 @@ func (p HostResources) Apply(root string, measuredMemory, measuredCPU int64) err
 	}
 	return nil
 }
+
+// CheckServingBudget binds a nested Compose envelope to its installed host
+// allocation. Neither a config image nor a second policy may consume another
+// application's reserve or exceed the parent's startup-inclusive ceilings.
+func (p HostResources) CheckServingBudget(app string, resources *ResourcePolicy) error {
+	if resources == nil {
+		return errors.New("serving budget is missing")
+	}
+	if err := resources.Check(); err != nil {
+		return err
+	}
+	if !strings.HasPrefix(resources.CgroupParent, "/komizo-production/") {
+		return nil
+	}
+	if resources.CgroupParent != "/komizo-production/"+app {
+		return errors.New("serving budget uses another application's cgroup")
+	}
+	if err := p.Check(p.PhysicalMemoryBytes, p.PhysicalMilliCPUs); err != nil {
+		return err
+	}
+	group, ok := p.Apps[app]
+	if !ok || resources.MaxMemoryReserveBytes != group.MemoryLowBytes || resources.MaxMemoryBytes > group.MemoryBytes || resources.MaxMemorySwapBytes > group.MemoryBytes+group.SwapBytes || resources.MaxMilliCPUs > group.MilliCPUs {
+		return errors.New("serving budget does not fit the installed application reserve and ceilings")
+	}
+	return nil
+}

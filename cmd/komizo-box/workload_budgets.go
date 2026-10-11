@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"io"
 	"os"
+	"runtime"
+	"strings"
 
 	"github.com/nicodes/komizo/internal/workload"
 )
@@ -23,7 +27,11 @@ func runWorkloadBudgets(args []string) error {
 	if err != nil {
 		return err
 	}
-	decoder := json.NewDecoder(io.LimitReader(os.Stdin, workload.MaxBytes+1))
+	body, err := readWorkloadInput(context.Background(), os.Stdin, workload.MaxBytes)
+	if err != nil || len(body) > workload.MaxBytes {
+		return errors.New("resource envelope exceeds its deadline or size bound")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	var resources workload.ResourcePolicy
 	if err := decoder.Decode(&resources); err != nil {
@@ -37,5 +45,29 @@ func runWorkloadBudgets(args []string) error {
 		return err
 	}
 	p.Resources = &resources
+	if err := p.Check(); err != nil {
+		return err
+	}
+	if err := installedServingBudget(p); err != nil {
+		return err
+	}
 	return workload.WritePrivateJSON(*policyPath, p)
+}
+
+func installedServingBudget(p workload.Policy) error {
+	if p.Resources == nil || !strings.HasPrefix(p.Resources.CgroupParent, "/komizo-production/") {
+		return nil
+	}
+	var host workload.HostResources
+	if err := protectedActivationJSON("/etc/komizo/resources.json", &host); err != nil {
+		return errors.New("installed host serving allocation is unavailable")
+	}
+	memory, err := hostMemoryBytes()
+	if err != nil {
+		return err
+	}
+	if err := host.Check(memory, int64(runtime.NumCPU())*1000); err != nil {
+		return err
+	}
+	return host.CheckServingBudget(p.App, p.Resources)
 }
