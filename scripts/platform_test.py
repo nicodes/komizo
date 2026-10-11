@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import signal
 from pathlib import Path
 import tempfile
 import unittest
@@ -55,11 +56,40 @@ class Fixture:
             elif action == 'start':
                 self.active.add(service)
         if args == ['komizo-box', 'version']:
-            return 0, 'v0.0.77\n'
+            return 0, '0.0.77\n'
         return 0, ''
 
 
 class PlatformTests(unittest.TestCase):
+    @unittest.skipUnless(hasattr(os, 'fork'), 'requires a real Unix process')
+    def test_sigkill_at_durable_boundaries_recovers_previous_files(self):
+        for boundary in ('prepared', 'replaced-0', 'replaced-1'):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as root:
+                f = Fixture(root)
+                pid = os.fork()
+                if pid == 0:
+                    def interrupt(phase):
+                        if phase == boundary:
+                            os.kill(os.getpid(), signal.SIGSTOP)
+                    f.p.checkpoint = interrupt
+                    try:
+                        f.p.apply(f.stage, f.expected)
+                    finally:
+                        os._exit(1)
+                try:
+                    child, status = os.waitpid(pid, os.WUNTRACED)
+                    self.assertEqual(child, pid)
+                    self.assertTrue(os.WIFSTOPPED(status), status)
+                finally:
+                    os.kill(pid, signal.SIGKILL)
+                    os.waitpid(pid, 0)
+                self.assertTrue((f.stage.parent/'pending.json').exists())
+                recovered = f.p.apply(f.stage, f.expected, recover=True)
+                self.assertEqual(recovered['phase'], 'recovered')
+                for path, body in f.before.items():
+                    self.assertEqual(f.p.path(path).read_bytes(), body)
+                self.assertFalse((f.stage.parent/'pending.json').exists())
+
     def test_upgrade_preserves_service_state_agent_and_exact_files(self):
         with tempfile.TemporaryDirectory() as root:
             f = Fixture(root)
