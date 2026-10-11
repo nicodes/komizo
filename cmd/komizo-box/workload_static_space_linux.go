@@ -8,9 +8,13 @@ import (
 	"syscall"
 )
 
-func staticSpace(public string) error {
+func staticSpace(public string, profile string) error {
+	maxBytes, _, err := workload.StaticBounds(profile)
+	if err != nil {
+		return err
+	}
 	var space syscall.Statfs_t
-	if err := syscall.Statfs(public, &space); err != nil || uint64(space.Bavail)*uint64(space.Bsize) < uint64((2<<30)+2*workload.StaticMaxBytes) || space.Ffree < 1024+2*workload.StaticMaxEntries {
+	if err := syscall.Statfs(public, &space); err != nil || uint64(space.Bavail)*uint64(space.Bsize) < uint64((2<<30)+2*maxBytes) || space.Ffree < 1024+2*workload.StaticMaxEntries {
 		return errors.New("public extraction would consume the host recovery floor")
 	}
 	return nil

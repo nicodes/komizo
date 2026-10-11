@@ -6,6 +6,68 @@ import (
 	"testing"
 )
 
+func TestApplicationReservesRefuseStarvationAndPreserveHostFloor(t *testing.T) {
+	g := HostGroup{MemoryBytes: 64 << 20, MilliCPUs: 200, PIDs: 128}
+	p := HostResources{Version: 1, PhysicalMemoryBytes: 512 << 20, OSReserveBytes: 128 << 20, PhysicalMilliCPUs: 1000, OSReserveMilliCPUs: 200, Production: g, Proxy: g, Previews: g, PreviewDatabase: g}
+	app := ApplicationGroup{HostGroup: HostGroup{MemoryBytes: 48 << 20, MilliCPUs: 100, PIDs: 32}, BaselineMemoryBytes: 8 << 20, MemoryLowBytes: 16 << 20, MemoryHighBytes: 32 << 20, CPUWeight: 100, IOWeight: 100}
+	p.Apps = map[string]ApplicationGroup{"one": app, "two": app}
+	if err := p.Check(512<<20, 1000); err != nil {
+		t.Fatal(err)
+	}
+	app.MemoryBytes++
+	p.Apps["one"] = app
+	if p.Check(512<<20, 1000) == nil {
+		t.Fatal("one app can exhaust another app's declared reserve")
+	}
+	app.MemoryBytes--
+	app.MemoryLowBytes = app.BaselineMemoryBytes - 1
+	p.Apps["one"] = app
+	if p.Check(512<<20, 1000) == nil {
+		t.Fatal("reserve below measured baseline accepted")
+	}
+}
+
+func TestApplicationUsagePreflightIsAtomicAndLimitsAreApplied(t *testing.T) {
+	g := HostGroup{MemoryBytes: 64 << 20, MilliCPUs: 200, PIDs: 128}
+	app := ApplicationGroup{HostGroup: HostGroup{MemoryBytes: 32 << 20, MilliCPUs: 100, PIDs: 32}, BaselineMemoryBytes: 8 << 20, MemoryLowBytes: 16 << 20, MemoryHighBytes: 24 << 20, CPUWeight: 200, IOWeight: 100}
+	p := HostResources{Version: 1, PhysicalMemoryBytes: 512 << 20, OSReserveBytes: 128 << 20, PhysicalMilliCPUs: 1000, OSReserveMilliCPUs: 200, Production: g, Proxy: g, Previews: g, PreviewDatabase: g, Apps: map[string]ApplicationGroup{"one": app}}
+	root := t.TempDir()
+	write := func(path, value string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(value), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(root, "cgroup.controllers"), "cpu memory pids io")
+	write(filepath.Join(root, "cgroup.subtree_control"), "unchanged")
+	dir := filepath.Join(root, "komizo-production", "one")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []string{"memory.current", "memory.swap.current", "pids.current"} {
+		write(filepath.Join(dir, file), "0")
+	}
+	for _, file := range []string{"memory.current", "memory.swap.current", "pids.current"} {
+		write(filepath.Join(root, "komizo-production", file), "0")
+	}
+	write(filepath.Join(dir, "memory.current"), "33554433")
+	if p.Apply(root, 512<<20, 1000) == nil {
+		t.Fatal("shrinking below observed use accepted")
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "cgroup.subtree_control")); string(b) != "unchanged" {
+		t.Fatal("partial mutation before preflight")
+	}
+	write(filepath.Join(dir, "memory.current"), "0")
+	if err := p.Apply(root, 512<<20, 1000); err != nil {
+		t.Fatal(err)
+	}
+	for file, expected := range map[string]string{"memory.low": "16777216", "memory.high": "25165824", "memory.max": "33554432", "cpu.weight": "200", "io.weight": "default 100"} {
+		if b, _ := os.ReadFile(filepath.Join(dir, file)); string(b) != expected {
+			t.Fatal("missing app limit", file, string(b))
+		}
+	}
+}
+
 func TestHostGroupsCannotBorrowProductionAndOSReservation(t *testing.T) {
 	group := HostGroup{MemoryBytes: 64 << 20, MilliCPUs: 200, PIDs: 128}
 	p := HostResources{Version: 1, PhysicalMemoryBytes: 512 << 20, OSReserveBytes: 128 << 20, PhysicalMilliCPUs: 1000, OSReserveMilliCPUs: 200, Production: group, Proxy: group, Previews: group, PreviewDatabase: group}
