@@ -21,19 +21,20 @@ import (
 const MaxBytes = 1 << 20
 
 type Policy struct {
-	Version                 int               `json:"version"`
-	App                     string            `json:"app"`
-	AppDir                  string            `json:"app_dir"`
-	ImagePrefix             string            `json:"image_prefix"`
-	SharedNetwork           string            `json:"shared_network"`
-	SourceRepository        string            `json:"source_repository,omitempty"`
-	RepositoryID            string            `json:"repository_id,omitempty"`
-	Resources               *ResourcePolicy   `json:"resources,omitempty"`
-	Readiness               *ReadinessPolicy  `json:"readiness,omitempty"`
-	IngressNetwork          string            `json:"ingress_network,omitempty"`
-	RequireStatefulContract bool              `json:"require_stateful_contract,omitempty"`
-	Static                  *StaticPolicy     `json:"static,omitempty"`
-	Deployment              *DeploymentPolicy `json:"deployment,omitempty"`
+	Version                      int               `json:"version"`
+	App                          string            `json:"app"`
+	AppDir                       string            `json:"app_dir"`
+	ImagePrefix                  string            `json:"image_prefix"`
+	SharedNetwork                string            `json:"shared_network"`
+	SourceRepository             string            `json:"source_repository,omitempty"`
+	RepositoryID                 string            `json:"repository_id,omitempty"`
+	Resources                    *ResourcePolicy   `json:"resources,omitempty"`
+	Readiness                    *ReadinessPolicy  `json:"readiness,omitempty"`
+	IngressNetwork               string            `json:"ingress_network,omitempty"`
+	RequireStatefulContract      bool              `json:"require_stateful_contract,omitempty"`
+	RequireDeliveryAuthorization bool              `json:"require_delivery_authorization,omitempty"`
+	Static                       *StaticPolicy     `json:"static,omitempty"`
+	Deployment                   *DeploymentPolicy `json:"deployment,omitempty"`
 }
 
 var identifier = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}$`)
@@ -58,7 +59,7 @@ func (p Policy) Check() error {
 			return err
 		}
 	}
-	if p.RequireStatefulContract && p.SourceRepository == "" {
+	if (p.RequireStatefulContract || p.RequireDeliveryAuthorization) && p.SourceRepository == "" {
 		return errors.New("stateful contracts require authenticated release source authority")
 	}
 	if p.IngressNetwork != "" && p.IngressNetwork != IsolatedIngress(p.App) {
@@ -70,6 +71,9 @@ func (p Policy) Check() error {
 		}
 	}
 	if p.Resources != nil {
+		if strings.HasPrefix(p.Resources.CgroupParent, "/komizo-production/") && p.Resources.CgroupParent != "/komizo-production/"+p.App {
+			return errors.New("application cgroup must belong to this app")
+		}
 		if err := p.Resources.Check(); err != nil {
 			return err
 		}

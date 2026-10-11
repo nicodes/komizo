@@ -23,7 +23,7 @@ import (
 //
 // The script is extracted and run, not read: what matters is the bytes that
 // land on disk and the mode they land with.
-type setterBox struct{ dir, bin string }
+type setterBox struct{ dir, bin, tools string }
 
 func newSetterBox(t *testing.T) *setterBox {
 	t.Helper()
@@ -39,15 +39,23 @@ func newSetterBox(t *testing.T) *setterBox {
 
 	body := between(t, scripts.AlpineScript,
 		`cat > "$SECRET_BIN.tmp" <<'KOMIZO_SECRET_EOF'`, "KOMIZO_SECRET_EOF")
-	body = strings.NewReplacer("__APP_DIR__", appDir, "__STATE_FILE__", state).Replace(body)
+	body = strings.NewReplacer("__APP_DIR__", appDir, "__STATE_FILE__", state, "__APP_NAME__", "blog").Replace(body)
 	bin := filepath.Join(root, "set-secret-blog")
 	write(t, bin, 0o755, body)
-	return &setterBox{dir: appDir, bin: bin}
+	tools := filepath.Join(root, "bin")
+	if err := os.Mkdir(tools, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// This fixture exercises the legacy file writer. The protected authorization
+	// command has its own executor tests; model only its exact legacy opt-in here.
+	write(t, filepath.Join(tools, "komizo-box"), 0755, "#!/bin/sh\n[ \"$*\" = \"workload legacy-secrets-allowed --policy /etc/komizo/workloads/blog.json\" ] || exit 2\n")
+	return &setterBox{dir: appDir, bin: bin, tools: tools}
 }
 
 func (b *setterBox) run(t *testing.T, stdin string, args ...string) (string, error) {
 	t.Helper()
 	cmd := exec.Command("sh", append([]string{b.bin}, args...)...)
+	cmd.Env = append(os.Environ(), "PATH="+b.tools+":"+os.Getenv("PATH"))
 	cmd.Stdin = strings.NewReader(stdin)
 	out, err := cmd.CombinedOutput()
 	return string(out), err

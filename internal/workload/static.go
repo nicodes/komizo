@@ -21,6 +21,21 @@ const StaticContainerRoot = "/srv/public"
 const StaticMaxBytes int64 = 64 << 20
 const StaticMaxFileBytes int64 = 16 << 20
 const StaticMaxEntries = 4096
+const GodotStaticMaxBytes int64 = 1 << 30
+const GodotStaticMaxFileBytes int64 = 128 << 20
+
+// StaticBounds keeps the general SPA envelope unchanged. Godot exports retain
+// large immutable packs and their precompressed sidecars.
+func StaticBounds(profile string) (total, file int64, err error) {
+	switch profile {
+	case "spa-v1":
+		return StaticMaxBytes, StaticMaxFileBytes, nil
+	case "godot-v1":
+		return GodotStaticMaxBytes, GodotStaticMaxFileBytes, nil
+	default:
+		return 0, 0, errors.New("unsupported static profile")
+	}
+}
 
 // StaticPolicy is an operator opt-in to a fixed serving profile. The exact
 // gate configuration hash fences changes requiring new parity verification.
@@ -33,7 +48,7 @@ type StaticPolicy struct {
 }
 
 func (s StaticPolicy) Check() error {
-	if s.Profile != "spa-v1" || !contentIdentity.MatchString(s.GateConfigSHA) || !identifier.MatchString(s.Proxy) {
+	if (s.Profile != "spa-v1" && s.Profile != "godot-v1") || !contentIdentity.MatchString(s.GateConfigSHA) || !identifier.MatchString(s.Proxy) {
 		return errors.New("unsupported static serving profile")
 	}
 	if len(s.Hostnames) < 1 || len(s.Hostnames) > 16 {
@@ -52,7 +67,15 @@ func (s StaticPolicy) Check() error {
 // StaticTree extracts an immutable, bounded public archive into a fresh
 // directory. Links, devices, traversal, duplicate/case-colliding names and
 // hidden files (except the exact Expo route manifest) are refused. No archive-controlled permission is retained.
-func StaticTree(reader io.Reader, destination string) (identity string, err error) {
+func StaticTree(reader io.Reader, destination string) (string, error) {
+	return StaticTreeForProfile(reader, destination, "spa-v1")
+}
+
+func StaticTreeForProfile(reader io.Reader, destination, profile string) (identity string, err error) {
+	maxBytes, maxFileBytes, err := StaticBounds(profile)
+	if err != nil {
+		return "", err
+	}
 	if err = os.Mkdir(destination, 0700); err != nil {
 		return "", err
 	}
@@ -61,7 +84,7 @@ func StaticTree(reader io.Reader, destination string) (identity string, err erro
 			_ = os.RemoveAll(destination)
 		}
 	}()
-	limited := &io.LimitedReader{R: reader, N: StaticMaxBytes + StaticMaxEntries*2048 + 1}
+	limited := &io.LimitedReader{R: reader, N: maxBytes + StaticMaxEntries*2048 + 1}
 	archive := tar.NewReader(limited)
 	seen := map[string]bool{}
 	hashes := map[string]string{}
@@ -104,7 +127,7 @@ func StaticTree(reader io.Reader, destination string) (identity string, err erro
 			}
 			continue
 		}
-		if h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeRegA || h.Size < 0 || h.Size > StaticMaxFileBytes || h.Size > StaticMaxBytes-total {
+		if h.Typeflag != tar.TypeReg && h.Typeflag != tar.TypeRegA || h.Size < 0 || h.Size > maxFileBytes || h.Size > maxBytes-total {
 			return "", errors.New("unsupported or oversized public archive entry")
 		}
 		total += h.Size
@@ -130,7 +153,7 @@ func StaticTree(reader io.Reader, destination string) (identity string, err erro
 		hashes[name] = hex.EncodeToString(sum.Sum(nil))
 	}
 	if limited.N <= 0 || hashes["index.html"] == "" {
-		return "", errors.New("public archive lacks a bounded SPA entry point")
+		return "", errors.New("public archive lacks a bounded entry point")
 	}
 	keys := make([]string, 0, len(hashes))
 	for name := range hashes {
@@ -169,6 +192,13 @@ func StaticTree(reader io.Reader, destination string) (identity string, err erro
 var staticHostname = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$`)
 
 func StaticRoute(route []byte, app, revision string, hostnames []string) ([]byte, error) {
+	return StaticRouteForProfile(route, app, revision, hostnames, "spa-v1")
+}
+
+func StaticRouteForProfile(route []byte, app, revision string, hostnames []string, profile string) ([]byte, error) {
+	if _, _, err := StaticBounds(profile); err != nil {
+		return nil, err
+	}
 	if !identifier.MatchString(app) || !commitID.MatchString(revision) || len(route) > MaxBytes {
 		return nil, errors.New("invalid static route identity")
 	}
@@ -199,6 +229,9 @@ func StaticRoute(route []byte, app, revision string, hostnames []string) ([]byte
 		"\ttry_files {path} {path}.html {path}/index.html /index.html\n\tfile_server\n" +
 		"\theader {\n\t\tX-Frame-Options DENY\n\t\tX-Content-Type-Options nosniff\n" +
 		"\t\tReferrer-Policy strict-origin-when-cross-origin\n\t}\n"
+	if profile == "godot-v1" {
+		snippet = godotStaticRoute(app, revision)
+	}
 	return []byte(strings.ReplaceAll(string(route), needle, snippet)), nil
 }
 
@@ -219,10 +252,18 @@ func StaticGate(compose []byte, app string) (string, error) {
 }
 
 func StaticTreeChecksum(directory string) (string, error) {
+	return StaticTreeChecksumForProfile(directory, "spa-v1")
+}
+
+func StaticTreeChecksumForProfile(directory, profile string) (string, error) {
+	maxBytes, maxFileBytes, err := StaticBounds(profile)
+	if err != nil {
+		return "", err
+	}
 	hashes := map[string]string{}
 	var total int64
 	entries := 0
-	err := filepath.WalkDir(directory, func(name string, entry os.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(directory, func(name string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -240,7 +281,7 @@ func StaticTreeChecksum(directory string) (string, error) {
 			}
 			return nil
 		}
-		if !info.Mode().IsRegular() || info.Mode().Perm()&0222 != 0 || info.Size() > StaticMaxFileBytes || info.Size() > StaticMaxBytes-total {
+		if !info.Mode().IsRegular() || info.Mode().Perm()&0222 != 0 || info.Size() > maxFileBytes || info.Size() > maxBytes-total {
 			return errors.New("cached public file is unsafe")
 		}
 		total += info.Size()
@@ -253,7 +294,7 @@ func StaticTreeChecksum(directory string) (string, error) {
 			return openErr
 		}
 		sum := sha256.New()
-		_, copyErr := io.Copy(sum, io.LimitReader(file, StaticMaxFileBytes+1))
+		_, copyErr := io.Copy(sum, io.LimitReader(file, maxFileBytes+1))
 		closeErr := file.Close()
 		if copyErr != nil || closeErr != nil {
 			return errors.Join(copyErr, closeErr)

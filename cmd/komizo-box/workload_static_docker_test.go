@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -67,6 +69,11 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 	}
 	sum := sha256.Sum256(config)
 	h, r, _ := staticActivationFixture(t)
+	baselineHost := "app.ctcalc.com"
+	if os.Getenv("KOMIZO_STATIC_FIXTURE_PROFILE") == "godot-v1" {
+		h.policy.Static.Profile = "godot-v1"
+		baselineHost = "prizm.avior.studio"
+	}
 	h.makeStaticDir = nil
 	h.policy.Static.GateConfigSHA = hex.EncodeToString(sum[:])
 	fake := h.run
@@ -93,7 +100,7 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Only the fixture's listener wrapper changes: real deployment retains the
-	// parent's TLS policy. Both isolated containers expose no host ports.
+	// parent's TLS policy. Both isolated containers expose only ephemeral loopback ports.
 	fixtureRoute := strings.Replace(string(active), "example.test {", "http://example.test {", 1)
 	proxyConfig := filepath.Join(t.TempDir(), "Caddyfile")
 	if err := os.WriteFile(proxyConfig, []byte("{\n auto_https off\n admin 127.0.0.1:2019\n persist_config off\n}\n"+fixtureRoute+"\nhttp:// {\n respond \"no route for this hostname\" 404\n}\n"), 0644); err != nil {
@@ -101,12 +108,16 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 	}
 	start := func(extra ...string) string {
 		t.Helper()
-		args := []string{"run", "-d", "--network", "none", "--user", "0:0", "--read-only", "--cap-drop", "ALL", "--cap-add", "NET_BIND_SERVICE", "--security-opt", "no-new-privileges:true", "--memory", "128m", "--memory-swap", "128m", "--cpus", "0.5", "--pids-limit", "64", "-e", "GOMEMLIMIT=32MiB", "-e", "GOGC=50", "--tmpfs", "/tmp:rw,noexec,nosuid,size=8m"}
+		args := []string{"run", "-d", "--publish", "127.0.0.1::80", "--user", "0:0", "--read-only", "--cap-drop", "ALL", "--cap-add", "NET_BIND_SERVICE", "--security-opt", "no-new-privileges:true", "--memory", "128m", "--memory-swap", "128m", "--cpus", "0.5", "--pids-limit", "64", "-e", "GOMEMLIMIT=32MiB", "-e", "GOGC=50", "--tmpfs", "/tmp:rw,noexec,nosuid,size=8m"}
 		args = append(args, extra...)
-		args = append(args, "--entrypoint", "/usr/bin/caddy", image, "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile")
+		entry := "/usr/bin/caddy"
+		if h.policy.Static.Profile == "godot-v1" {
+			entry = "/caddy"
+		}
+		args = append(args, "--entrypoint", entry, image, "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile")
 		cid, err := command(args...)
 		if err != nil {
-			t.Fatal("fixture Caddy start failed")
+			t.Fatal("fixture Caddy start failed", err)
 		}
 		cid = strings.TrimSpace(cid)
 		t.Cleanup(func() { _, _ = command("rm", "-fv", cid) })
@@ -116,34 +127,59 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 	proxy := start("-v", proxyConfig+":/etc/caddy/Caddyfile:ro", "-v", filepath.Join(h.root, workload.StaticRoot)+":/srv/public:ro")
 
 	type response struct {
-		status  string
-		headers map[string]string
-		body    []byte
+		status   string
+		headers  map[string]string
+		body     []byte
+		checksum string
+		size     int64
 	}
-	fetch := func(cid, host, path, encoding string) response {
+	addresses := map[string]string{}
+	for _, cid := range []string{gate, proxy} {
+		address, err := command("port", cid, "80/tcp")
+		if err != nil || !strings.HasPrefix(strings.TrimSpace(address), "127.0.0.1:") {
+			t.Fatal("fixture port is not loopback", err)
+		}
+		addresses[cid] = "http://" + strings.TrimSpace(address)
+	}
+	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{DisableCompression: true}}
+	t.Cleanup(func() { client.CloseIdleConnections() })
+	fetchMethod := func(cid, host, path, encoding, method, byteRange string) response {
 		t.Helper()
-		cmd := exec.CommandContext(ctx, "docker", "exec", cid, "wget", "-S", "-O", "-", "--header=Host: "+host, "--header=Accept-Encoding: "+encoding, "http://127.0.0.1"+path)
-		var body, headers bytes.Buffer
-		cmd.Stdout = &body
-		cmd.Stderr = &headers
-		_ = cmd.Run()
-		out := response{body: body.Bytes(), headers: map[string]string{}}
-		for _, line := range strings.Split(headers.String(), "\n") {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "HTTP/") {
-				parts := strings.Fields(line)
-				if len(parts) > 1 {
-					out.status = parts[1]
-				}
-			} else if key, value, ok := strings.Cut(line, ":"); ok {
-				out.headers[strings.ToLower(key)] = strings.TrimSpace(value)
-			}
+		req, err := http.NewRequestWithContext(ctx, method, addresses[cid]+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Host = host
+		req.Header.Set("Accept-Encoding", encoding)
+		if byteRange != "" {
+			req.Header.Set("Range", byteRange)
+		}
+		actual, err := client.Do(req)
+		if err != nil {
+			return response{headers: map[string]string{}}
+		}
+		defer actual.Body.Close()
+		hash := sha256.New()
+		body, err := io.ReadAll(io.LimitReader(io.TeeReader(actual.Body, hash), 2<<20))
+		if err != nil {
+			t.Fatal(err)
+		}
+		remaining, err := io.Copy(hash, io.LimitReader(actual.Body, workload.GodotStaticMaxFileBytes-int64(len(body))+1))
+		if err != nil || int64(len(body))+remaining > workload.GodotStaticMaxFileBytes {
+			t.Fatal("unbounded serving response", err)
+		}
+		out := response{status: fmt.Sprint(actual.StatusCode), body: body, checksum: hex.EncodeToString(hash.Sum(nil)), size: int64(len(body)) + remaining, headers: map[string]string{}}
+		for key, values := range actual.Header {
+			out.headers[strings.ToLower(key)] = strings.Join(values, ", ")
 		}
 		return out
 	}
+	fetch := func(cid, host, path, encoding string) response {
+		return fetchMethod(cid, host, path, encoding, "GET", "")
+	}
 	var baseline response
 	for attempt := 0; attempt < 40; attempt++ {
-		baseline = fetch(gate, "app.ctcalc.com", "/", "identity")
+		baseline = fetch(gate, baselineHost, "/", "identity")
 		if baseline.status == "200" {
 			break
 		}
@@ -163,10 +199,14 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 		log, _ := command("logs", proxy)
 		t.Fatal("fixture proxy startup", state, log)
 	}
-	if _, err := command("exec", proxy, "caddy", "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"); err != nil {
+	caddy := "/usr/bin/caddy"
+	if h.policy.Static.Profile == "godot-v1" {
+		caddy = "/caddy"
+	}
+	if _, err := command("exec", proxy, caddy, "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"); err != nil {
 		t.Fatal("whole fixture configuration invalid", err)
 	}
-	if _, err := command("exec", proxy, "caddy", "reload", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"); err != nil {
+	if _, err := command("exec", proxy, caddy, "reload", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"); err != nil {
 		t.Fatal("fixture reload failed")
 	}
 	paths := []string{"/", "/index.html", "/deep/link", "/missing.html", "/../../secrets.env"}
@@ -176,26 +216,45 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 			paths = append(paths, path)
 		}
 	}
+	if h.policy.Static.Profile == "godot-v1" {
+		paths = append(paths, "/index.js", "/index.wasm", "/index.pck")
+		for _, match := range regexp.MustCompile(`releases/[a-f0-9]{64}/[^\"\x27\s<>]+`).FindAll(baseline.body, 16) {
+			paths = append(paths, "/"+string(match))
+		}
+	}
 	for _, path := range paths {
 		for _, encoding := range []string{"identity", "gzip"} {
-			old := fetch(gate, "app.ctcalc.com", path, encoding)
+			old := fetch(gate, baselineHost, path, encoding)
 			next := fetch(proxy, "example.test", path, encoding)
-			if old.status != next.status || !bytes.Equal(old.body, next.body) {
+			if old.status != next.status || old.checksum != next.checksum || old.size != next.size || !bytes.Equal(old.body, next.body) {
 				t.Fatalf("serving parity changed %s %s: %s/%s", path, encoding, old.status, next.status)
 			}
-			for _, header := range []string{"content-type", "content-encoding", "etag", "last-modified", "cache-control", "vary", "x-frame-options", "x-content-type-options", "referrer-policy"} {
+			for _, header := range []string{"content-type", "content-encoding", "etag", "last-modified", "cache-control", "vary", "x-frame-options", "x-content-type-options", "referrer-policy", "cross-origin-opener-policy", "cross-origin-embedder-policy", "content-security-policy"} {
 				if old.headers[header] != next.headers[header] {
 					t.Fatalf("header parity changed %s %s: %s %q/%q", path, encoding, header, old.headers[header], next.headers[header])
 				}
 			}
-			if next.headers["x-komizo-revision"] != r.Candidate {
-				t.Fatal("shared serving lost candidate identity")
+			if next.status == "200" && next.headers["x-komizo-revision"] != r.Candidate {
+				t.Fatal("shared serving lost candidate identity", path, encoding, next.status, next.headers)
+			}
+		}
+	}
+	for _, method := range []string{"HEAD", "GET"} {
+		for _, path := range []string{"/", "/index.html"} {
+			byteRange := ""
+			if method == "GET" {
+				byteRange = "bytes=0-63"
+			}
+			old := fetchMethod(gate, baselineHost, path, "identity", method, byteRange)
+			next := fetchMethod(proxy, "example.test", path, "identity", method, byteRange)
+			if old.status != next.status || old.checksum != next.checksum || old.size != next.size || !bytes.Equal(old.body, next.body) || old.headers["content-range"] != next.headers["content-range"] || old.headers["content-length"] != next.headers["content-length"] {
+				t.Fatal("HEAD/range parity differs", path, method, old.status, next.status)
 			}
 		}
 	}
 	if fetch(proxy, "foreign.test", "/", "identity").status != "404" || fetch(gate, "foreign.test", "/", "identity").status != "404" {
 		t.Fatal("unreviewed hostname served")
 	}
-	proof, _ := json.Marshal(map[string]any{"image": image, "configuration_sha256": h.policy.Static.GateConfigSHA, "tree_sha256": h.static.record.TreeSHA256, "paths": paths, "encodings": []string{"identity", "gzip"}, "no_host_ports": true, "public_mount_read_only": true, "source_admission": "separate fixtures", "result": "passed"})
+	proof, _ := json.Marshal(map[string]any{"image": image, "configuration_sha256": h.policy.Static.GateConfigSHA, "tree_sha256": h.static.record.TreeSHA256, "paths": paths, "encodings": []string{"identity", "gzip"}, "methods": []string{"GET", "HEAD"}, "range": "bytes=0-63", "loopback_ports_only": true, "public_mount_read_only": true, "source_admission": "separate fixtures", "result": "passed"})
 	fmt.Println(string(proof))
 }
