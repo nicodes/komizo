@@ -201,7 +201,7 @@ class Platform:
                 app = destination.removeprefix('/usr/local/bin/deploy-')
                 permitted = bool(APP.fullmatch(app) and self.path(f'/var/lib/komizo/apps/{app}.env').exists())
             if value['kind'] == 'proxy-upgrade':
-                permitted = destination == '/srv/_proxy/compose.yml'
+                permitted = destination in ('/srv/_proxy/compose.yml','/srv/_proxy/Caddyfile')
             if (not permitted or destination in paths or not re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', row['staged'])
                     or not SHA.fullmatch(row['before']) or not SHA.fullmatch(row['after']) or row['mode'] not in (0o644, 0o755)):
                 raise ValueError('platform file is outside its declared authority')
@@ -211,7 +211,7 @@ class Platform:
         if value['kind'] == 'self-upgrade':
             if '/usr/local/bin/komizo-box' not in paths or '/var/lib/komizo/version' not in paths or value['image'] is not None or value['probes']:
                 raise ValueError('self-upgrade requires its binary and version')
-        elif (len(paths) != 1 or not isinstance(value['image'], dict)
+        elif (not 1 <= len(paths) <= 2 or '/srv/_proxy/compose.yml' not in paths or not isinstance(value['image'], dict)
                 or set(value['image']) != {'reference', 'id', 'previous_id'}
                 or not re.fullmatch(r'ghcr.io/nicodes/platform-proxy@sha256:[a-f0-9]{64}', value['image']['reference'])
                 or any(not re.fullmatch(r'sha256:[a-f0-9]{64}', value['image'][key]) for key in ('id', 'previous_id'))
@@ -228,7 +228,8 @@ class Platform:
 
     def proxy_preflight(self, stage, value):
         old = self.path('/srv/_proxy/compose.yml')
-        candidate = stage/value['files'][0]['staged']
+        compose_row = next(row for row in value['files'] if row['path'] == '/srv/_proxy/compose.yml')
+        candidate = stage/compose_row['staged']
         old_doc = json.loads(self.compose(old, 'config', '--format', 'json')[1])
         new_doc = json.loads(self.compose(candidate, 'config', '--format', 'json')[1])
         if set(old_doc.get('services', {})) != {'proxy'} or set(new_doc.get('services', {})) != {'proxy'}:
@@ -243,6 +244,23 @@ class Platform:
         old_identity = self.run(['docker', 'inspect', '--format', '{{.Image}}', 'komizo-proxy'])[1].strip()
         if old_identity != value['image']['previous_id']:
             raise ValueError('running proxy changed after review')
+        config_row = next((row for row in value['files'] if row['path'] == '/srv/_proxy/Caddyfile'), None)
+        if config_row:
+            # Override exactly the existing Caddyfile mount for preflight. The
+            # installed Compose remains unchanged except for its reviewed image.
+            definition = json.loads(self.compose(candidate, 'config', '--format', 'json')[1])
+            volumes = definition['services']['proxy'].get('volumes', [])
+            matches = [volume for volume in volumes if volume.get('target') == '/etc/caddy/Caddyfile']
+            if len(matches) != 1 or matches[0].get('type') != 'bind' or matches[0].get('source') != '/srv/_proxy/Caddyfile' or matches[0].get('read_only') is not True:
+                raise ValueError('proxy configuration mount differs from its protected contract')
+            matches[0]['source'] = str(stage/config_row['staged'])
+            preflight = stage/'proxy-preflight.json'
+            if preflight.exists():
+                raise ValueError('proxy preflight already exists; use a fresh stage')
+            with open(preflight, 'x') as stream:
+                json.dump(definition, stream)
+                os.fchmod(stream.fileno(), 0o600)
+            candidate = preflight
         self.compose(candidate, 'run', '--rm', '--no-deps', '--pull', 'never', '--entrypoint', '/usr/bin/caddy', 'proxy', 'validate', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile')
 
     def verify_proxy(self, value):

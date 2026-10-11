@@ -182,5 +182,48 @@ class PlatformTests(unittest.TestCase):
                 self.assertFalse(any(a[-1] in ('start', 'stop') for a in f.calls))
 
 
+
+class ProxyPlatformTests(unittest.TestCase):
+    def test_config_preflight_uses_only_staged_readonly_caddy_mount(self):
+        with tempfile.TemporaryDirectory() as root:
+            f = Fixture(root)
+            proxy = f.root/'srv/_proxy'
+            proxy.mkdir(parents=True)
+            (proxy/'compose.yml').write_text('{}')
+            (proxy/'Caddyfile').write_text('existing synthetic routes')
+            files=[]
+            for destination,name,new in [('/srv/_proxy/compose.yml','proxy-compose',b'candidate compose'),('/srv/_proxy/Caddyfile','proxy-caddy',b'candidate timeouts')]:
+                (f.stage/name).write_bytes(new)
+                os.chmod(f.stage/name,0o600)
+                files.append({'path':destination,'staged':name,'before':f.p.digest(f.p.path(destination)),
+                              'after':hashlib.sha256(new).hexdigest(),'mode':0o644})
+            reference='ghcr.io/nicodes/platform-proxy@sha256:'+'b'*64
+            image={'reference':reference,'id':'sha256:'+'c'*64,'previous_id':'sha256:'+'d'*64}
+            receipt={'version':1,'source':'a'*40,'authenticated':True,'kind':'proxy-upgrade','files':files,'image':image}
+            body=json.dumps(receipt).encode();(f.stage/'verified-release.json').write_bytes(body)
+            value={'version':1,'kind':'proxy-upgrade','source':'a'*40,'release':'v0.20.0','files':files,
+                   'receipt_sha256':hashlib.sha256(body).hexdigest(),'image':image,
+                   'probes':[{'url':'https://example.test/health','revision':'a'*40}]}
+            body=json.dumps(value).encode();(f.stage/'manifest.json').write_bytes(body)
+            expected=hashlib.sha256(body).hexdigest()
+            def fake(args,required=True):
+                f.calls.append(args)
+                if args[:3]==['docker','image','inspect']:return 0,image['id']
+                if args[:2]==['docker','inspect']:return 0,image['previous_id']
+                if args[-3:]==['config','--format','json']:
+                    selected=args[args.index('--file')+1]
+                    return 0,json.dumps({'services':{'proxy':{'image':'old' if selected==str(proxy/'compose.yml') else reference,
+                        'volumes':[{'type':'bind','source':'/srv/_proxy/Caddyfile','target':'/etc/caddy/Caddyfile','read_only':True}]}}})
+                return 0,''
+            f.p.run=fake
+            accepted=f.p.manifest(f.stage,expected)
+            f.p.proxy_preflight(f.stage,accepted)
+            definition=json.loads((f.stage/'proxy-preflight.json').read_text())
+            volume=definition['services']['proxy']['volumes'][0]
+            self.assertEqual(volume['source'],str(f.stage/'proxy-caddy'))
+            self.assertTrue(volume['read_only'])
+            self.assertEqual((proxy/'Caddyfile').read_text(),'existing synthetic routes')
+            self.assertIn(str(f.stage/'proxy-preflight.json'),f.calls[-1])
+
 if __name__ == '__main__':
     unittest.main()

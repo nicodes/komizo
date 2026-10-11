@@ -183,6 +183,8 @@ func Main(args []string) error {
 		// it, and asking it for permission first would have made an outage the
 		// reason you cannot fix your own machine.
 		err = runCommand(args[0], args[1:])
+	case "artifact":
+		err = RunArtifact(args[1:])
 	case "script":
 		err = RunScript(args[1:])
 	case "-h", "--help", "help":
@@ -257,6 +259,7 @@ hand.
   komizo ui      (runs ON the box: the local web app, loopback or tailnet)
   komizo reconcile --host root@HOST --inventory expected-apps.json
   komizo script [init|add|remove|unset-secret|proxy]
+  komizo artifact --arch amd64|arm64 --output NEW_FILE
 
 THE SERVICE IS DECOMMISSIONED. komizo-be is gone (board decision) and this CLI
 is the whole product: you manage your servers from it directly, over SSH, with
@@ -293,6 +296,10 @@ key to ~/.ssh/known_hosts; those are the only local files it can touch.
 
 "komizo script" prints the shell this ships to the server, so you can read what
 will run as root before it does.
+
+"komizo artifact" exports the embedded Linux box executable from this release
+to a new file, and prints its version, checksum and build stamp. It downloads
+nothing and refuses to overwrite an existing file.
 
 Run a command with --help for its flags.
 `)
