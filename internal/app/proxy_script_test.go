@@ -54,6 +54,7 @@ func newProxyBox(t *testing.T) *proxyBox {
 	// /run -- the same substitution deploy_script_test makes for alpine.sh.
 	b.script = strings.NewReplacer(
 		"/srv/_proxy", b.proxyDir,
+		"/srv/_public", filepath.Join(b.root, "srv", "_public"),
 		"/run/komizo", filepath.Join(root, "run", "komizo"),
 		"/etc/komizo/workloads", filepath.Join(root, "workloads"),
 	).Replace(scripts.AlpineProxyScript)
@@ -260,7 +261,7 @@ func TestWildcardTLSUsesNarrowReadOnlyMountAndPersistentCertificates(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"image: " + image, dir + ":/etc/caddy/tls:ro", dir + "/secrets.env", "caddy_data:/data", "caddy_config:/config"} {
+	for _, required := range []string{"image: " + image, dir + ":/etc/caddy/tls:ro", dir + "/secrets.env", "caddy_data:/data", "caddy_config:/config", filepath.Join(b.root, "srv", "_public") + ":/srv/public:ro"} {
 		if !strings.Contains(string(data), required) {
 			t.Errorf("missing %s", required)
 		}
