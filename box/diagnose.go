@@ -72,9 +72,9 @@ func Diagnose(r Report) []Problem {
 		}
 		if op := a.Deployment; op != nil {
 			switch op.Phase {
-			case "failed", "activation_failed", "readiness_failed":
+			case "failed", "staging_failed", "activation_failed", "readiness_failed":
 				out = append(out, Problem{Kind: ProblemDeploymentIncomplete, App: a.Name, Detail: fmt.Sprintf("%s deployment %s ended in %s; inspect its journal before changing versions", a.Name, op.Candidate, op.Phase)})
-			case "admitted", "configured", "activating":
+			case "admitted", "staging", "configured", "activating":
 				if r.At.Sub(op.At) > 10*time.Minute {
 					out = append(out, Problem{Kind: ProblemDeploymentIncomplete, App: a.Name, Detail: fmt.Sprintf("%s deployment %s has remained %s for over ten minutes; inspect its journal", a.Name, op.Candidate, op.Phase)})
 				}

@@ -721,6 +721,23 @@ ROUTE_FILE="__ROUTES_DIR__/__APP_NAME__.caddy"
 SCOPED_ENV="__SCOPED_ENV__"
 WORKLOAD_POLICY="/etc/komizo/workloads/__APP_NAME__.json"
 
+# Root policy opts this installed app into the durable typed transaction. Once
+# enabled, a submission failure is terminal; it never falls back to shell
+# staging. The compatibility transaction below remains for older installations.
+if komizo-box workload deployment-enabled --policy "$WORKLOAD_POLICY" 2>/dev/null; then
+	if [ "$SCOPED_ENV" = "fields-postgres-v2" ]; then
+		[ "$#" -eq 4 ] || { echo "deploy: scoped generation missing" >&2; exit 1; }
+	elif [ "$#" -ne 1 ] && [ "$#" -ne 3 ]; then
+		echo "deploy: unexpected arguments" >&2
+		exit 1
+	fi
+	submission=$(komizo-box workload deployment-submit --policy "$WORKLOAD_POLICY" \
+		--version "${1:-}" --registry "${2:-}" --registry-user "${3:-}" --generation "${4:-}") || exit 1
+	printf '%s\n' "$submission"
+	operation_id=$(printf '%s\n' "$submission" | tail -n 1)
+	exec komizo-box workload activation-wait --id "$operation_id"
+fi
+
 # This app's own record, which is where a DELIBERATE STOP is written down.
 #
 # The deploy reads it and refuses to start an app somebody stopped -- see the
