@@ -325,7 +325,7 @@ class Platform:
                     self.atomic(self.path(row['path']), stage/row['staged'], row['mode'])
                     self.checkpoint('replaced-'+str(index))
                 if value['kind'] == 'self-upgrade':
-                    if self.run(['komizo-box', 'version'])[1].strip() != value['release']:
+                    if self.run(['komizo-box', 'version'])[1].strip().removeprefix('v') != value['release'].removeprefix('v'):
                         raise ValueError('installed platform version differs')
                     if self.digest(self.path('/etc/komizo/agent.json')) != configuration:
                         raise ValueError('agent configuration changed during platform upgrade')
