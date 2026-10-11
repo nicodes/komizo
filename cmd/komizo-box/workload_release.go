@@ -139,7 +139,10 @@ func protectedReleaseDirectory(dir string) error {
 }
 func readPrivateRelease(path string, out any) error {
 	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0022 != 0 || !workloadRootOwner(info) {
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0022 != 0 || !workloadRootOwner(info) {
 		return errors.New("accepted release must be a protected root-owned regular file")
 	}
 	f, err := os.Open(path)
