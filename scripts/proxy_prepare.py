@@ -9,7 +9,6 @@ from pathlib import Path
 import re
 import shlex
 import sys
-import urllib.request
 import urllib.parse
 import stat
 
@@ -41,22 +40,24 @@ def private_bytes(path, maximum=1024*1024):
 
 
 def existing_probe(probe):
-    if probe['url'].startswith('wss://'):
-        host=probe['url'].removeprefix('wss://').rstrip('/')
-        key=base64.b64encode(os.urandom(16)).decode()
-        expected=base64.b64encode(hashlib.sha1((key+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode()
-        connection=http.client.HTTPSConnection(host,timeout=10)
-        try:
-            connection.request('GET','/',headers={'Connection':'Upgrade','Upgrade':'websocket',
+    url=urllib.parse.urlsplit(probe['url'])
+    connection=http.client.HTTPSConnection(url.hostname,port=url.port or 443,timeout=10)
+    try:
+        if url.scheme == 'wss':
+            key=base64.b64encode(os.urandom(16)).decode()
+            expected=base64.b64encode(hashlib.sha1((key+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode()
+            connection.request('GET',url.path,headers={'Connection':'Upgrade','Upgrade':'websocket',
                 'Sec-WebSocket-Version':'13','Sec-WebSocket-Key':key})
             response=connection.getresponse()
             return (response.status==101 and response.getheader('X-Komizo-Revision')==probe['revision']
                     and response.getheader('Upgrade','').lower()=='websocket'
                     and response.getheader('Sec-WebSocket-Accept')==expected)
-        finally:connection.close()
-    with urllib.request.urlopen(probe['url'],timeout=10) as response:
-        return (response.status==200 and response.headers.get('X-Komizo-Revision')==probe['revision']
+        # Direct HTTPS does not follow redirects or use environment proxies.
+        connection.request('GET',url.path)
+        response=connection.getresponse()
+        return (response.status==200 and response.getheader('X-Komizo-Revision')==probe['revision']
                 and bool(response.read(512).strip()))
+    finally:connection.close()
 
 
 def bounded_listener(previous):
