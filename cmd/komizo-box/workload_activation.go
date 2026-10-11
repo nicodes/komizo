@@ -88,6 +88,12 @@ func runWorkloadActivation(args []string) error {
 		if !result.OK || result.Started == nil {
 			return fmt.Errorf("activation %s: %s; inspect the durable operation before retrying", result.ID, result.Phase)
 		}
+		if result.ScopedGeneration != "" {
+			if len(result.ScopedGeneration) != 32 || strings.Trim(result.ScopedGeneration, "0123456789abcdef") != "" {
+				return errors.New("invalid scoped generation in activation receipt")
+			}
+			fmt.Printf("deploy: scoped-generation=%s\n", result.ScopedGeneration)
+		}
 		if *result.Started {
 			fmt.Println("deploy: started=yes")
 		} else {
@@ -486,7 +492,7 @@ func activationPass(ctx context.Context, dir string, h *hostActivation) error {
 	op, opErr := h.operation(request)
 	if opErr == nil && (op.Phase == "ready" || op.Phase == "prepared_stopped") {
 		started := op.Phase == "ready"
-		result = workload.ActivationResult{Version: 1, ID: request.ID, App: request.App, Candidate: request.Candidate, At: op.At, Phase: op.Phase, OK: true, Started: &started}
+		result = workload.ActivationResult{Version: 1, ID: request.ID, App: request.App, Candidate: request.Candidate, At: op.At, Phase: op.Phase, OK: true, Started: &started, ScopedGeneration: request.ScopedGeneration}
 	} else {
 		if request.Stage != nil {
 			configured, stageErr := h.stageDeployment(ctx, request, dir)
