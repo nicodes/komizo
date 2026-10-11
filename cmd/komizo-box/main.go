@@ -60,6 +60,8 @@ func main() {
 	}
 	var err error
 	switch os.Args[1] {
+	case "platform":
+		err = runPlatform(os.Args[2:])
 	case "workload":
 		err = runWorkload(os.Args[2:])
 	case "rootd":
@@ -103,6 +105,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `komizo-box -- the komizo agent, on the server
 
   komizo-box rootd [--interval 60s] [--report PATH]
+  komizo-box platform apply|recover|inspect STAGE MANIFEST_SHA256
   komizo-box report [--cached] [--volumes]
   komizo-box poll --from UNIX --to UNIX
   komizo-box serve [--socket PATH]

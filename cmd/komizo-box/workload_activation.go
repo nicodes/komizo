@@ -27,6 +27,9 @@ const releaseDirectory = "/var/lib/komizo/releases"
 const workloadPolicyDirectory = "/etc/komizo/workloads"
 
 func activationIdle(dir string) error {
+	if _, err := os.Lstat(filepath.Join(filepath.Dir(dir), "upgrades", "pending.json")); !os.IsNotExist(err) {
+		return errors.New("platform operation requires completion or recovery before application deployment")
+	}
 	if _, err := os.Lstat(filepath.Join(dir, "pending.json")); os.IsNotExist(err) {
 		return nil
 	}
@@ -198,6 +201,8 @@ type hostActivation struct {
 	deploymentBoundary       func(string)
 	deploymentWrite          func(string, []byte, os.FileMode) error
 	deploymentOwner          func(os.FileInfo) bool
+	reconciliationSnapshot   func(string, any) error
+	reconciliationReady      func(context.Context, string, []byte) error
 }
 
 func newHostActivation() *hostActivation {

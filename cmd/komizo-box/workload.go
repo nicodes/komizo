@@ -15,6 +15,14 @@ import (
 func runWorkload(args []string) error {
 	if len(args) > 0 {
 		switch args[0] {
+		case "inspect", "reconcile":
+			return runWorkloadReconciliation(args)
+		case "operation-contract":
+			if len(args) != 1 {
+				return errors.New("operation-contract accepts no arguments")
+			}
+			_, err := os.Stdout.Write(workload.OperationContract())
+			return err
 		case "deployment-enabled", "deployment-submit":
 			return runWorkloadDeployment(args)
 		case "activation-idle", "activation-submit", "activation-wait":
