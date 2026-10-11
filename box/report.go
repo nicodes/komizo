@@ -194,9 +194,10 @@ type App struct {
 	StoppedAt time.Time `json:"stopped_at,omitzero"`
 
 	// Deployment is root-owned durable activation state, including failures.
-	Deployment *Deployment `json:"deployment,omitempty"`
-	Ingress    *Network    `json:"ingress,omitempty"`
-	Containers []Container `json:"containers,omitempty"`
+	Deployment *Deployment    `json:"deployment,omitempty"`
+	Static     *StaticServing `json:"static,omitempty"`
+	Ingress    *Network       `json:"ingress,omitempty"`
+	Containers []Container    `json:"containers,omitempty"`
 	// Hosts is every name this app answers on, with the container the app said
 	// serves it. The service is empty when the app did not say -- which is the
 	// honest default, since nothing else on this machine could work it out.

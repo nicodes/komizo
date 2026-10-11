@@ -26,3 +26,20 @@ func TestRuntimeRequiresAllDeclaredServicesAndHealth(t *testing.T) {
 		t.Fatalf("deliberate stop: %s", got)
 	}
 }
+
+func TestStaticRuntimePreservesActualContainerCountAndStopIntent(t *testing.T) {
+	f := newFakeBox(t)
+	app := App{Name: "example", Static: &StaticServing{Active: true}}
+	if got := f.probe().runtimeState(app); got != "running" || app.Running() != 0 {
+		t.Fatal("static serving fabricated a container", got, app.Running())
+	}
+	app.Static.Active = false
+	if got := f.probe().runtimeState(app); got != "down" {
+		t.Fatal("inactive serving claimed running", got)
+	}
+	app.Static.Active = true
+	app.Stopped = true
+	if got := f.probe().runtimeState(app); got != "stopped" {
+		t.Fatal("static serving overruled stop", got)
+	}
+}
