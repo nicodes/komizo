@@ -55,7 +55,7 @@ func RunInit(args []string) error {
 	if err := validateNetworkName(o.network); err != nil {
 		return err
 	}
-	if !onlyChars(o.image, imageChars) {
+	if !onlyChars(o.image, proxyImageChars) {
 		return fmt.Errorf("--proxy-image contains characters that are not valid in an image reference: %q", o.image)
 	}
 
