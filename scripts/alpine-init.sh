@@ -86,7 +86,8 @@ apk update
 # Upgrading is a real thing to want, and it is a thing to do on purpose:
 # `apk upgrade docker` over the same connection, when you have decided to.
 missing=""
-for pkg in docker docker-cli-compose openssh doas python3; do
+# BusyBox flock lacks -w; state and prune locks require bounded waits.
+for pkg in docker docker-cli-compose openssh doas python3 flock; do
 	apk info -e "$pkg" >/dev/null 2>&1 || missing="$missing $pkg"
 done
 if [ -n "$missing" ]; then
