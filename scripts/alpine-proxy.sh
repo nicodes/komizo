@@ -159,7 +159,7 @@ write_caddyfile() {
 	printf '# gate container, and cannot be written from here or broken from\n'
 	printf '# here.\n'
 
-	# On-demand TLS is the one global option, and it belongs to the SERVER
+	# Listener limits and on-demand TLS belong to the SERVER
 	# rather than to an app: it decides, for the whole box, who is allowed to
 	# make it request certificates. An app used to ship this block in its own
 	# config image, which made every app on the machine share one namespace
@@ -168,8 +168,9 @@ write_caddyfile() {
 	# No blank line before the global block: 'caddy fmt' removes one, and a
 	# config that is not formatted the way Caddy formats it warns on every
 	# reload -- which trains you to ignore reload warnings.
+	printf '{\n'
+	printf '\tservers {\n\t\ttimeouts {\n\t\t\tread_header 5s\n\t\t\tread_body 3m\n\t\t\tidle 2m\n\t\t}\n\t}\n'
 	if [ -n "$TLS_ASK" ]; then
-		printf '{\n'
 		printf '\t# Certificates for wildcard hostnames are issued on demand, one per\n'
 		printf '\t# name. Without a gate, anyone who pointed a DNS record at this box\n'
 		printf '\t# could make it request certificates on their behalf -- so an app is\n'
@@ -177,8 +178,8 @@ write_caddyfile() {
 		printf '\ton_demand_tls {\n'
 		printf '\t\task %s\n' "$TLS_ASK"
 		printf '\t}\n'
-		printf '}\n'
 	fi
+	printf '}\n'
 
 	printf '\n# One file per app, written by deploy-<app> from the hostnames that\n'
 	printf '# app published. Nothing here names an app, so adding or removing one\n'

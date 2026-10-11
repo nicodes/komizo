@@ -9,7 +9,7 @@ import (
 )
 
 // Container activation and owner-stop race coverage now exercise rootd in
-// cmd/komizo-box/workload_activation_test.go. The shell retains staging only.
+// cmd/komizo-box/workload_activation_test.go. The shell is a submit/wait adapter.
 
 // deployBody is the generated per-app deploy script, as it is written to the
 // box -- the contents of the quoted heredoc inside alpine.sh.
@@ -32,6 +32,16 @@ func deployBody(t *testing.T) string {
 		t.Fatal("the KOMIZO_DEPLOY_EOF heredoc is never closed")
 	}
 	return rest[:j]
+}
+
+// Historical shell behavior is retained only as an unshipped migration fixture.
+func legacyDeployBody(t *testing.T) string {
+	t.Helper()
+	body, err := os.ReadFile("../internal/app/testdata/legacy-v76-deploy.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
 }
 
 func closingFi(t *testing.T, lines []string, open int, what string) int {
@@ -81,11 +91,11 @@ func versionCommit(t *testing.T, body string) (block string, at, end int) {
 	return block, at, at + len(block)
 }
 
-func TestTheDeployedVersionIsRecordedOnEveryDeploy(t *testing.T) {
+func TestLegacyMigrationRecordsTheDeployedVersion(t *testing.T) {
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skip("sh is not installed")
 	}
-	block, _, _ := versionCommit(t, deployBody(t))
+	block, _, _ := versionCommit(t, legacyDeployBody(t))
 
 	for _, tc := range []struct {
 		name string

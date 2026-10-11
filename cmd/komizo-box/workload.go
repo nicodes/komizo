@@ -23,7 +23,7 @@ func runWorkload(args []string) error {
 			}
 			_, err := os.Stdout.Write(workload.OperationContract())
 			return err
-		case "deployment-enabled", "deployment-submit":
+		case "deployment-enable", "deployment-enabled", "deployment-submit":
 			return runWorkloadDeployment(args)
 		case "activation-idle", "activation-submit", "activation-wait":
 			return runWorkloadActivation(args)
