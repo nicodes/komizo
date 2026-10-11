@@ -15,6 +15,10 @@ import (
 func runWorkload(args []string) error {
 	if len(args) > 0 {
 		switch args[0] {
+		case "release-secrets", "owner-secret", "legacy-secrets-allowed":
+			return runWorkloadSecrets(args)
+		case "delivery-enable", "delivery-authorize":
+			return runWorkloadDelivery(args)
 		case "inspect", "reconcile":
 			return runWorkloadReconciliation(args)
 		case "operation-contract":
@@ -89,6 +93,7 @@ func runWorkload(args []string) error {
 			authority.Resources = nil // provisioning retains the operator's envelope
 			authority.Readiness = nil
 			authority.IngressNetwork = ""
+			authority.RequireDeliveryAuthorization = false
 			authority.RequireStatefulContract = false // provisioning retains root's requirement
 			authority.Static = nil                    // provisioning retains root's opt-in profile
 			authority.Deployment = nil

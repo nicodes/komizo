@@ -72,6 +72,7 @@ esac
 DEPLOY_BIN="/usr/local/bin/deploy-$APP_NAME"
 PRUNE_BIN="/usr/local/bin/prune-$APP_NAME"
 SECRET_BIN="/usr/local/bin/set-secret-$APP_NAME"
+RELEASE_SECRETS_BIN="/usr/local/bin/set-release-secrets-$APP_NAME"
 TASK_BIN="/usr/local/bin/task-$APP_NAME"
 SCOPED_BIN="/usr/local/bin/set-scoped-env-$APP_NAME"
 PROVISION_BIN="/usr/local/bin/provision-scoped-env-$APP_NAME"
@@ -234,7 +235,7 @@ log "Removing $DEPLOY_BIN, $PRUNE_BIN, $SECRET_BIN, $TASK_BIN and $SCOPED_BIN"
 # this step does not read those files. A wipe still goes through the APP_DIR
 # guard below, not a separate secrets deletion. Old lease helpers are not data
 # either. KEEP_DATA does not keep the binaries.
-rm -f "$DEPLOY_BIN" "$PRUNE_BIN" "$SECRET_BIN" "$TASK_BIN" "$SCOPED_BIN" "$PROVISION_BIN" "$STATUS_BIN"
+rm -f "$DEPLOY_BIN" "$PRUNE_BIN" "$SECRET_BIN" "$RELEASE_SECRETS_BIN" "$TASK_BIN" "$SCOPED_BIN" "$PROVISION_BIN" "$STATUS_BIN"
 rm -f "/etc/periodic/15min/komizo-scoped-env-$APP_NAME" \
 	"/etc/local.d/komizo-scoped-env-$APP_NAME.start"
 

@@ -37,7 +37,7 @@ func (b ServiceBudget) check() error {
 }
 
 func (p ResourcePolicy) Check() error {
-	if p.CgroupParent != "" && p.CgroupParent != "/komizo-production" {
+	if p.CgroupParent != "" && p.CgroupParent != "/komizo-production" && !regexp.MustCompile(`^/komizo-production/[a-z][a-z0-9_-]{0,62}$`).MatchString(p.CgroupParent) {
 		return errors.New("production cgroup must be host owned")
 	}
 	if err := p.Default.check(); err != nil {

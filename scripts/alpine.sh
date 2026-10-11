@@ -81,6 +81,7 @@ esac
 DEPLOY_BIN="/usr/local/bin/deploy-$APP_NAME"
 PRUNE_BIN="/usr/local/bin/prune-$APP_NAME"
 SECRET_BIN="/usr/local/bin/set-secret-$APP_NAME"
+RELEASE_SECRETS_BIN="/usr/local/bin/set-release-secrets-$APP_NAME"
 TASK_BIN="/usr/local/bin/task-$APP_NAME"
 PROVISION_BIN="/usr/local/bin/provision-scoped-env-$APP_NAME"
 STATUS_BIN="/usr/local/bin/scoped-env-status-$APP_NAME"
@@ -1112,6 +1113,8 @@ if [ "$profile" = "fields-postgres-v2" ]; then
 	exit 1
 fi
 
+komizo-box workload legacy-secrets-allowed --policy /etc/komizo/workloads/__APP_NAME__.json
+
 if [ "$shape" = "file" ]; then
 	# A FILENAME, not an env-var name, so the charset differs from the one
 	# below -- dots and hyphens are ordinary in "postgres-owner.env" and
@@ -1174,6 +1177,7 @@ KOMIZO_SECRET_EOF
 sed -i \
 	-e "s|__APP_DIR__|$APP_DIR|g" \
 	-e "s|__STATE_FILE__|$STATE_FILE|g" \
+	-e "s|__APP_NAME__|$APP_NAME|g" \
 	"$SECRET_BIN.tmp"
 if grep -q '__[A-Z_][A-Z_]*__' "$SECRET_BIN.tmp"; then
 	rm -f "$SECRET_BIN.tmp"
@@ -1182,6 +1186,17 @@ fi
 mv "$SECRET_BIN.tmp" "$SECRET_BIN"
 chown root:root "$SECRET_BIN"
 chmod 755 "$SECRET_BIN"
+
+cat > "$RELEASE_SECRETS_BIN.tmp" <<-'EOF'
+#!/bin/sh
+set -eu
+[ "$#" -eq 0 ] || exit 2
+exec komizo-box workload release-secrets --policy /etc/komizo/workloads/__APP_NAME__.json
+EOF
+sed -i "s|__APP_NAME__|$APP_NAME|g" "$RELEASE_SECRETS_BIN.tmp"
+chown root:root "$RELEASE_SECRETS_BIN.tmp"
+chmod 755 "$RELEASE_SECRETS_BIN.tmp"
+mv -f "$RELEASE_SECRETS_BIN.tmp" "$RELEASE_SECRETS_BIN"
 
 # --- 3b2. Scoped env path --------------------------------------------------
 # Opt-in, and only the fixed fieldsofrevik profile. Provision is root-only
@@ -1353,7 +1368,7 @@ adopted_file="/tmp/.komizo-adopted.$$"
 # it, so a stale grant naming it must be dropped by this scan and not carried
 # out into the adopted section, which would resurrect a privilege the rest of
 # this script exists to remove.
-recognised="$DEPLOY_BIN $PRUNE_BIN $SECRET_BIN $STATUS_BIN $TASK_BIN $SCOPED_BIN $PROVISION_BIN"
+recognised="$DEPLOY_BIN $PRUNE_BIN $SECRET_BIN $RELEASE_SECRETS_BIN $STATUS_BIN $TASK_BIN $SCOPED_BIN $PROVISION_BIN"
 # The preview helpers are komizo's own as of this change. Without them
 # here, the first update after it would "adopt" the very rules it had
 # just written and carry them out of the block.
@@ -1361,10 +1376,12 @@ recognised="$recognised $PREVIEW_RUN_BIN $PREVIEW_STACKENV_BIN"
 awk -v begin="# $PROJECT_MARKER: $CI_USER BEGIN" \
     -v end="# $PROJECT_MARKER: $CI_USER END" \
     -v user="$CI_USER" \
-    -v bins="$recognised" '
+    -v bins="$recognised" \
+    -v release_secret="$RELEASE_SECRETS_BIN" '
 	BEGIN {
 		n = split(bins, b, " ")
 		for (i = 1; i <= n; i++) mine["permit nopass " user " as root cmd " b[i]] = 1
+        mine["permit nopass " user " as root cmd " release_secret " args"] = 1
 	}
 	$0 == begin { inside = 1; next }
 	$0 == end   { inside = 0; next }
@@ -1411,6 +1428,7 @@ if [ "$SCOPED_ENV" = "fields-postgres-v2" ]; then
 	printf 'permit nopass %s as root cmd %s\n' "$CI_USER" "$STATUS_BIN" >> /etc/doas.conf
 else
 	printf 'permit nopass %s as root cmd %s\n' "$CI_USER" "$SECRET_BIN" >> /etc/doas.conf
+	printf 'permit nopass %s as root cmd %s args\n' "$CI_USER" "$RELEASE_SECRETS_BIN" >> /etc/doas.conf
 fi
 if [ -n "$TASKS" ]; then
 	# Exactly one extra rule, for the root-owned validator/executor. Dynamic

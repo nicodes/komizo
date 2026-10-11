@@ -10,31 +10,9 @@ import (
 	"strings"
 )
 
-// RunSetSecret puts a secret on a box from an operator's machine.
-//
-// WHY IT EXISTS. Until now the only writer of the secret store was CI, through
-// `doas set-secret-<app>` on the deploy account, and it could only write an
-// env value: the setter refuses "a value that contains a newline, which an env
-// file cannot represent". Everything that does not fit that shape -- an OpenAI
-// key that has to be MOUNTED rather than exported, an age backup identity, a
-// PEM, a postgres owner password the database reads before the app exists --
-// was therefore put on the box by hand over SSH. Ten such files across five
-// apps in one portfolio: delivered by nothing, rotated by nothing, and
-// invisible to every komizo command.
-//
-// That is the largest remaining source of hand-placed state on these servers,
-// and the only reason it existed was that komizo had no way to deliver it.
-//
-// AN OPERATOR COMMAND, like unset-secret and for the same reason: it runs as
-// root over the operator's own connection. CI keeps the narrower grant it
-// already has -- the set-secret-<app> binary on the box, which this command
-// invokes rather than reimplements, so there is exactly one piece of code that
-// decides where a secret lands and what mode it lands with.
-//
-// The value never appears in argv. It is read from a file or from stdin and
-// piped to the remote command, because arguments are visible in the host's
-// process list to every other user on the box -- the same rule the box-side
-// setter has always followed.
+// RunSetSecret sends a bounded value over the operator's root connection to
+// the typed host writer. CI uses the separately scoped release-secret command.
+// Both routes share the same atomic writer; secret bytes never enter argv.
 func RunSetSecret(args []string) error {
 	fs := flag.NewFlagSet("set-secret", flag.ContinueOnError)
 	fs.Usage = func() { usageSetSecret(fs) }
@@ -124,7 +102,7 @@ func setSecretCommand(app, name, uid string, asFile bool) (string, error) {
 			}
 		}
 	}
-	cmd := "/usr/local/bin/set-secret-" + app
+	cmd := "komizo-box workload owner-secret --policy /etc/komizo/workloads/" + app + ".json"
 	if uid != "" {
 		if _, err := strconv.Atoi(uid); err != nil {
 			return "", fmt.Errorf("--uid must be numeric: %q", uid)
@@ -134,23 +112,28 @@ func setSecretCommand(app, name, uid string, asFile bool) (string, error) {
 	if asFile {
 		cmd += " --file"
 	}
-	return cmd + " " + name, nil
+	return cmd + " --name " + name, nil
 }
 
 // readSecretValue takes the bytes from a path, or from stdin when there is no
 // path. Bytes, not text: a file secret may be a PEM or a binary identity, and
 // its trailing newline is part of it.
 func readSecretValue(from string) ([]byte, error) {
-	if from == "" || from == "-" {
-		value, err := io.ReadAll(os.Stdin)
+	var input io.Reader = os.Stdin
+	if from != "" && from != "-" {
+		file, err := os.Open(from)
 		if err != nil {
-			return nil, fmt.Errorf("reading the value from stdin: %w", err)
+			return nil, fmt.Errorf("opening secret input: %w", err)
 		}
-		return value, nil
+		defer file.Close()
+		input = file
 	}
-	value, err := os.ReadFile(from)
+	value, err := io.ReadAll(io.LimitReader(input, (1<<20)+1))
 	if err != nil {
-		return nil, fmt.Errorf("reading the value from %s: %w", from, err)
+		return nil, fmt.Errorf("reading secret input: %w", err)
+	}
+	if len(value) > 1<<20 {
+		return nil, fmt.Errorf("secret input exceeds its 1 MiB bound")
 	}
 	return value, nil
 }

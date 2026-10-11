@@ -14,15 +14,27 @@ import (
 // Per-service maxima still apply inside each parent. This is a hard aggregate
 // ceiling, not a claim that all services can use their individual maxima at once.
 type HostResources struct {
-	Version             int       `json:"version"`
-	PhysicalMemoryBytes int64     `json:"physical_memory_bytes"`
-	OSReserveBytes      int64     `json:"os_reserve_bytes"`
-	PhysicalMilliCPUs   int64     `json:"physical_milli_cpus"`
-	OSReserveMilliCPUs  int64     `json:"os_reserve_milli_cpus"`
-	Production          HostGroup `json:"production"`
-	Proxy               HostGroup `json:"proxy"`
-	Previews            HostGroup `json:"previews"`
-	PreviewDatabase     HostGroup `json:"preview_database"`
+	Version             int                         `json:"version"`
+	PhysicalMemoryBytes int64                       `json:"physical_memory_bytes"`
+	OSReserveBytes      int64                       `json:"os_reserve_bytes"`
+	PhysicalMilliCPUs   int64                       `json:"physical_milli_cpus"`
+	OSReserveMilliCPUs  int64                       `json:"os_reserve_milli_cpus"`
+	Production          HostGroup                   `json:"production"`
+	Proxy               HostGroup                   `json:"proxy"`
+	Previews            HostGroup                   `json:"previews"`
+	PreviewDatabase     HostGroup                   `json:"preview_database"`
+	Apps                map[string]ApplicationGroup `json:"apps,omitempty"`
+}
+
+// ApplicationGroup retains a measured serving footprint under pressure. Each
+// app's hard ceiling leaves room for every other app's declared reserve.
+type ApplicationGroup struct {
+	HostGroup
+	BaselineMemoryBytes int64 `json:"baseline_memory_bytes"`
+	MemoryLowBytes      int64 `json:"memory_low_bytes"`
+	MemoryHighBytes     int64 `json:"memory_high_bytes"`
+	CPUWeight           int64 `json:"cpu_weight"`
+	IOWeight            int64 `json:"io_weight"`
 }
 type HostGroup struct {
 	MemoryBytes int64 `json:"memory_bytes"`
@@ -56,6 +68,32 @@ func (p HostResources) Check(measuredMemory, measuredCPU int64) error {
 	if p.Previews.SwapBytes != 0 || p.PreviewDatabase.SwapBytes != 0 {
 		return errors.New("preview groups may not grow swap")
 	}
+	if err := p.checkApps(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p HostResources) checkApps() error {
+	if len(p.Apps) > 32 {
+		return errors.New("host application inventory exceeds its bound")
+	}
+	var reserved int64
+	for name, group := range p.Apps {
+		if !identifier.MatchString(name) || group.BaselineMemoryBytes < 4<<20 ||
+			group.MemoryLowBytes < group.BaselineMemoryBytes || group.MemoryHighBytes < group.MemoryLowBytes ||
+			group.MemoryBytes < group.MemoryHighBytes || group.MemoryBytes > p.Production.MemoryBytes ||
+			group.SwapBytes < 0 || group.SwapBytes > p.Production.SwapBytes || group.MilliCPUs < 1 || group.MilliCPUs > p.Production.MilliCPUs ||
+			group.PIDs < 16 || group.PIDs > p.Production.PIDs || group.CPUWeight < 1 || group.CPUWeight > 10000 || group.IOWeight < 1 || group.IOWeight > 10000 {
+			return errors.New("application group requires measured baseline, pressure threshold and finite host-owned limits")
+		}
+		reserved += group.MemoryLowBytes
+	}
+	for _, group := range p.Apps {
+		if reserved-group.MemoryLowBytes+group.MemoryBytes > p.Production.MemoryBytes {
+			return errors.New("one app's hard memory ceiling consumes another app's serving reserve")
+		}
+	}
 	return nil
 }
 
@@ -67,9 +105,34 @@ func (p HostResources) Apply(root string, measuredMemory, measuredCPU int64) err
 	if err != nil {
 		return errors.New("cgroup v2 controller inventory unavailable")
 	}
-	for _, name := range []string{"cpu", "memory", "pids"} {
+	needed := []string{"cpu", "memory", "pids"}
+	if len(p.Apps) > 0 {
+		needed = append(needed, "io")
+	}
+	for _, name := range needed {
 		if !strings.Contains(" "+strings.TrimSpace(string(controllers))+" ", " "+name+" ") {
 			return errors.New("required cgroup v2 controller unavailable")
+		}
+	}
+	// Preflight every new subgroup before changing any controller or limit.
+	for name, group := range p.Apps {
+		dir := filepath.Join(root, "komizo-production", name)
+		info, err := os.Lstat(dir)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("application cgroup path is not a real directory")
+		}
+		for file, limit := range map[string]int64{"memory.current": group.MemoryBytes, "memory.swap.current": group.SwapBytes, "pids.current": group.PIDs} {
+			body, err := os.ReadFile(filepath.Join(dir, file))
+			if err != nil {
+				return errors.New("application usage is unavailable")
+			}
+			current, err := strconv.ParseInt(strings.TrimSpace(string(body)), 10, 64)
+			if err != nil || current < 0 || current > limit {
+				return errors.New("application resource reduction requires measurement and drain")
+			}
 		}
 	}
 
@@ -97,7 +160,11 @@ func (p HostResources) Apply(root string, measuredMemory, measuredCPU int64) err
 		}
 	}
 
-	if err := os.WriteFile(filepath.Join(root, "cgroup.subtree_control"), []byte("+cpu +memory +pids"), 0600); err != nil {
+	control := "+cpu +memory +pids"
+	if len(p.Apps) > 0 {
+		control += " +io"
+	}
+	if err := os.WriteFile(filepath.Join(root, "cgroup.subtree_control"), []byte(control), 0600); err != nil {
 		return err
 	}
 	for name, group := range p.groups() {
@@ -113,6 +180,32 @@ func (p HostResources) Apply(root string, measuredMemory, measuredCPU int64) err
 			if err := os.WriteFile(filepath.Join(dir, file), []byte(value), 0600); err != nil {
 				return fmt.Errorf("apply %s/%s: %w", name, file, err)
 			}
+		}
+	}
+	if len(p.Apps) > 0 {
+		production := filepath.Join(root, "komizo-production")
+		if err := os.WriteFile(filepath.Join(production, "cgroup.subtree_control"), []byte(control), 0600); err != nil {
+			return err
+		}
+		var reserve int64
+		for name, group := range p.Apps {
+			reserve += group.MemoryLowBytes
+			dir := filepath.Join(production, name)
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return err
+			}
+			settings := map[string]string{"memory.low": fmt.Sprint(group.MemoryLowBytes), "memory.high": fmt.Sprint(group.MemoryHighBytes),
+				"memory.max": fmt.Sprint(group.MemoryBytes), "memory.swap.max": fmt.Sprint(group.SwapBytes),
+				"cpu.max": fmt.Sprintf("%d 100000", group.MilliCPUs*100), "cpu.weight": fmt.Sprint(group.CPUWeight),
+				"pids.max": fmt.Sprint(group.PIDs), "io.weight": fmt.Sprintf("default %d", group.IOWeight), "cgroup.subtree_control": control}
+			for file, value := range settings {
+				if err := os.WriteFile(filepath.Join(dir, file), []byte(value), 0600); err != nil {
+					return fmt.Errorf("apply application group %s/%s: %w", name, file, err)
+				}
+			}
+		}
+		if err := os.WriteFile(filepath.Join(production, "memory.low"), []byte(fmt.Sprint(reserve)), 0600); err != nil {
+			return err
 		}
 	}
 	return nil

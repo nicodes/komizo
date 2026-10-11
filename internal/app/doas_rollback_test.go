@@ -76,6 +76,7 @@ exit 0
 		"$DEPLOY_BIN", "/usr/local/bin/deploy-blog",
 		"$PRUNE_BIN", "/usr/local/bin/prune-blog",
 		"$SECRET_BIN", "/usr/local/bin/set-secret-blog",
+		"$RELEASE_SECRETS_BIN", "/usr/local/bin/set-release-secrets-blog",
 		"$TASK_BIN", "/usr/local/bin/task-blog",
 		// The adoption scan names every shape of rule komizo writes, so the
 		// extracted section reads these three too. Substituted rather than

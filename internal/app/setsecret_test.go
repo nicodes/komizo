@@ -18,7 +18,7 @@ func TestTheRemoteCommandNeverCarriesTheValue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "/usr/local/bin/set-secret-cazper --uid 65534 --file openai_api_key"
+	want := "komizo-box workload owner-secret --policy /etc/komizo/workloads/cazper.json --uid 65534 --file --name openai_api_key"
 	if cmd != want {
 		t.Errorf("remote command\n want %q\n got  %q", want, cmd)
 	}
@@ -29,7 +29,7 @@ func TestTheEnvShapeBuildsThePlainCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cmd != "/usr/local/bin/set-secret-blog CLERK_SECRET_KEY" {
+	if cmd != "komizo-box workload owner-secret --policy /etc/komizo/workloads/blog.json --name CLERK_SECRET_KEY" {
 		t.Errorf("got %q", cmd)
 	}
 }
