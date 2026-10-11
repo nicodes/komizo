@@ -409,3 +409,34 @@ func TestStaticProcessCrashAtEveryMutationBoundaryRequiresReconciliation(t *test
 		})
 	}
 }
+
+func TestStaticOwnerStartPreservesNewerStop(t *testing.T) {
+	h, r, state := staticActivationFixture(t)
+	if _, err := workload.Activate(context.Background(), r, h); err != nil {
+		t.Fatal(err)
+	}
+	sub := subject{app: r.App, root: h.root, dir: h.policy.AppDir}
+	if _, err := staticOwnerWithHost(context.Background(), "stop", sub, "", "fixture", h); err != nil {
+		t.Fatal(err)
+	}
+	fired := false
+	state.during = func(call string) {
+		if !fired && strings.Contains(call, "caddy reload") {
+			fired = true
+			if err := box.MarkStopped(h.root, r.App, "newer-stop", time.Now()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if _, err := staticOwnerWithHost(context.Background(), "start", sub, "", "fixture", h); !errors.Is(err, workload.ErrActivationStopped) {
+		t.Fatalf("newer stop did not win: %v", err)
+	}
+	stopped, err := box.IsStopped(h.root, r.App)
+	if err != nil || !stopped {
+		t.Fatal("newer stop erased")
+	}
+	route, err := os.ReadFile(r.RoutePath)
+	if err != nil || strings.Contains(string(route), "file_server") {
+		t.Fatal("stop left static route active")
+	}
+}
