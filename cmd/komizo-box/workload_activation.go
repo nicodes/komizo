@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -183,6 +184,11 @@ type hostActivation struct {
 	readJSON                 func(string, any) error
 	readBytes                func(string) ([]byte, error)
 	policy                   workload.Policy
+	static                   *staticOperation
+	staticStream             func(context.Context, []string, func(io.Reader) error) error
+	makeStaticDir            func(string, os.FileMode) error
+	readinessClient          *http.Client
+	checkpoint               func(string)
 }
 
 func newHostActivation() *hostActivation {
@@ -245,6 +251,11 @@ func (h *hostActivation) Verify(ctx context.Context, r workload.ActivationReques
 	if version != r.Candidate {
 		return errors.New("configured app revision differs")
 	}
+	if h.policy.Static != nil {
+		if _, err := workload.StaticGate(compose, r.App); err != nil {
+			return err
+		}
+	}
 	if h.policy.SourceRepository != "" {
 		var accepted workload.ReleaseAcceptance
 		if err := h.readJSON(filepath.Join(h.releases, r.App, r.Candidate+".json"), &accepted); err != nil {
@@ -263,6 +274,29 @@ func (h *hostActivation) Stopped(ctx context.Context, r workload.ActivationReque
 	return box.IsStopped(h.root, r.App)
 }
 func (h *hostActivation) Compose(ctx context.Context, r workload.ActivationRequest, verb string) error {
+	if h.policy.Static != nil {
+		if verb == "up" {
+			return h.prepareStatic(ctx, r)
+		}
+		if verb == "stop" {
+			if h.static == nil {
+				if err := h.prepareStoppedStatic(r); err != nil {
+					return err
+				}
+			}
+			if err := h.staticRoute(h.static.record.DisabledRoute, false); err != nil {
+				return err
+			}
+			if err := h.composeWorkload(ctx, r, "stop"); err != nil {
+				return err
+			}
+			return h.ReloadProxy(ctx, r)
+		}
+		return errors.New("invalid static activation verb")
+	}
+	return h.composeWorkload(ctx, r, verb)
+}
+func (h *hostActivation) composeWorkload(ctx context.Context, r workload.ActivationRequest, verb string) error {
 	args := []string{"compose", "--project-name", r.App, "--project-directory", h.policy.AppDir, "-f", filepath.Join(h.policy.AppDir, "compose.yml")}
 	switch verb {
 	case "up":
@@ -281,12 +315,19 @@ func (h *hostActivation) ReloadProxy(ctx context.Context, r workload.ActivationR
 			return errors.New("complete candidate proxy configuration failed; loaded configuration retained")
 		}
 	}
+	h.boundary("proxy_reload")
 	return nil
 }
 func (h *hostActivation) Retain(ctx context.Context, r workload.ActivationRequest) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if h.policy.Static != nil {
+		return nil // Static serving commits retention after route readiness.
+	}
+	return h.retainWorkload(r)
+}
+func (h *hostActivation) retainWorkload(r workload.ActivationRequest) error {
 	if r.Candidate != r.Previous {
 		path := filepath.Join(h.policy.AppDir, ".komizo-image-retention")
 		if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() {
@@ -301,15 +342,23 @@ func (h *hostActivation) Retain(ctx context.Context, r workload.ActivationReques
 			return err
 		}
 	}
+	h.boundary("retention")
 	return nil
 }
 func writePrivateText(path string, body []byte) error {
+	return writeAtomicText(path, body, 0600)
+}
+func writeAtomicText(path string, body []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, ".komizo-retain-*")
 	if err != nil {
 		return err
 	}
 	defer os.Remove(f.Name())
+	if err = f.Chmod(mode); err != nil {
+		_ = f.Close()
+		return err
+	}
 	if _, err = f.Write(body); err == nil {
 		err = f.Sync()
 	}
@@ -340,14 +389,18 @@ func (h *hostActivation) Ready(parent context.Context, r workload.ActivationRequ
 	}
 	ctx, cancel := context.WithTimeout(parent, 90*time.Second)
 	defer cancel()
-	client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	client := h.staticClient()
 	for {
 		if stopped, err := h.Stopped(ctx, r); err != nil {
 			return err
 		} else if stopped {
 			return workload.ErrActivationStopped
 		}
-		err = workload.VerifyReadiness(ctx, h.run, client, h.policy, r.Candidate, filepath.Join(h.policy.AppDir, "compose.yml"), body)
+		if h.policy.Static != nil {
+			err = workload.VerifyStaticReadiness(ctx, h.run, client, h.policy, r.Candidate)
+		} else {
+			err = workload.VerifyReadiness(ctx, h.run, client, h.policy, r.Candidate, filepath.Join(h.policy.AppDir, "compose.yml"), body)
+		}
 		if err == nil {
 			return nil
 		}
@@ -362,7 +415,38 @@ func (h *hostActivation) Phase(r workload.ActivationRequest, phase string) error
 	if _, err := h.operation(r); err != nil {
 		return err
 	}
-	return workload.RecordOperation(filepath.Join(h.releases, r.App, "operation.json"), r.App, r.Candidate, r.Previous, phase, time.Now().UTC())
+	if h.policy.Static != nil && (phase == "ready" || phase == "prepared_stopped") {
+		if h.static == nil {
+			if err := h.prepareStoppedStatic(r); err != nil {
+				return err
+			}
+		}
+		if err := h.retainWorkload(r); err != nil {
+			return err
+		}
+		if err := h.storeStatic(); err != nil {
+			return err
+		}
+	}
+	if err := workload.RecordOperation(filepath.Join(h.releases, r.App, "operation.json"), r.App, r.Candidate, r.Previous, phase, time.Now().UTC()); err != nil {
+		return err
+	}
+	h.boundary("journal_" + phase)
+	if h.policy.Static != nil && (phase == "ready" || phase == "prepared_stopped") {
+		// Acceptance is durable before retiring the old gate. Failure to stop
+		// this redundant process does not invalidate the accepted serving route.
+		cleanup, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := h.composeWorkload(cleanup, r, "stop"); err != nil {
+			log.Print("static serving accepted; redundant gate retirement needs reconciliation")
+		}
+		if phase == "ready" {
+			if err := h.pruneStatic(r); err != nil {
+				log.Print("static serving accepted; public-tree retention needs reconciliation")
+			}
+		}
+	}
+	return nil
 }
 
 func activationPass(ctx context.Context, dir string, h *hostActivation) error {
@@ -453,5 +537,11 @@ func activationLoop(ctx context.Context) {
 				lastError = time.Now()
 			}
 		}
+	}
+}
+
+func (h *hostActivation) boundary(name string) {
+	if h.checkpoint != nil {
+		h.checkpoint(name)
 	}
 }
