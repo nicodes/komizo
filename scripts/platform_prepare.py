@@ -129,14 +129,15 @@ def legacy_migration(ssh, stage):
         raise ValueError('upgrade requires the supported typed executor v0.0.79 or newer')
 
 
-def protected_directory(path):
+def protected_directory(path, *, root=Path('/'), owner=0):
     path = Path(path)
-    if not path.is_absolute() or path != Path(os.path.abspath(path)):
+    if not path.is_absolute() or path != Path(os.path.abspath(path)) or not path.is_relative_to(root):
         raise ValueError('local preparation paths must be absolute and canonical')
     for ancestor in (path, *path.parents):
         info = ancestor.lstat()
-        if not ancestor.is_dir() or ancestor.is_symlink() or info.st_uid != 0 or info.st_mode & 0o022:
+        if not ancestor.is_dir() or ancestor.is_symlink() or info.st_uid != owner or info.st_mode & 0o022:
             raise ValueError('preparation directory ancestry must be protected')
+        if ancestor == root: break
 
 
 def prepare(host, release, source, release_dir, worktree, stage, apply=False, resume=False, expected_manifest=None):
