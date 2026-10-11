@@ -145,6 +145,63 @@ func TestTypedDeploymentOwnsDisconnectedStagingAndStop(t *testing.T) {
 		})
 	}
 }
+
+func TestFreshTypedDeploymentHasNoInventedPreviousRevision(t *testing.T) {
+	f := newDeploymentFixture(t)
+	f.r.Previous = ""
+	if err := os.WriteFile(filepath.Join(f.h.root, "srv/example/.env"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	opPath := filepath.Join(f.h.releases, "example/operation.json")
+	var op workload.Operation
+	if err := f.h.readJSON(opPath, &op); err != nil {
+		t.Fatal(err)
+	}
+	op.Previous = ""
+	if err := workload.WritePrivateJSON(opPath, op); err != nil {
+		t.Fatal(err)
+	}
+	if err := workload.WritePrivateJSON(filepath.Join(f.queue, "pending.json"), f.r); err != nil {
+		t.Fatal(err)
+	}
+	if err := activationPass(context.Background(), f.queue, f.h); err != nil {
+		t.Fatal(err)
+	}
+	result, err := waitActivation(context.Background(), f.queue, f.r.ID, f.h.readJSON)
+	if err != nil || !result.OK {
+		t.Fatalf("first deployment: %+v %v", result, err)
+	}
+	if err := f.h.readJSON(opPath, &op); err != nil {
+		t.Fatal(err)
+	}
+	if op.Previous != "" {
+		t.Fatal("fresh deployment invented a rollback source")
+	}
+}
+
+func TestEnablingTypedDeploymentRequiresOperatorAuthority(t *testing.T) {
+	p, err := workload.NewPolicy("example", "/srv/example", "ghcr.io/example/example-config", "edge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := enabledDeploymentPolicy(p); err == nil {
+		t.Fatal("unconfigured fresh policy enabled")
+	}
+	p.SourceRepository, p.RepositoryID = "example/repo", "123"
+	p.Resources = &workload.ResourcePolicy{Default: workload.ServiceBudget{MemoryBytes: 64 << 20, MemorySwapBytes: 64 << 20, MilliCPUs: 500}, MaxMemoryBytes: 128 << 20, MaxMemorySwapBytes: 128 << 20, MaxMilliCPUs: 1000}
+	p.Readiness = &workload.ReadinessPolicy{Probes: []workload.ReadinessProbe{{URL: "https://example.test/health"}}}
+	next, err := enabledDeploymentPolicy(p)
+	if err != nil || next.Deployment.RoutePath != "/srv/_proxy/routes/example.caddy" {
+		t.Fatalf("enable: %+v %v", next, err)
+	}
+	if _, err := enabledDeploymentPolicy(next); err != nil {
+		t.Fatal("idempotent enable refused", err)
+	}
+	next.Deployment.RoutePath = "/srv/_foreign/routes/example.caddy"
+	if _, err := enabledDeploymentPolicy(next); err == nil {
+		t.Fatal("foreign deployment authority rewritten")
+	}
+}
 func TestTypedDeploymentFailureRestoresFilesAndFencesReplay(t *testing.T) {
 	f := newDeploymentFixture(t)
 	originalRun := f.h.run

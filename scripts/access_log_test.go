@@ -165,8 +165,8 @@ func TestEveryGeneratedSiteBlockWritesAnAccessLog(t *testing.T) {
 // THE PER-APP ROUTE IS BUILT WITH printf RATHER THAN A HEREDOC, so the parser
 // above cannot see it. It is the route that carries real traffic and the one
 // komizo#80's metrics are actually counted from, so it is asserted by name.
-func TestThePerAppRouteWritesAnAccessLog(t *testing.T) {
-	src := AlpineScript
+func TestLegacyMigrationRouteWritesAnAccessLog(t *testing.T) {
+	src := legacyDeployBody(t)
 	if !strings.Contains(src, "access_log()") {
 		t.Fatal("alpine.sh no longer defines access_log, so the per-app route's logging moved " +
 			"somewhere this test cannot see")

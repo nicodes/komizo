@@ -193,6 +193,7 @@ func TestTheGateIsEmittedVerbatim(t *testing.T) {
 		t.Fatalf("a run with a gate failed: %v\n%s", err, out)
 	}
 	want := "{\n" +
+		"\tservers {\n\t\ttimeouts {\n\t\t\tread_header 5s\n\t\t\tread_body 3m\n\t\t\tidle 2m\n\t\t}\n\t}\n" +
 		"\t# Certificates for wildcard hostnames are issued on demand, one per\n" +
 		"\t# name. Without a gate, anyone who pointed a DNS record at this box\n" +
 		"\t# could make it request certificates on their behalf -- so an app is\n" +
