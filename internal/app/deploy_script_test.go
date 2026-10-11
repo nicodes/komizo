@@ -14,7 +14,9 @@ import (
 	"github.com/nicodes/komizo/scripts"
 )
 
-// deploy-<app> is the only thing on the box a leaked CI key can invoke, it runs
+// Historical v76 migration regression fixture, excluded from release binaries.
+// The supported typed executor has its own cmd/komizo-box acceptance fixtures.
+// deploy-<app> was the only thing on the box a leaked CI key can invoke, it runs
 // as root, and it is the largest piece of generated code komizo ships. Parsing
 // it proves nothing about what it does, so this runs it.
 //
@@ -108,8 +110,11 @@ exit 0
 
 	// The template, substituted exactly as alpine.sh substitutes it -- but
 	// pointed at this fake box rather than at /srv and /var/lib.
-	body := between(t, scripts.AlpineScript,
-		`cat > "$DEPLOY_BIN.tmp" <<'KOMIZO_DEPLOY_EOF'`, "KOMIZO_DEPLOY_EOF")
+	legacy, err := os.ReadFile("testdata/legacy-v76-deploy.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(legacy)
 	b.script = strings.NewReplacer(
 		"__APP_NAME__", "blog",
 		"__APP_DIR__", b.appDir,
