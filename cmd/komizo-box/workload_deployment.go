@@ -109,6 +109,9 @@ func runWorkloadDeployment(args []string) error {
 	if args[0] == "deployment-enabled" {
 		return nil
 	}
+	if err := installedServingBudget(p); err != nil {
+		return err
+	}
 	if args[0] != "deployment-submit" || len(*version) != 40 || strings.Trim(*version, "0123456789abcdef") != "" {
 		return errors.New("deployment needs an exact source revision")
 	}
@@ -119,18 +122,11 @@ func runWorkloadDeployment(args []string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	unlock, err := box.LockDeployment(ctx, "", p.App)
-	if err != nil {
-		return err
+	wire, err := readWorkloadInput(ctx, os.Stdin, 160<<10)
+	if err != nil || len(wire) > 160<<10 {
+		return errors.New("deployment input exceeds its deadline or size bound")
 	}
-	defer unlock()
-	if err := activationIdle(activationDirectory); err != nil {
-		return err
-	}
-	if err := protectedReleaseDirectory(activationDirectory); err != nil {
-		return err
-	}
-	reader := bufio.NewReaderSize(io.LimitReader(os.Stdin, 160<<10+1), 16386)
+	reader := bufio.NewReaderSize(bytes.NewReader(wire), 16386)
 	credentials := deploymentCredentials{Registry: *registry, User: *user}
 	if *registry != "" {
 		line, e := reader.ReadSlice('\n')
@@ -145,6 +141,22 @@ func runWorkloadDeployment(args []string) error {
 	proof, err := io.ReadAll(io.LimitReader(reader, 128<<10+1))
 	if err != nil || len(proof) > 128<<10 {
 		return errors.New("release proof exceeds its bound")
+	}
+	if len(bytesTrim(proof)) != 0 {
+		if err := verifyTaskRelease(ctx, p, proof); err != nil {
+			return err
+		}
+	}
+	unlock, err := box.LockDeployment(ctx, "", p.App)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := activationIdle(activationDirectory); err != nil {
+		return err
+	}
+	if err := protectedReleaseDirectory(activationDirectory); err != nil {
+		return err
 	}
 	env, err := protectedActivationBytes(filepath.Join(p.AppDir, ".env"))
 	if err != nil {
@@ -167,7 +179,7 @@ func runWorkloadDeployment(args []string) error {
 	output.Close()
 	os.Remove(outPath)
 	defer os.Remove(outPath)
-	if err := admitWorkloadReleaseFrom(p, *version, dir, outPath, bytes.NewReader(proof)); err != nil {
+	if err := admitWorkloadReleaseContext(ctx, p, *version, dir, outPath, bytes.NewReader(proof)); err != nil {
 		return err
 	}
 	if err := workload.RecordOperation(filepath.Join(dir, "operation.json"), p.App, *version, previous, "admitted", time.Now().UTC()); err != nil {
