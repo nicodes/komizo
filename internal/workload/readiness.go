@@ -143,3 +143,22 @@ func probeReady(ctx context.Context, client *http.Client, candidate string, prob
 	}
 	return nil
 }
+
+// VerifyStaticReadiness checks the existing serving process and exact revision
+// on every root-owned route probe. No retired gate container is treated as a
+// running service, and file presence alone cannot establish readiness.
+func VerifyStaticReadiness(ctx context.Context, run ImageRun, client *http.Client, p Policy, candidate string) error {
+	if p.Static == nil || p.Readiness == nil || !commitID.MatchString(candidate) {
+		return errors.New("static readiness requires an explicit protected profile")
+	}
+	status, err := run(ctx, "inspect", "--format", "{{.State.Status}}", p.Static.Proxy)
+	if err != nil || strings.TrimSpace(status) != "running" {
+		return errors.New("static serving proxy is not running")
+	}
+	for _, probe := range p.Readiness.Probes {
+		if err := probeReady(ctx, client, candidate, probe); err != nil {
+			return err
+		}
+	}
+	return nil
+}

@@ -93,6 +93,16 @@ func Activate(parent context.Context, request ActivationRequest, runtime Activat
 	defer func() {
 		result.At = time.Now().UTC()
 		if err != nil {
+			// A static adapter may restore its previous serving route without
+			// changing an image or any application data. Other workloads never
+			// acquire rollback authority from this optional hook.
+			if recovery, ok := runtime.(interface {
+				AbortStatic(context.Context, ActivationRequest) error
+			}); ok {
+				cleanup, stop := context.WithTimeout(context.Background(), 30*time.Second)
+				err = errors.Join(err, recovery.AbortStatic(cleanup, request))
+				stop()
+			}
 			failure := "failed"
 			if phase == "activating" {
 				failure = "activation_failed"

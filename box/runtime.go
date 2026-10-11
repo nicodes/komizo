@@ -14,6 +14,12 @@ func (p *Probe) runtimeState(app App) string {
 	if app.Stopped {
 		return "stopped"
 	}
+	if app.Static != nil {
+		if app.Static.Active {
+			return "running"
+		}
+		return "down"
+	}
 	f, err := os.Open(p.path(filepath.Join(app.Dir, "compose.yml")))
 	if err != nil {
 		return "unknown"
