@@ -57,6 +57,11 @@ func runWorkloadRelease(args []string) error {
 		return workload.WritePrivateJSON(*policyPath, p)
 	}
 	dir := filepath.Join(*store, p.App)
+	if args[0] == "release-admit" {
+		if err := checkDeliveryAuthorization(p, *version, time.Now().UTC()); err != nil {
+			return err
+		}
+	}
 	if err := protectedReleaseDirectory(dir); err != nil {
 		return err
 	}
@@ -174,6 +179,14 @@ func admitWorkloadRelease(p workload.Policy, version, dir, output string) error 
 	return admitWorkloadReleaseFrom(p, version, dir, output, os.Stdin)
 }
 func admitWorkloadReleaseFrom(p workload.Policy, version, dir, output string, input io.Reader) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return admitWorkloadReleaseContext(ctx, p, version, dir, output, input)
+}
+func admitWorkloadReleaseContext(ctx context.Context, p workload.Policy, version, dir, output string, input io.Reader) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if output == "" {
 		return errors.New("release admission needs a private output")
 	}
@@ -202,7 +215,7 @@ func admitWorkloadReleaseFrom(p workload.Policy, version, dir, output string, in
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	wire, err := io.ReadAll(io.LimitReader(input, 128<<10+1))
+	wire, err := readWorkloadInput(ctx, input, 128<<10)
 	if err != nil || len(wire) > 128<<10 {
 		return errors.New("release proof exceeds wire limit")
 	}
@@ -226,7 +239,7 @@ func admitWorkloadReleaseFrom(p workload.Policy, version, dir, output string, in
 	if err != nil {
 		return errors.New("invalid release proof encoding")
 	}
-	accepted, err := workload.VerifyRelease(context.Background(), body, p, version, time.Now().UTC(), workload.GitHubReleaseKey)
+	accepted, err := workload.VerifyRelease(ctx, body, p, version, time.Now().UTC(), workload.GitHubReleaseKey)
 	if err != nil {
 		return err
 	}
@@ -237,6 +250,9 @@ func admitWorkloadReleaseFrom(p workload.Policy, version, dir, output string, in
 		if err := statefulRetryAllowed(p, version, dir, existing); err != nil {
 			return err
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if !have {
 		if err := workload.WritePrivateJSON(path, accepted); err != nil {

@@ -76,3 +76,36 @@ func TestNamedTaskProofCannotSkipProtectedDeliveryAuthorization(t *testing.T) {
 		t.Fatalf("task source fence skipped: %v", err)
 	}
 }
+
+func TestCancelledAdmissionCreatesNoReceipt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	root := t.TempDir()
+	output := filepath.Join(root, "accepted.json")
+	if err := admitWorkloadReleaseContext(ctx, workload.Policy{}, "", root, output, bytes.NewReader(nil)); err == nil {
+		t.Fatal("cancelled admission accepted")
+	}
+	if entries, _ := os.ReadDir(root); len(entries) != 0 {
+		t.Fatal("cancelled admission wrote a receipt")
+	}
+}
+
+func TestRootReleaseCommandMissingGrantCreatesNoStore(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("actual protected CLI policy fixture requires root")
+	}
+	root := t.TempDir()
+	policy := filepath.Join(root, "policy.json")
+	p := workload.Policy{Version: 1, App: "unregistered-fixture", AppDir: filepath.Join(root, "app"), ImagePrefix: "ghcr.io/owner/fixture-", SharedNetwork: "fixture", SourceRepository: "owner/fixture", RepositoryID: "123", RequireDeliveryAuthorization: true}
+	if err := workload.WritePrivateJSON(policy, p); err != nil {
+		t.Fatal(err)
+	}
+	store := filepath.Join(root, "absent-store")
+	err := runWorkloadRelease([]string{"release-admit", "--policy", policy, "--store", store, "--version", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output", filepath.Join(root, "out.json")})
+	if err == nil || !strings.Contains(err.Error(), "protected delivery authorization is missing") {
+		t.Fatalf("CLI skipped the authorization fence: %v", err)
+	}
+	if _, err := os.Lstat(store); !os.IsNotExist(err) {
+		t.Fatal("unauthorized CLI created its protected store")
+	}
+}
