@@ -67,6 +67,9 @@ func Diagnose(r Report) []Problem {
 				out = append(out, Problem{Kind: ProblemDetached, App: a.Name, Detail: fmt.Sprintf("%s ingress %q is detached from the shared proxy", a.Name, network.Name)})
 			}
 		}
+		if a.Static != nil && a.Static.Active && a.Running() > 0 {
+			out = append(out, Problem{Kind: ProblemDeploymentIncomplete, App: a.Name, Detail: fmt.Sprintf("%s static serving is accepted but its redundant gate still runs; retire it through the root operator", a.Name)})
+		}
 		if op := a.Deployment; op != nil {
 			switch op.Phase {
 			case "failed", "activation_failed", "readiness_failed":
@@ -142,7 +145,11 @@ func Diagnose(r Report) []Problem {
 		// Stopped is a decision and must never page anyone -- which is the whole
 		// reason the box records it. Nothing outside the machine can tell a
 		// deliberate stop from a crash, so the distinction has to be made here.
-		if !a.Stopped && len(a.Containers) > 0 && a.Running() == 0 {
+		if a.Stopped && a.Static != nil && a.Static.Active {
+			out = append(out, Problem{Kind: ProblemStoppedButRunning, App: a.Name,
+				Detail: fmt.Sprintf("%s is recorded as stopped but its static serving route remains active", a.Name)})
+		}
+		if !a.Stopped && len(a.Containers) > 0 && a.Running() == 0 && (a.Static == nil || !a.Static.Active) {
 			out = append(out, Problem{
 				Kind:   ProblemAppDown,
 				App:    a.Name,

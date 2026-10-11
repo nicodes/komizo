@@ -222,6 +222,7 @@ func (p *Probe) apps(inv dockerInventory) []App {
 			a.Hosts = p.hosts(a.Dir)
 			a.Containers = p.containers(a.Dir, inv)
 		}
+		a.Static = p.staticServing(a, &inv)
 		a.RuntimeState = p.runtimeState(a)
 		out = append(out, a)
 	}

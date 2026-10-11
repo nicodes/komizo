@@ -133,6 +133,9 @@ func resolveSubject(root, name string, proxy bool) (subject, error) {
 // network. This function is that promise, kept in one place -- runApp parses
 // flags into it, and applyCommand parses a verified envelope into it.
 func runVerb(ctx context.Context, verb string, sub subject, tail int, svc, by string) error {
+	if handled, err := staticOwnerVerb(ctx, verb, sub, svc, by); handled {
+		return err
+	}
 	if verb == "restart" {
 		// Restarting nothing succeeds silently, which is the failure paths.go
 		// argues against in its own words: a command that "does nothing, and has

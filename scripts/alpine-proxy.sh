@@ -231,7 +231,9 @@ fi
 # --- 2. the Caddyfile ------------------------------------------------------
 
 log "Writing $PROXY_DIR/Caddyfile"
-mkdir -p "$ROUTES_DIR" "$PROXY_DIR/logs"
+mkdir -p "$ROUTES_DIR" "$PROXY_DIR/logs" /srv/_public
+chown root:root /srv/_public
+chmod 755 /srv/_public
 chown root:root "$PROXY_DIR" "$ROUTES_DIR" "$PROXY_DIR/logs"
 chmod 755 "$PROXY_DIR" "$ROUTES_DIR"
 # Access logs. 750 rather than 755: they carry client IPs and request paths,
@@ -342,6 +344,9 @@ cat >> "$PROXY_DIR/compose.yml" <<EOF
       # Now it sees generated route files, which komizo wrote and which contain
       # nothing but hostnames and an upstream.
       - $ROUTES_DIR:/etc/caddy/routes:ro
+      # Executor-validated public trees only; application directories and
+      # credentials are never mounted into the shared serving process.
+      - /srv/_public:/srv/public:ro
       # The one writable path. Access logs are written here rather than to
       # stdout so that the proxy's own log -- the one that explains a
       # certificate failure -- does not become a request firehose, and so the
