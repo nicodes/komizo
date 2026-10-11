@@ -193,6 +193,9 @@ func admitWorkloadReleaseFrom(p workload.Policy, version, dir, output string, in
 		}
 		return workload.WritePrivateJSON(output, existing)
 	}
+	if err := checkDeliveryAuthorization(p, version, time.Now().UTC()); err != nil {
+		return err
+	}
 	const frame = "komizo-release/v1:"
 	if !strings.HasPrefix(string(wire), frame) {
 		return errors.New("invalid release proof frame")

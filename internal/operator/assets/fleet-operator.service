@@ -1,0 +1,36 @@
+[Unit]
+Description=Protected fleet operator for finite editor grants
+After=network-online.target
+Wants=network-online.target
+Requires=fleet-operator.socket
+After=fleet-operator.socket
+
+[Service]
+Type=simple
+User=root
+Group=fleet-editor
+EnvironmentFile=/etc/fleet-operator-broker
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/fleet/fleet_broker.py --editor-gid ${FLEET_EDITOR_GID}
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+StateDirectory=fleet-operator
+StateDirectoryMode=0700
+RuntimeDirectory=fleet-operator
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/fleet-operator /var/lock/fleet-operator /run/fleet-operator
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
