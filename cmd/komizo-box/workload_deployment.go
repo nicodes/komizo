@@ -458,6 +458,7 @@ func (h *hostActivation) stageDeployment(parent context.Context, r workload.Acti
 		return configured, err
 	}
 	configured.Version = 1
+	configured.ScopedGeneration = r.Stage.Generation
 	configured.Stage = nil
 	configured.ComposeSHA256 = deploymentHash(canonical)
 	configured.RouteSHA256 = deploymentHash(route)

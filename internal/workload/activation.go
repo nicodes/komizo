@@ -17,29 +17,31 @@ var ErrActivationStopped = errors.New("owner stopped the workload during readine
 // ActivationRequest describes one already admitted, configured host operation.
 // It contains identities and hashes, never a shell command or registry secret.
 type ActivationRequest struct {
-	Version       int              `json:"version"`
-	ID            string           `json:"operation_id"`
-	App           string           `json:"app"`
-	Candidate     string           `json:"candidate"`
-	Previous      string           `json:"previous,omitempty"`
-	PolicySHA256  string           `json:"policy_sha256"`
-	ComposeSHA256 string           `json:"compose_sha256"`
-	RouteSHA256   string           `json:"route_sha256"`
-	RoutePath     string           `json:"route_path"`
-	Proxy         string           `json:"proxy"`
-	Deadline      time.Time        `json:"deadline"`
-	Stage         *DeploymentStage `json:"stage,omitempty"`
+	Version          int              `json:"version"`
+	ID               string           `json:"operation_id"`
+	App              string           `json:"app"`
+	Candidate        string           `json:"candidate"`
+	Previous         string           `json:"previous,omitempty"`
+	PolicySHA256     string           `json:"policy_sha256"`
+	ComposeSHA256    string           `json:"compose_sha256"`
+	RouteSHA256      string           `json:"route_sha256"`
+	RoutePath        string           `json:"route_path"`
+	Proxy            string           `json:"proxy"`
+	Deadline         time.Time        `json:"deadline"`
+	ScopedGeneration string           `json:"scoped_generation,omitempty"`
+	Stage            *DeploymentStage `json:"stage,omitempty"`
 }
 
 type ActivationResult struct {
-	Version   int       `json:"version"`
-	ID        string    `json:"operation_id"`
-	App       string    `json:"app"`
-	Candidate string    `json:"candidate"`
-	At        time.Time `json:"at"`
-	Phase     string    `json:"phase"`
-	OK        bool      `json:"ok"`
-	Started   *bool     `json:"started,omitempty"`
+	Version          int       `json:"version"`
+	ID               string    `json:"operation_id"`
+	App              string    `json:"app"`
+	Candidate        string    `json:"candidate"`
+	At               time.Time `json:"at"`
+	Phase            string    `json:"phase"`
+	OK               bool      `json:"ok"`
+	ScopedGeneration string    `json:"scoped_generation,omitempty"`
+	Started          *bool     `json:"started,omitempty"`
 }
 
 func (r ActivationRequest) Check(now time.Time) error {
@@ -58,11 +60,11 @@ func (r ActivationRequest) CheckIdentity() error {
 	}
 	switch r.Version {
 	case 1:
-		if r.Stage != nil || !contentIdentity.MatchString(r.ComposeSHA256) || !contentIdentity.MatchString(r.RouteSHA256) {
+		if (r.ScopedGeneration != "" && !operationIdentity.MatchString(r.ScopedGeneration)) || r.Stage != nil || !contentIdentity.MatchString(r.ComposeSHA256) || !contentIdentity.MatchString(r.RouteSHA256) {
 			return errors.New("invalid configured activation identity")
 		}
 	case 2:
-		if r.Stage == nil || r.ComposeSHA256 != "" || r.RouteSHA256 != "" || !commitID.MatchString(r.Candidate) || (r.Previous != "" && !commitID.MatchString(r.Previous)) {
+		if r.ScopedGeneration != "" || r.Stage == nil || r.ComposeSHA256 != "" || r.RouteSHA256 != "" || !commitID.MatchString(r.Candidate) || (r.Previous != "" && !commitID.MatchString(r.Previous)) {
 			return errors.New("invalid staging identity")
 		}
 		return r.Stage.Check()
@@ -202,5 +204,6 @@ func Activate(parent context.Context, request ActivationRequest, runtime Activat
 	}
 	started := !stopped
 	result.Phase, result.OK, result.Started = phase, true, &started
+	result.ScopedGeneration = request.ScopedGeneration
 	return result, nil
 }
