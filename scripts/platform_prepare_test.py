@@ -14,6 +14,10 @@ spec.loader.exec_module(m)
 
 
 class Preparation(unittest.TestCase):
+    def protected_fixture(self, root):
+        protect = m.protected_directory
+        return patch.object(m, 'protected_directory', side_effect=lambda path: protect(path, root=root, owner=os.getuid()))
+
     def test_wrapper_uses_only_fixed_installed_metadata(self):
         template = "<<'KOMIZO_DEPLOY_EOF'\nAPP_NAME=\"__APP_NAME__\"\nAPP_DIR=\"__APP_DIR__\"\nKOMIZO_DEPLOY_EOF\n"
         fields = {'APP_NAME': 'example', 'APP_DIR': '/srv/example', 'CONFIG_IMAGE': 'ghcr.io/owner/example-config',
@@ -51,7 +55,7 @@ class Preparation(unittest.TestCase):
                 if command == 'komizo-box report': return b'{"apps":[]}'
                 if command.startswith('sha256sum '): return ('b'*64+'  protected-file\n').encode()
                 raise AssertionError(args)
-            with patch.object(m, 'verify', return_value='fixture template'), patch.object(m, 'run', side_effect=run):
+            with self.protected_fixture(root), patch.object(m, 'verify', return_value='fixture template'), patch.object(m, 'run', side_effect=run):
                 result = m.prepare('box.example.test', 'v0.0.81', 'a'*40, release, None, stage)
                 self.assertTrue(result['prepared']); self.assertFalse(result['applied'])
                 self.assertTrue(all(body is None for _, body in calls))
@@ -91,7 +95,7 @@ class Preparation(unittest.TestCase):
                     self.assertEqual(expected, m.digest(uploaded['manifest.json']))
                     mutations.append('apply'); return b'{"phase":"complete","application_restart":false}'
                 raise AssertionError(args)
-            with patch.object(m, 'verify', return_value='fixture template'), patch.object(m, 'run', side_effect=run):
+            with self.protected_fixture(root), patch.object(m, 'verify', return_value='fixture template'), patch.object(m, 'run', side_effect=run):
                 plan = m.prepare('box.example.test','v0.0.81','a'*40,release,None,stage)
                 self.assertEqual(mutations, [])
                 with self.assertRaisesRegex(ValueError, 'host or receipt'):
