@@ -5,8 +5,10 @@ artifact already authenticated by the release preparer. It is not independent
 review and never claims to constrain root. No project code or shell is executed.
 """
 import contextlib
+import base64
 import fcntl
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -20,6 +22,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+import urllib.parse
 
 SHA = re.compile(r'[a-f0-9]{64}\Z')
 REV = re.compile(r'[a-f0-9]{40}\Z')
@@ -218,7 +221,7 @@ class Platform:
                 or not 1 <= len(value['probes']) <= 64):
             raise ValueError('proxy grant requires exact image and route probes')
         for probe in value['probes']:
-            if (set(probe) != {'url', 'revision'} or not re.fullmatch(r'https://[A-Za-z0-9.-]+/[A-Za-z0-9/_?=&.-]*', probe['url'])
+            if (set(probe) != {'url', 'revision'} or not re.fullmatch(r'(?:https|wss)://[A-Za-z0-9.-]+/[A-Za-z0-9/_?=&.-]*', probe['url'])
                     or not REV.fullmatch(probe['revision'])):
                 raise ValueError('invalid platform readiness probe')
         return value
@@ -263,17 +266,47 @@ class Platform:
             candidate = preflight
         self.compose(candidate, 'run', '--rm', '--no-deps', '--pull', 'never', '--entrypoint', '/usr/bin/caddy', 'komizo-proxy', 'validate', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile')
 
-    def verify_proxy(self, value):
+    def verify_proxy(self, value, deadline_seconds=30):
         identity = self.run(['docker', 'inspect', '--format', '{{.Image}}', 'komizo-proxy'])[1].strip()
         if identity != value['image']['id']:
             raise ValueError('installed proxy identity differs')
-        for probe in value['probes']:
-            request = urllib.request.Request(probe['url'], headers={'Cache-Control': 'no-cache'})
-            with urllib.request.urlopen(request, timeout=10) as response:
-                if response.status != 200 or response.headers.get('X-Komizo-Revision') != probe['revision']:
-                    raise ValueError('installed proxy route identity differs')
-                if not response.read(512).strip():
-                    raise ValueError('installed proxy route returned no content')
+        # Compose has created the process; its listener may still be starting.
+        # One deadline covers the complete route set, never a deadline per URL.
+        end = time.monotonic()+deadline_seconds
+        pending = list(value['probes'])
+        while pending:
+            for probe in list(pending):
+                remaining = end-time.monotonic()
+                if remaining <= 0:
+                    raise ValueError('installed proxy route acceptance deadline exceeded')
+                try:
+                    if self.probe_route(probe,min(3,remaining)):
+                        pending.remove(probe)
+                except (OSError, TimeoutError):
+                    pass
+            if pending:
+                time.sleep(min(.1,max(0,end-time.monotonic())))
+
+    @staticmethod
+    def probe_route(probe, timeout):
+        if probe['url'].startswith('wss://'):
+            parsed=urllib.parse.urlsplit(probe['url'])
+            key=base64.b64encode(os.urandom(16)).decode()
+            expected=base64.b64encode(hashlib.sha1((key+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode()
+            connection=http.client.HTTPSConnection(parsed.hostname,timeout=timeout)
+            try:
+                connection.request('GET',parsed.path+('?' + parsed.query if parsed.query else ''),headers={
+                    'Connection':'Upgrade','Upgrade':'websocket','Sec-WebSocket-Version':'13','Sec-WebSocket-Key':key})
+                response=connection.getresponse()
+                return (response.status==101 and response.getheader('X-Komizo-Revision')==probe['revision']
+                        and response.getheader('Upgrade','').lower()=='websocket'
+                        and response.getheader('Sec-WebSocket-Accept')==expected)
+            finally:
+                connection.close()
+        request=urllib.request.Request(probe['url'],headers={'Cache-Control':'no-cache'})
+        with urllib.request.urlopen(request,timeout=timeout) as response:
+            return (response.status==200 and response.headers.get('X-Komizo-Revision')==probe['revision']
+                    and bool(response.read(512).strip()))
 
     def apply(self, stage, expected, recover=False):
         stage = Path(stage)
