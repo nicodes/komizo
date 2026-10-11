@@ -224,7 +224,7 @@ class Platform:
         return value
 
     def compose(self, file, *args):
-        return self.run(['docker', 'compose', '--project-name', 'proxy', '--project-directory', '/srv/_proxy', '--file', str(file), *args])
+        return self.run(['docker', 'compose', '--project-name', 'komizo-proxy', '--project-directory', '/srv/_proxy', '--file', str(file), *args])
 
     def proxy_preflight(self, stage, value):
         old = self.path('/srv/_proxy/compose.yml')
@@ -232,10 +232,10 @@ class Platform:
         candidate = stage/compose_row['staged']
         old_doc = json.loads(self.compose(old, 'config', '--format', 'json')[1])
         new_doc = json.loads(self.compose(candidate, 'config', '--format', 'json')[1])
-        if set(old_doc.get('services', {})) != {'proxy'} or set(new_doc.get('services', {})) != {'proxy'}:
+        if set(old_doc.get('services', {})) != {'komizo-proxy'} or set(new_doc.get('services', {})) != {'komizo-proxy'}:
             raise ValueError('proxy update requires one existing proxy service')
-        image = new_doc['services']['proxy'].pop('image', None)
-        old_doc['services']['proxy'].pop('image', None)
+        image = new_doc['services']['komizo-proxy'].pop('image', None)
+        old_doc['services']['komizo-proxy'].pop('image', None)
         if image != value['image']['reference'] or old_doc != new_doc:
             raise ValueError('proxy update may change only its image')
         identity = self.run(['docker', 'image', 'inspect', '--format', '{{.Id}}', image])[1].strip()
@@ -249,7 +249,7 @@ class Platform:
             # Override exactly the existing Caddyfile mount for preflight. The
             # installed Compose remains unchanged except for its reviewed image.
             definition = json.loads(self.compose(candidate, 'config', '--format', 'json')[1])
-            volumes = definition['services']['proxy'].get('volumes', [])
+            volumes = definition['services']['komizo-proxy'].get('volumes', [])
             matches = [volume for volume in volumes if volume.get('target') == '/etc/caddy/Caddyfile']
             if len(matches) != 1 or matches[0].get('type') != 'bind' or matches[0].get('source') != '/srv/_proxy/Caddyfile' or matches[0].get('read_only') is not True:
                 raise ValueError('proxy configuration mount differs from its protected contract')
@@ -261,7 +261,7 @@ class Platform:
                 json.dump(definition, stream)
                 os.fchmod(stream.fileno(), 0o600)
             candidate = preflight
-        self.compose(candidate, 'run', '--rm', '--no-deps', '--pull', 'never', '--entrypoint', '/usr/bin/caddy', 'proxy', 'validate', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile')
+        self.compose(candidate, 'run', '--rm', '--no-deps', '--pull', 'never', '--entrypoint', '/usr/bin/caddy', 'komizo-proxy', 'validate', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile')
 
     def verify_proxy(self, value):
         identity = self.run(['docker', 'inspect', '--format', '{{.Image}}', 'komizo-proxy'])[1].strip()
@@ -351,7 +351,7 @@ class Platform:
                         self.run(['rc-service', service, 'start'])
                     self.run(['komizo-box', 'rootd', '--once'])
                 else:
-                    self.compose(self.path('/srv/_proxy/compose.yml'), 'up', '-d', '--no-build', '--pull', 'never', 'proxy')
+                    self.compose(self.path('/srv/_proxy/compose.yml'), 'up', '-d', '--no-build', '--pull', 'never', 'komizo-proxy')
                     self.verify_proxy(value)
                 for row in value['files']:
                     if self.digest(self.path(row['path'])) != row['after']:
@@ -381,7 +381,7 @@ class Platform:
         for index, row in enumerate(value['files']):
             self.atomic(self.path(row['path']), stage/'previous'/str(index), record['old_modes'][index])
         if value['kind'] == 'proxy-upgrade':
-            self.compose(self.path('/srv/_proxy/compose.yml'), 'up', '-d', '--no-build', '--pull', 'never', 'proxy')
+            self.compose(self.path('/srv/_proxy/compose.yml'), 'up', '-d', '--no-build', '--pull', 'never', 'komizo-proxy')
             if self.run(['docker', 'inspect', '--format', '{{.Image}}', 'komizo-proxy'])[1].strip() != value['image']['previous_id']:
                 raise ValueError('previous proxy identity unavailable; recovery fence retained')
         for service in record['services']:

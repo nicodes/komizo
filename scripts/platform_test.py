@@ -212,14 +212,14 @@ class ProxyPlatformTests(unittest.TestCase):
                 if args[:2]==['docker','inspect']:return 0,image['previous_id']
                 if args[-3:]==['config','--format','json']:
                     selected=args[args.index('--file')+1]
-                    return 0,json.dumps({'services':{'proxy':{'image':'old' if selected==str(proxy/'compose.yml') else reference,
+                    return 0,json.dumps({'services':{'komizo-proxy':{'image':'old' if selected==str(proxy/'compose.yml') else reference,
                         'volumes':[{'type':'bind','source':'/srv/_proxy/Caddyfile','target':'/etc/caddy/Caddyfile','read_only':True}]}}})
                 return 0,''
             f.p.run=fake
             accepted=f.p.manifest(f.stage,expected)
             f.p.proxy_preflight(f.stage,accepted)
             definition=json.loads((f.stage/'proxy-preflight.json').read_text())
-            volume=definition['services']['proxy']['volumes'][0]
+            volume=definition['services']['komizo-proxy']['volumes'][0]
             self.assertEqual(volume['source'],str(f.stage/'proxy-caddy'))
             self.assertTrue(volume['read_only'])
             self.assertEqual((proxy/'Caddyfile').read_text(),'existing synthetic routes')
