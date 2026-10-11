@@ -62,6 +62,60 @@ class Fixture:
 
 
 class PlatformTests(unittest.TestCase):
+    def task_fixture(self, root, registered=True):
+        fixture = Fixture(root)
+        program = fixture.root/'var/lib/komizo/tasks/example.sh'
+        program.parent.mkdir(mode=0o700)
+        program.write_bytes(b'#!/bin/sh\ncat\n')
+        program.chmod(0o700)
+        if registered:
+            (fixture.root/'var/lib/komizo/apps/example.env').write_bytes(b'APP_NAME=example\n')
+        wrapper = fixture.root/'usr/local/bin/task-example'
+        wrapper.write_bytes(b'previous reviewed task wrapper')
+        wrapper.chmod(0o755)
+        candidate = fixture.stage/'task-example'
+        candidate.write_bytes(b'candidate fixed executor wrapper')
+        candidate.chmod(0o600)
+        receipt = json.loads((fixture.stage/'verified-release.json').read_bytes())
+        row = {'path': '/usr/local/bin/task-example', 'staged': 'task-example',
+               'before': fixture.p.digest(wrapper), 'after': fixture.p.digest(candidate), 'mode': 0o755}
+        receipt['files'].append(row)
+        body = json.dumps(receipt).encode()
+        (fixture.stage/'verified-release.json').write_bytes(body)
+        manifest = json.loads((fixture.stage/'manifest.json').read_bytes())
+        manifest['files'].append(row)
+        manifest['receipt_sha256'] = hashlib.sha256(body).hexdigest()
+        body = json.dumps(manifest).encode()
+        (fixture.stage/'manifest.json').write_bytes(body)
+        fixture.expected = hashlib.sha256(body).hexdigest()
+        return fixture, program, wrapper
+
+    def test_interrupted_task_wrapper_upgrade_restores_private_program_and_previous_wrapper(self):
+        with tempfile.TemporaryDirectory() as root:
+            fixture, program, wrapper = self.task_fixture(root)
+            original = program.read_bytes()
+            def interrupt(phase):
+                if phase == 'replaced-2':
+                    raise SystemExit('fixture disconnect after task wrapper replacement')
+            fixture.p.checkpoint = interrupt
+            with self.assertRaises(SystemExit):
+                fixture.p.apply(fixture.stage, fixture.expected)
+            self.assertEqual(wrapper.read_bytes(), b'candidate fixed executor wrapper')
+            result = fixture.p.apply(fixture.stage, fixture.expected, recover=True)
+            self.assertEqual(result['phase'], 'recovered')
+            self.assertEqual(wrapper.read_bytes(), b'previous reviewed task wrapper')
+            self.assertEqual(program.read_bytes(), original)
+            self.assertEqual(program.stat().st_mode & 0o777, 0o700)
+
+    def test_task_wrapper_for_unregistered_app_refuses_before_effects(self):
+        with tempfile.TemporaryDirectory() as root:
+            fixture, program, wrapper = self.task_fixture(root, registered=False)
+            with self.assertRaises(ValueError):
+                fixture.p.apply(fixture.stage, fixture.expected)
+            self.assertEqual(wrapper.read_bytes(), b'previous reviewed task wrapper')
+            self.assertEqual(fixture.calls, [])
+            self.assertFalse((fixture.stage.parent/'pending.json').exists())
+
     def test_websocket_probe_requires_transport_challenge_and_source(self):
         class Connection:
             closed=False

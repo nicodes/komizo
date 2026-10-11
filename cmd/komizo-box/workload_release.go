@@ -61,6 +61,20 @@ func runWorkloadRelease(args []string) error {
 		return err
 	}
 	switch args[0] {
+	case "owner-recovery-admit":
+		// This root-only command is deliberately absent from CI doas wrappers.
+		// It can recover only a retained current/previous accepted local release.
+		if os.Geteuid() != 0 || *output == "" || !cachedRollbackAllowed(p, *version) {
+			return errors.New("owner recovery requires a retained current/previous accepted revision")
+		}
+		var accepted workload.ReleaseAcceptance
+		if err := readPrivateRelease(filepath.Join(dir, *version+".json"), &accepted); err != nil {
+			return err
+		}
+		if err := accepted.Check(p, *version); err != nil {
+			return err
+		}
+		return workload.WritePrivateJSON(*output, accepted)
 	case "release-admit":
 		return admitWorkloadRelease(p, *version, dir, *output)
 	case "operation":
@@ -169,6 +183,11 @@ func admitWorkloadReleaseFrom(p workload.Policy, version, dir, output string, in
 	if len(version) != 40 || strings.ContainsAny(version, "/.") {
 		return errors.New("authenticated releases require a full commit revision")
 	}
+	// Fence protected store reads and every acceptance write before inspecting
+	// any cached release. A previous receipt does not authorize a new CI run.
+	if err := checkDeliveryAuthorization(p, version, time.Now().UTC()); err != nil {
+		return err
+	}
 	path := filepath.Join(dir, version+".json")
 	var existing workload.ReleaseAcceptance
 	have := false
@@ -188,6 +207,9 @@ func admitWorkloadReleaseFrom(p workload.Policy, version, dir, output string, in
 		return errors.New("release proof exceeds wire limit")
 	}
 	if len(bytesTrim(wire)) == 0 {
+		if p.RequireDeliveryAuthorization {
+			return errors.New("protected CI admission requires current authenticated proof; use the root owner recovery route")
+		}
 		if !have || !cachedRollbackAllowed(p, version) {
 			return errors.New("release requires authenticated Actions proof or the current/previous accepted revision")
 		}

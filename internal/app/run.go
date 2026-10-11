@@ -183,6 +183,8 @@ func Main(args []string) error {
 		// it, and asking it for permission first would have made an outage the
 		// reason you cannot fix your own machine.
 		err = runCommand(args[0], args[1:])
+	case "platform":
+		err = RunPlatform(args[1:])
 	case "operator":
 		err = RunOperator(args[1:])
 	case "artifact":
@@ -261,6 +263,7 @@ hand.
   komizo ui      (runs ON the box: the local web app, loopback or tailnet)
   komizo reconcile --host root@HOST --inventory expected-apps.json
   komizo script [init|add|remove|unset-secret|proxy]
+  komizo platform plan|apply --host HOST --release vVERSION --source COMMIT --release-dir DIR --stage DIR
   komizo artifact --arch amd64|arm64 --output NEW_FILE
   komizo operator plan|export [--directory NEW_ABSOLUTE_DIRECTORY]
 
