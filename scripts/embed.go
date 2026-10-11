@@ -17,6 +17,11 @@ var Platform string
 //go:embed platform_prepare.py
 var PlatformPrepare string
 
+// ProxyPrepare owns generic proxy planning and application; probes are operator input.
+//
+//go:embed proxy_prepare.py
+var ProxyPrepare string
+
 // The server-side shell, shipped over SSH and run as root on the box.
 //
 // ALL of it lives here as .sh files, and none of it is built with fmt.Sprintf.
