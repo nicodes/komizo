@@ -154,6 +154,9 @@ func readPrivateRelease(path string, out any) error {
 	return json.Unmarshal(body, out)
 }
 func admitWorkloadRelease(p workload.Policy, version, dir, output string) error {
+	return admitWorkloadReleaseFrom(p, version, dir, output, os.Stdin)
+}
+func admitWorkloadReleaseFrom(p workload.Policy, version, dir, output string, input io.Reader) error {
 	if output == "" {
 		return errors.New("release admission needs a private output")
 	}
@@ -177,7 +180,7 @@ func admitWorkloadRelease(p workload.Policy, version, dir, output string) error 
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	wire, err := io.ReadAll(io.LimitReader(os.Stdin, 128<<10+1))
+	wire, err := io.ReadAll(io.LimitReader(input, 128<<10+1))
 	if err != nil || len(wire) > 128<<10 {
 		return errors.New("release proof exceeds wire limit")
 	}
@@ -223,6 +226,7 @@ func dockerReleaseRun(ctx context.Context, args ...string) (string, error) {
 		ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, "docker", "image", "save", args[1])
+		cmd.Env = deploymentDockerEnv(ctx)
 		cmd.WaitDelay = 2 * time.Second
 		stdout, err := cmd.StdoutPipe()
 		if err != nil {
@@ -244,6 +248,7 @@ func dockerReleaseRun(ctx context.Context, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd.Env = deploymentDockerEnv(ctx)
 	cmd.WaitDelay = 2 * time.Second
 	output := &boundedDockerOutput{limit: 2 << 20}
 	cmd.Stdout = output

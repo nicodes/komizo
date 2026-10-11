@@ -54,7 +54,7 @@ func RecordOperation(path, app, candidate, previous, phase string, now time.Time
 		return errors.New("invalid deployment operation identity")
 	}
 	switch phase {
-	case "admitted", "configured", "activating", "activated", "ready", "readiness_failed", "prepared_stopped", "failed", "activation_failed", "reconciled":
+	case "admitted", "staging", "staging_failed", "configured", "activating", "activated", "ready", "readiness_failed", "prepared_stopped", "failed", "activation_failed", "reconciled":
 	default:
 		return errors.New("invalid deployment operation phase")
 	}
@@ -70,14 +70,14 @@ func RecordOperation(path, app, candidate, previous, phase string, now time.Time
 		if phase != "admitted" && old.Candidate != candidate {
 			return errors.New("deployment operation candidate changed")
 		}
-		if phase == "admitted" && (old.Phase == "activating" || old.Phase == "activation_failed") {
+		if phase == "admitted" && (old.Phase == "activating" || old.Phase == "activation_failed" || old.Phase == "staging" || old.Phase == "staging_failed" || old.Phase == "configured") {
 			return errors.New("interrupted activation needs reconciliation before another version")
 		}
 		if phase != "admitted" {
 			if previous != old.Previous || !legalOperationTransition(old.Phase, phase) {
 				return errors.New("invalid deployment operation transition")
 			}
-			if !old.Deadline.IsZero() && now.After(old.Deadline) && phase != "failed" && phase != "activation_failed" && phase != "readiness_failed" && phase != "reconciled" {
+			if !old.Deadline.IsZero() && now.After(old.Deadline) && phase != "failed" && phase != "staging_failed" && phase != "activation_failed" && phase != "readiness_failed" && phase != "reconciled" {
 				return errors.New("deployment operation deadline expired")
 			}
 			operation.ID, operation.StartedAt, operation.Deadline = old.ID, old.StartedAt, old.Deadline
@@ -103,7 +103,7 @@ func legalOperationTransition(from, to string) bool {
 		return true
 	} // An identical phase acknowledgement is idempotent.
 	if to == "reconciled" {
-		return from == "activating" || from == "activation_failed" || from == "readiness_failed" || from == "failed"
+		return from == "activating" || from == "activation_failed" || from == "readiness_failed" || from == "failed" || from == "staging" || from == "staging_failed" || from == "configured"
 	}
 	if to == "failed" {
 		return from != "ready" && from != "prepared_stopped" && from != "reconciled"
@@ -111,8 +111,13 @@ func legalOperationTransition(from, to string) bool {
 	if to == "activation_failed" {
 		return from == "activating"
 	}
+	if to == "staging_failed" {
+		return from == "staging"
+	}
 	switch from {
 	case "admitted":
+		return to == "configured" || to == "staging"
+	case "staging":
 		return to == "configured"
 	case "configured":
 		return to == "activating" || to == "prepared_stopped"
