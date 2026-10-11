@@ -1510,6 +1510,11 @@ func lockPreviews(ctx context.Context, root string) (func(), error) {
 	return lockHostFile(ctx, root, "previews.lock")
 }
 
+// LockImageMetadata serializes the bounded root-owned immutable digest cache.
+func LockImageMetadata(ctx context.Context, root string) (func(), error) {
+	return lockHostFile(ctx, root, "image-metadata.lock")
+}
+
 func lockHostFile(ctx context.Context, root, name string) (func(), error) {
 	directory := RunDir
 	if root != "" {
