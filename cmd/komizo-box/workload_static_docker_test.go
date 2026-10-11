@@ -69,10 +69,12 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 	}
 	sum := sha256.Sum256(config)
 	h, r, _ := staticActivationFixture(t)
-	baselineHost := "app.ctcalc.com"
+	baselineHost := os.Getenv("KOMIZO_STATIC_FIXTURE_HOST")
+	if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$`).MatchString(baselineHost) {
+		t.Fatal("explicit fixture gate hostname required")
+	}
 	if os.Getenv("KOMIZO_STATIC_FIXTURE_PROFILE") == "godot-v1" {
 		h.policy.Static.Profile = "godot-v1"
-		baselineHost = "prizm.avior.studio"
 	}
 	h.makeStaticDir = nil
 	h.policy.Static.GateConfigSHA = hex.EncodeToString(sum[:])

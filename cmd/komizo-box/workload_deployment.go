@@ -112,6 +112,11 @@ func runWorkloadDeployment(args []string) error {
 	if args[0] != "deployment-submit" || len(*version) != 40 || strings.Trim(*version, "0123456789abcdef") != "" {
 		return errors.New("deployment needs an exact source revision")
 	}
+	// Refuse an unreviewed revision before locks, staging directories, accepted
+	// files, registry credentials or any activation state can be created.
+	if err := checkDeliveryAuthorization(p, *version, time.Now().UTC()); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	unlock, err := box.LockDeployment(ctx, "", p.App)

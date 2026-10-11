@@ -186,7 +186,7 @@ class Platform:
         if (set(value) != {'version', 'kind', 'source', 'release', 'files', 'receipt_sha256', 'image', 'probes'}
                 or value['version'] != 1 or value['kind'] not in ('self-upgrade', 'proxy-upgrade')
                 or not REV.fullmatch(value['source']) or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', value['release'])
-                or not SHA.fullmatch(value['receipt_sha256']) or not 1 <= len(value['files']) <= 67):
+                or not SHA.fullmatch(value['receipt_sha256']) or not 1 <= len(value['files']) <= 131):
             raise ValueError('invalid platform grant')
         receipt = json.loads(self.read(stage/'verified-release.json', private=True))
         if (self.digest(stage/'verified-release.json') != value['receipt_sha256']
@@ -200,9 +200,12 @@ class Platform:
                 raise ValueError('invalid platform file grant')
             destination = row['path']
             permitted = destination in ('/usr/local/bin/komizo', '/usr/local/bin/komizo-box', '/var/lib/komizo/version')
-            if destination.startswith('/usr/local/bin/deploy-'):
-                app = destination.removeprefix('/usr/local/bin/deploy-')
-                permitted = bool(APP.fullmatch(app) and self.path(f'/var/lib/komizo/apps/{app}.env').exists())
+            for prefix in ('/usr/local/bin/deploy-', '/usr/local/bin/task-'):
+                if destination.startswith(prefix):
+                    app = destination.removeprefix(prefix)
+                    permitted = bool(APP.fullmatch(app) and self.path(f'/var/lib/komizo/apps/{app}.env').exists())
+                    if prefix.endswith('task-'):
+                        permitted = permitted and self.path(f'/var/lib/komizo/tasks/{app}.sh').exists()
             if value['kind'] == 'proxy-upgrade':
                 permitted = destination in ('/srv/_proxy/compose.yml','/srv/_proxy/Caddyfile')
             if (not permitted or destination in paths or not re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', row['staged'])

@@ -69,6 +69,7 @@ func (b *taskBox) run(t *testing.T, tasks, scriptBody string) (string, error) {
 		encoded = base64.StdEncoding.EncodeToString([]byte(scriptBody))
 	}
 	preamble := "set -eu\n" +
+		"APP_NAME=blog\n" +
 		"TASK_STORE=" + b.store + "\n" +
 		"TASK_FILE=" + filepath.Join(b.store, "blog.sh") + "\n" +
 		"TASK_BIN=" + b.taskBin + "\n" +
@@ -91,12 +92,43 @@ func TestTheTaskScriptArrivesUnchanged(t *testing.T) {
 	if out, err := b.run(t, "1", body); err != nil {
 		t.Fatalf("install failed: %v\n%s", err, out)
 	}
-	got, err := os.ReadFile(b.taskBin)
+	got, err := os.ReadFile(filepath.Join(b.store, "blog.sh"))
 	if err != nil {
 		t.Fatalf("nothing was installed: %v", err)
 	}
 	if string(got) != body {
 		t.Errorf("the script changed in transit.\nwant %q\ngot  %q", body, got)
+	}
+}
+
+func TestTaskWrapperKeepsCIArgumentsAfterTheFixedPolicySeparator(t *testing.T) {
+	b := newTaskBox(t)
+	if out, err := b.run(t, "1", "#!/bin/sh\nexit 0\n"); err != nil {
+		t.Fatalf("install failed: %v %s", err, out)
+	}
+	wrapper, err := os.ReadFile(b.taskBin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := filepath.Join(b.bin, "executor")
+	argsPath, inputPath := filepath.Join(b.root, "args"), filepath.Join(b.root, "input")
+	write(t, fake, 0755, "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$TASK_ARGS\"\ncat > \"$TASK_INPUT\"\n")
+	// Replace only the fixed executable in this isolated fixture.
+	body := strings.Replace(string(wrapper), "/usr/local/bin/komizo-box", fake, 1)
+	write(t, b.taskBin, 0755, body)
+	command := exec.Command(b.taskBin, "--policy", "/etc/foreign.json", "--owner")
+	command.Env = append(os.Environ(), "TASK_ARGS="+argsPath, "TASK_INPUT="+inputPath)
+	command.Stdin = strings.NewReader("synthetic proof and input\n")
+	if out, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("wrapper failed: %v %s", err, out)
+	}
+	args, _ := os.ReadFile(argsPath)
+	if string(args) != "workload\ntask\n--policy\n/etc/komizo/workloads/blog.json\n--\n--policy\n/etc/foreign.json\n--owner\n" {
+		t.Fatalf("CI changed the fixed authority: %q", args)
+	}
+	input, _ := os.ReadFile(inputPath)
+	if string(input) != "synthetic proof and input\n" {
+		t.Fatal("wrapper changed task input")
 	}
 }
 
@@ -151,8 +183,12 @@ func TestAnUpdateWithoutAScriptReinstallsTheStoredOne(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the update dropped the task program: %v", err)
 	}
-	if string(got) != body {
-		t.Errorf("the reinstalled program is not the stored one: %q", got)
+	if !strings.Contains(string(got), "exec /usr/local/bin/komizo-box workload task --policy /etc/komizo/workloads/blog.json -- \"$@\"") {
+		t.Errorf("the reinstalled wrapper bypasses the protected executor: %q", got)
+	}
+	stored, err := os.ReadFile(filepath.Join(b.store, "blog.sh"))
+	if err != nil || string(stored) != body {
+		t.Fatal("update changed the reviewed task source")
 	}
 }
 
