@@ -64,7 +64,46 @@ func runWorkloadDeployment(args []string) error {
 	if err != nil {
 		return err
 	}
-	if *policyPath != filepath.Join(workloadPolicyDirectory, p.App+".json") || p.Deployment == nil {
+	if *policyPath != filepath.Join(workloadPolicyDirectory, p.App+".json") {
+		return errors.New("deployment requires the installed root policy")
+	}
+	if args[0] == "deployment-enable" {
+		if *version != "" || *registry != "" || *user != "" || *generation != "" {
+			return errors.New("deployment-enable accepts only the policy")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		unlock, err := box.LockDeployment(ctx, "", p.App)
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		p, err = readWorkloadPolicy(*policyPath)
+		if err != nil {
+			return err
+		}
+		if err := activationIdle(activationDirectory); err != nil {
+			return err
+		}
+		next, err := enabledDeploymentPolicy(p)
+		if err != nil {
+			return err
+		}
+		if p.Deployment != nil {
+			return nil
+		}
+		var op workload.Operation
+		opPath := filepath.Join(releaseDirectory, p.App, "operation.json")
+		if err := protectedActivationJSON(opPath, &op); err == nil {
+			if op.Phase != "ready" && op.Phase != "prepared_stopped" && op.Phase != "reconciled" {
+				return errors.New("reconcile the existing operation before changing deployment authority")
+			}
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+		return workload.WritePrivateJSON(*policyPath, next)
+	}
+	if p.Deployment == nil {
 		return errors.New("typed deployment is not enabled in the installed root policy")
 	}
 	if args[0] == "deployment-enabled" {
@@ -162,6 +201,20 @@ func runWorkloadDeployment(args []string) error {
 	fmt.Printf("deploy: previous-version=%s\ndeploy: submitted=%s\n", previous, op.ID)
 	fmt.Println(op.ID)
 	return nil
+}
+
+// Fresh installations and migrated policies enter the same executor. No
+// repository image can select source authority, readiness or resource limits.
+func enabledDeploymentPolicy(p workload.Policy) (workload.Policy, error) {
+	if p.SourceRepository == "" || p.Readiness == nil || p.Resources == nil {
+		return p, errors.New("configure trusted source, resource budgets and readiness before enabling deployment")
+	}
+	expected := workload.DeploymentPolicy{RoutePath: "/srv/_proxy/routes/" + p.App + ".caddy", Proxy: "komizo-proxy", ProxyDir: "/srv/_proxy"}
+	if p.Deployment != nil && *p.Deployment != expected {
+		return p, errors.New("existing deployment authority differs; explicit operator review required")
+	}
+	p.Deployment = &expected
+	return p, p.Check()
 }
 
 func deploymentVersion(env []byte) (string, error) {
