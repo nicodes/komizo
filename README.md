@@ -45,3 +45,13 @@ sudo ./komizo operator recover
 The existing `fleet-editor` group, protected `/etc/fleet-operator.json` policy and `/etc/fleet-operator-broker` environment file define the caller's scope. The lifecycle refuses missing or changed authority, journals prior code before replacing it and retains consumed grants across upgrades. `recover` restores a prepared installation after interruption; it does not replay operations. The systemd activation socket remains owned by the service manager across broker process restarts.
 
 The application host remains one box. App-scoped deployment, workload budgets, ingress and release admission are enforced by the host executor. Explicit static profiles and delivery-authorization requirements require an operator-reviewed migration; upgrading a binary alone does not enable them.
+
+
+The authenticated CLI also prepares shared proxy upgrades:
+
+```sh
+komizo platform proxy plan --host box.example.test --reference ghcr.io/nicodes/platform-proxy@sha256:IMAGE_DIGEST --source PUBLISHER_COMMIT --stage /root/proxy-plan --probes /root/proxy-probes.json
+komizo platform proxy apply --host box.example.test --reference ghcr.io/nicodes/platform-proxy@sha256:IMAGE_DIGEST --source PUBLISHER_COMMIT --stage /root/proxy-plan --probes /root/proxy-probes.json --expected-manifest PLAN_SHA256
+```
+
+The root-owned private probe file is a JSON array with one explicit URL and current serving revision per running hostname, for example `[{"url":"https://app.example.test/health","revision":"FORTY_CHARACTER_COMMIT"}]`. HTTPS and TLS WebSocket probes are supported. Planning verifies publisher provenance and prefetches the immutable image without replacing files or restarting services. Apply requires the exact reviewed plan, rechecks serving identity, and uses the installed durable executor. Interrupted operations use `komizo-box platform inspect` and `recover`; deleting a journal or repeating an ambiguous operation is unsupported. The current proxy artifact supports Linux/amd64.
