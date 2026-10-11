@@ -199,8 +199,13 @@ func admitWorkloadRelease(p workload.Policy, version, dir, output string) error 
 	if err != nil {
 		return err
 	}
-	if have && !reflect.DeepEqual(existing.Manifest.Images, accepted.Manifest.Images) {
-		return errors.New("release revision was already accepted with different images")
+	if have && (!reflect.DeepEqual(existing.Manifest.Images, accepted.Manifest.Images) || !reflect.DeepEqual(existing.Manifest.StatefulContract, accepted.Manifest.StatefulContract)) {
+		return errors.New("release revision was already accepted with different images or stateful contract")
+	}
+	if have {
+		if err := statefulRetryAllowed(p, version, dir, existing); err != nil {
+			return err
+		}
 	}
 	if !have {
 		if err := workload.WritePrivateJSON(path, accepted); err != nil {
@@ -262,23 +267,63 @@ func (b *boundedDockerOutput) Write(p []byte) (int, error) {
 	}
 	return b.buffer.Write(p)
 }
-func cachedRollbackAllowed(p workload.Policy, version string) bool {
-	// Only root's current/previous deployment record authorizes an unsigned
-	// retry or rollback. Older accepted receipts alone confer no authority.
-	path := filepath.Join(p.AppDir, ".komizo-image-retention")
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0022 != 0 || !workloadRootOwner(info) {
-		return false
+func retainedRevisions(p workload.Policy) (string, string, error) {
+	var body []byte
+	if err := readPrivateReleaseText(filepath.Join(p.AppDir, ".komizo-image-retention"), &body); err != nil {
+		return "", "", err
 	}
-	body, err := os.ReadFile(path)
-	if err != nil || len(body) > 4096 {
-		return false
-	}
+	values := map[string]string{}
+	seen := map[string]bool{}
 	for _, line := range strings.Split(string(body), "\n") {
-		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
-		if ok && (key == "CURRENT" || key == "PREVIOUS") && value == version {
-			return true
+		if strings.TrimSpace(line) == "" {
+			continue
 		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || seen[key] {
+			return "", "", errors.New("invalid retained revisions")
+		}
+		values[key] = value
+		seen[key] = true
 	}
-	return false
+	if values["CURRENT"] == "" {
+		return "", "", errors.New("current revision unavailable")
+	}
+	return values["CURRENT"], values["PREVIOUS"], nil
+}
+func readPrivateReleaseText(path string, out *[]byte) error {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0022 != 0 || !workloadRootOwner(info) || info.Size() > 4096 {
+		return errors.New("retention requires a bounded protected root-owned regular file")
+	}
+	*out, err = os.ReadFile(path)
+	return err
+}
+func cachedRollbackAllowed(p workload.Policy, version string) bool {
+	current, previous, err := retainedRevisions(p)
+	// Stateful rollback remains disabled: a compatibility declaration is not
+	// an independently exercised post-write rollback proof.
+	return err == nil && (version == current || !p.RequireStatefulContract && version == previous)
+}
+func statefulRetryAllowed(p workload.Policy, version, dir string, candidate workload.ReleaseAcceptance) error {
+	if !p.RequireStatefulContract {
+		return nil
+	}
+	current, _, err := retainedRevisions(p)
+	if err != nil {
+		return err
+	}
+	if current == version {
+		return nil
+	}
+	var installed workload.ReleaseAcceptance
+	if err := readPrivateRelease(filepath.Join(dir, current+".json"), &installed); err != nil {
+		return err
+	}
+	if err := installed.Check(p, current); err != nil {
+		return err
+	}
+	if candidate.VerifiedAt.IsZero() || installed.VerifiedAt.IsZero() || !candidate.VerifiedAt.After(installed.VerifiedAt) {
+		return errors.New("historical stateful release requires explicit verified post-write recovery; use a forward fix")
+	}
+	return nil // Fresh proof may retry an admitted, newer failed candidate.
 }
