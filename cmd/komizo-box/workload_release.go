@@ -139,7 +139,10 @@ func protectedReleaseDirectory(dir string) error {
 }
 func readPrivateRelease(path string, out any) error {
 	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0022 != 0 || !workloadRootOwner(info) {
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0022 != 0 || !workloadRootOwner(info) {
 		return errors.New("accepted release must be a protected root-owned regular file")
 	}
 	f, err := os.Open(path)
@@ -223,27 +226,7 @@ func bytesTrim(body []byte) []byte { return []byte(strings.TrimSpace(string(body
 
 func dockerReleaseRun(ctx context.Context, args ...string) (string, error) {
 	if len(args) == 2 && args[0] == "config-digest" {
-		ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, "docker", "image", "save", args[1])
-		cmd.Env = deploymentDockerEnv(ctx)
-		cmd.WaitDelay = 2 * time.Second
-		stdout, err := cmd.StdoutPipe()
-		if err != nil {
-			return "", err
-		}
-		if err := cmd.Start(); err != nil {
-			return "", err
-		}
-		id, readErr := workload.DockerArchiveConfigDigest(stdout)
-		if readErr != nil {
-			cancel()
-		}
-		waitErr := cmd.Wait()
-		if readErr != nil {
-			return "", readErr
-		}
-		return id, waitErr
+		return imageConfigDigest(ctx, "", imageConfigCacheDirectory, args[1], workloadRootOwner, imageConfigSpace, exportDockerConfigDigest)
 	}
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
@@ -337,4 +320,28 @@ func statefulRetryAllowed(p workload.Policy, version, dir string, candidate work
 		return errors.New("historical stateful release requires explicit verified post-write recovery; use a forward fix")
 	}
 	return nil // Fresh proof may retry an admitted, newer failed candidate.
+}
+
+func exportDockerConfigDigest(ctx context.Context, image string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "image", "save", image)
+	cmd.Env = deploymentDockerEnv(ctx)
+	cmd.WaitDelay = 2 * time.Second
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+	id, readErr := workload.DockerArchiveConfigDigest(stdout)
+	if readErr != nil {
+		cancel()
+	}
+	waitErr := cmd.Wait()
+	if readErr != nil {
+		return "", readErr
+	}
+	return id, waitErr
 }
