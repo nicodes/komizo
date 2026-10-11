@@ -6,6 +6,7 @@ import signal
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('platform_operator', Path(__file__).with_name('platform.py'))
 module = importlib.util.module_from_spec(spec)
@@ -61,6 +62,54 @@ class Fixture:
 
 
 class PlatformTests(unittest.TestCase):
+    def test_websocket_probe_requires_transport_challenge_and_source(self):
+        class Connection:
+            closed=False
+            status=101
+            source='a'*40
+            valid=True
+            def __init__(self,*args,**kwargs):pass
+            def request(self,method,path,headers):self.headers=headers
+            def getresponse(self):return self
+            def getheader(self,name,default=None):
+                if name=='X-Komizo-Revision':return self.source
+                if name=='Upgrade':return 'websocket'
+                if name=='Sec-WebSocket-Accept':
+                    body=(self.headers['Sec-WebSocket-Key']+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()
+                    return module.base64.b64encode(module.hashlib.sha1(body).digest()).decode() if self.valid else 'foreign'
+                return default
+            def close(self):Connection.closed=True
+        with patch.object(module.http.client,'HTTPSConnection',Connection):
+            probe={'url':'wss://example.test/','revision':'a'*40}
+            self.assertTrue(module.Platform.probe_route(probe,1))
+            self.assertTrue(Connection.closed)
+            Connection.valid=False
+            self.assertFalse(module.Platform.probe_route(probe,1))
+            Connection.valid=True;Connection.source='b'*40
+            self.assertFalse(module.Platform.probe_route(probe,1))
+
+    def test_proxy_acceptance_waits_for_listener_but_preserves_exact_identity(self):
+        class Response:
+            status=200
+            headers={'X-Komizo-Revision':'a'*40}
+            def __enter__(self):return self
+            def __exit__(self,*args):pass
+            def read(self,maximum):return b'ready'
+        with tempfile.TemporaryDirectory() as root:
+            f=Fixture(root)
+            f.p.run=lambda args,required=True:(0,'sha256:'+'b'*64)
+            value={'image':{'id':'sha256:'+'b'*64},'probes':[{'url':'https://example.test/readyz','revision':'a'*40}]}
+            with patch.object(module.urllib.request,'urlopen',side_effect=[OSError('starting'),Response()]) as request:
+                f.p.verify_proxy(value,1)
+                self.assertEqual(request.call_count,2)
+            Response.headers={'X-Komizo-Revision':'c'*40}
+            with patch.object(module.urllib.request,'urlopen',return_value=Response()):
+                with self.assertRaisesRegex(ValueError,'deadline'):
+                    f.p.verify_proxy(value,.02)
+            with patch.object(module.urllib.request,'urlopen',side_effect=OSError('unavailable')):
+                with self.assertRaisesRegex(ValueError,'deadline'):
+                    f.p.verify_proxy(value,.02)
+
     @unittest.skipUnless(hasattr(os, 'fork'), 'requires a real Unix process')
     def test_sigkill_at_durable_boundaries_recovers_previous_files(self):
         for boundary in ('prepared', 'replaced-0', 'replaced-1'):
