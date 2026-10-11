@@ -277,6 +277,12 @@ func retainedRevisions(p workload.Policy) (string, string, error) {
 	if err := readPrivateReleaseText(filepath.Join(p.AppDir, ".komizo-image-retention"), &body); err != nil {
 		return "", "", err
 	}
+	return parseRetainedRevisions(body)
+}
+func parseRetainedRevisions(body []byte) (string, string, error) {
+	if len(body) > 4096 {
+		return "", "", errors.New("retention exceeds its bound")
+	}
 	values := map[string]string{}
 	seen := map[string]bool{}
 	for _, line := range strings.Split(string(body), "\n") {
