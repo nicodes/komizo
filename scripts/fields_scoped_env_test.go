@@ -595,7 +595,7 @@ func TestProvisionRefusesPermutedEnvFiles(t *testing.T) {
 	}
 }
 
-func TestDeployReadyComparesExpectedGeneration(t *testing.T) {
+func TestLegacyMigrationComparesExpectedGeneration(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
@@ -605,12 +605,13 @@ func TestDeployReadyComparesExpectedGeneration(t *testing.T) {
 	t.Setenv("PATH", bin+":/usr/bin:/bin")
 	const start = "komizo_scoped_env_ready() {"
 	const end = "# Operator-written host-wide floors"
-	i := strings.Index(AlpineScript, start)
-	j := strings.Index(AlpineScript, end)
+	source := legacyDeployBody(t)
+	i := strings.Index(source, start)
+	j := strings.Index(source, end)
 	if i < 0 || j < i {
 		t.Fatal("deploy preflight function was not found")
 	}
-	fn := AlpineScript[i:j]
+	fn := source[i:j]
 	app := filepath.Join(dir, "app")
 	id := "0123456789abcdef0123456789abcdef"
 	gen := filepath.Join(app, "secrets", "generations", id)
@@ -665,21 +666,20 @@ func TestDeployReadyComparesExpectedGeneration(t *testing.T) {
 		t.Fatal("generation without provenance was accepted or printed")
 	}
 	const startFn = "komizo_scoped_env_ready() {"
-	fnStart := strings.Index(AlpineScript, startFn)
-	fnEnd := strings.Index(AlpineScript, "# Operator-written host-wide floors")
-	if fnStart < 0 || fnEnd < fnStart || strings.Contains(AlpineScript[fnStart:fnEnd], "CLERK_SECRET_KEY") {
+	fnStart := strings.Index(source, startFn)
+	fnEnd := strings.Index(source, "# Operator-written host-wide floors")
+	if fnStart < 0 || fnEnd < fnStart || strings.Contains(source[fnStart:fnEnd], "CLERK_SECRET_KEY") {
 		t.Fatal("deploy preflight still names a secret")
 	}
 }
 
 func TestShippedDeployArgvContract(t *testing.T) {
 	for _, want := range []string{
-		"deploy: refusing: scoped generation missing",
-		"deploy: refusing: scoped generation malformed",
-		"deploy: refusing: unexpected arguments",
-		"deploy: scoped-generation=$expected_generation",
-		"provision-scoped-env-$APP_NAME --check-compose",
-		"deploy: refusing: scoped env is not a fields-postgres-v2 generation",
+		"deploy: scoped generation missing",
+		"deploy: unexpected arguments",
+		"--generation \"${4:-}\"",
+		"workload deployment-submit --policy",
+		"exec komizo-box workload activation-wait --id",
 	} {
 		if !strings.Contains(AlpineScript, want) {
 			t.Errorf("shipped deploy script missing %q", want)
