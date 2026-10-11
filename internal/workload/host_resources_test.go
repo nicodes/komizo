@@ -149,3 +149,31 @@ func TestHostResourceReductionPreflightsEveryUsageBeforeWriting(t *testing.T) {
 		})
 	}
 }
+
+func TestServingBudgetCannotEscapeItsInstalledAllocation(t *testing.T) {
+	group := HostGroup{MemoryBytes: 64 << 20, MilliCPUs: 200, PIDs: 128}
+	app := ApplicationGroup{HostGroup: HostGroup{MemoryBytes: 48 << 20, SwapBytes: 16 << 20, MilliCPUs: 100, PIDs: 32}, BaselineMemoryBytes: 8 << 20, MemoryLowBytes: 16 << 20, MemoryHighBytes: 32 << 20, CPUWeight: 100, IOWeight: 100}
+	host := HostResources{Version: 1, PhysicalMemoryBytes: 512 << 20, OSReserveBytes: 128 << 20, PhysicalMilliCPUs: 1000, OSReserveMilliCPUs: 200, Production: group, Proxy: group, Previews: group, PreviewDatabase: group, Apps: map[string]ApplicationGroup{"one": app}}
+	host.Production.SwapBytes = 16 << 20
+	budget := ResourcePolicy{CgroupParent: "/komizo-production/one", Default: ServiceBudget{MemoryBytes: 32 << 20, MemoryReserveBytes: 16 << 20, MemorySwapBytes: 32 << 20, MilliCPUs: 50}, MaxMemoryBytes: 48 << 20, MaxMemoryReserveBytes: 16 << 20, MaxMemorySwapBytes: 64 << 20, MaxMilliCPUs: 100, StartupAllowanceBytes: 16 << 20}
+	if err := host.CheckServingBudget("one", &budget); err != nil {
+		t.Fatal(err)
+	}
+	for _, alter := range []func(*ResourcePolicy){
+		func(p *ResourcePolicy) { p.CgroupParent = "/komizo-production/two" },
+		func(p *ResourcePolicy) { p.MaxMemoryReserveBytes++ },
+		func(p *ResourcePolicy) { p.MaxMemoryBytes++ },
+		func(p *ResourcePolicy) { p.MaxMemorySwapBytes++ },
+		func(p *ResourcePolicy) { p.MaxMilliCPUs++ },
+	} {
+		changed := budget
+		alter(&changed)
+		if host.CheckServingBudget("one", &changed) == nil {
+			t.Fatal("serving allocation escape accepted")
+		}
+	}
+	delete(host.Apps, "one")
+	if host.CheckServingBudget("one", &budget) == nil {
+		t.Fatal("unregistered application accepted")
+	}
+}

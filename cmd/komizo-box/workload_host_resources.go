@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -33,7 +34,7 @@ func runHostResources(args []string) error {
 		}
 		body, err = os.ReadFile(path)
 	} else {
-		body, err = io.ReadAll(io.LimitReader(os.Stdin, workload.MaxBytes+1))
+		body, err = readWorkloadInput(context.Background(), os.Stdin, workload.MaxBytes)
 	}
 	if err != nil || len(body) > workload.MaxBytes {
 		return errors.New("host resource policy unavailable or oversized")

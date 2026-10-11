@@ -44,18 +44,18 @@ func runWorkloadSecrets(args []string) error {
 		}
 		return nil
 	}
-	body, err := io.ReadAll(io.LimitReader(os.Stdin, 2*workload.MaxBytes+1))
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	body, err := readWorkloadInput(ctx, os.Stdin, 2*workload.MaxBytes)
 	if err != nil || len(body) > 2*workload.MaxBytes {
 		return errors.New("secret input exceeds its bound")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	unlock, err := box.LockDeployment(ctx, "", p.App)
-	if err != nil {
-		return err
-	}
-	defer unlock()
 	if args[0] == "owner-secret" {
+		unlock, err := box.LockDeployment(ctx, "", p.App)
+		if err != nil {
+			return err
+		}
+		defer unlock()
 		if *asFile {
 			if !secretFile.MatchString(*name) || *uid < 0 || len(body) == 0 || len(body) > workload.MaxBytes {
 				return errors.New("invalid owner secret file")
@@ -112,6 +112,19 @@ func runWorkloadSecrets(args []string) error {
 	if err := validateSecretSet(set.Secrets); err != nil {
 		return err
 	}
+	// Reject a missing grant or invalid identity before a lock file, admission
+	// directory, cached receipt or secret can be written by a CI request.
+	if err := verifyTaskRelease(ctx, p, proof); err != nil {
+		return err
+	}
+	unlock, err := box.LockDeployment(ctx, "", p.App)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := verifyTaskRelease(ctx, p, proof); err != nil {
+		return err
+	}
 	dir := filepath.Join("/var/lib/komizo/releases", p.App)
 	if err := protectedReleaseDirectory(dir); err != nil {
 		return err
@@ -121,7 +134,10 @@ func runWorkloadSecrets(args []string) error {
 		return err
 	}
 	defer os.RemoveAll(stage)
-	if err := admitWorkloadReleaseFrom(p, manifest.Revision, dir, filepath.Join(stage, "accepted.json"), bytes.NewReader(proof)); err != nil {
+	if err := admitWorkloadReleaseContext(ctx, p, manifest.Revision, dir, filepath.Join(stage, "accepted.json"), bytes.NewReader(proof)); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 	return writeSecretSet(p.AppDir, set.Secrets)
