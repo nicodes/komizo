@@ -15,6 +15,10 @@ import (
 func runWorkload(args []string) error {
 	if len(args) > 0 {
 		switch args[0] {
+		case "owner-task":
+			return runWorkloadTask(args[1:], true)
+		case "task":
+			return runWorkloadTask(args[1:], false)
 		case "release-secrets", "owner-secret", "legacy-secrets-allowed":
 			return runWorkloadSecrets(args)
 		case "delivery-enable", "delivery-authorize":
@@ -53,7 +57,7 @@ func runWorkload(args []string) error {
 			return runWorkloadIngress(args[1:], args[0] == "isolate-ingress")
 		case "readiness":
 			return runWorkloadReadinessPolicy(args[1:])
-		case "trust", "release-admit", "release-bind", "release-bootstrap", "operation", "ready":
+		case "trust", "release-admit", "owner-recovery-admit", "release-bind", "release-bootstrap", "operation", "ready":
 			return runWorkloadRelease(args)
 		}
 	}

@@ -1270,7 +1270,12 @@ if [ -n "${TASK_SCRIPT_B64:-}" ]; then
 fi
 if [ -n "$TASKS" ]; then
 	log "Installing $TASK_BIN from this app's task script"
-	cp "$TASK_FILE" "$TASK_BIN.tmp"
+	cat > "$TASK_BIN.tmp" <<'KOMIZO_TASK_EOF'
+#!/bin/sh
+set -eu
+exec /usr/local/bin/komizo-box workload task --policy /etc/komizo/workloads/__APP_NAME__.json -- "$@"
+KOMIZO_TASK_EOF
+	sed -i "s|__APP_NAME__|$APP_NAME|g" "$TASK_BIN.tmp"
 	mv -f "$TASK_BIN.tmp" "$TASK_BIN"
 	chown root:root "$TASK_BIN"
 	chmod 755 "$TASK_BIN"
