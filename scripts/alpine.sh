@@ -720,6 +720,8 @@ APP_DIR="__APP_DIR__"
 ROUTE_FILE="__ROUTES_DIR__/__APP_NAME__.caddy"
 SCOPED_ENV="__SCOPED_ENV__"
 WORKLOAD_POLICY="/etc/komizo/workloads/__APP_NAME__.json"
+# Keep the bounded metadata contract readable by authenticated upgrade adapters.
+: "$CONFIG_IMAGE" "$PROXY_CONTAINER" "$PROXY_DIR" "$APP_NAME" "$APP_DIR" "$ROUTE_FILE"
 
 # All supported installations use the root-owned typed executor. Configure
 # source, resources and readiness, then run workload deployment-enable.
