@@ -390,6 +390,10 @@ func staticOwnerWithHost(ctx context.Context, verb string, sub subject, svc, by 
 		}
 		return true, h.storeStatic()
 	}
+	state, err := box.StateRevision(sub.root, sub.app)
+	if err != nil {
+		return true, err
+	}
 	stopped, err := box.IsStopped(sub.root, sub.app)
 	if err != nil || verb == "restart" && stopped {
 		return true, errors.Join(err, errors.New("stopped static application must be explicitly started"))
@@ -439,8 +443,15 @@ func staticOwnerWithHost(ctx context.Context, verb string, sub subject, svc, by 
 	if err := h.storeStatic(); err != nil {
 		return true, errors.Join(err, h.AbortStatic(ctx, r))
 	}
+	now, err := box.StateRevision(sub.root, sub.app)
+	if err != nil || now != state {
+		return true, errors.Join(workload.ErrActivationStopped, err, h.AbortStatic(context.Background(), r))
+	}
 	if verb == "start" {
-		return true, box.ClearStopped(sub.root, sub.app)
+		cleared, err := box.ClearStoppedIfUnchanged(sub.root, sub.app, state)
+		if err != nil || !cleared {
+			return true, errors.Join(workload.ErrActivationStopped, err, h.AbortStatic(context.Background(), r))
+		}
 	}
 	return true, nil
 }

@@ -189,6 +189,12 @@ type hostActivation struct {
 	makeStaticDir            func(string, os.FileMode) error
 	readinessClient          *http.Client
 	checkpoint               func(string)
+	deploymentLogin          func(context.Context, deploymentCredentials, string) error
+	deploymentCopy           func(context.Context, string) ([]byte, []byte, error)
+	deploymentSecretCheck    func(context.Context, string, string) error
+	deploymentBoundary       func(string)
+	deploymentWrite          func(string, []byte, os.FileMode) error
+	deploymentOwner          func(os.FileInfo) bool
 }
 
 func newHostActivation() *hostActivation {
@@ -474,13 +480,37 @@ func activationPass(ctx context.Context, dir string, h *hostActivation) error {
 		started := op.Phase == "ready"
 		result = workload.ActivationResult{Version: 1, ID: request.ID, App: request.App, Candidate: request.Candidate, At: op.At, Phase: op.Phase, OK: true, Started: &started}
 	} else {
-		result, _ = workload.Activate(ctx, request, h)
+		if request.Stage != nil {
+			configured, stageErr := h.stageDeployment(ctx, request, dir)
+			if stageErr != nil {
+				phase := "staging_failed"
+				if errors.Is(stageErr, workload.ErrActivationReconciliation) {
+					phase = "reconciliation_required"
+				}
+				result = workload.ActivationResult{Version: 1, ID: request.ID, App: request.App, Candidate: request.Candidate, At: time.Now().UTC(), Phase: phase}
+			} else {
+				request = configured
+				result, _ = workload.Activate(ctx, request, h)
+			}
+		} else {
+			result, _ = workload.Activate(ctx, request, h)
+		}
 	}
 	if err := pruneActivationResults(dir); err != nil {
 		return err
 	}
 	if err := workload.WritePrivateJSON(filepath.Join(dir, request.ID+".json"), result); err != nil {
 		return err
+	}
+	// A restart that fences staging also destroys its operation-owned registry
+	// authority. No credential is kept for an automatic retry.
+	if err := os.RemoveAll(filepath.Dir(deploymentCredentialPath(dir, request.ID))); err != nil {
+		return err
+	}
+	if result.OK && (result.Phase == "ready" || result.Phase == "prepared_stopped") {
+		if err := os.Remove(filepath.Join(h.releases, request.App, "staging-"+request.ID+".json")); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 	if err := os.Remove(filepath.Join(dir, "pending.json")); err != nil {
 		return err

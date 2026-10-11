@@ -1,7 +1,11 @@
 package box
 
 import (
+	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -124,7 +128,7 @@ func MarkStopped(root, app, by string, at time.Time) error {
 		// duration computed across two of them is wrong by hours in a way that
 		// looks like a plausible answer. RFC3339 because probe.go parses
 		// exactly that and a value it cannot parse is silently dropped.
-		stoppedAtKey: at.UTC().Format(time.RFC3339),
+		stoppedAtKey: at.UTC().Format(time.RFC3339Nano),
 	})
 }
 
@@ -196,6 +200,47 @@ func ClearStopped(root, app string) error {
 // editing is the only record of where an app lives and which account deploys
 // it.
 func setStateValues(path string, set map[string]string) error {
+	return setStateValuesExpected(path, set, "")
+}
+
+var errStateChanged = errors.New("app state changed during lifecycle operation")
+
+// StateRevision is a bounded fingerprint, never the contents of an app record.
+func StateRevision(root, app string) (string, error) {
+	path, err := appStatePath(root, app)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
+		return "", errors.New("invalid bounded app record")
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// ClearStoppedIfUnchanged cannot erase a newer owner request or provisioning
+// change. It shares the mandatory record lock with every stop-marker writer.
+func ClearStoppedIfUnchanged(root, app, expected string) (bool, error) {
+	if len(expected) != 64 || strings.Trim(expected, "0123456789abcdef") != "" {
+		return false, errors.New("invalid app state fingerprint")
+	}
+	path, err := appStatePath(root, app)
+	if err != nil {
+		return false, err
+	}
+	err = setStateValuesExpected(path, map[string]string{stoppedKey: "", stoppedByKey: "", stoppedAtKey: ""}, expected)
+	if errors.Is(err, errStateChanged) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func setStateValuesExpected(path string, set map[string]string, expected string) error {
 	for k, v := range set {
 		// A NEWLINE IN A VALUE FORGES A KEY. A `by` containing
 		// "\nAPP_DIR=/srv/theirs" writes a second APP_DIR into a file whose
@@ -257,15 +302,16 @@ func setStateValues(path string, set map[string]string) error {
 	// reconstruct -- see the lock and the atomic replacement in alpine.sh, which
 	// is the other half of this pair and takes the same lock by the same name.
 	//
-	// It is not a correctness barrier on its own, and it does not pretend to
-	// be: it is skipped whenever it cannot be taken, and it gives up after
-	// recordLockWait and proceeds anyway. Blocking here would hang rootd's
-	// applier on a lock held by something that may never let go, and a stop
-	// that hangs is worse than a stop that races. What makes the unlocked case
-	// survivable is that BOTH writers now replace the file by rename, so the
-	// worst outcome without the lock is a lost update rather than a reader
-	// seeing a file that has been emptied and not yet refilled.
-	defer lockRecord(path)()
+	// Failure to acquire the record lock refuses the write. Atomic replacement
+	// protects readers; the lock protects concurrent read-modify-write decisions.
+	root := strings.TrimSuffix(filepath.Dir(path), AppsDir)
+	ctx, cancel := context.WithTimeout(context.Background(), recordLockWait)
+	defer cancel()
+	unlock, err := lockHostFile(ctx, root, RecordLockName(strings.TrimSuffix(filepath.Base(path), ".env")))
+	if err != nil {
+		return fmt.Errorf("app record lock unavailable: %w", err)
+	}
+	defer unlock()
 
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -274,6 +320,15 @@ func setStateValues(path string, set map[string]string) error {
 		// invent an app with no APP_DIR, and paths.go is explicit that a record
 		// naming no directory is a box mid-removal or a file somebody edited.
 		return err
+	}
+	if len(b) > 1<<20 {
+		return errors.New("app record exceeds its bound")
+	}
+	if expected != "" {
+		sum := sha256.Sum256(b)
+		if hex.EncodeToString(sum[:]) != expected {
+			return errStateChanged
+		}
 	}
 
 	var out []string
@@ -329,19 +384,6 @@ const maxStateValue = 128
 // answers the operator instead of hanging.
 const recordLockWait = 5 * time.Second
 
-// lockRecord takes the cross-process lock on one app's record, and returns the
-// release. See setStateValues for why, and alpine.sh for the other side.
-//
-// The lock lives under RunDir rather than beside the record. AppsDir is
-// rewritten by rename, and a lock file in a directory that is being rewritten
-// is a lock file that can be replaced underneath the two processes holding it;
-// /run is also cleared on boot, which is the correct lifetime for a lock and
-// the wrong one for a record.
-//
-// Every failure returns a no-op release rather than an error, and every one of
-// them is a case where locking is impossible rather than contended: no /run to
-// write, no permission, a kernel without flock on the filesystem in question.
-// The caller's work is still correct in all of them, just no longer serialised.
 // RecordLockName is the per-app lock file, and it is exported so the agreement
 // with alpine.sh can be asserted from ONE definition rather than from two
 // literals that happen to look alike. The directory was already pinned that
@@ -349,39 +391,6 @@ const recordLockWait = 5 * time.Second
 // processes locking different files -- which excludes nothing, quietly, while
 // every test still passes.
 func RecordLockName(app string) string { return "state-" + app + ".lock" }
-
-func lockRecord(path string) func() {
-	nothing := func() {}
-	if err := os.MkdirAll(RunDir, 0o755); err != nil {
-		return nothing
-	}
-	// Named from the record, which appStatePath has already refused a separator
-	// in, so this cannot become a path of somebody else's choosing. The name
-	// matches the one alpine.sh builds from APP_NAME; two processes locking
-	// different files exclude nothing.
-	name := RecordLockName(strings.TrimSuffix(filepath.Base(path), ".env"))
-	f, err := os.OpenFile(filepath.Join(RunDir, name), os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nothing
-	}
-	deadline := time.Now().Add(recordLockWait)
-	for {
-		if flockExclusiveNB(f.Fd()) {
-			return func() {
-				// Unlocked explicitly before the close. Closing releases it too,
-				// but only as a side effect of the last descriptor going away --
-				// and this process may hold another one on a later call.
-				flockUnlock(f.Fd())
-				_ = f.Close()
-			}
-		}
-		if time.Now().After(deadline) {
-			_ = f.Close()
-			return nothing
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-}
 
 // appStatePath is where one app's record lives, and the one place that decides.
 //

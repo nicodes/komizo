@@ -219,3 +219,43 @@ func TestWhatIsWrittenIsWhatTheProbeReads(t *testing.T) {
 		t.Errorf("the probe read %+v back from what MarkStopped wrote", a)
 	}
 }
+
+func TestStopClearRequiresUnchangedRecord(t *testing.T) {
+	root := recordFixture(t)
+	at := time.Date(2026, 10, 11, 1, 2, 3, 1, time.UTC)
+	if err := MarkStopped(root, "blog", StoppedByCLI, at); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := StateRevision(root, "blog")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkStopped(root, "blog", StoppedByCLI, at.Add(time.Nanosecond)); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := ClearStoppedIfUnchanged(root, "blog", revision)
+	if err != nil || cleared {
+		t.Fatalf("newer stop was cleared: %v %v", cleared, err)
+	}
+	revision, err = StateRevision(root, "blog")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleared, err = ClearStoppedIfUnchanged(root, "blog", revision)
+	if err != nil || !cleared {
+		t.Fatalf("unchanged stop not cleared: %v %v", cleared, err)
+	}
+}
+func TestRecordLockFailureRefusesStopWrite(t *testing.T) {
+	root := recordFixture(t)
+	if err := os.WriteFile(filepath.Join(root, "run"), []byte("not a directory"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	before := recordOf(t, root)
+	if err := MarkStopped(root, "blog", StoppedByCLI, time.Now()); err == nil {
+		t.Fatal("stop write bypassed unavailable record lock")
+	}
+	if recordOf(t, root) != before {
+		t.Fatal("record changed without its lock")
+	}
+}
