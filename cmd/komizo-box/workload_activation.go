@@ -142,7 +142,10 @@ func runWorkloadActivation(args []string) error {
 
 func protectedActivationBytes(path string) ([]byte, error) {
 	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0022 != 0 || !workloadRootOwner(info) || info.Size() > workload.MaxBytes {
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0022 != 0 || !workloadRootOwner(info) || info.Size() > workload.MaxBytes {
 		return nil, errors.New("activation input is not a bounded protected root file")
 	}
 	f, err := os.Open(path)
