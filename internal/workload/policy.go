@@ -21,18 +21,19 @@ import (
 const MaxBytes = 1 << 20
 
 type Policy struct {
-	Version                 int              `json:"version"`
-	App                     string           `json:"app"`
-	AppDir                  string           `json:"app_dir"`
-	ImagePrefix             string           `json:"image_prefix"`
-	SharedNetwork           string           `json:"shared_network"`
-	SourceRepository        string           `json:"source_repository,omitempty"`
-	RepositoryID            string           `json:"repository_id,omitempty"`
-	Resources               *ResourcePolicy  `json:"resources,omitempty"`
-	Readiness               *ReadinessPolicy `json:"readiness,omitempty"`
-	IngressNetwork          string           `json:"ingress_network,omitempty"`
-	RequireStatefulContract bool             `json:"require_stateful_contract,omitempty"`
-	Static                  *StaticPolicy    `json:"static,omitempty"`
+	Version                 int               `json:"version"`
+	App                     string            `json:"app"`
+	AppDir                  string            `json:"app_dir"`
+	ImagePrefix             string            `json:"image_prefix"`
+	SharedNetwork           string            `json:"shared_network"`
+	SourceRepository        string            `json:"source_repository,omitempty"`
+	RepositoryID            string            `json:"repository_id,omitempty"`
+	Resources               *ResourcePolicy   `json:"resources,omitempty"`
+	Readiness               *ReadinessPolicy  `json:"readiness,omitempty"`
+	IngressNetwork          string            `json:"ingress_network,omitempty"`
+	RequireStatefulContract bool              `json:"require_stateful_contract,omitempty"`
+	Static                  *StaticPolicy     `json:"static,omitempty"`
+	Deployment              *DeploymentPolicy `json:"deployment,omitempty"`
 }
 
 var identifier = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}$`)
@@ -46,6 +47,14 @@ func (p Policy) Check() error {
 			return errors.New("static profiles require authenticated gate-only releases and explicit readiness")
 		}
 		if err := p.Static.Check(); err != nil {
+			return err
+		}
+	}
+	if p.Deployment != nil {
+		if p.SourceRepository == "" {
+			return errors.New("typed deployment requires authenticated source authority")
+		}
+		if err := p.Deployment.Check(p.App); err != nil {
 			return err
 		}
 	}

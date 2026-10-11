@@ -15,6 +15,8 @@ import (
 func runWorkload(args []string) error {
 	if len(args) > 0 {
 		switch args[0] {
+		case "deployment-enabled", "deployment-submit":
+			return runWorkloadDeployment(args)
 		case "activation-idle", "activation-submit", "activation-wait":
 			return runWorkloadActivation(args)
 		case "host-resources":
@@ -81,6 +83,7 @@ func runWorkload(args []string) error {
 			authority.IngressNetwork = ""
 			authority.RequireStatefulContract = false // provisioning retains root's requirement
 			authority.Static = nil                    // provisioning retains root's opt-in profile
+			authority.Deployment = nil
 			if authority != p {
 				return errors.New("existing workload policy differs; review an operator policy update")
 			}

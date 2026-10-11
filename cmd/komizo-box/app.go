@@ -136,6 +136,9 @@ func runVerb(ctx context.Context, verb string, sub subject, tail int, svc, by st
 	if handled, err := staticOwnerVerb(ctx, verb, sub, svc, by); handled {
 		return err
 	}
+	if handled, err := typedOwnerVerb(ctx, verb, sub, svc, by); handled {
+		return err
+	}
 	if verb == "restart" {
 		// Restarting nothing succeeds silently, which is the failure paths.go
 		// argues against in its own words: a command that "does nothing, and has

@@ -17,17 +17,18 @@ var ErrActivationStopped = errors.New("owner stopped the workload during readine
 // ActivationRequest describes one already admitted, configured host operation.
 // It contains identities and hashes, never a shell command or registry secret.
 type ActivationRequest struct {
-	Version       int       `json:"version"`
-	ID            string    `json:"operation_id"`
-	App           string    `json:"app"`
-	Candidate     string    `json:"candidate"`
-	Previous      string    `json:"previous,omitempty"`
-	PolicySHA256  string    `json:"policy_sha256"`
-	ComposeSHA256 string    `json:"compose_sha256"`
-	RouteSHA256   string    `json:"route_sha256"`
-	RoutePath     string    `json:"route_path"`
-	Proxy         string    `json:"proxy"`
-	Deadline      time.Time `json:"deadline"`
+	Version       int              `json:"version"`
+	ID            string           `json:"operation_id"`
+	App           string           `json:"app"`
+	Candidate     string           `json:"candidate"`
+	Previous      string           `json:"previous,omitempty"`
+	PolicySHA256  string           `json:"policy_sha256"`
+	ComposeSHA256 string           `json:"compose_sha256"`
+	RouteSHA256   string           `json:"route_sha256"`
+	RoutePath     string           `json:"route_path"`
+	Proxy         string           `json:"proxy"`
+	Deadline      time.Time        `json:"deadline"`
+	Stage         *DeploymentStage `json:"stage,omitempty"`
 }
 
 type ActivationResult struct {
@@ -52,10 +53,21 @@ func (r ActivationRequest) Check(now time.Time) error {
 }
 
 func (r ActivationRequest) CheckIdentity() error {
-	if r.Version != 1 || !operationIdentity.MatchString(r.ID) || !identifier.MatchString(r.App) || !revision.MatchString(r.Candidate) ||
-		(r.Previous != "" && !revision.MatchString(r.Previous)) || !contentIdentity.MatchString(r.PolicySHA256) || !contentIdentity.MatchString(r.ComposeSHA256) ||
-		!contentIdentity.MatchString(r.RouteSHA256) || !identifier.MatchString(r.Proxy) || !filepath.IsAbs(r.RoutePath) || filepath.Clean(r.RoutePath) != r.RoutePath || filepath.Base(r.RoutePath) != r.App+".caddy" || r.Deadline.IsZero() {
-		return errors.New("invalid or expired host activation request")
+	if !operationIdentity.MatchString(r.ID) || !identifier.MatchString(r.App) || !revision.MatchString(r.Candidate) || (r.Previous != "" && !revision.MatchString(r.Previous)) || !contentIdentity.MatchString(r.PolicySHA256) || !identifier.MatchString(r.Proxy) || !filepath.IsAbs(r.RoutePath) || filepath.Clean(r.RoutePath) != r.RoutePath || filepath.Base(r.RoutePath) != r.App+".caddy" || r.Deadline.IsZero() {
+		return errors.New("invalid host operation identity")
+	}
+	switch r.Version {
+	case 1:
+		if r.Stage != nil || !contentIdentity.MatchString(r.ComposeSHA256) || !contentIdentity.MatchString(r.RouteSHA256) {
+			return errors.New("invalid configured activation identity")
+		}
+	case 2:
+		if r.Stage == nil || r.ComposeSHA256 != "" || r.RouteSHA256 != "" || !commitID.MatchString(r.Candidate) || (r.Previous != "" && !commitID.MatchString(r.Previous)) {
+			return errors.New("invalid staging identity")
+		}
+		return r.Stage.Check()
+	default:
+		return errors.New("unknown host operation version")
 	}
 	return nil
 }
@@ -78,6 +90,9 @@ type ActivationRuntime interface {
 // Verify; an interrupted external effect requires explicit reconciliation.
 func Activate(parent context.Context, request ActivationRequest, runtime ActivationRuntime) (result ActivationResult, err error) {
 	result = ActivationResult{Version: 1, ID: request.ID, App: request.App, Candidate: request.Candidate, Phase: "refused", At: time.Now().UTC()}
+	if request.Version != 1 || request.Stage != nil {
+		return result, errors.New("staging must complete before activation")
+	}
 	if err = request.Check(time.Now()); err != nil {
 		return result, err
 	}
