@@ -16,7 +16,7 @@ const (
 	proxyDir        = "/srv/_proxy"
 	proxyContainer  = "komizo-proxy"
 	defaultNetwork  = "edge"
-	defaultProxy    = "caddy:2"
+	defaultProxy    = "ghcr.io/nicodes/platform-proxy@sha256:25d6dabfad5ff85e7d2b449f1662a981e785d6d7d51772585e88e19e207c13a3"
 	proxyImageChars = imageChars + "@"
 )
 

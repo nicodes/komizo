@@ -35,14 +35,14 @@
 #
 # Inputs, all environment variables:
 #   SHARED_NETWORK docker network apps join                 (default: edge)
-#   PROXY_IMAGE    caddy image to run                       (default: caddy:2)
+#   PROXY_IMAGE    caddy image to run                       (default: reviewed immutable platform release)
 #   TLS_ASK        on-demand-TLS gate URL                   (default: none)
 #   TLS_CONFIG_DIR root-owned wildcard Caddyfile/credentials (default: none)
 
 set -eu
 
 SHARED_NETWORK="${SHARED_NETWORK:-edge}"
-PROXY_IMAGE="${PROXY_IMAGE:-caddy:2}"
+PROXY_IMAGE="${PROXY_IMAGE:-ghcr.io/nicodes/platform-proxy@sha256:25d6dabfad5ff85e7d2b449f1662a981e785d6d7d51772585e88e19e207c13a3}"
 TLS_ASK="${TLS_ASK:-}"
 TLS_CONFIG_DIR="${TLS_CONFIG_DIR:-}"
 

@@ -53,9 +53,7 @@ func RecordOperation(path, app, candidate, previous, phase string, now time.Time
 	if !identifier.MatchString(app) || !revision.MatchString(candidate) || (previous != "" && !revision.MatchString(previous)) {
 		return errors.New("invalid deployment operation identity")
 	}
-	switch phase {
-	case "admitted", "staging", "staging_failed", "configured", "activating", "activated", "ready", "readiness_failed", "prepared_stopped", "failed", "activation_failed", "reconciled":
-	default:
+	if !KnownOperationPhase(phase) {
 		return errors.New("invalid deployment operation phase")
 	}
 	operation := Operation{Version: 1, App: app, Candidate: candidate, Previous: previous, Phase: phase, At: now}

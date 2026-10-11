@@ -7,6 +7,11 @@ import (
 	"strings"
 )
 
+// Platform is the fixed operator executor, embedded in the authenticated binary.
+//
+//go:embed platform.py
+var Platform string
+
 // The server-side shell, shipped over SSH and run as root on the box.
 //
 // ALL of it lives here as .sh files, and none of it is built with fmt.Sprintf.

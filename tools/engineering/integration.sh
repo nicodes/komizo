@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 export KOMIZO_REQUIRE_SHELLCHECK=1
+python3 scripts/platform_test.py
 mapfile -t packages < <(go list ./... | sed '\|/internal/workflows$|d;\|/scripts$|d')
 go test -race -count=1 -timeout 5m "${packages[@]}"
 set -euo pipefail
