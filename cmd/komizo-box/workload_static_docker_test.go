@@ -291,7 +291,7 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 		}
 	}
 	for _, method := range []string{"HEAD", "GET"} {
-		for _, path := range []string{"/", "/index.html"} {
+		for _, path := range paths {
 			byteRange := ""
 			if method == "GET" {
 				byteRange = "bytes=0-63"
@@ -300,6 +300,11 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 			next := fetchMethod(proxy, "example.test", path, "identity", method, byteRange)
 			if old.status != next.status || old.checksum != next.checksum || old.size != next.size || !bytes.Equal(old.body, next.body) || old.headers["content-range"] != next.headers["content-range"] || old.headers["content-length"] != next.headers["content-length"] {
 				t.Fatal("HEAD/range parity differs", path, method, old.status, next.status)
+			}
+			for _, header := range []string{"content-type", "content-encoding", "cache-control", "vary", "x-frame-options", "x-content-type-options", "referrer-policy", "cross-origin-opener-policy", "cross-origin-embedder-policy", "content-security-policy"} {
+				if old.headers[header] != next.headers[header] {
+					t.Fatalf("HEAD/range header parity differs %s %s: %s %q/%q", path, method, header, old.headers[header], next.headers[header])
+				}
 			}
 		}
 	}

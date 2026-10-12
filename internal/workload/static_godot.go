@@ -21,6 +21,7 @@ func godotStaticRoute(app, revision string) string {
 	# leaves a direct Brotli download without a MIME type. Shared file serving
 	# must preserve that response rather than depending on proxy sniffing.
 	@APP_brotli_download {
+		method GET
 		path *.br
 		file {path}
 		not path /index.js* /index.wasm* /index.pck* /index.audio* /index.service.worker* /index.offline*
