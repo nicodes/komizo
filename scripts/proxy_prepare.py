@@ -22,6 +22,7 @@ if 'run' not in globals():
     run, digest, protected_directory, HOST = shared.run, shared.digest, shared.protected_directory, shared.HOST
 
 TIMEOUTS = '    servers {\n        timeouts {\n            read_header 5s\n            read_body 3m\n            idle 2m\n        }\n    }\n'
+PROVISIONED_TIMEOUTS = TIMEOUTS.replace('    ', '\t')
 
 
 def private_bytes(path, maximum=1024*1024):
@@ -66,7 +67,8 @@ def existing_probe(probe):
 def bounded_listener(previous):
     """Preserve TLS/imports verbatim; refuse ambiguous pre-existing servers."""
     if re.search(r'^\s*servers(?:\s|\{)', previous, re.M):
-        if previous.count(TIMEOUTS)==1 and len(re.findall(r'^\s*servers(?:\s|\{)',previous,re.M))==1:
+        if (sum(previous.count(block) for block in (TIMEOUTS,PROVISIONED_TIMEOUTS))==1
+                and len(re.findall(r'^\s*servers(?:\s|\{)',previous,re.M))==1):
             return previous.encode()
         raise ValueError('existing listener policy needs explicit review')
     lines = previous.splitlines(keepends=True)
