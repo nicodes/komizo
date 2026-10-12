@@ -237,6 +237,9 @@ func StaticRouteForProfile(route []byte, app, revision string, hostnames []strin
 		if profile == "godot-legacy-v1" {
 			legacy := "\t@" + app + "_legacy path /index.js* /index.wasm* /index.pck* /index.audio* /index.service.worker* /index.offline*\n\trespond @" + app + "_legacy 404\n"
 			snippet = strings.Replace(snippet, legacy, "", 1)
+			// This layout serves the legacy filenames too, including direct
+			// Brotli downloads. Only the immutable layouts refuse those paths.
+			snippet = strings.Replace(snippet, "\t\tnot path /index.js* /index.wasm* /index.pck* /index.audio* /index.service.worker* /index.offline*\n", "", 1)
 		}
 	}
 	return []byte(strings.ReplaceAll(string(route), needle, snippet)), nil
