@@ -12,8 +12,11 @@ import (
 // All ceilings are selected by the operator, never by a config image. Memory
 // swap is the total RAM+swap ceiling, matching Docker's memswap_limit. Equal
 // values disable swap. Aggregate ceilings include every service, including
-// migration/profile services, and a separate image/startup allowance.
+// migration/profile services, and a separate image/startup allowance. In cgroup
+// mode these are finite Compose admission ceilings; the installed application
+// group enforces the smaller runtime total shared by those services.
 type ResourcePolicy struct {
+	AggregateMode         string                   `json:"aggregate_mode,omitempty"`
 	CgroupParent          string                   `json:"cgroup_parent,omitempty"`
 	Default               ServiceBudget            `json:"default"`
 	Services              map[string]ServiceBudget `json:"services,omitempty"`
@@ -39,6 +42,12 @@ func (b ServiceBudget) check() error {
 }
 
 func (p ResourcePolicy) Check() error {
+	if p.AggregateMode != "" && p.AggregateMode != "sum" && p.AggregateMode != "cgroup" {
+		return errors.New("unknown aggregate resource mode")
+	}
+	if p.AggregateMode == "cgroup" && !strings.HasPrefix(p.CgroupParent, "/komizo-production/") {
+		return errors.New("cgroup aggregate mode requires an installed application allocation")
+	}
 	if p.CgroupParent != "" && p.CgroupParent != "/komizo-production" && !regexp.MustCompile(`^/komizo-production/[a-z][a-z0-9_-]{0,62}$`).MatchString(p.CgroupParent) {
 		return errors.New("production cgroup must be host owned")
 	}
