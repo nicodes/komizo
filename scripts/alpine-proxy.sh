@@ -303,8 +303,10 @@ services:
 EOF
 if [ -f /etc/komizo/resources.json ]; then
  komizo-box workload host-resources --apply
- printf '    cgroup_parent: /komizo-proxy\n' >> "$PROXY_DIR/compose.yml"
 fi
+# Finite leaf limits also apply on a cold box without an aggregate policy.
+# Existing protected allocations select both leaf limits and the parent group.
+komizo-box workload proxy-budget --compose >> "$PROXY_DIR/compose.yml"
 if [ -n "$TLS_CONFIG_DIR" ] && [ -f "$TLS_CONFIG_DIR/secrets.env" ]; then
 	printf '    env_file:\n      - %s/secrets.env\n' "$TLS_CONFIG_DIR" >> "$PROXY_DIR/compose.yml"
 fi

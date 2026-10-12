@@ -37,6 +37,8 @@ func runWorkload(args []string) error {
 			return runWorkloadActivation(args)
 		case "host-resources":
 			return runHostResources(args[1:])
+		case "proxy-budget":
+			return runProxyBudget(args[1:])
 		case "image-refs":
 			if len(args) != 1 {
 				return errors.New("image-refs reads only standard input")
