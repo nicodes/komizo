@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 1ca6931e105e70f322be3bd385779afb71497a0ac2e8f37978528559c78327e8 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 47624588c69fcf2fe489e76466ccc75252a6a6e140103b09c10e7f27e524532e -->
 
 # komizo
 
@@ -75,6 +75,18 @@ For a release that supports `--authority-review`, install that same authenticate
 Add `--authority-review /root/komizo/review/review.json` to `platform plan`, then apply the resulting stage with its exact reviewed manifest digest. Planning reads only installed identity and permissions. Applying validates policy/shell/doas inputs before replacing files, retains previous bytes, modes and absence, and never activates application containers or routes. If interrupted, inspect and recover the same remote stage; pending recovery blocks workload and preview effects. A foreign file or permission change retains the fence for operator inspection. Root remains the trusted reviewer.
 
 For a release supporting resource-policy migration, the review may also replace the existing `/etc/komizo/resources.json` at mode 0600. The executor validates measured capacity, controller availability and current usage before creating its journal, then applies the installed policy after replacing the reviewed files. Recovery restores both prior policy bytes and its controller settings; a failed controller recovery retains the fence for a measured drain. Empty unused app leaves may remain for inspection. Releases supporting rate-only I/O policies accept `io_weight: 0` only with nonempty finite `io_max` device limits. This keeps the installed disk scheduler and applies explicit read/write caps without assuming a proportional-weight backend. Positive weights require the `io.weight` interface and refuse during read-only preflight when it is unavailable; configured weights are scheduling hints whose effective share needs measurement. Container membership changes only through later ordinary app deployment. Use `komizo-box workload host-resources --check --policy /root/komizo/review/resources.json --check-usage` for a read-only preflight; a caller-selected file cannot select the apply authority.
+
+Releases supporting `aggregate_mode: "cgroup"` can let services share the installed application's finite runtime budget. Individual services keep finite admission limits; the protected application group enforces the smaller total. The app reserve must match the installed allocation, and its startup allowance must fit between its reserve and pressure threshold. The default summed mode still requires the declared aggregate to fit the app allocation. Measure application startup and expensive work before opting in; the mode does not make all individual maxima available simultaneously.
+
+The optional native kernel fixture is available from a reviewed source checkout:
+
+```sh
+python3 tools/engineering/native-cgroup-acceptance.py \
+  --image alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 \
+  --output /absolute/path/native-cgroup-evidence.json
+```
+
+Run it on a development machine with local Docker and Linux cgroup v2 support. It creates and removes its own privileged container with a private cgroup namespace, no host mounts or Docker socket, and finite outer limits. The synthetic hard-boundary test intentionally kills an over-budget worker while checking the neighboring responder. It verifies kernel behavior; product, installer and OS-boot acceptance are separate.
 
 For a release supporting current-image reconfiguration, Root can submit `komizo-box workload deployment-submit --policy /etc/komizo/workloads/APP.json --version CURRENT_SOURCE --local-only </dev/null`, then wait with `workload activation-wait --id OPERATION_ID`. This reuses only the retained current accepted source and local immutable images through the ordinary journalled worker. It accepts no registry credential or CI proof, performs no pull, preserves private environment and retained prior images, and refuses unresolved current operations or missing cached images. A scoped app still needs its existing protected `--generation`. This lets an operator apply reviewed resource/serving policy without rebuilding or authorizing another source. Root remains trusted; the flag is not exposed through product CI adapters.
 

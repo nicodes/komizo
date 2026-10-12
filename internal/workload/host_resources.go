@@ -366,7 +366,19 @@ func (p HostResources) CheckServingBudget(app string, resources *ResourcePolicy)
 		return err
 	}
 	group, ok := p.Apps[app]
-	if !ok || resources.MaxMemoryReserveBytes != group.MemoryLowBytes || resources.MaxMemoryBytes > group.MemoryBytes || resources.MaxMemorySwapBytes > group.MemoryBytes+group.SwapBytes || resources.MaxMilliCPUs > group.MilliCPUs {
+	if !ok || resources.MaxMemoryReserveBytes != group.MemoryLowBytes {
+		return errors.New("serving budget does not fit the installed application reserve and ceilings")
+	}
+	if resources.AggregateMode == "cgroup" {
+		// Compose cannot choose the parent or alter its protected hard limits.
+		// Services may share that finite runtime total rather than requiring all
+		// their individual admission maxima to be available simultaneously.
+		if resources.StartupAllowanceBytes <= 0 || resources.StartupAllowanceBytes > group.MemoryHighBytes-group.MemoryLowBytes {
+			return errors.New("startup allowance consumes the application's serving reserve")
+		}
+		return nil
+	}
+	if resources.MaxMemoryBytes > group.MemoryBytes || resources.MaxMemorySwapBytes > group.MemoryBytes+group.SwapBytes || resources.MaxMilliCPUs > group.MilliCPUs {
 		return errors.New("serving budget does not fit the installed application reserve and ceilings")
 	}
 	return nil
