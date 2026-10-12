@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -31,7 +32,7 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Fatal("fixture must exercise actual root ownership")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	command := func(args ...string) (string, error) {
 		cmd := exec.CommandContext(ctx, "docker", args...)
@@ -73,8 +74,8 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 	if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$`).MatchString(baselineHost) {
 		t.Fatal("explicit fixture gate hostname required")
 	}
-	if os.Getenv("KOMIZO_STATIC_FIXTURE_PROFILE") == "godot-v1" {
-		h.policy.Static.Profile = "godot-v1"
+	if profile := os.Getenv("KOMIZO_STATIC_FIXTURE_PROFILE"); profile == "godot-v1" || profile == "godot-legacy-v1" || profile == "godot-immutable-v1" {
+		h.policy.Static.Profile = profile
 	}
 	h.makeStaticDir = nil
 	h.policy.Static.GateConfigSHA = hex.EncodeToString(sum[:])
@@ -108,15 +109,21 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 	if err := os.WriteFile(proxyConfig, []byte("{\n auto_https off\n admin 127.0.0.1:2019\n persist_config off\n}\n"+fixtureRoute+"\nhttp:// {\n respond \"no route for this hostname\" 404\n}\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	start := func(extra ...string) string {
+	proxyImage := os.Getenv("KOMIZO_STATIC_FIXTURE_PROXY_IMAGE")
+	if proxyImage == "" {
+		proxyImage = image
+	}
+	start := func(selectedImage string, extra ...string) string {
 		t.Helper()
-		args := []string{"run", "-d", "--publish", "127.0.0.1::80", "--user", "0:0", "--read-only", "--cap-drop", "ALL", "--cap-add", "NET_BIND_SERVICE", "--security-opt", "no-new-privileges:true", "--memory", "128m", "--memory-swap", "128m", "--cpus", "0.5", "--pids-limit", "64", "-e", "GOMEMLIMIT=32MiB", "-e", "GOGC=50", "--tmpfs", "/tmp:rw,noexec,nosuid,size=8m"}
+		args := []string{"run", "-d", "--publish", "127.0.0.1::80", "--user", "0:0", "--read-only", "--cap-drop", "ALL", "--cap-add", "NET_BIND_SERVICE", "--security-opt", "no-new-privileges:true", "--memory", "96m", "--memory-swap", "96m", "--cpus", "0.1", "--pids-limit", "64", "-e", "GOMEMLIMIT=32MiB", "-e", "GOGC=50", "--tmpfs", "/tmp:rw,noexec,nosuid,size=8m"}
 		args = append(args, extra...)
-		entry := "/usr/bin/caddy"
-		if h.policy.Static.Profile == "godot-v1" {
-			entry = "/caddy"
+		entryJSON, err := command("image", "inspect", "--format", "{{json .Config.Entrypoint}}", selectedImage)
+		var entries []string
+		if err != nil || json.Unmarshal([]byte(entryJSON), &entries) != nil || len(entries) != 1 || (entries[0] != "/caddy" && entries[0] != "/usr/bin/caddy") {
+			t.Fatal("unknown fixture Caddy entrypoint")
 		}
-		args = append(args, "--entrypoint", entry, image, "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile")
+		entry := entries[0]
+		args = append(args, "--entrypoint", entry, selectedImage, "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile")
 		cid, err := command(args...)
 		if err != nil {
 			t.Fatal("fixture Caddy start failed", err)
@@ -125,8 +132,8 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 		t.Cleanup(func() { _, _ = command("rm", "-fv", cid) })
 		return cid
 	}
-	gate := start()
-	proxy := start("-v", proxyConfig+":/etc/caddy/Caddyfile:ro", "-v", filepath.Join(h.root, workload.StaticRoot)+":/srv/public:ro")
+	gate := start(image)
+	proxy := start(proxyImage, "-v", proxyConfig+":/etc/caddy/Caddyfile:ro", "-v", filepath.Join(h.root, workload.StaticRoot)+":/srv/public:ro")
 
 	type response struct {
 		status   string
@@ -143,7 +150,7 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 		}
 		addresses[cid] = "http://" + strings.TrimSpace(address)
 	}
-	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{DisableCompression: true}}
+	client := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{DisableCompression: true}}
 	t.Cleanup(func() { client.CloseIdleConnections() })
 	fetchMethod := func(cid, host, path, encoding, method, byteRange string) response {
 		t.Helper()
@@ -201,10 +208,12 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 		log, _ := command("logs", proxy)
 		t.Fatal("fixture proxy startup", state, log)
 	}
-	caddy := "/usr/bin/caddy"
-	if h.policy.Static.Profile == "godot-v1" {
-		caddy = "/caddy"
+	entryJSON, err := command("image", "inspect", "--format", "{{json .Config.Entrypoint}}", proxyImage)
+	var entries []string
+	if err != nil || json.Unmarshal([]byte(entryJSON), &entries) != nil || len(entries) != 1 {
+		t.Fatal("proxy entrypoint unavailable")
 	}
+	caddy := entries[0]
 	if _, err := command("exec", proxy, caddy, "validate", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"); err != nil {
 		t.Fatal("whole fixture configuration invalid", err)
 	}
@@ -218,7 +227,7 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 			paths = append(paths, path)
 		}
 	}
-	if h.policy.Static.Profile == "godot-v1" {
+	if strings.HasPrefix(h.policy.Static.Profile, "godot-") {
 		paths = append(paths, "/index.js", "/index.wasm", "/index.pck")
 		for _, match := range regexp.MustCompile(`releases/[a-f0-9]{64}/[^\"\x27\s<>]+`).FindAll(baseline.body, 16) {
 			paths = append(paths, "/"+string(match))
@@ -257,6 +266,149 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 	if fetch(proxy, "foreign.test", "/", "identity").status != "404" || fetch(gate, "foreign.test", "/", "identity").status != "404" {
 		t.Fatal("unreviewed hostname served")
 	}
-	proof, _ := json.Marshal(map[string]any{"image": image, "configuration_sha256": h.policy.Static.GateConfigSHA, "tree_sha256": h.static.record.TreeSHA256, "paths": paths, "encodings": []string{"identity", "gzip"}, "methods": []string{"GET", "HEAD"}, "range": "bytes=0-63", "loopback_ports_only": true, "public_mount_read_only": true, "source_admission": "separate fixtures", "result": "passed"})
+
+	var limits struct {
+		HostConfig struct {
+			Memory   int64
+			NanoCpus int64
+		}
+		State struct{ Pid int }
+	}
+	installed, err := command("inspect", "--format", "{{json .}}", proxy)
+	if err != nil || json.Unmarshal([]byte(installed), &limits) != nil || limits.HostConfig.Memory != 96<<20 || limits.HostConfig.NanoCpus != 100000000 {
+		t.Fatal("actual proxy fixture allocation differs")
+	}
+	cgroup := func() string {
+		installed, err := command("inspect", "--format", "{{json .}}", proxy)
+		if err != nil || json.Unmarshal([]byte(installed), &limits) != nil {
+			t.Fatal("fixture PID unavailable")
+		}
+		body, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", limits.State.Pid))
+		if err != nil || !strings.HasPrefix(string(body), "0::/") || strings.Contains(string(body), "..") {
+			t.Fatal("fixture cgroup unavailable", err)
+		}
+		return filepath.Join("/sys/fs/cgroup", strings.TrimSpace(strings.TrimPrefix(string(body), "0::")))
+	}
+	counters := func(path string) map[string]int64 {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal("fixture counter unavailable", err)
+		}
+		out := map[string]int64{}
+		fields := strings.Fields(string(body))
+		for i := 0; i+1 < len(fields); i += 2 {
+			value, err := strconv.ParseInt(fields[i+1], 10, 64)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out[fields[i]] = value
+		}
+		return out
+	}
+	group := cgroup()
+	before := counters(filepath.Join(group, "memory.events"))
+	cpuBefore := counters(filepath.Join(group, "cpu.stat"))
+	loadPath := "/index.html"
+	var largest int64
+	for _, path := range paths {
+		if (strings.HasSuffix(path, ".pck") || strings.HasSuffix(path, ".wasm")) && (strings.HasPrefix(path, "/releases/") || h.policy.Static.Profile == "godot-legacy-v1") {
+			info, err := os.Stat(filepath.Join(h.root, workload.StaticRoot, r.App, r.Candidate, filepath.FromSlash(strings.TrimPrefix(path, "/"))))
+			if err != nil || !info.Mode().IsRegular() {
+				t.Fatal("fixture asset identity unavailable", err)
+			}
+			if info.Size() > largest {
+				loadPath = path
+				largest = info.Size()
+			}
+		}
+	}
+	expected := fetch(proxy, "example.test", loadPath, "identity")
+	if expected.status != "200" {
+		t.Fatal("fixture load asset unavailable")
+	}
+	type loaded struct {
+		size     int64
+		checksum string
+		err      error
+	}
+	loads := make(chan loaded, 2)
+	for worker := 0; worker < 2; worker++ {
+		go func() {
+			req, e := http.NewRequestWithContext(ctx, "GET", addresses[proxy]+loadPath, nil)
+			if e != nil {
+				loads <- loaded{err: e}
+				return
+			}
+			req.Host = "example.test"
+			req.Header.Set("Accept-Encoding", "identity")
+			res, e := client.Do(req)
+			if e != nil {
+				loads <- loaded{err: e}
+				return
+			}
+			defer res.Body.Close()
+			if res.StatusCode != 200 || res.Header.Get("X-Komizo-Revision") != r.Candidate {
+				loads <- loaded{err: fmt.Errorf("load serving identity differs")}
+				return
+			}
+			hash := sha256.New()
+			n, e := io.Copy(hash, io.LimitReader(res.Body, workload.GodotStaticMaxFileBytes+1))
+			loads <- loaded{size: n, checksum: hex.EncodeToString(hash.Sum(nil)), err: e}
+		}()
+	}
+	var maximumCore time.Duration
+	for request := 0; request < 20; request++ {
+		began := time.Now()
+		core := fetch(proxy, "example.test", "/", "identity")
+		elapsed := time.Since(began)
+		if core.status != "200" || core.headers["x-komizo-revision"] != r.Candidate || elapsed > 2*time.Second {
+			t.Fatal("core read exceeded the synthetic two-second allowance under two concurrent asset transfers", elapsed)
+		}
+		if elapsed > maximumCore {
+			maximumCore = elapsed
+		}
+	}
+	for worker := 0; worker < 2; worker++ {
+		select {
+		case result := <-loads:
+			if result.err != nil || result.size != expected.size || result.checksum != expected.checksum {
+				t.Fatal("concurrent transfer differs", result.err)
+			}
+		case <-ctx.Done():
+			t.Fatal("concurrent transfer deadline")
+		}
+	}
+	after := counters(filepath.Join(group, "memory.events"))
+	cpuAfter := counters(filepath.Join(group, "cpu.stat"))
+	if after["oom"] != before["oom"] || after["oom_kill"] != before["oom_kill"] {
+		t.Fatal("proxy fixture OOM under declared load")
+	}
+	if _, err := command("restart", proxy); err != nil {
+		t.Fatal("fixture proxy restart failed", err)
+	}
+	address, err := command("port", proxy, "80/tcp")
+	if err != nil || !strings.HasPrefix(strings.TrimSpace(address), "127.0.0.1:") {
+		t.Fatal("restarted fixture port is not loopback", err)
+	}
+	addresses[proxy] = "http://" + strings.TrimSpace(address)
+	recovered := false
+	for attempt := 0; attempt < 40; attempt++ {
+		check := fetch(proxy, "example.test", "/", "identity")
+		if check.status == "200" && check.headers["x-komizo-revision"] == r.Candidate {
+			recovered = true
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if !recovered {
+		t.Fatal("proxy did not recover serving identity")
+	}
+	recovery := fetchMethod(proxy, "example.test", loadPath, "identity", "GET", "bytes=0-63")
+	if recovery.status != "206" || recovery.size != 64 {
+		t.Fatal("asset range did not recover")
+	}
+	loadProof := map[string]any{"asset": loadPath, "asset_bytes": expected.size, "concurrent_transfers": 2, "core_reads": 20, "core_allowance_ms": 2000, "maximum_core_ms": float64(maximumCore.Microseconds()) / 1000, "memory_events_before": before, "memory_events_after": after, "cpu_before": cpuBefore, "cpu_after": cpuAfter, "process_restart_recovered": true}
+
+	proof, _ := json.Marshal(map[string]any{"image": image, "configuration_sha256": h.policy.Static.GateConfigSHA, "tree_sha256": h.static.record.TreeSHA256, "paths": paths, "encodings": []string{"identity", "gzip"}, "methods": []string{"GET", "HEAD"}, "range": "bytes=0-63", "profile": h.policy.Static.Profile, "proxy_image": proxyImage, "load": loadProof, "memory_bytes": 96 << 20, "milli_cpus": 100, "loopback_ports_only": true, "public_mount_read_only": true, "source_admission": "separate fixtures", "result": "passed"})
 	fmt.Println(string(proof))
 }
