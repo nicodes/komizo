@@ -229,6 +229,39 @@ class PlatformTests(unittest.TestCase):
                     self.assertEqual(f.p.path(path).read_bytes(), body)
                 self.assertFalse((f.stage.parent/'pending.json').exists())
 
+    def test_default_installation_upgrade_and_recovery_preserve_absent_agent_configuration(self):
+        for interrupted in (False,True):
+            with tempfile.TemporaryDirectory() as root:
+                f=Fixture(root);config=f.root/'etc/komizo/agent.json';config.unlink()
+                def disconnect(phase):
+                    if phase=='replaced-0':raise SystemExit()
+                if interrupted:
+                    f.p.checkpoint=disconnect
+                    with self.assertRaises(SystemExit):f.p.apply(f.stage,f.expected)
+                    f.p.checkpoint=lambda phase:None
+                    record=f.p.apply(f.stage,f.expected,recover=True)
+                    self.assertEqual(record['phase'],'recovered')
+                    for path,before in f.before.items():self.assertEqual(f.p.path(path).read_bytes(),before)
+                else:
+                    record=f.p.apply(f.stage,f.expected)
+                    self.assertEqual(record['phase'],'complete')
+                self.assertIsNone(record['agent_configuration_sha256'])
+                self.assertFalse(config.exists())
+                self.assertFalse((f.stage.parent/'pending.json').exists())
+
+    def test_configuration_created_after_interruption_retains_the_fence(self):
+        with tempfile.TemporaryDirectory() as root:
+            f=Fixture(root);config=f.root/'etc/komizo/agent.json';config.unlink()
+            def disconnect(phase):
+                if phase=='replaced-0':raise SystemExit()
+            f.p.checkpoint=disconnect
+            with self.assertRaises(SystemExit):f.p.apply(f.stage,f.expected)
+            config.write_bytes(b'new owner configuration')
+            with self.assertRaisesRegex(ValueError,'configuration'):
+                f.p.apply(f.stage,f.expected,recover=True)
+            self.assertTrue((f.stage.parent/'pending.json').exists())
+            self.assertEqual(config.read_bytes(),b'new owner configuration')
+
     def test_upgrade_preserves_service_state_agent_and_exact_files(self):
         with tempfile.TemporaryDirectory() as root:
             f = Fixture(root)
