@@ -15,7 +15,7 @@ import (
 //go:embed assets/*
 var assets embed.FS
 
-var names = []string{"fleet_operator.py", "fleet_broker.py", "fleet-operator.service", "fleet-operator.socket"}
+var names = []string{"fleet_operator.py", "fleet_broker.py", "fleet_publisher.py", "fleet-operator.service", "fleet-operator.socket"}
 
 // Plan identifies every byte in the operator bundle without installing it.
 func Plan() (map[string]string, error) {
