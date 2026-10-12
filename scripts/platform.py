@@ -28,6 +28,8 @@ REV = re.compile(r'[a-f0-9]{40}\Z')
 APP = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}\Z')
 SERVICES = ('komizo-rootd', 'komizo-api', 'komizo-agent')
 TERMINAL = ('ready', 'prepared_stopped', 'reconciled')
+STATIC_MOUNT = {'type': 'bind', 'source': '/srv/_public', 'target': '/srv/public',
+                'read_only': True, 'bind': {'create_host_path': False}}
 
 
 class Platform:
@@ -105,7 +107,9 @@ class Platform:
         for pattern, mode in patterns:
             match = re.fullmatch(pattern, destination)
             if match:
-                self.protected(self.path('/var/lib/komizo/apps/'+match[1]+'.env'), private=True)
+                # The public registrar writes root-owned 0640 roster metadata.
+                # It is authority by ownership and non-writability, not secrecy.
+                self.protected(self.path('/var/lib/komizo/apps/'+match[1]+'.env'))
                 return mode
         raise ValueError('workload migration path is outside the registered authority')
 
@@ -217,7 +221,7 @@ class Platform:
             raise ValueError('reviewed platform manifest changed')
         value = json.loads(body)
         required={'version', 'kind', 'source', 'release', 'files', 'receipt_sha256', 'image', 'probes'}
-        if (not required <= set(value) or set(value)-required-{'resource_budget'}
+        if (not required <= set(value) or set(value)-required-{'resource_budget', 'static_mount'}
                 or value['version'] != 1 or value['kind'] not in ('self-upgrade', 'proxy-upgrade', 'workload-authority')
                 or not REV.fullmatch(value['source']) or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', value['release'])
                 or not SHA.fullmatch(value['receipt_sha256']) or not 1 <= len(value['files']) <= 131):
@@ -232,6 +236,11 @@ class Platform:
             if value['kind']!='proxy-upgrade' or receipt.get('resource_budget')!=value['resource_budget']:
                 raise ValueError('proxy resources differ from protected receipt')
             self.check_resource_budget(value)
+        if 'static_mount' in value:
+            if (value['kind'] != 'proxy-upgrade' or value['static_mount'] != STATIC_MOUNT
+                    or receipt.get('static_mount') != STATIC_MOUNT):
+                raise ValueError('static mount differs from the protected receipt')
+            self.protected(self.path('/srv/_public'), directory=True)
         paths = set()
         for row in value['files']:
             authority = value['kind'] == 'workload-authority'
@@ -315,6 +324,19 @@ class Platform:
             raise ValueError('proxy update requires one existing proxy service')
         image = new_doc['services']['komizo-proxy'].pop('image', None)
         old_doc['services']['komizo-proxy'].pop('image', None)
+        if 'static_mount' in value:
+            self.protected(self.path('/srv/_public'), directory=True)
+            for document, required in ((new_doc, True), (old_doc, False)):
+                volumes = document['services']['komizo-proxy'].get('volumes', [])
+                if not isinstance(volumes, list) or any(not isinstance(row, dict) for row in volumes):
+                    raise ValueError('static mount requires normalized explicit mounts')
+                matches = [row for row in volumes if row.get('target') == '/srv/public']
+                implicit = {**STATIC_MOUNT, 'bind': {'create_host_path': True}}
+                normalized = {**STATIC_MOUNT, 'bind': {}}
+                if (required and matches not in ([STATIC_MOUNT], [normalized])) or (matches and matches not in ([STATIC_MOUNT], [implicit], [normalized])):
+                    raise ValueError('static mount differs from the fixed read-only public tree')
+                if matches:
+                    volumes.remove(matches[0])
         if 'resource_budget' in value:
             budget=value['resource_budget']
             fields={'mem_limit':budget['memory_bytes'],'memswap_limit':budget['total_memory_swap_bytes'],
@@ -357,6 +379,13 @@ class Platform:
         identity = self.run(['docker', 'inspect', '--format', '{{.Image}}', 'komizo-proxy'])[1].strip()
         if identity != value['image']['id']:
             raise ValueError('installed proxy identity differs')
+        if 'static_mount' in value:
+            self.protected(self.path('/srv/_public'), directory=True)
+            mounts = json.loads(self.run(['docker', 'inspect', '--format', '{{json .Mounts}}', 'komizo-proxy'])[1])
+            matches = [row for row in mounts if row.get('Destination') == '/srv/public']
+            if (len(matches) != 1 or matches[0].get('Type') != 'bind'
+                    or matches[0].get('Source') != '/srv/_public' or matches[0].get('RW') is not False):
+                raise ValueError('installed public tree is not the fixed read-only mount')
         # Compose has created the process; its listener may still be starting.
         # One deadline covers the complete route set, never a deadline per URL.
         end = time.monotonic()+deadline_seconds
@@ -547,6 +576,17 @@ class Platform:
             self.compose(self.path('/srv/_proxy/compose.yml'), 'up', '-d', '--no-build', '--pull', 'never', 'komizo-proxy')
             if self.run(['docker', 'inspect', '--format', '{{.Image}}', 'komizo-proxy'])[1].strip() != value['image']['previous_id']:
                 raise ValueError('previous proxy identity unavailable; recovery fence retained')
+            if 'static_mount' in value:
+                previous = json.loads(self.compose(self.path('/srv/_proxy/compose.yml'), 'config', '--format', 'json')[1])
+                wanted = [row for row in previous['services']['komizo-proxy'].get('volumes', []) if row.get('target') == '/srv/public']
+                actual = json.loads(self.run(['docker', 'inspect', '--format', '{{json .Mounts}}', 'komizo-proxy'])[1])
+                observed = [row for row in actual if row.get('Destination') == '/srv/public']
+                implicit = {**STATIC_MOUNT, 'bind': {'create_host_path': True}}
+                normalized = {**STATIC_MOUNT, 'bind': {}}
+                if (len(wanted) != len(observed) or wanted and (wanted not in ([STATIC_MOUNT], [implicit], [normalized])
+                        or observed[0].get('Type') != 'bind' or observed[0].get('Source') != '/srv/_public'
+                        or observed[0].get('RW') is not False)):
+                    raise ValueError('previous static mount differs; recovery fence retained')
         for service in record['services']:
             self.run(['rc-service', service, 'start'])
         record['phase'] = 'recovered'
