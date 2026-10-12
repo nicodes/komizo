@@ -22,6 +22,11 @@ var PlatformPrepare string
 //go:embed proxy_prepare.py
 var ProxyPrepare string
 
+// PublicationPrepare produces finite image artifacts without registry access.
+//
+//go:embed publication_prepare.py
+var PublicationPrepare string
+
 // The server-side shell, shipped over SSH and run as root on the box.
 //
 // ALL of it lives here as .sh files, and none of it is built with fmt.Sprintf.

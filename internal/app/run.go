@@ -185,6 +185,8 @@ func Main(args []string) error {
 		err = runCommand(args[0], args[1:])
 	case "platform":
 		err = RunPlatform(args[1:])
+	case "publication":
+		err = RunPublication(args[1:])
 	case "operator":
 		err = RunOperator(args[1:])
 	case "artifact":
@@ -264,6 +266,7 @@ hand.
   komizo reconcile --host root@HOST --inventory expected-apps.json
   komizo script [init|add|remove|unset-secret|proxy]
   komizo platform plan|apply --host HOST --release vVERSION --source COMMIT --release-dir DIR --stage DIR
+  komizo publication prepare --image ghcr.io/OWNER/IMAGE:SOURCE --output NEW_DIRECTORY
   komizo artifact --arch amd64|arm64 --output NEW_FILE
   komizo operator plan|export [--directory NEW_ABSOLUTE_DIRECTORY]
 
