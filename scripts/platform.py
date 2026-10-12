@@ -146,7 +146,7 @@ class Platform:
     def command(self, args, required=True):
         # Fixed executable, cwd, environment and output bound; no user shell.
         executables = {'rc-service': '/sbin/rc-service', 'docker': '/usr/bin/docker',
-                       'komizo-box': '/usr/local/bin/komizo-box', 'doas': '/usr/bin/doas', 'sh': '/bin/sh'}
+                       'komizo-box': '/usr/local/bin/komizo-box', 'doas': '/usr/bin/doas', 'busybox': '/bin/busybox'}
         executable = self.path(executables[args[0]])
         self.protected(executable)
         body = bytearray()
@@ -300,7 +300,7 @@ class Platform:
             elif row['path'] == '/etc/doas.conf':
                 self.run(['doas', '-C', str(candidate)])
             else:
-                self.run(['sh', '-n', str(candidate)])
+                self.run(['busybox', 'sh', '-n', str(candidate)])
 
     def compose(self, file, *args):
         return self.run(['docker', 'compose', '--project-name', 'komizo-proxy', '--project-directory', '/srv/_proxy', '--file', str(file), *args])
