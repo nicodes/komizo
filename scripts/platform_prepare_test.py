@@ -14,6 +14,51 @@ spec.loader.exec_module(m)
 
 
 class Preparation(unittest.TestCase):
+    def review_fixture(self, root):
+        candidate = root/'candidate.sh'; candidate.write_bytes(b'#!/bin/sh\nexit 0\n'); candidate.chmod(0o600)
+        review = root/'review.json'; review.write_text(json.dumps({'version':1,'files':[
+            {'path':'/var/lib/komizo/tasks/example.sh','source':'candidate.sh','mode':0o700}]})); review.chmod(0o600)
+        return review
+
+    def test_authority_review_refuses_foreign_paths_permissions_links_and_traversal(self):
+        for bad in ('path','mode','link','traversal','public'):
+            with self.subTest(bad=bad), tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:
+                root = Path(tmp); root.chmod(0o700); review = self.review_fixture(root)
+                document = json.loads(review.read_bytes())
+                if bad == 'path': document['files'][0]['path'] = '/etc/shadow'
+                elif bad == 'mode': document['files'][0]['mode'] = 0o755
+                elif bad == 'traversal': document['files'][0]['source'] = '../candidate.sh'
+                elif bad == 'public': (root/'candidate.sh').chmod(0o644)
+                else:
+                    (root/'candidate.sh').unlink(); (root/'candidate.sh').symlink_to('review.json')
+                review.write_text(json.dumps(document))
+                with self.protected_fixture(root), self.assertRaises(ValueError): m.authority_inputs(review)
+
+    def test_authority_plan_is_read_only_records_absence_and_requires_installed_executor(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:
+            root=Path(tmp); root.chmod(0o700); review=self.review_fixture(root)
+            release=root/'release';release.mkdir(mode=0o700)
+            (release/'komizo-box-linux-amd64').write_bytes(b'fixture released box')
+            (release/'komizo_Linux_x86_64.tar.gz').write_bytes(b'fixture archive')
+            (release/'embedded-agents.json').write_text(json.dumps({'sha256':m.digest(b'fixture released box'),'stamp':'a'*12}))
+            version='0.0.88';calls=[]
+            def run(args,body=None,**kwargs):
+                calls.append((args,body)); command=args[-1]
+                if command=='uname -m':return b'x86_64'
+                if command=='komizo-box version':return version.encode()
+                if command=='komizo-box report':return b'{"apps":[{"name":"example"}]}'
+                raise AssertionError(args)
+            with self.protected_fixture(root),patch.object(m,'verify',return_value='fixture template'),patch.object(m,'run',side_effect=run),patch.object(m,'remote_identity',return_value=(None,None)):
+                plan=m.prepare('box.example.test','v0.0.88','a'*40,release,None,root/'authority-plan',authority_review=review)
+                self.assertFalse(plan['applied']);self.assertTrue(all(body is None for _,body in calls))
+                value=json.loads((root/'authority-plan/manifest.json').read_bytes())
+                self.assertEqual(value['kind'],'workload-authority'); self.assertIsNone(value['files'][0]['before'])
+                self.assertIsNone(value['files'][0]['before_mode']); self.assertEqual(value['files'][0]['mode'],0o700)
+                self.assertEqual((root/'authority-plan/box').read_bytes(),b'fixture released box')
+                version='0.0.87'
+                with self.assertRaisesRegex(ValueError,'install this authenticated executor'):
+                    m.prepare('box.example.test','v0.0.88','a'*40,release,None,root/'old-executor-plan',authority_review=review)
+
     def protected_fixture(self, root):
         protect = m.protected_directory
         return patch.object(m, 'protected_directory', side_effect=lambda path: protect(path, root=root, owner=os.getuid()))
