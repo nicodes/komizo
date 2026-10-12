@@ -153,7 +153,7 @@ def authority_inputs(review, owner=0):
     for index, row in enumerate(document['files']):
         if set(row) != {'path', 'source', 'mode'} or not re.fullmatch('[A-Za-z0-9_.-]{1,128}', row['source']) or row['source'] in ('.', '..'):
             raise ValueError('authority candidates must be named files beside the review')
-        permitted = row['path'] == '/etc/doas.conf' and row['mode'] == 0o600
+        permitted = row['path'] in ('/etc/doas.conf', '/etc/komizo/resources.json') and row['mode'] == 0o600
         for pattern, mode in ((r'/etc/komizo/workloads/[a-z][a-z0-9_-]{0,62}\.json', 0o600),
                               (r'/var/lib/komizo/tasks/[a-z][a-z0-9_-]{0,62}\.sh', 0o700),
                               (r'/usr/local/bin/(?:deploy|task|set-secret|set-release-secrets|export-backup)-[a-z][a-z0-9_-]{0,62}', 0o755)):

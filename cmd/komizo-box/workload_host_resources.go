@@ -7,6 +7,7 @@ import (
 	"flag"
 	"io"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -18,16 +19,26 @@ func runHostResources(args []string) error {
 	fs := flag.NewFlagSet("host-resources", flag.ContinueOnError)
 	apply := fs.Bool("apply", false, "apply the installed operator policy")
 	check := fs.Bool("check", false, "validate stdin against measured capacity without changing policy or controllers")
+	policyPath := fs.String("policy", "", "protected candidate file; accepted only with --check")
+	usage := fs.Bool("check-usage", false, "also preflight installed controllers and usage; requires --check")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if os.Geteuid() != 0 || fs.NArg() != 0 || (*apply && *check) {
+	if os.Geteuid() != 0 || fs.NArg() != 0 || (*apply && *check) || ((!*check) && (*policyPath != "" || *usage)) {
 		return errors.New("host resources require the root operator")
 	}
 	const path = "/etc/komizo/resources.json"
 	var body []byte
 	var err error
-	if *apply {
+	if *check && *policyPath != "" {
+		if !filepath.IsAbs(*policyPath) || filepath.Clean(*policyPath) != *policyPath {
+			return errors.New("candidate resource policy must be an absolute canonical path")
+		}
+		if err := backupProtectedPath(*policyPath, false); err != nil {
+			return err
+		}
+		body, err = protectedActivationBytes(*policyPath)
+	} else if *apply {
 		info, statErr := os.Lstat(path)
 		if statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || !workloadRootOwner(info) {
 			return errors.New("host resource policy must be a root-owned private regular file")
@@ -54,6 +65,9 @@ func runHostResources(args []string) error {
 		return err
 	}
 	if *check {
+		if *usage {
+			return policy.Preflight("/sys/fs/cgroup", total, int64(runtime.NumCPU())*1000)
+		}
 		return policy.Check(total, int64(runtime.NumCPU())*1000)
 	}
 	if err := policy.Apply("/sys/fs/cgroup", total, int64(runtime.NumCPU())*1000); err != nil {
