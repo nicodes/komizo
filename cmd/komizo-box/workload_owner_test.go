@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"github.com/nicodes/komizo/box"
 	"github.com/nicodes/komizo/internal/workload"
@@ -130,7 +131,7 @@ func TestTypedScopedLifecycleKeepsOneLockAndChecksProvenance(t *testing.T) {
 			original := f.h.run
 			f.h.run = func(ctx context.Context, args ...string) (string, error) {
 				joined := strings.Join(args, " ")
-				if strings.Contains(joined, " up -d ") || strings.HasSuffix(joined, " restart") {
+				if strings.Contains(joined, " up -d ") || strings.Contains(joined, " restart --no-deps ") {
 					lockCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 					defer cancel()
 					if unlock, err := box.LockDeployment(lockCtx, sub.root, sub.app); err == nil {
@@ -138,8 +139,8 @@ func TestTypedScopedLifecycleKeepsOneLockAndChecksProvenance(t *testing.T) {
 						t.Fatal("startup effect lost the shared app lock")
 					}
 				}
-				if strings.HasSuffix(joined, " ps -q") {
-					return "synthetic-container\n", nil
+				if strings.HasSuffix(joined, " ps --status running --services") {
+					return "example-gate\n", nil
 				}
 				return original(ctx, args...)
 			}
@@ -155,6 +156,77 @@ func TestTypedScopedLifecycleKeepsOneLockAndChecksProvenance(t *testing.T) {
 			f.calls = nil
 			if err := f.h.performTypedOwner(context.Background(), verb, sub, "", "fixture", f.queue); err == nil || len(f.calls) != 0 {
 				t.Fatalf("changed provenance started a scoped workload: %v", err)
+			}
+		})
+	}
+}
+
+func TestTypedRestartUsesOnlyApprovedRunningServices(t *testing.T) {
+	for _, tc := range []struct {
+		name, running, requested string
+		wantRestart              bool
+	}{
+		{name: "serving only", running: "example-gate\n", wantRestart: true},
+		{name: "explicit running service", running: "example-gate\n", requested: "example-gate", wantRestart: true},
+		{name: "foreign service", running: "foreign\n"},
+		{name: "duplicate service", running: "example-gate\nexample-gate\n"},
+		{name: "no running service"},
+		{name: "requested stopped service", running: "example-gate\n", requested: "migrate"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDeploymentFixture(t)
+			if err := activationPass(context.Background(), f.queue, f.h); err != nil {
+				t.Fatal(err)
+			}
+			sub := subject{app: f.r.App, root: f.h.root, dir: f.h.policy.AppDir}
+			composePath := filepath.Join(sub.dir, "compose.yml")
+			body, err := os.ReadFile(composePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var definition map[string]any
+			if err := json.Unmarshal(body, &definition); err != nil {
+				t.Fatal(err)
+			}
+			services := definition["services"].(map[string]any)
+			gate := services["example-gate"].(map[string]any)
+			job := make(map[string]any)
+			for key, value := range gate {
+				job[key] = value
+			}
+			job["profiles"] = []string{"migrate"}
+			services["migrate"] = job
+			body, err = json.Marshal(definition)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(composePath, body, 0600); err != nil {
+				t.Fatal(err)
+			}
+			original := f.h.run
+			var restarts []string
+			f.h.run = func(ctx context.Context, args ...string) (string, error) {
+				joined := strings.Join(args, " ")
+				if strings.HasSuffix(joined, " ps --status running --services") {
+					return tc.running, nil
+				}
+				if strings.HasSuffix(joined, " ps -q") {
+					return "synthetic-running-container\n", nil
+				}
+				if strings.Contains(joined, " restart") {
+					restarts = append(restarts, joined)
+				}
+				return original(ctx, args...)
+			}
+			err = f.h.performTypedOwner(context.Background(), "restart", sub, tc.requested, "fixture", f.queue)
+			if !tc.wantRestart {
+				if err == nil || len(restarts) != 0 {
+					t.Fatalf("invalid inventory/request caused startup: err=%v effects=%v", err, restarts)
+				}
+				return
+			}
+			if err != nil || len(restarts) != 1 || !strings.HasSuffix(restarts[0], " restart --no-deps example-gate") {
+				t.Fatalf("restart broadened the running service set: err=%v effects=%v", err, restarts)
 			}
 		})
 	}
