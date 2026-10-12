@@ -59,6 +59,16 @@ class ProxyPreparation(unittest.TestCase):
         self.assertEqual(m.bounded_listener(bounded.decode()),bounded)
         with self.assertRaises(ValueError):m.bounded_listener('{\n servers { read_header 1h }\n}\n')
 
+    def test_actual_provisioned_listener_is_preserved_and_extra_servers_refuse(self):
+        # Bind this acceptance to the public provisioner's actual printf bytes.
+        script=Path(__file__).with_name('alpine-proxy.sh').read_text()
+        escaped=m.PROVISIONED_TIMEOUTS.replace('\t','\\t').replace('\n','\\n')
+        self.assertIn("printf '"+escaped+"'",script)
+        current='{\n'+m.PROVISIONED_TIMEOUTS+'}\nimport /etc/caddy/routes/*.caddy\n'
+        self.assertEqual(m.bounded_listener(current),current.encode())
+        with self.assertRaises(ValueError):m.bounded_listener(current+'servers { protocols h1 }\n')
+        with self.assertRaises(ValueError):m.bounded_listener(current.replace('idle 2m','idle 1h'))
+
     def test_proxy_compose_changes_only_image_and_rejects_unknown_project(self):
         doc={'name':'komizo-proxy','services':{'komizo-proxy':{'image':'previous','volumes':['tls:/data']}}}
         converted=json.loads(m.compose_candidate(json.dumps(doc).encode(),'candidate'))

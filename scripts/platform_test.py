@@ -390,6 +390,42 @@ class PlatformTests(unittest.TestCase):
 
 
 class ProxyPlatformTests(unittest.TestCase):
+    def test_resource_binding_changes_only_exact_reviewed_limits_and_preserves_volumes(self):
+        with tempfile.TemporaryDirectory() as root:
+            f=Fixture(root)
+            reference='ghcr.io/nicodes/platform-proxy@sha256:'+'b'*64
+            budget={'memory_bytes':96<<20,'total_memory_swap_bytes':96<<20,'milli_cpus':100,
+                    'pids':128,'cgroup_parent':'/komizo-proxy'}
+            value={'files':[{'path':'/srv/_proxy/compose.yml','staged':'candidate'}],
+                   'image':{'reference':reference,'id':'sha256:'+'c'*64,'previous_id':'sha256:'+'d'*64},
+                   'resource_budget':budget}
+            old={'name':'komizo-proxy','services':{'komizo-proxy':{'image':'old',
+                 'volumes':[{'type':'volume','source':'komizo-proxy_caddy_data','target':'/data'}]}}}
+            fields={'mem_limit':96<<20,'memswap_limit':96<<20,'cpus':0.1,'pids_limit':128,'cgroup_parent':'/komizo-proxy'}
+            new=json.loads(json.dumps(old));new['services']['komizo-proxy'].update(image=reference,**fields)
+            f.p.compose=lambda file,*args:(0,json.dumps(old if file==f.p.path('/srv/_proxy/compose.yml') else new))
+            def run(args,required=True):
+                f.calls.append(args)
+                return 0,value['image']['id'] if args[:3]==['docker','image','inspect'] else value['image']['previous_id']
+            f.p.run=run
+            f.p.proxy_preflight(f.stage,value)
+            # Compose v5 serializes normalized memory byte sizes as strings.
+            for field in ('mem_limit','memswap_limit'):
+                new['services']['komizo-proxy'][field]=str(fields[field])
+            f.p.proxy_preflight(f.stage,value)
+            for field in fields:
+                original=new['services']['komizo-proxy'][field]
+                new['services']['komizo-proxy'][field]='unreviewed'
+                f.calls.clear()
+                with self.assertRaisesRegex(ValueError,'protected budget'):f.p.proxy_preflight(f.stage,value)
+                self.assertEqual(f.calls,[])
+                new['services']['komizo-proxy'][field]=original
+            new['services']['komizo-proxy']['volumes'][0]['source']='foreign-certificate-volume'
+            with self.assertRaisesRegex(ValueError,'only its image'):f.p.proxy_preflight(f.stage,value)
+            new['services']['komizo-proxy']['volumes'][0]['source']='komizo-proxy_caddy_data'
+            without_budget={key:item for key,item in value.items() if key!='resource_budget'}
+            with self.assertRaisesRegex(ValueError,'only its image'):f.p.proxy_preflight(f.stage,without_budget)
+
     def test_config_preflight_uses_only_staged_readonly_caddy_mount(self):
         with tempfile.TemporaryDirectory() as root:
             f = Fixture(root)
