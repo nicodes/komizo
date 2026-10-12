@@ -151,16 +151,34 @@ func (h *hostActivation) performTypedOwner(parent context.Context, verb string, 
 		return err
 	}
 	if verb == "restart" {
-		running, err := h.run(ctx, append(append([]string{}, args...), "ps", "-q")...)
+		running, err := h.run(ctx, append(append([]string{}, args...), "ps", "--status", "running", "--services")...)
 		if err != nil || strings.TrimSpace(running) == "" {
 			return errors.New("there are no running containers to restart")
 		}
-		args = append(args, "restart")
+		services := strings.Fields(running)
+		seen := make(map[string]bool)
+		for _, name := range services {
+			if _, ok := doc.Services[name]; !ok || seen[name] {
+				return errors.New("running service inventory differs from the approved workload")
+			}
+			seen[name] = true
+		}
+		if svc != "" {
+			if !seen[svc] {
+				return errors.New("the requested service is stopped; start it explicitly")
+			}
+			services = []string{svc}
+		}
+		// Compose restart without explicit names also starts completed jobs.
+		// Restart only the observed serving services and preserve their stopped
+		// dependencies, including the release's completed migration container.
+		args = append(args, "restart", "--no-deps")
+		args = append(args, services...)
 	} else {
 		args = append(args, "up", "-d", "--remove-orphans", "--pull", "never")
-	}
-	if svc != "" {
-		args = append(args, svc)
+		if svc != "" {
+			args = append(args, svc)
+		}
 	}
 	if _, err := h.run(ctx, args...); err != nil {
 		return err
