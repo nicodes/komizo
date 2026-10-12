@@ -88,6 +88,23 @@ def resource_budget(value):
     return value
 
 
+def installed_compose(ssh, previous):
+    """Keep exact file bytes in the grant; normalize legacy YAML with its project."""
+    try:
+        json.loads(previous)
+        return previous
+    except json.JSONDecodeError:
+        labels=json.loads(run(ssh+['docker inspect --format \'{{json .Config.Labels}}\' komizo-proxy']))
+        if (labels.get('com.docker.compose.project')!='komizo-proxy'
+                or labels.get('com.docker.compose.service')!='komizo-proxy'):
+            raise ValueError('legacy YAML proxy lacks the expected installed Compose identity')
+        normalized=run(ssh+['docker compose --project-name komizo-proxy --file /srv/_proxy/compose.yml config --format json --no-interpolate --no-env-resolution'])
+        document=json.loads(normalized)
+        if document.get('name')!='komizo-proxy' or set(document.get('services',{}))!={'komizo-proxy'}:
+            raise ValueError('legacy proxy normalization changed the installed project')
+        return normalized
+
+
 def compose_candidate(previous, reference, budget=None):
     doc = json.loads(previous)
     if doc.get('name') != 'komizo-proxy' or set(doc.get('services', {})) != {'komizo-proxy'}:
@@ -222,7 +239,7 @@ def prepare(host, reference, source, stage, probes, apply=False, expected_manife
     if label != source:
         raise ValueError('local proxy source label differs')
     files = []
-    for path, name, convert in [('/srv/_proxy/compose.yml','proxy-compose',lambda b:compose_candidate(b,reference,budget)),
+    for path, name, convert in [('/srv/_proxy/compose.yml','proxy-compose',lambda b:compose_candidate(installed_compose(ssh,b),reference,budget)),
                                 ('/srv/_proxy/Caddyfile','proxy-caddy',lambda b:bounded_listener(b.decode()))]:
         previous = run(ssh+['cat '+shlex.quote(path)])
         body = convert(previous)
