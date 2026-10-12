@@ -39,6 +39,9 @@ func runWorkloadSecrets(args []string) error {
 		return err
 	}
 	if args[0] == "legacy-secrets-allowed" {
+		if err := activationIdle(activationDirectory); err != nil {
+			return err
+		}
 		if p.RequireDeliveryAuthorization {
 			return errors.New("legacy secret writes require migration to authenticated delivery")
 		}

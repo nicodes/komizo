@@ -13,5 +13,9 @@ func previewOperation(ctx context.Context, root string) (context.Context, func()
 	if err != nil {
 		return ctx, nil, err
 	}
+	if err := platformIdle(root); err != nil {
+		release()
+		return ctx, nil, err
+	}
 	return context.WithValue(ctx, operationKey{}, root), release, nil
 }

@@ -140,7 +140,55 @@ def protected_directory(path, *, root=Path('/'), owner=0):
         if ancestor == root: break
 
 
-def prepare(host, release, source, release_dir, worktree, stage, apply=False, resume=False, expected_manifest=None):
+def authority_inputs(review):
+    review = Path(review)
+    protected_directory(review.parent)
+    info = review.lstat()
+    if not review.is_file() or review.is_symlink() or info.st_uid != 0 or info.st_mode & 0o077 or info.st_size > 1<<20:
+        raise ValueError('authority review must be a bounded private root-owned file')
+    document = json.loads(review.read_bytes())
+    if set(document) != {'version', 'files'} or document['version'] != 1 or not isinstance(document['files'], list) or not 1 <= len(document['files']) <= 131:
+        raise ValueError('invalid authority review')
+    inputs = []
+    for index, row in enumerate(document['files']):
+        if set(row) != {'path', 'source', 'mode'} or not re.fullmatch('[A-Za-z0-9_.-]{1,128}', row['source']) or row['source'] in ('.', '..'):
+            raise ValueError('authority candidates must be named files beside the review')
+        permitted = row['path'] == '/etc/doas.conf' and row['mode'] == 0o600
+        for pattern, mode in ((r'/etc/komizo/workloads/[a-z][a-z0-9_-]{0,62}\.json', 0o600),
+                              (r'/var/lib/komizo/tasks/[a-z][a-z0-9_-]{0,62}\.sh', 0o700),
+                              (r'/usr/local/bin/(?:deploy|task|set-secret|set-release-secrets|export-backup)-[a-z][a-z0-9_-]{0,62}', 0o755)):
+            permitted |= bool(re.fullmatch(pattern, row['path']) and type(row['mode']) is int and row['mode'] == mode)
+        if not permitted or any(path == row['path'] for path, *_ in inputs):
+            raise ValueError('authority review path or permissions are outside the migration contract')
+        candidate = review.parent/row['source']
+        info = candidate.lstat()
+        if not candidate.is_file() or candidate.is_symlink() or info.st_uid != 0 or info.st_mode & 0o077 or not 0 < info.st_size <= 1<<20:
+            raise ValueError('authority candidate must be a bounded private root-owned file')
+        inputs.append((row['path'], 'authority-'+str(index), candidate.read_bytes(), row['mode']))
+    return inputs
+
+
+def remote_identity(ssh, path):
+    # The fixed Python reader reports only identity and mode, never prior bytes.
+    program = """import hashlib,json,os,stat,sys
+from pathlib import Path
+p=Path(sys.argv[1])
+for q in p.parents:
+ s=q.lstat()
+ if not stat.S_ISDIR(s.st_mode) or s.st_uid!=0 or s.st_mode&0o022:raise ValueError('unprotected ancestry')
+try:s=p.lstat()
+except FileNotFoundError:print(json.dumps([None,None]));raise SystemExit
+if not stat.S_ISREG(s.st_mode) or s.st_uid!=0 or s.st_mode&0o022 or s.st_size>64<<20:raise ValueError('unprotected file')
+fd=os.open(p,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+h=hashlib.sha256()
+with os.fdopen(fd,'rb') as f:
+ for b in iter(lambda:f.read(65536),b''):h.update(b)
+print(json.dumps([h.hexdigest(),stat.S_IMODE(s.st_mode)]))
+"""
+    return json.loads(run(ssh+['python3 -I -c '+shlex.quote(program)+' '+shlex.quote(path)]))
+
+
+def prepare(host, release, source, release_dir, worktree, stage, apply=False, resume=False, expected_manifest=None, authority_review=None):
     if apply and (not isinstance(expected_manifest,str) or not re.fullmatch('[a-f0-9]{64}',expected_manifest)):
         raise ValueError('apply requires the exact reviewed prepared manifest digest')
     if not isinstance(host, str) or not HOST.fullmatch(host) or (stage.exists() and not resume) or not re.fullmatch('[A-Za-z0-9_-]{1,100}', stage.name):
@@ -156,8 +204,10 @@ def prepare(host, release, source, release_dir, worktree, stage, apply=False, re
         if not apply or not stage.is_dir() or not re.fullmatch('[a-zA-Z0-9_-]{1,100}',stage.name):
             raise ValueError('resume requires an existing protected preflight stage and --apply')
         manifest = json.loads((stage/'manifest.json').read_text())
-        if manifest['source'] != source or manifest['release'] != release or manifest['kind'] != 'self-upgrade':
+        if manifest['source'] != source or manifest['release'] != release or manifest['kind'] not in ('self-upgrade', 'workload-authority'):
             raise ValueError('resume identity differs')
+        if manifest['kind'] == 'workload-authority' and run(ssh+['komizo-box version']).decode().strip().removeprefix('v') != release.removeprefix('v'):
+            raise ValueError('install this authenticated executor before changing workload authority')
         receipt = json.loads((stage/'verified-release.json').read_text())
         if receipt.get('host') != host or digest((stage/'verified-release.json').read_bytes()) != manifest['receipt_sha256']:
             raise ValueError('resume host or receipt differs')
@@ -165,6 +215,7 @@ def prepare(host, release, source, release_dir, worktree, stage, apply=False, re
             raise ValueError('resume differs from the reviewed prepared manifest')
         remote='/var/lib/komizo/upgrades/'+stage.name
         names = ('manifest.json','verified-release.json',*(r['staged'] for r in manifest['files']))
+        if manifest['kind'] == 'workload-authority': names += ('box',)
         if len(set(names)) != len(names): raise ValueError('duplicate staged filename')
         payloads = {}
         for name in names:
@@ -206,9 +257,19 @@ def prepare(host, release, source, release_dir, worktree, stage, apply=False, re
         raise ValueError('invalid installed roster')
     metadata = json.loads((release_dir/'embedded-agents.json').read_text())
     files = []
+    kind = 'workload-authority' if authority_review is not None else 'self-upgrade'
     inputs = [('/usr/local/bin/komizo-box','box',(release_dir/'komizo-box-linux-amd64').read_bytes(),0o755),
               ('/var/lib/komizo/version','version',(release+'\n'+metadata['stamp']+'\n').encode(),0o644)]
-    for app in apps:
+    if authority_review is not None:
+        if run(ssh+['komizo-box version']).decode().strip().removeprefix('v') != release.removeprefix('v'):
+            raise ValueError('install this authenticated executor before changing workload authority')
+        inputs = authority_inputs(authority_review)
+        for path, _, _, _ in inputs:
+            if path == '/etc/doas.conf': continue
+            app = Path(path).stem if path.startswith(('/etc/komizo/workloads/', '/var/lib/komizo/tasks/')) else re.sub(r'^(deploy|task|set-secret|set-release-secrets|export-backup)-', '', Path(path).name)
+            if app not in apps: raise ValueError('authority review names an unregistered app')
+        (stage/'box').write_bytes((release_dir/'komizo-box-linux-amd64').read_bytes()); (stage/'box').chmod(0o755)
+    for app in apps if authority_review is None else ():
         path='/usr/local/bin/deploy-'+app
         previous=run(ssh+['cat '+shlex.quote(path)],maximum=1024*1024).decode()
         inputs.append((path,'deploy-'+app,wrapper(template,previous),0o755))
@@ -217,16 +278,22 @@ def prepare(host, release, source, release_dir, worktree, stage, apply=False, re
         if state == b'installed': inputs.append((task,'task-'+app,task_wrapper(template,app),0o755))
         elif state != b'absent': raise ValueError('unknown installed task state')
     for path,name,body,mode in inputs:
-        prior=run(ssh+['sha256sum '+shlex.quote(path)]).decode().split()[0]
-        if not re.fullmatch('[a-f0-9]{64}',prior):raise ValueError('installed identity is invalid')
-        (stage/name).write_bytes(body);os.chmod(stage/name,mode)
+        if authority_review is not None:
+            prior, previous_mode = remote_identity(ssh, path)
+        else:
+            prior = run(ssh+['sha256sum '+shlex.quote(path)]).decode().split()[0]
+            previous_mode = None
+            if not re.fullmatch('[a-f0-9]{64}',prior): raise ValueError('installed identity is invalid')
+        if prior is None and authority_review is None: raise ValueError('installed identity is absent')
+        (stage/name).write_bytes(body);os.chmod(stage/name,0o600 if authority_review is not None else mode)
         if name.startswith(('deploy-','task-')):run(['sh','-n',str(stage/name)])
         files.append({'path':path,'staged':name,'before':prior,'after':digest(body),'mode':mode})
-    receipt={'version':1,'kind':'self-upgrade','host':host,'source':source,'authenticated':True,'files':files,'image':None,
+        if authority_review is not None: files[-1]['before_mode'] = previous_mode
+    receipt={'version':1,'kind':kind,'host':host,'source':source,'authenticated':True,'files':files,'image':None,
              'release':release,'artifact_sha256':digest((release_dir/'komizo_Linux_x86_64.tar.gz').read_bytes()),
              'independent_review_claimed':False}
     raw=(json.dumps(receipt,sort_keys=True)+'\n').encode();(stage/'verified-release.json').write_bytes(raw)
-    manifest={'version':1,'kind':'self-upgrade','source':source,'release':release,'files':files,
+    manifest={'version':1,'kind':kind,'source':source,'release':release,'files':files,
               'receipt_sha256':digest(raw),'image':None,'probes':[]}
     raw=(json.dumps(manifest,sort_keys=True)+'\n').encode();(stage/'manifest.json').write_bytes(raw)
     for name in ('manifest.json','verified-release.json'):os.chmod(stage/name,0o600)
@@ -261,10 +328,11 @@ def main(arguments=None):
     parser.add_argument('--stage',type=Path,required=True)
     parser.add_argument('--expected-manifest',help='exact digest returned by the reviewed preparation')
     parser.add_argument('--resume',action='store_true',help='retry only an identical stage with no operation journal')
+    parser.add_argument('--authority-review',type=Path,help='private operator review of registered workload policy, adapter, task and doas files; no container activation')
     args=parser.parse_args(arguments)
     if os.geteuid()!=0: raise ValueError('protected preparation requires the root operator')
     if args.operation == 'plan' and (args.resume or args.expected_manifest): raise ValueError('plan accepts no apply options')
-    print(json.dumps(prepare(args.host,args.release,args.source,args.release_dir,None,args.stage,args.operation=='apply',args.resume or (args.operation=='apply' and args.stage.exists()),args.expected_manifest)))
+    print(json.dumps(prepare(args.host,args.release,args.source,args.release_dir,None,args.stage,args.operation=='apply',args.resume or (args.operation=='apply' and args.stage.exists()),args.expected_manifest,args.authority_review)))
 
 
 if __name__ == '__main__':
