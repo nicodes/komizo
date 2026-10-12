@@ -52,6 +52,15 @@ func TestDiskPolicyRecoveryRemovesPriorRateLimits(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "cgroup.controllers"), []byte("cpu memory pids io"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	parent := filepath.Join(root, "komizo-production")
+	if err := os.Mkdir(parent, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for file, value := range map[string]string{"memory.current": "0", "memory.swap.current": "0", "pids.current": "0", "io.weight": "default 100"} {
+		if err := os.WriteFile(filepath.Join(parent, file), []byte(value), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := host.Apply(root, 512<<20, 1000); err != nil {
 		t.Fatal(err)
 	}
