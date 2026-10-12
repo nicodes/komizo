@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -54,5 +55,42 @@ func TestServingPressureRefusesBeforeRegistryOrConfigurationEffects(t *testing.T
 	}
 	if op.Phase != "admitted" {
 		t.Fatal("refusal changed operation phase", op.Phase)
+	}
+}
+
+// A login shell must not supply or conceal kernel usage through its cwd. A
+// uniquely named application has no real kernel leaf, even when the caller
+// plants an apparently matching relative hierarchy.
+func TestStartupUsageIgnoresLoginDirectory(t *testing.T) {
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	app := "startup-cwd-" + filepath.Base(cwd)
+	dir := filepath.Join(cwd, "sys/fs/cgroup/komizo-production", app)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{filepath.Join(filepath.Dir(dir), "memory.current"), filepath.Join(dir, "memory.current")} {
+		if err := os.WriteFile(path, []byte("invalid relative usage\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	host, err := json.Marshal(workload.HostResources{Apps: map[string]workload.ApplicationGroup{app: {}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{"", "/"} {
+		h := newHostActivation()
+		h.root = root
+		h.readBytes = func(path string) ([]byte, error) {
+			if path != "/etc/komizo/resources.json" {
+				t.Fatalf("relative installed policy path: %s", path)
+			}
+			return host, nil
+		}
+		p := workload.Policy{App: app, Resources: &workload.ResourcePolicy{CgroupParent: "/komizo-production/" + app}}
+		err := h.startupCapacity(p)
+		if err == nil || err.Error() != "current startup usage is unavailable" {
+			t.Fatalf("root %q: relative caller data affected startup: %v", root, err)
+		}
 	}
 }
