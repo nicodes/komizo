@@ -62,6 +62,40 @@ class Fixture:
 
 
 class PlatformTests(unittest.TestCase):
+    def test_proxy_budget_change_refuses_before_durable_or_docker_effects(self):
+        with tempfile.TemporaryDirectory() as root:
+            f=Fixture(root)
+            value=json.loads((f.stage/'manifest.json').read_text())
+            budget={'version':1,'memory_bytes':96<<20,'total_memory_swap_bytes':128<<20,'milli_cpus':100,
+                    'pids':128,'cgroup_parent':'/komizo-proxy','policy_sha256':'a'*64}
+            value.update(kind='proxy-upgrade',files=[{**value['files'][0],'path':'/srv/_proxy/compose.yml'}],
+                image={'reference':'ghcr.io/nicodes/platform-proxy@sha256:'+'b'*64,'id':'sha256:'+'b'*64,'previous_id':'sha256:'+'c'*64},
+                probes=[{'url':'https://app.example.test/','revision':'a'*40}],resource_budget=budget)
+            receipt={'version':1,'kind':value['kind'],'source':value['source'],'authenticated':True,'files':value['files'],
+                     'image':value['image'],'resource_budget':budget}
+            raw=json.dumps(receipt).encode();(f.stage/'verified-release.json').write_bytes(raw);value['receipt_sha256']=hashlib.sha256(raw).hexdigest()
+            raw=json.dumps(value).encode();(f.stage/'manifest.json').write_bytes(raw);expected=hashlib.sha256(raw).hexdigest()
+            calls=[]
+            def run(args,required=True):
+                calls.append(args)
+                self.assertEqual(args,['komizo-box','workload','proxy-budget'])
+                return 0,json.dumps({**budget,'policy_sha256':'f'*64})
+            f.p.run=run
+            with self.assertRaisesRegex(ValueError,'resources changed'):f.p.apply(f.stage,expected)
+            self.assertEqual(len(calls),1);self.assertFalse((f.stage/'operation.json').exists())
+            self.assertFalse((f.stage.parent/'pending.json').exists())
+
+    def test_proxy_acceptance_checks_actual_container_parent_and_limits(self):
+        with tempfile.TemporaryDirectory() as root:
+            f=Fixture(root)
+            budget={'version':1,'memory_bytes':96<<20,'total_memory_swap_bytes':128<<20,'milli_cpus':100,
+                    'pids':128,'cgroup_parent':'/komizo-proxy','policy_sha256':'a'*64}
+            actual={'Memory':96<<20,'MemorySwap':128<<20,'NanoCpus':100000000,'PidsLimit':128,'CgroupParent':'/komizo-proxy'}
+            f.p.run=lambda args,required=True:(0,json.dumps(budget if args[0]=='komizo-box' else actual))
+            f.p.check_resource_budget({'resource_budget':budget},installed=True)
+            actual['CgroupParent']=''
+            with self.assertRaisesRegex(ValueError,'not adopted'):f.p.check_resource_budget({'resource_budget':budget},installed=True)
+
     def task_fixture(self, root, registered=True):
         fixture = Fixture(root)
         program = fixture.root/'var/lib/komizo/tasks/example.sh'
