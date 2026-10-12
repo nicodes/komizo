@@ -49,6 +49,7 @@ func newProxyBox(t *testing.T) *proxyBox {
 	// config, compose up, the caddy validate inside the container -- answers
 	// success, so a run gets as far as the script's own logic lets it.
 	write(t, filepath.Join(b.bin, "docker"), 0o755, "#!/bin/sh\nexit 0\n")
+	write(t, filepath.Join(b.bin, "komizo-box"), 0o755, "#!/bin/sh\n"+proxyBudgetFixture+"exit 1\n")
 
 	// The shipped script, pointed at this fake box rather than at /srv and
 	// /run -- the same substitution deploy_script_test makes for alpine.sh.
@@ -61,6 +62,59 @@ func newProxyBox(t *testing.T) *proxyBox {
 	return b
 }
 
+// This stub selects a synthetic allocation different from the cold defaults,
+// proving the script preserves the typed emitter's budget. The real emitter's
+// policy/default/controller checks live in cmd/komizo-box fixtures.
+const proxyBudgetFixture = `if [ "$*" = 'workload proxy-budget --compose' ]; then
+cat <<'BUDGET'
+    mem_limit: 73400320
+    memswap_limit: 104857600
+    cpus: "0.175"
+    pids_limit: 96
+BUDGET
+exit 0
+fi
+`
+
+func TestProxyBudgetRefusalChangesNoConfigurationOrDockerState(t *testing.T) {
+	b := newProxyBox(t)
+	listener := filepath.Join(b.proxyDir, "Caddyfile")
+	compose := filepath.Join(b.proxyDir, "compose.yml")
+	write(t, listener, 0600, "previous trusted listener")
+	write(t, compose, 0600, "previous trusted compose")
+	write(t, filepath.Join(b.bin, "komizo-box"), 0755, "#!/bin/sh\nexit 1\n")
+	effects := filepath.Join(b.root, "docker-effects")
+	write(t, filepath.Join(b.bin, "docker"), 0755, "#!/bin/sh\necho invoked >> '"+effects+"'\n")
+	if out, err := b.run(t, ""); err == nil || !strings.Contains(out, "resource preflight refused") {
+		t.Fatalf("missing budget did not refuse: %v %s", err, out)
+	}
+	for path, wanted := range map[string]string{listener: "previous trusted listener", compose: "previous trusted compose"} {
+		body, err := os.ReadFile(path)
+		if err != nil || string(body) != wanted {
+			t.Fatal("resource refusal changed installed configuration", path, err)
+		}
+	}
+	if _, err := os.Stat(effects); !os.IsNotExist(err) {
+		t.Fatal("resource refusal invoked Docker", err)
+	}
+}
+
+func TestProxyWritesTheFiniteTypedEmitterAllocation(t *testing.T) {
+	b := newProxyBox(t)
+	if out, err := b.run(t, ""); err != nil {
+		t.Fatalf("proxy failed: %v %s", err, out)
+	}
+	body, err := os.ReadFile(filepath.Join(b.proxyDir, "compose.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"mem_limit: 73400320", "memswap_limit: 104857600", "cpus: \"0.175\"", "pids_limit: 96"} {
+		if !strings.Contains(string(body), expected) {
+			t.Fatal("typed proxy resource was omitted", expected)
+		}
+	}
+}
+
 func TestProxyRecreationRetainsProtectedPrivateIngress(t *testing.T) {
 	b := newProxyBox(t)
 	policyDir := filepath.Join(b.root, "workloads")
@@ -70,7 +124,7 @@ func TestProxyRecreationRetainsProtectedPrivateIngress(t *testing.T) {
 	for _, app := range []string{"alpha", "beta"} {
 		write(t, filepath.Join(policyDir, app+".json"), 0600, "{}")
 	}
-	write(t, filepath.Join(b.bin, "komizo-box"), 0755, "#!/bin/sh\napp=$(basename \"$4\" .json)\nprintf 'komizo-%s-ingress\\n' \"$app\"\n")
+	write(t, filepath.Join(b.bin, "komizo-box"), 0755, "#!/bin/sh\n"+proxyBudgetFixture+"app=$(basename \"$4\" .json)\nprintf 'komizo-%s-ingress\\n' \"$app\"\n")
 	write(t, filepath.Join(b.bin, "docker"), 0755, `#!/bin/sh
 if [ "$1 $2" = 'network inspect' ] && [ "$4" = '--format' ]; then
  case "$3" in
@@ -101,7 +155,7 @@ func TestProxyRefusesForeignPrivateIngressBeforeChangingConfiguration(t *testing
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(policyDir, "alpha.json"), 0600, "{}")
-	write(t, filepath.Join(b.bin, "komizo-box"), 0755, "#!/bin/sh\necho komizo-alpha-ingress\n")
+	write(t, filepath.Join(b.bin, "komizo-box"), 0755, "#!/bin/sh\n"+proxyBudgetFixture+"echo komizo-alpha-ingress\n")
 	write(t, filepath.Join(b.bin, "docker"), 0755, "#!/bin/sh\nif [ \"$1 $2\" = 'network inspect' ] && [ \"$4\" = '--format' ]; then echo 'true|other'; fi\n")
 	write(t, filepath.Join(b.proxyDir, "Caddyfile"), 0644, "original")
 	if out, err := b.run(t, ""); err == nil || !strings.Contains(out, "protected owner") {
