@@ -82,6 +82,10 @@ case "$TLS_ASK" in
 	*) die "TLS_ASK must be an http:// or https:// URL" ;;
 esac
 command -v docker >/dev/null 2>&1 || die "this server is not set up yet -- run 'komizo init' first"
+# Refuse unavailable/drifted resources before changing a route or container.
+# Bootstrap applied declared controllers before starting Docker; proxy updates
+# cannot silently change the host-wide resource allocation.
+proxy_budget=$(komizo-box workload proxy-budget --compose) || die "proxy resource preflight refused; use the matching box release and reviewed host resources"
 
 # Fail CLOSED on the one rewrite that can take every site on the box down.
 #
@@ -301,10 +305,9 @@ services:
   komizo-proxy:
     image: $PROXY_IMAGE
 EOF
-if [ -f /etc/komizo/resources.json ]; then
- komizo-box workload host-resources --apply
- printf '    cgroup_parent: /komizo-proxy\n' >> "$PROXY_DIR/compose.yml"
-fi
+# Finite leaf limits also apply on a cold box without an aggregate policy.
+# Existing protected allocations select both leaf limits and the parent group.
+printf '%s\n' "$proxy_budget" >> "$PROXY_DIR/compose.yml"
 if [ -n "$TLS_CONFIG_DIR" ] && [ -f "$TLS_CONFIG_DIR/secrets.env" ]; then
 	printf '    env_file:\n      - %s/secrets.env\n' "$TLS_CONFIG_DIR" >> "$PROXY_DIR/compose.yml"
 fi

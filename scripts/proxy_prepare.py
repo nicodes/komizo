@@ -78,11 +78,28 @@ def bounded_listener(previous):
     return ''.join(lines).encode()
 
 
-def compose_candidate(previous, reference):
+def resource_budget(value):
+    if (not isinstance(value,dict) or set(value)!={'version','memory_bytes','total_memory_swap_bytes','milli_cpus','pids','cgroup_parent','policy_sha256'}
+            or value['version']!=1 or any(type(value[k]) is not int or value[k]<=0 for k in ('memory_bytes','total_memory_swap_bytes','milli_cpus','pids'))
+            or value['total_memory_swap_bytes']<value['memory_bytes'] or value['cgroup_parent'] not in ('','/komizo-proxy')
+            or bool(value['cgroup_parent']) != (isinstance(value['policy_sha256'],str) and re.fullmatch('[a-f0-9]{64}',value['policy_sha256']) is not None)
+            or not value['cgroup_parent'] and value['policy_sha256'] is not None):
+        raise ValueError('proxy resource grant must bind finite protected host budgets')
+    return value
+
+
+def compose_candidate(previous, reference, budget=None):
     doc = json.loads(previous)
     if doc.get('name') != 'komizo-proxy' or set(doc.get('services', {})) != {'komizo-proxy'}:
         raise ValueError('unknown installed proxy project')
     doc['services']['komizo-proxy']['image'] = reference
+    if budget is not None:
+        budget=resource_budget(budget)
+        service=doc['services']['komizo-proxy']
+        service.update(mem_limit=budget['memory_bytes'],memswap_limit=budget['total_memory_swap_bytes'],
+                       cpus=f"{budget['milli_cpus']/1000:.3f}",pids_limit=budget['pids'])
+        if budget['cgroup_parent']:service['cgroup_parent']=budget['cgroup_parent']
+        else:service.pop('cgroup_parent',None)
     return (json.dumps(doc, indent=2)+'\n').encode()
 
 
@@ -108,7 +125,7 @@ def verify(reference, source):
     return proof
 
 
-def prepare(host, reference, source, stage, probes, apply=False, expected_manifest=None):
+def prepare(host, reference, source, stage, probes, apply=False, expected_manifest=None, bind_resources=False):
     if not HOST.fullmatch(host) or not stage.is_absolute() or stage.resolve(strict=False) != stage or not re.fullmatch('[A-Za-z0-9_-]{1,100}',stage.name):
         raise ValueError('approved host and fresh protected stage required')
     protected_directory(stage.parent)
@@ -124,9 +141,13 @@ def prepare(host, reference, source, stage, probes, apply=False, expected_manife
         if (digest(manifest_raw) != expected_manifest or manifest.get('kind') != 'proxy-upgrade'
                 or manifest.get('source') != source or manifest.get('image',{}).get('reference') != reference
                 or receipt.get('host') != host or digest(receipt_raw) != manifest.get('receipt_sha256')
-                or receipt.get('probes') != probes or manifest.get('probes') != probes):
+                or receipt.get('probes') != probes or manifest.get('probes') != probes
+                or bool('resource_budget' in manifest)!=bind_resources
+                or receipt.get('resource_budget')!=manifest.get('resource_budget')):
             raise ValueError('proxy apply differs from the reviewed host, source, probes or manifest')
         verify(reference,source)
+        if bind_resources and resource_budget(json.loads(run(ssh+['komizo-box workload proxy-budget']))) != manifest['resource_budget']:
+            raise ValueError('protected proxy resource budget changed after planning')
         names=('manifest.json','verified-release.json',*(row['staged'] for row in manifest['files']))
         if len(set(names)) != len(names) or any(not re.fullmatch('[a-zA-Z0-9_.-]+',name) for name in names):
             raise ValueError('invalid proxy staging filenames')
@@ -157,6 +178,7 @@ def prepare(host, reference, source, stage, probes, apply=False, expected_manife
     stage.mkdir(mode=0o700)
     (stage/'attestation.json').write_bytes(proof)
     report = json.loads(run(ssh+['komizo-box report']))
+    budget=resource_budget(json.loads(run(ssh+['komizo-box workload proxy-budget']))) if bind_resources else None
     release = report['server']['komizo']['version']
     if tuple(map(int,release.removeprefix('v').split('.'))) < (0,0,79):
         raise ValueError('proxy upgrade requires the reviewed platform executor')
@@ -200,7 +222,7 @@ def prepare(host, reference, source, stage, probes, apply=False, expected_manife
     if label != source:
         raise ValueError('local proxy source label differs')
     files = []
-    for path, name, convert in [('/srv/_proxy/compose.yml','proxy-compose',lambda b:compose_candidate(b,reference)),
+    for path, name, convert in [('/srv/_proxy/compose.yml','proxy-compose',lambda b:compose_candidate(b,reference,budget)),
                                 ('/srv/_proxy/Caddyfile','proxy-caddy',lambda b:bounded_listener(b.decode()))]:
         previous = run(ssh+['cat '+shlex.quote(path)])
         body = convert(previous)
@@ -213,10 +235,12 @@ def prepare(host, reference, source, stage, probes, apply=False, expected_manife
             raise ValueError('existing proxy does not meet the reviewed route contract')
     receipt = {'version':1,'kind':'proxy-upgrade','source':source,'authenticated':True,'files':files,'image':image,
                'host':host,'probes':probes,'independent_review_claimed':False,'provenance_sha256':digest(proof)}
+    if budget is not None:receipt['resource_budget']=budget
     raw = (json.dumps(receipt,sort_keys=True)+'\n').encode()
     (stage/'verified-release.json').write_bytes(raw)
     manifest = {'version':1,'kind':'proxy-upgrade','source':source,'release':release,'files':files,
                 'receipt_sha256':digest(raw),'image':image,'probes':probes}
+    if budget is not None:manifest['resource_budget']=budget
     raw = (json.dumps(manifest,sort_keys=True)+'\n').encode()
     (stage/'manifest.json').write_bytes(raw)
     for file in stage.iterdir():file.chmod(0o600)
@@ -235,10 +259,11 @@ def main(arguments=None):
     parser.add_argument('--stage',type=Path,required=True)
     parser.add_argument('--probes',type=Path,required=True)
     parser.add_argument('--expected-manifest')
+    parser.add_argument('--bind-resources',action='store_true',help='bind finite leaf limits and group to the current protected host resource policy')
     args=parser.parse_args(arguments)
     if os.geteuid()!=0: raise ValueError('protected proxy preparation requires root')
     probes=json.loads(private_bytes(args.probes,65536))
     if not isinstance(probes,list) or not 1 <= len(probes) <= 64: raise ValueError('bounded probe list is required')
-    print(json.dumps(prepare(args.host,args.reference,args.source,args.stage,probes,args.operation=='apply',args.expected_manifest)))
+    print(json.dumps(prepare(args.host,args.reference,args.source,args.stage,probes,args.operation=='apply',args.expected_manifest,args.bind_resources)))
 
 if __name__ == '__main__': main()

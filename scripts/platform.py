@@ -195,7 +195,8 @@ class Platform:
         if hashlib.sha256(body).hexdigest() != expected:
             raise ValueError('reviewed platform manifest changed')
         value = json.loads(body)
-        if (set(value) != {'version', 'kind', 'source', 'release', 'files', 'receipt_sha256', 'image', 'probes'}
+        required={'version', 'kind', 'source', 'release', 'files', 'receipt_sha256', 'image', 'probes'}
+        if (not required <= set(value) or set(value)-required-{'resource_budget'}
                 or value['version'] != 1 or value['kind'] not in ('self-upgrade', 'proxy-upgrade')
                 or not REV.fullmatch(value['source']) or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', value['release'])
                 or not SHA.fullmatch(value['receipt_sha256']) or not 1 <= len(value['files']) <= 131):
@@ -206,6 +207,10 @@ class Platform:
                 or receipt.get('authenticated') is not True or receipt.get('kind') != value['kind']
                 or receipt.get('files') != value['files'] or receipt.get('image') != value['image']):
             raise ValueError('protected release authentication receipt differs')
+        if 'resource_budget' in value:
+            if value['kind']!='proxy-upgrade' or receipt.get('resource_budget')!=value['resource_budget']:
+                raise ValueError('proxy resources differ from protected receipt')
+            self.check_resource_budget(value)
         paths = set()
         for row in value['files']:
             if set(row) != {'path', 'staged', 'before', 'after', 'mode'}:
@@ -339,12 +344,27 @@ class Platform:
         finally:
             connection.close()
 
+    def check_resource_budget(self, value, installed=False):
+        budget=value.get('resource_budget')
+        if budget is None:return
+        status,body=self.run(['komizo-box','workload','proxy-budget'])
+        if status or json.loads(body)!=budget:
+            raise ValueError('protected proxy resources changed; operation refused')
+        if installed:
+            status,body=self.run(['docker','inspect','--format','{{json .HostConfig}}','komizo-proxy'])
+            actual=json.loads(body)
+            expected={'Memory':budget['memory_bytes'],'MemorySwap':budget['total_memory_swap_bytes'],
+                      'NanoCpus':budget['milli_cpus']*1000000,'PidsLimit':budget['pids'],'CgroupParent':budget['cgroup_parent']}
+            if status or any(actual.get(name)!=wanted for name,wanted in expected.items()):
+                raise ValueError('running proxy has not adopted the declared resource group and limits')
+
     def apply(self, stage, expected, recover=False):
         stage = Path(stage)
         if stage.parent != self.path('/var/lib/komizo/upgrades') or not re.fullmatch(r'[a-zA-Z0-9_-]{1,100}', stage.name):
             raise ValueError('platform stage must be in the protected upgrade directory')
         value = self.manifest(stage, expected)
         with self.locks():
+            self.check_resource_budget(value)
             journal = stage/'operation.json'
             pending = self.path('/var/lib/komizo/upgrades/pending.json')
             if pending.exists():
@@ -417,8 +437,10 @@ class Platform:
                         self.run(['rc-service', service, 'start'])
                     self.run(['komizo-box', 'rootd', '--once'])
                 else:
-                    self.compose(self.path('/srv/_proxy/compose.yml'), 'up', '-d', '--no-build', '--pull', 'never', 'komizo-proxy')
+                    recreate=['--force-recreate'] if 'resource_budget' in value else []
+                    self.compose(self.path('/srv/_proxy/compose.yml'), 'up', '-d', *recreate, '--no-build', '--pull', 'never', 'komizo-proxy')
                     self.verify_proxy(value)
+                    self.check_resource_budget(value,installed=True)
                 for row in value['files']:
                     if self.digest(self.path(row['path'])) != row['after']:
                         raise ValueError('installed platform bytes differ')

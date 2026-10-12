@@ -13,6 +13,20 @@ spec=importlib.util.spec_from_file_location('komizo_proxy_prepare',Path(__file__
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 
 class ProxyPreparation(unittest.TestCase):
+    def test_resource_binding_preserves_tls_volumes_and_sets_finite_leaf_limits(self):
+        budget={'version':1,'memory_bytes':96<<20,'total_memory_swap_bytes':128<<20,
+                'milli_cpus':100,'pids':128,'cgroup_parent':'/komizo-proxy','policy_sha256':'a'*64}
+        doc={'name':'komizo-proxy','services':{'komizo-proxy':{'image':'previous','volumes':['tls:/data'],
+             'networks':['private-ingress'],'cap_drop':['ALL'],'mem_limit':0}}}
+        candidate=json.loads(m.compose_candidate(json.dumps(doc).encode(),'candidate',budget))
+        service=candidate['services']['komizo-proxy']
+        self.assertEqual(service['volumes'],['tls:/data']);self.assertEqual(service['networks'],['private-ingress'])
+        self.assertEqual(service['cap_drop'],['ALL']);self.assertEqual(service['cgroup_parent'],'/komizo-proxy')
+        self.assertEqual(service['mem_limit'],96<<20);self.assertEqual(service['memswap_limit'],128<<20)
+        self.assertEqual(service['cpus'],'0.100');self.assertEqual(service['pids_limit'],128)
+        for field,value in (('memory_bytes',0),('milli_cpus',True),('cgroup_parent','/foreign'),('policy_sha256',None)):
+            with self.subTest(field=field),self.assertRaises(ValueError):m.resource_budget({**budget,field:value})
+
     def protection(self,root):
         protect=m.protected_directory
         return patch.object(m,'protected_directory',side_effect=lambda path:protect(path,root=root,owner=os.getuid()))
