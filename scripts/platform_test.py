@@ -62,6 +62,102 @@ class Fixture:
 
 
 class PlatformTests(unittest.TestCase):
+    def authority_fixture(self, root, absent=True):
+        f = Fixture(root)
+        for name in ('var/lib/komizo/tasks', 'etc/komizo/workloads'):
+            (f.root/name).mkdir(mode=0o700)
+        (f.root/'var/lib/komizo/apps/example.env').write_bytes(b'APP_NAME=example\n')
+        (f.root/'var/lib/komizo/apps/example.env').chmod(0o600)
+        rows = []
+        for index, (path, mode, body) in enumerate((
+                ('/var/lib/komizo/tasks/example.sh', 0o700, b'#!/bin/sh\nexit 0\n'),
+                ('/usr/local/bin/task-example', 0o755, b'#!/bin/sh\nexec komizo-box workload task\n'),
+                ('/etc/komizo/workloads/example.json', 0o600, b'{"app":"example"}\n'))):
+            target = f.root/path.lstrip('/')
+            if not absent or index != 0:
+                target.write_bytes(b'{"app":"example","version":1}\n' if index == 2 else b'#!/bin/sh\nexit 1\n')
+                target.chmod(mode)
+            staged = 'authority-'+str(index)
+            (f.stage/staged).write_bytes(body)
+            (f.stage/staged).chmod(0o600)
+            before, before_mode = f.p.identity(target)
+            rows.append({'path':path,'staged':staged,'before':before,'before_mode':before_mode,
+                         'after':hashlib.sha256(body).hexdigest(),'mode':mode})
+        self.authority_manifest(f, rows)
+        return f, rows
+
+    def authority_manifest(self, f, rows):
+        receipt = {'version':1,'source':'a'*40,'authenticated':True,'kind':'workload-authority','files':rows,'image':None}
+        raw = json.dumps(receipt).encode(); (f.stage/'verified-release.json').write_bytes(raw)
+        value = {'version':1,'kind':'workload-authority','source':'a'*40,'release':'v0.0.88',
+                 'files':rows,'receipt_sha256':hashlib.sha256(raw).hexdigest(),'image':None,'probes':[]}
+        raw = json.dumps(value).encode(); (f.stage/'manifest.json').write_bytes(raw)
+        f.expected = hashlib.sha256(raw).hexdigest()
+
+    def test_actual_sigkill_private_task_creation_recovers_absence_and_prior_modes(self):
+        with tempfile.TemporaryDirectory() as root:
+            f, rows = self.authority_fixture(root)
+            pid = os.fork()
+            if pid == 0:
+                f.p.checkpoint = lambda phase: os.kill(os.getpid(), signal.SIGKILL) if phase == 'replaced-0' else None
+                f.p.apply(f.stage, f.expected)
+                os._exit(99)
+            _, status = os.waitpid(pid, 0)
+            self.assertTrue(os.WIFSIGNALED(status)); self.assertEqual(os.WTERMSIG(status), signal.SIGKILL)
+            task = f.root/rows[0]['path'].lstrip('/')
+            self.assertEqual(task.stat().st_mode & 0o777, 0o700)
+            self.assertTrue((f.stage.parent/'pending.json').exists())
+            self.assertEqual(f.p.apply(f.stage, f.expected, recover=True)['phase'], 'recovered')
+            self.assertFalse(task.exists())
+            for row in rows[1:]:
+                self.assertEqual(f.p.identity(f.root/row['path'].lstrip('/')), (row['before'], row['before_mode']))
+            self.assertFalse((f.stage.parent/'pending.json').exists())
+            self.assertEqual(f.p.apply(f.stage, f.expected, recover=True)['phase'], 'recovered')
+
+    def test_authority_apply_validates_before_effects_and_preserves_services(self):
+        with tempfile.TemporaryDirectory() as root:
+            f, rows = self.authority_fixture(root)
+            before = set(f.active)
+            self.assertEqual(f.p.apply(f.stage, f.expected)['phase'], 'complete')
+            self.assertEqual(f.active, before)
+            self.assertFalse(any(c[0] in ('docker','rc-service') for c in f.calls))
+            self.assertTrue(any(c[:3] == ['komizo-box','workload','validate'] for c in f.calls))
+            for row in rows:
+                self.assertEqual(f.p.identity(f.root/row['path'].lstrip('/')), (row['after'],row['mode']))
+            with self.assertRaisesRegex(ValueError,'already exists'): f.p.apply(f.stage,f.expected)
+
+    def test_authority_refuses_path_permission_roster_and_mode_races_without_journal(self):
+        for bad in ('path','mode','roster','before-mode','policy-app'):
+            with self.subTest(bad=bad), tempfile.TemporaryDirectory() as root:
+                f, rows = self.authority_fixture(root)
+                if bad == 'path': rows[0]['path'] = '/etc/shadow'
+                elif bad == 'mode': rows[0]['mode'] = 0o755
+                elif bad == 'roster': (f.root/'var/lib/komizo/apps/example.env').unlink()
+                elif bad == 'before-mode': (f.root/rows[1]['path'].lstrip('/')).chmod(0o700)
+                else:
+                    (f.stage/rows[2]['staged']).write_bytes(b'{"app":"other"}')
+                    rows[2]['after'] = hashlib.sha256((f.stage/rows[2]['staged']).read_bytes()).hexdigest()
+                self.authority_manifest(f,rows)
+                with self.assertRaises((ValueError,FileNotFoundError)): f.p.apply(f.stage,f.expected)
+                self.assertFalse((f.stage/'operation.json').exists())
+                self.assertFalse((f.stage.parent/'pending.json').exists())
+
+    def test_authority_recovery_preserves_foreign_writer_and_keeps_fence(self):
+        for bad in ('bytes','mode'):
+            with self.subTest(bad=bad), tempfile.TemporaryDirectory() as root:
+                f, rows = self.authority_fixture(root)
+                def interrupted(phase):
+                    if phase == 'replaced-0': raise SystemExit('owned fixture interruption')
+                f.p.checkpoint = interrupted
+                with self.assertRaises(SystemExit): f.p.apply(f.stage,f.expected)
+                target = f.root/rows[0]['path'].lstrip('/')
+                if bad == 'bytes': target.write_bytes(b'foreign operator bytes')
+                else: target.chmod(0o755)
+                identity = f.p.identity(target)
+                with self.assertRaisesRegex(ValueError,'changed installed'): f.p.apply(f.stage,f.expected,recover=True)
+                self.assertEqual(f.p.identity(target),identity)
+                self.assertTrue((f.stage.parent/'pending.json').exists())
+
     def test_proxy_budget_change_refuses_before_durable_or_docker_effects(self):
         with tempfile.TemporaryDirectory() as root:
             f=Fixture(root)

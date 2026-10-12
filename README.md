@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: a686a8729d76e8452e05dfab1b639fb80843ebbfcbcce0cefe41cc2642bd5e64 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 3e6b66bfefe21c7b07f6dcc41a4fc0e917e262d61936891db97ff5ffd565a88c -->
 
 # komizo
 
@@ -67,3 +67,9 @@ Create the parent directories as Root first. Planning authenticates the release 
 New cold proxies have finite memory, swap, CPU and PID limits. To move an existing proxy into a declared host resource group, explicitly add `--bind-resources` to both proxy planning and application. The manifest binds the protected allocation and policy hash; application recreates the proxy and verifies its actual Docker group and limits. Measure resource policy before migrating serving workloads.
 
 Protected container publication uses the Komizo-owned operator bundle with a separate Root policy and package credential. The publisher verifies finite final-source authorization, authenticated CI, immutable artifact/image/layer identities and package destinations before credentials. It durably refuses replay; ambiguous uploads require read-only inspection/reconciliation. Installing the bundle alone does not configure registry permissions or enable delivery authorization.
+
+## Review workload authority changes
+
+For a release that supports `--authority-review`, install that same authenticated release on the application host first. Keep the review and candidate files in a protected Root directory. The private JSON review has `version: 1` and a `files` list; each entry names an allowed registered-app destination `path`, a candidate filename `source` beside the review, and its exact `mode`. Workload policies use 0600, private task programs 0700, fixed command adapters 0755 and `/etc/doas.conf` 0600. Existing parent directories must already be protected; secret stores and arbitrary filesystem paths are outside this interface.
+
+Add `--authority-review /root/komizo/review/review.json` to `platform plan`, then apply the resulting stage with its exact reviewed manifest digest. Planning reads only installed identity and permissions. Applying validates policy/shell/doas inputs before replacing files, retains previous bytes, modes and absence, and never activates application containers or routes. If interrupted, inspect and recover the same remote stage; pending recovery blocks workload and preview effects. A foreign file or permission change retains the fence for operator inspection. Root remains the trusted reviewer.

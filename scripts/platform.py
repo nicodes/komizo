@@ -88,8 +88,29 @@ class Platform:
                 h.update(block)
         return h.hexdigest()
 
+    def identity(self, path):
+        try:
+            info = self.protected(path)
+        except FileNotFoundError:
+            self.protected(Path(path).parent, directory=True)
+            return None, None
+        return self.digest(path), stat.S_IMODE(info.st_mode)
+
+    def authority_mode(self, destination):
+        if destination == '/etc/doas.conf':
+            return 0o600
+        patterns = ((r'/etc/komizo/workloads/([a-z][a-z0-9_-]{0,62})\.json', 0o600),
+                    (r'/var/lib/komizo/tasks/([a-z][a-z0-9_-]{0,62})\.sh', 0o700),
+                    (r'/usr/local/bin/(?:deploy|task|set-secret|set-release-secrets|export-backup)-([a-z][a-z0-9_-]{0,62})', 0o755))
+        for pattern, mode in patterns:
+            match = re.fullmatch(pattern, destination)
+            if match:
+                self.protected(self.path('/var/lib/komizo/apps/'+match[1]+'.env'), private=True)
+                return mode
+        raise ValueError('workload migration path is outside the registered authority')
+
     def atomic(self, destination, source, mode):
-        self.protected(destination)
+        self.identity(destination)
         fd, temporary = tempfile.mkstemp(prefix='.komizo-platform-', dir=destination.parent)
         try:
             with os.fdopen(fd, 'wb') as out, open(source, 'rb') as incoming:
@@ -125,7 +146,7 @@ class Platform:
     def command(self, args, required=True):
         # Fixed executable, cwd, environment and output bound; no user shell.
         executables = {'rc-service': '/sbin/rc-service', 'docker': '/usr/bin/docker',
-                       'komizo-box': '/usr/local/bin/komizo-box'}
+                       'komizo-box': '/usr/local/bin/komizo-box', 'doas': '/usr/bin/doas', 'busybox': '/bin/busybox'}
         executable = self.path(executables[args[0]])
         self.protected(executable)
         body = bytearray()
@@ -197,7 +218,7 @@ class Platform:
         value = json.loads(body)
         required={'version', 'kind', 'source', 'release', 'files', 'receipt_sha256', 'image', 'probes'}
         if (not required <= set(value) or set(value)-required-{'resource_budget'}
-                or value['version'] != 1 or value['kind'] not in ('self-upgrade', 'proxy-upgrade')
+                or value['version'] != 1 or value['kind'] not in ('self-upgrade', 'proxy-upgrade', 'workload-authority')
                 or not REV.fullmatch(value['source']) or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', value['release'])
                 or not SHA.fullmatch(value['receipt_sha256']) or not 1 <= len(value['files']) <= 131):
             raise ValueError('invalid platform grant')
@@ -213,9 +234,17 @@ class Platform:
             self.check_resource_budget(value)
         paths = set()
         for row in value['files']:
-            if set(row) != {'path', 'staged', 'before', 'after', 'mode'}:
+            authority = value['kind'] == 'workload-authority'
+            fields = {'path', 'staged', 'before', 'after', 'mode'} | ({'before_mode'} if authority else set())
+            if set(row) != fields:
                 raise ValueError('invalid platform file grant')
             destination = row['path']
+            if authority:
+                if (row['mode'] != self.authority_mode(destination)
+                        or type(row['mode']) is not int
+                        or (row['before'] is None) != (row['before_mode'] is None)
+                        or row['before_mode'] is not None and (type(row['before_mode']) is not int or row['before_mode'] & 0o022 or not 0 <= row['before_mode'] <= 0o777)):
+                    raise ValueError('invalid workload migration permissions')
             permitted = destination in ('/usr/local/bin/komizo', '/usr/local/bin/komizo-box', '/var/lib/komizo/version')
             for prefix in ('/usr/local/bin/deploy-', '/usr/local/bin/task-'):
                 if destination.startswith(prefix):
@@ -225,8 +254,11 @@ class Platform:
                         permitted = permitted and self.path(f'/var/lib/komizo/tasks/{app}.sh').exists()
             if value['kind'] == 'proxy-upgrade':
                 permitted = destination in ('/srv/_proxy/compose.yml','/srv/_proxy/Caddyfile')
+            if authority:
+                permitted = True
             if (not permitted or destination in paths or not re.fullmatch(r'[A-Za-z0-9_.-]{1,128}', row['staged'])
-                    or not SHA.fullmatch(row['before']) or not SHA.fullmatch(row['after']) or row['mode'] not in (0o644, 0o755)):
+                    or not (authority and row['before'] is None or isinstance(row['before'], str) and SHA.fullmatch(row['before']))
+                    or not SHA.fullmatch(row['after']) or not authority and row['mode'] not in (0o644, 0o755)):
                 raise ValueError('platform file is outside its declared authority')
             paths.add(destination)
             if self.digest(stage/row['staged']) != row['after']:
@@ -234,6 +266,9 @@ class Platform:
         if value['kind'] == 'self-upgrade':
             if '/usr/local/bin/komizo-box' not in paths or '/var/lib/komizo/version' not in paths or value['image'] is not None or value['probes']:
                 raise ValueError('self-upgrade requires its binary and version')
+        elif value['kind'] == 'workload-authority':
+            if value['image'] is not None or value['probes']:
+                raise ValueError('workload authority migration cannot activate containers or routes')
         elif (not 1 <= len(paths) <= 2 or '/srv/_proxy/compose.yml' not in paths or not isinstance(value['image'], dict)
                 or set(value['image']) != {'reference', 'id', 'previous_id'}
                 or not re.fullmatch(r'ghcr.io/nicodes/platform-proxy@sha256:[a-f0-9]{64}', value['image']['reference'])
@@ -253,6 +288,19 @@ class Platform:
                         or target.port not in (None,443) or target.query or target.fragment or not target.path.startswith('/')):
                     raise ValueError('invalid explicit redirect readiness contract')
         return value
+
+    def authority_preflight(self, stage, value):
+        for row in value['files']:
+            candidate = stage/row['staged']
+            if row['path'].startswith('/etc/komizo/workloads/'):
+                document = json.loads(self.read(candidate, private=True, maximum=1<<20))
+                if document.get('app') != Path(row['path']).stem:
+                    raise ValueError('workload policy names a different app')
+                self.run(['komizo-box', 'workload', 'validate', '--policy', str(candidate)])
+            elif row['path'] == '/etc/doas.conf':
+                self.run(['doas', '-C', str(candidate)])
+            else:
+                self.run(['busybox', 'sh', '-n', str(candidate)])
 
     def compose(self, file, *args):
         return self.run(['docker', 'compose', '--project-name', 'komizo-proxy', '--project-directory', '/srv/_proxy', '--file', str(file), *args])
@@ -388,8 +436,10 @@ class Platform:
                     raise ValueError('platform recovery identity differs')
                 if record['phase'] in ('complete', 'recovered'):
                     side = 'after' if record['phase'] == 'complete' else 'before'
-                    if any(self.digest(self.path(row['path'])) != row[side] for row in value['files']):
+                    if any(self.identity(self.path(row['path']))[0] != row[side] for row in value['files']):
                         raise ValueError('completed platform identity changed; fence retained')
+                    if value['kind'] == 'workload-authority' and any(self.identity(self.path(row['path']))[1] != row['mode' if side == 'after' else 'before_mode'] for row in value['files']):
+                        raise ValueError('completed workload permissions changed; fence retained')
                     if value['kind']=='self-upgrade' and self.agent_configuration()!=record['agent_configuration_sha256']:
                         raise ValueError('agent configuration changed; fence retained')
                     if value['kind'] == 'proxy-upgrade' and side == 'after':
@@ -403,7 +453,8 @@ class Platform:
             if journal.exists():
                 raise ValueError('platform operation already exists; inspect or recover it')
             for row in value['files']:
-                if self.digest(self.path(row['path'])) != row['before']:
+                identity = self.identity(self.path(row['path']))
+                if identity[0] != row['before'] or value['kind'] == 'workload-authority' and identity[1] != row['before_mode']:
                     raise ValueError('installed platform bytes changed after review')
             services, configuration = [], None
             if value['kind'] == 'self-upgrade':
@@ -411,20 +462,23 @@ class Platform:
                 if 'komizo-rootd' not in services:
                     raise ValueError('self-upgrade requires the existing root worker')
                 configuration = self.agent_configuration()
-            else:
+            elif value['kind'] == 'proxy-upgrade':
                 self.proxy_preflight(stage, value)
+            else:
+                self.authority_preflight(stage, value)
             backup = stage/'previous'
             backup.mkdir(mode=0o700)
             for index, row in enumerate(value['files']):
                 path = self.path(row['path'])
-                shutil.copyfile(path, backup/str(index))
-                os.chmod(backup/str(index), 0o600)
-                with open(backup/str(index), 'rb') as f:
-                    os.fsync(f.fileno())
+                if row['before'] is not None:
+                    shutil.copyfile(path, backup/str(index))
+                    os.chmod(backup/str(index), 0o600)
+                    with open(backup/str(index), 'rb') as f:
+                        os.fsync(f.fileno())
             self.sync(backup)
             record = {'version': 1, 'manifest': expected, 'source': value['source'], 'phase': 'prepared',
                       'services': services, 'agent_configuration_sha256': configuration,
-                      'old_modes': [stat.S_IMODE(self.path(r['path']).stat().st_mode) for r in value['files']],
+                      'old_modes': [self.identity(self.path(r['path']))[1] for r in value['files']],
                       'application_restart': False}
             self.journal(stage, record)
             self.journal(stage.parent, {'stage': stage.name, 'manifest': expected})
@@ -447,13 +501,13 @@ class Platform:
                     for service in services:
                         self.run(['rc-service', service, 'start'])
                     self.run(['komizo-box', 'rootd', '--once'])
-                else:
+                elif value['kind'] == 'proxy-upgrade':
                     recreate=['--force-recreate'] if 'resource_budget' in value else []
                     self.compose(self.path('/srv/_proxy/compose.yml'), 'up', '-d', *recreate, '--no-build', '--pull', 'never', 'komizo-proxy')
                     self.verify_proxy(value)
                     self.check_resource_budget(value,installed=True)
                 for row in value['files']:
-                    if self.digest(self.path(row['path'])) != row['after']:
+                    if self.identity(self.path(row['path'])) != (row['after'], row['mode']):
                         raise ValueError('installed platform bytes differ')
                 record['phase'] = 'complete'
                 self.journal(stage, record)
@@ -469,8 +523,12 @@ class Platform:
         # An interruption may leave either side of an atomic replacement. A
         # third identity means another operator wrote it: keep the fence.
         for index, row in enumerate(value['files']):
-            if self.digest(self.path(row['path'])) not in (row['before'], row['after']) or self.digest(stage/'previous'/str(index)) != row['before']:
+            actual = self.identity(self.path(row['path']))
+            sides = ((row['before'], record['old_modes'][index]), (row['after'], row['mode']))
+            if actual not in sides or row['before'] is not None and self.digest(stage/'previous'/str(index)) != row['before']:
                 raise ValueError('platform recovery refuses changed installed or backup bytes')
+            if row['before'] is None and (stage/'previous'/str(index)).exists():
+                raise ValueError('absent previous file has foreign recovery bytes')
         if value['kind'] == 'self-upgrade' and self.agent_configuration() != record['agent_configuration_sha256']:
             raise ValueError('platform recovery preserves changed agent configuration')
         record['phase'] = 'recovering'
@@ -478,7 +536,13 @@ class Platform:
         for service in reversed(record['services']):
             self.run(['rc-service', service, 'stop'])
         for index, row in enumerate(value['files']):
-            self.atomic(self.path(row['path']), stage/'previous'/str(index), record['old_modes'][index])
+            if row['before'] is None:
+                path = self.path(row['path'])
+                if self.identity(path)[0] is not None:
+                    path.unlink()
+                    self.sync(path.parent)
+            else:
+                self.atomic(self.path(row['path']), stage/'previous'/str(index), record['old_modes'][index])
         if value['kind'] == 'proxy-upgrade':
             self.compose(self.path('/srv/_proxy/compose.yml'), 'up', '-d', '--no-build', '--pull', 'never', 'komizo-proxy')
             if self.run(['docker', 'inspect', '--format', '{{.Image}}', 'komizo-proxy'])[1].strip() != value['image']['previous_id']:
