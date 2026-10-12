@@ -30,6 +30,7 @@ func (d DeploymentPolicy) Check(app string) error {
 // no token or password. The slot's exact bytes are bound before submission.
 type DeploymentStage struct {
 	CredentialSHA256 string `json:"credential_sha256"`
+	LocalOnly        bool   `json:"local_only,omitempty"`
 	Generation       string `json:"generation,omitempty"`
 }
 
