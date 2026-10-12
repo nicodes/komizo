@@ -49,6 +49,15 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 		}
 		return out.String(), err
 	}
+	cleanup := func(cid string) {
+		cleanupContext, stop := context.WithTimeout(context.Background(), 20*time.Second)
+		defer stop()
+		cmd := exec.CommandContext(cleanupContext, "docker", "rm", "-fv", cid)
+		cmd.WaitDelay = 2 * time.Second
+		if err := cmd.Run(); err != nil {
+			t.Errorf("owned static fixture cleanup failed for %s: %v", cid, err)
+		}
+	}
 	actual, err := command("image", "inspect", "--format", "{{.Id}}", image)
 	if err != nil || !strings.HasPrefix(strings.TrimSpace(actual), "sha256:") {
 		t.Fatal("fixture image unavailable")
@@ -59,7 +68,7 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 		t.Fatal(err)
 	}
 	configContainer = strings.TrimSpace(configContainer)
-	defer command("rm", "-fv", configContainer)
+	t.Cleanup(func() { cleanup(configContainer) })
 	configPath := filepath.Join(t.TempDir(), "Caddyfile")
 	if _, err := command("cp", configContainer+":/etc/caddy/Caddyfile", configPath); err != nil {
 		t.Fatal(err)
@@ -115,7 +124,7 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 	}
 	start := func(selectedImage string, extra ...string) string {
 		t.Helper()
-		args := []string{"run", "-d", "--publish", "127.0.0.1::80", "--user", "0:0", "--read-only", "--cap-drop", "ALL", "--cap-add", "NET_BIND_SERVICE", "--security-opt", "no-new-privileges:true", "--memory", "96m", "--memory-swap", "96m", "--cpus", "0.1", "--pids-limit", "64", "-e", "GOMEMLIMIT=32MiB", "-e", "GOGC=50", "--tmpfs", "/tmp:rw,noexec,nosuid,size=8m"}
+		args := []string{"run", "-d", "--label", "io.komizo.fixture=static-parity", "--publish", "127.0.0.1::80", "--user", "0:0", "--read-only", "--cap-drop", "ALL", "--cap-add", "NET_BIND_SERVICE", "--security-opt", "no-new-privileges:true", "--memory", "96m", "--memory-swap", "96m", "--cpus", "0.1", "--pids-limit", "64", "-e", "GOMEMLIMIT=32MiB", "-e", "GOGC=50", "--tmpfs", "/tmp:rw,noexec,nosuid,size=8m"}
 		args = append(args, extra...)
 		entryJSON, err := command("image", "inspect", "--format", "{{json .Config.Entrypoint}}", selectedImage)
 		var entries []string
@@ -129,7 +138,7 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 			t.Fatal("fixture Caddy start failed", err)
 		}
 		cid = strings.TrimSpace(cid)
-		t.Cleanup(func() { _, _ = command("rm", "-fv", cid) })
+		t.Cleanup(func() { cleanup(cid) })
 		return cid
 	}
 	gate := start(image)
