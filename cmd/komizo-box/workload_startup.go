@@ -24,7 +24,7 @@ func (h *hostActivation) startupCapacity(p workload.Policy) error {
 		return errors.New("installed startup allocation is invalid")
 	}
 	readUsage := func(name string) (int64, error) {
-		body, err := os.ReadFile(filepath.Join(h.root, "sys/fs/cgroup/komizo-production", name, "memory.current"))
+		body, err := os.ReadFile(filepath.Join(h.root, "/sys/fs/cgroup/komizo-production", name, "memory.current"))
 		if err != nil || len(body) > 64 {
 			return 0, errors.New("current startup usage is unavailable")
 		}
