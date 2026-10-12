@@ -107,11 +107,42 @@ def installed_compose(ssh, previous):
         return normalized
 
 
-def compose_candidate(previous, reference, budget=None):
+STATIC_MOUNT = {'type': 'bind', 'source': '/srv/_public', 'target': '/srv/public',
+                'read_only': True, 'bind': {'create_host_path': False}}
+
+
+def protected_static_root(ssh):
+    program = """from pathlib import Path
+import stat
+for path in (Path('/srv/_public'), Path('/srv'), Path('/')):
+ info=path.lstat()
+ if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+  raise ValueError('static tree ancestry must be protected')
+print('protected')
+"""
+    if run(ssh+['python3 -I -c '+shlex.quote(program)]).strip() != b'protected':
+        raise ValueError('static tree ancestry must be protected')
+
+
+def compose_candidate(previous, reference, budget=None, bind_static=False):
     doc = json.loads(previous)
     if doc.get('name') != 'komizo-proxy' or set(doc.get('services', {})) != {'komizo-proxy'}:
         raise ValueError('unknown installed proxy project')
     doc['services']['komizo-proxy']['image'] = reference
+    if bind_static:
+        service = doc['services']['komizo-proxy']
+        volumes = service.setdefault('volumes', [])
+        if not isinstance(volumes, list) or any(not isinstance(row, dict) for row in volumes):
+            raise ValueError('static binding requires normalized explicit mounts')
+        existing = [row for row in volumes if row.get('target') == STATIC_MOUNT['target']]
+        implicit = {**STATIC_MOUNT, 'bind': {'create_host_path': True}}
+        normalized = {**STATIC_MOUNT, 'bind': {}}
+        if existing and existing not in ([STATIC_MOUNT], [implicit], [normalized]):
+            raise ValueError('existing static mount needs explicit review')
+        if existing:
+            volumes[volumes.index(existing[0])] = dict(STATIC_MOUNT)
+        else:
+            volumes.append(dict(STATIC_MOUNT))
     if budget is not None:
         budget=resource_budget(budget)
         service=doc['services']['komizo-proxy']
@@ -144,12 +175,14 @@ def verify(reference, source):
     return proof
 
 
-def prepare(host, reference, source, stage, probes, apply=False, expected_manifest=None, bind_resources=False):
+def prepare(host, reference, source, stage, probes, apply=False, expected_manifest=None, bind_resources=False, bind_static=False):
     if not HOST.fullmatch(host) or not stage.is_absolute() or stage.resolve(strict=False) != stage or not re.fullmatch('[A-Za-z0-9_-]{1,100}',stage.name):
         raise ValueError('approved host and fresh protected stage required')
     protected_directory(stage.parent)
     ssh = ['ssh','-T','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','UpdateHostKeys=no',
            '-o','ForwardAgent=no','root@'+host]
+    if bind_static:
+        protected_static_root(ssh)
     if apply:
         if not stage.is_dir(): raise ValueError('apply requires the protected prepared plan')
         protected_directory(stage)
@@ -162,6 +195,8 @@ def prepare(host, reference, source, stage, probes, apply=False, expected_manife
                 or receipt.get('host') != host or digest(receipt_raw) != manifest.get('receipt_sha256')
                 or receipt.get('probes') != probes or manifest.get('probes') != probes
                 or bool('resource_budget' in manifest)!=bind_resources
+                or bool('static_mount' in manifest)!=bind_static
+                or bind_static and (manifest['static_mount']!=STATIC_MOUNT or receipt.get('static_mount')!=STATIC_MOUNT)
                 or receipt.get('resource_budget')!=manifest.get('resource_budget')):
             raise ValueError('proxy apply differs from the reviewed host, source, probes or manifest')
         verify(reference,source)
@@ -241,7 +276,7 @@ def prepare(host, reference, source, stage, probes, apply=False, expected_manife
     if label != source:
         raise ValueError('local proxy source label differs')
     files = []
-    for path, name, convert in [('/srv/_proxy/compose.yml','proxy-compose',lambda b:compose_candidate(installed_compose(ssh,b),reference,budget)),
+    for path, name, convert in [('/srv/_proxy/compose.yml','proxy-compose',lambda b:compose_candidate(installed_compose(ssh,b),reference,budget,bind_static)),
                                 ('/srv/_proxy/Caddyfile','proxy-caddy',lambda b:bounded_listener(b.decode()))]:
         previous = run(ssh+['cat '+shlex.quote(path)])
         body = convert(previous)
@@ -255,11 +290,13 @@ def prepare(host, reference, source, stage, probes, apply=False, expected_manife
     receipt = {'version':1,'kind':'proxy-upgrade','source':source,'authenticated':True,'files':files,'image':image,
                'host':host,'probes':probes,'independent_review_claimed':False,'provenance_sha256':digest(proof)}
     if budget is not None:receipt['resource_budget']=budget
+    if bind_static:receipt['static_mount']=STATIC_MOUNT
     raw = (json.dumps(receipt,sort_keys=True)+'\n').encode()
     (stage/'verified-release.json').write_bytes(raw)
     manifest = {'version':1,'kind':'proxy-upgrade','source':source,'release':release,'files':files,
                 'receipt_sha256':digest(raw),'image':image,'probes':probes}
     if budget is not None:manifest['resource_budget']=budget
+    if bind_static:manifest['static_mount']=STATIC_MOUNT
     raw = (json.dumps(manifest,sort_keys=True)+'\n').encode()
     (stage/'manifest.json').write_bytes(raw)
     for file in stage.iterdir():file.chmod(0o600)
@@ -279,10 +316,11 @@ def main(arguments=None):
     parser.add_argument('--probes',type=Path,required=True)
     parser.add_argument('--expected-manifest')
     parser.add_argument('--bind-resources',action='store_true',help='bind finite leaf limits and group to the current protected host resource policy')
+    parser.add_argument('--bind-static',action='store_true',help='mount the existing protected /srv/_public tree read-only at /srv/public')
     args=parser.parse_args(arguments)
     if os.geteuid()!=0: raise ValueError('protected proxy preparation requires root')
     probes=json.loads(private_bytes(args.probes,65536))
     if not isinstance(probes,list) or not 1 <= len(probes) <= 64: raise ValueError('bounded probe list is required')
-    print(json.dumps(prepare(args.host,args.reference,args.source,args.stage,probes,args.operation=='apply',args.expected_manifest,args.bind_resources)))
+    print(json.dumps(prepare(args.host,args.reference,args.source,args.stage,probes,args.operation=='apply',args.expected_manifest,args.bind_resources,args.bind_static)))
 
 if __name__ == '__main__': main()

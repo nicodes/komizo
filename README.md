@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: a2e10aefdc0847ba4c3dafc31ef9d10dc0e6c7c2d5e00021a0d7ccbebd5c06f8 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: af59836d6a3d8cbd06e12bc13e0507d1445b4891675a644bf638d5f469aa1f66 -->
 
 # komizo
 
@@ -88,3 +88,5 @@ komizo publication prepare \
 The new output directory contains exactly `release.json` and `images.tar`. Upload them as `fleet-publication-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}` using the reviewed artifact action. Preparation records the actual Git tree, workflow run and attempt; it refuses changed tracked source, foreign tags, platforms, labels or layer hashes. It normalizes selected containerd/classic Docker save payloads into the protected publisher format within finite byte and time bounds. The Docker image ID is not assumed to equal the exported configuration digest.
 
 This command saves local image bytes. It requires no registry credential and does not push images. Root publication remains a separate authenticated operation requiring its protected policy, final-source grant, exact producer evidence and package permissions.
+
+`platform proxy plan|apply --bind-static` explicitly adds the existing protected `/srv/_public` tree at `/srv/public` read-only. Create its Root-owned parent beforehand. The plan retains all other mounts, certificates, networks and security settings; apply verifies the actual Docker mount and recovery restores its prior presence or absence. Existing writable or foreign mounts require separate review. This mount alone does not enable any application's static policy.
