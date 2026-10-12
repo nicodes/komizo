@@ -64,6 +64,37 @@ class Preparation(unittest.TestCase):
         protect = m.protected_directory
         return patch.object(m, 'protected_directory', side_effect=lambda path: protect(path, root=root, owner=os.getuid()))
 
+    def test_host_resource_plan_uses_host_authority_and_keeps_app_roster_checks(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:
+            root = Path(tmp); root.chmod(0o700)
+            candidate = root/'resources.json'; candidate.write_bytes(b'{"version":1}\n'); candidate.chmod(0o600)
+            review = root/'review.json'
+            document = {'version':1, 'files':[{'path':'/etc/komizo/resources.json', 'source':candidate.name, 'mode':0o600}]}
+            review.write_text(json.dumps(document)); review.chmod(0o600)
+            release = root/'release'; release.mkdir(mode=0o700)
+            (release/'komizo-box-linux-amd64').write_bytes(b'fixture released box')
+            (release/'komizo_Linux_x86_64.tar.gz').write_bytes(b'fixture archive')
+            (release/'embedded-agents.json').write_text(json.dumps({'sha256':m.digest(b'fixture released box'), 'stamp':'a'*12}))
+            calls = []
+            def run(args, body=None, **kwargs):
+                calls.append((args, body))
+                if args[-1] == 'uname -m': return b'x86_64'
+                if args[-1] == 'komizo-box version': return b'0.0.92'
+                if args[-1] == 'komizo-box report': return b'{"apps":[{"name":"example"}]}'
+                raise AssertionError(args)
+            inputs = m.authority_inputs
+            with self.protected_fixture(root), patch.object(m, 'verify', return_value='fixture template'), patch.object(m, 'run', side_effect=run), patch.object(m, 'remote_identity', return_value=('b'*64,0o600)) as identity, patch.object(m, 'authority_inputs', side_effect=lambda path: inputs(path, owner=os.getuid())):
+                plan = m.prepare('box.example.test','v0.0.92','a'*40,release,None,root/'host-plan',authority_review=review)
+                self.assertFalse(plan['applied'])
+                value = json.loads((root/'host-plan/manifest.json').read_bytes())
+                self.assertEqual([(r['path'],r['before'],r['before_mode'],r['mode']) for r in value['files']], [('/etc/komizo/resources.json','b'*64,0o600,0o600)])
+                self.assertTrue(all(body is None for _,body in calls))
+                document['files'][0]['path'] = '/etc/komizo/workloads/unregistered.json'
+                review.write_text(json.dumps(document)); identity.reset_mock()
+                with self.assertRaisesRegex(ValueError, 'unregistered app'):
+                    m.prepare('box.example.test','v0.0.92','a'*40,release,None,root/'foreign-app-plan',authority_review=review)
+                identity.assert_not_called()
+
     def test_wrapper_uses_only_fixed_installed_metadata(self):
         template = "<<'KOMIZO_DEPLOY_EOF'\nAPP_NAME=\"__APP_NAME__\"\nAPP_DIR=\"__APP_DIR__\"\nKOMIZO_DEPLOY_EOF\n"
         fields = {'APP_NAME': 'example', 'APP_DIR': '/srv/example', 'CONFIG_IMAGE': 'ghcr.io/owner/example-config',

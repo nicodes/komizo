@@ -265,7 +265,7 @@ def prepare(host, release, source, release_dir, worktree, stage, apply=False, re
             raise ValueError('install this authenticated executor before changing workload authority')
         inputs = authority_inputs(authority_review)
         for path, _, _, _ in inputs:
-            if path == '/etc/doas.conf': continue
+            if path in ('/etc/doas.conf', '/etc/komizo/resources.json'): continue
             app = Path(path).stem if path.startswith(('/etc/komizo/workloads/', '/var/lib/komizo/tasks/')) else re.sub(r'^(deploy|task|set-secret|set-release-secrets|export-backup)-', '', Path(path).name)
             if app not in apps: raise ValueError('authority review names an unregistered app')
         (stage/'box').write_bytes((release_dir/'komizo-box-linux-amd64').read_bytes()); (stage/'box').chmod(0o755)
