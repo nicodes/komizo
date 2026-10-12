@@ -83,7 +83,7 @@ func TestStaticProfilePreservesParentRouteAndRefusesAdditionalServices(t *testin
 		"\treverse_proxy example-gate:80 {\n\t\theader_up X-Forwarded-For {remote_host}\n\t}\n}\n"
 	route, err := StaticRoute([]byte(parent), "example", strings.Repeat("a", 40), []string{"example.invalid"})
 	if err != nil || !strings.Contains(string(route), "try_files {path} {path}.html {path}/index.html /index.html") ||
-		!strings.Contains(string(route), "header >X-Komizo-Revision") || !strings.Contains(string(route), "Strict-Transport-Security max-age=31536000") || strings.Contains(string(route), "reverse_proxy") {
+		!strings.Contains(string(route), "header X-Komizo-Revision \""+strings.Repeat("a", 40)+"\"") || strings.Contains(string(route), "header >X-Komizo-Revision") || !strings.Contains(string(route), "Strict-Transport-Security max-age=31536000") || strings.Contains(string(route), "reverse_proxy") {
 		t.Fatal(string(route), err)
 	}
 	if _, err := StaticRoute([]byte(strings.ReplaceAll(parent, "example-gate", "other-gate")), "example", strings.Repeat("a", 40), []string{"example.invalid"}); err == nil {

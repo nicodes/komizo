@@ -242,7 +242,12 @@ func StaticRouteForProfile(route []byte, app, revision string, hostnames []strin
 			snippet = strings.Replace(snippet, "\t\tnot path /index.js* /index.wasm* /index.pck* /index.audio* /index.service.worker* /index.offline*\n", "", 1)
 		}
 	}
-	return []byte(strings.ReplaceAll(string(route), needle, snippet)), nil
+	compiled := strings.ReplaceAll(string(route), needle, snippet)
+	// A local file server can return an error before the deferred response
+	// header runs. There is no upstream that can overwrite this identity, so
+	// set it immediately and retain it on missing-file responses too.
+	compiled = strings.ReplaceAll(compiled, "\theader >X-Komizo-Revision ", "\theader X-Komizo-Revision ")
+	return []byte(compiled), nil
 }
 
 func StaticGate(compose []byte, app string) (string, error) {
