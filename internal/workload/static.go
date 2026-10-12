@@ -30,7 +30,7 @@ func StaticBounds(profile string) (total, file int64, err error) {
 	switch profile {
 	case "spa-v1":
 		return StaticMaxBytes, StaticMaxFileBytes, nil
-	case "godot-v1":
+	case "godot-v1", "godot-legacy-v1", "godot-immutable-v1":
 		return GodotStaticMaxBytes, GodotStaticMaxFileBytes, nil
 	default:
 		return 0, 0, errors.New("unsupported static profile")
@@ -48,7 +48,7 @@ type StaticPolicy struct {
 }
 
 func (s StaticPolicy) Check() error {
-	if (s.Profile != "spa-v1" && s.Profile != "godot-v1") || !contentIdentity.MatchString(s.GateConfigSHA) || !identifier.MatchString(s.Proxy) {
+	if (s.Profile != "spa-v1" && s.Profile != "godot-v1" && s.Profile != "godot-legacy-v1" && s.Profile != "godot-immutable-v1") || !contentIdentity.MatchString(s.GateConfigSHA) || !identifier.MatchString(s.Proxy) {
 		return errors.New("unsupported static serving profile")
 	}
 	if len(s.Hostnames) < 1 || len(s.Hostnames) > 16 {
@@ -229,8 +229,15 @@ func StaticRouteForProfile(route []byte, app, revision string, hostnames []strin
 		"\ttry_files {path} {path}.html {path}/index.html /index.html\n\tfile_server\n" +
 		"\theader {\n\t\tX-Frame-Options DENY\n\t\tX-Content-Type-Options nosniff\n" +
 		"\t\tReferrer-Policy strict-origin-when-cross-origin\n\t}\n"
-	if profile == "godot-v1" {
+	if strings.HasPrefix(profile, "godot-") {
 		snippet = godotStaticRoute(app, revision)
+		if profile == "godot-immutable-v1" {
+			snippet = godotImmutableStaticRoute(app, revision)
+		}
+		if profile == "godot-legacy-v1" {
+			legacy := "\t@" + app + "_legacy path /index.js* /index.wasm* /index.pck* /index.audio* /index.service.worker* /index.offline*\n\trespond @" + app + "_legacy 404\n"
+			snippet = strings.Replace(snippet, legacy, "", 1)
+		}
 	}
 	return []byte(strings.ReplaceAll(string(route), needle, snippet)), nil
 }

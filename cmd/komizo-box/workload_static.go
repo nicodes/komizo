@@ -193,7 +193,7 @@ func (h *hostActivation) prepareStatic(ctx context.Context, r workload.Activatio
 	defer os.RemoveAll(stage)
 	var treeSHA string
 	source := ":/srv/public/app/."
-	if h.policy.Static.Profile == "godot-v1" {
+	if strings.HasPrefix(h.policy.Static.Profile, "godot-") {
 		source = ":/srv/public/."
 	}
 	err = stream(ctx, []string{"cp", cid + source, "-"}, func(reader io.Reader) error {

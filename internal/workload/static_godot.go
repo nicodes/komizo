@@ -50,3 +50,23 @@ func godotStaticRoute(app, revision string) string {
 	}
 `, "APP", app), "REVISION", revision)
 }
+
+// Immutable exports retain gzip-only sidecars and apply the no-store contract
+// to every mutable path, including missing routes. The reviewed gate hash and
+// full image parity remain prerequisites to opting into this distinct layout.
+func godotImmutableStaticRoute(app, revision string) string {
+	prefix := godotStaticRoute(app, revision)
+	prefix = prefix[:strings.Index(prefix, "\t@"+app+"_html path")]
+	suffix := `
+ @APP_mutable not path /releases/*
+ header @APP_mutable Cache-Control "no-cache, no-store, must-revalidate"
+ @APP_immutable path /releases/*
+ header @APP_immutable Cache-Control "public, max-age=31536000, immutable"
+ @APP_packs path *.pck
+ header @APP_packs Content-Type "application/octet-stream"
+ file_server {
+  precompressed gzip
+ }
+`
+	return prefix + strings.ReplaceAll(suffix, "APP", app)
+}
