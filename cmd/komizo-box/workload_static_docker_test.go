@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -143,6 +144,19 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 	}
 	gate := start(image)
 	proxy := start(proxyImage, "-v", proxyConfig+":/etc/caddy/Caddyfile:ro", "-v", filepath.Join(h.root, workload.StaticRoot)+":/srv/public:ro")
+	// Compare the previous public path, including its front proxy. Comparing
+	// directly to the gate misses response defaults introduced by proxying.
+	gateIP, err := command("inspect", "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", gate)
+	gateIP = strings.TrimSpace(gateIP)
+	if err != nil || net.ParseIP(gateIP) == nil {
+		t.Fatal("owned baseline gate address unavailable", err)
+	}
+	baselineConfig := filepath.Join(t.TempDir(), "Caddyfile")
+	baselineBody := fmt.Sprintf("{\n auto_https off\n admin off\n persist_config off\n}\nhttp://example.test {\n reverse_proxy %s:80 {\n header_up Host %s\n }\n}\nhttp:// {\n respond 404\n}\n", gateIP, baselineHost)
+	if err := os.WriteFile(baselineConfig, []byte(baselineBody), 0644); err != nil {
+		t.Fatal(err)
+	}
+	baselineProxy := start(proxyImage, "-v", baselineConfig+":/etc/caddy/Caddyfile:ro")
 
 	type response struct {
 		status   string
@@ -150,9 +164,10 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 		body     []byte
 		checksum string
 		size     int64
+		failure  string
 	}
 	addresses := map[string]string{}
-	for _, cid := range []string{gate, proxy} {
+	for _, cid := range []string{gate, proxy, baselineProxy} {
 		address, err := command("port", cid, "80/tcp")
 		if err != nil || !strings.HasPrefix(strings.TrimSpace(address), "127.0.0.1:") {
 			t.Fatal("fixture port is not loopback", err)
@@ -174,7 +189,7 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 		}
 		actual, err := client.Do(req)
 		if err != nil {
-			return response{headers: map[string]string{}}
+			return response{headers: map[string]string{}, failure: err.Error()}
 		}
 		defer actual.Body.Close()
 		hash := sha256.New()
@@ -197,7 +212,7 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 	}
 	var baseline response
 	for attempt := 0; attempt < 40; attempt++ {
-		baseline = fetch(gate, baselineHost, "/", "identity")
+		baseline = fetch(baselineProxy, "example.test", "/", "identity")
 		if baseline.status == "200" {
 			break
 		}
@@ -238,13 +253,29 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 	}
 	if strings.HasPrefix(h.policy.Static.Profile, "godot-") {
 		paths = append(paths, "/index.js", "/index.wasm", "/index.pck")
+		publicTree := filepath.Join(h.root, workload.StaticRoot, r.App, r.Candidate)
+		if err := filepath.WalkDir(publicTree, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if !entry.IsDir() {
+				relative, err := filepath.Rel(publicTree, path)
+				if err != nil {
+					return err
+				}
+				paths = append(paths, "/"+filepath.ToSlash(relative))
+			}
+			return nil
+		}); err != nil {
+			t.Fatal("validated public-tree inventory unavailable", err)
+		}
 		for _, match := range regexp.MustCompile(`releases/[a-f0-9]{64}/[^\"\x27\s<>]+`).FindAll(baseline.body, 16) {
 			paths = append(paths, "/"+string(match))
 		}
 	}
 	for _, path := range paths {
-		for _, encoding := range []string{"identity", "gzip"} {
-			old := fetch(gate, baselineHost, path, encoding)
+		for _, encoding := range []string{"identity", "gzip", "br"} {
+			old := fetch(baselineProxy, "example.test", path, encoding)
 			next := fetch(proxy, "example.test", path, encoding)
 			if old.status != next.status || old.checksum != next.checksum || old.size != next.size || !bytes.Equal(old.body, next.body) {
 				t.Fatalf("serving parity changed %s %s: %s/%s", path, encoding, old.status, next.status)
@@ -265,7 +296,7 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 			if method == "GET" {
 				byteRange = "bytes=0-63"
 			}
-			old := fetchMethod(gate, baselineHost, path, "identity", method, byteRange)
+			old := fetchMethod(baselineProxy, "example.test", path, "identity", method, byteRange)
 			next := fetchMethod(proxy, "example.test", path, "identity", method, byteRange)
 			if old.status != next.status || old.checksum != next.checksum || old.size != next.size || !bytes.Equal(old.body, next.body) || old.headers["content-range"] != next.headers["content-range"] || old.headers["content-length"] != next.headers["content-length"] {
 				t.Fatal("HEAD/range parity differs", path, method, old.status, next.status)
@@ -401,8 +432,10 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 	}
 	addresses[proxy] = "http://" + strings.TrimSpace(address)
 	recovered := false
+	var recoveryResponse response
 	for attempt := 0; attempt < 40; attempt++ {
 		check := fetch(proxy, "example.test", "/", "identity")
+		recoveryResponse = check
 		if check.status == "200" && check.headers["x-komizo-revision"] == r.Candidate {
 			recovered = true
 			break
@@ -410,7 +443,9 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if !recovered {
-		t.Fatal("proxy did not recover serving identity")
+		state, stateErr := command("inspect", "--format", "{{json .State}} {{json .NetworkSettings.Ports}}", proxy)
+		logs, logErr := command("logs", "--tail", "40", proxy)
+		t.Fatalf("proxy did not recover serving identity: response=%+v state=%s (%v) logs=%s (%v)", recoveryResponse, state, stateErr, logs, logErr)
 	}
 	recovery := fetchMethod(proxy, "example.test", loadPath, "identity", "GET", "bytes=0-63")
 	if recovery.status != "206" || recovery.size != 64 {
@@ -418,6 +453,6 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 	}
 	loadProof := map[string]any{"asset": loadPath, "asset_bytes": expected.size, "concurrent_transfers": 2, "core_reads": 20, "core_allowance_ms": 2000, "maximum_core_ms": float64(maximumCore.Microseconds()) / 1000, "memory_events_before": before, "memory_events_after": after, "cpu_before": cpuBefore, "cpu_after": cpuAfter, "process_restart_recovered": true}
 
-	proof, _ := json.Marshal(map[string]any{"image": image, "configuration_sha256": h.policy.Static.GateConfigSHA, "tree_sha256": h.static.record.TreeSHA256, "paths": paths, "encodings": []string{"identity", "gzip"}, "methods": []string{"GET", "HEAD"}, "range": "bytes=0-63", "profile": h.policy.Static.Profile, "proxy_image": proxyImage, "load": loadProof, "memory_bytes": 96 << 20, "milli_cpus": 100, "loopback_ports_only": true, "public_mount_read_only": true, "source_admission": "separate fixtures", "result": "passed"})
+	proof, _ := json.Marshal(map[string]any{"image": image, "configuration_sha256": h.policy.Static.GateConfigSHA, "tree_sha256": h.static.record.TreeSHA256, "paths": paths, "encodings": []string{"identity", "gzip", "br"}, "methods": []string{"GET", "HEAD"}, "range": "bytes=0-63", "profile": h.policy.Static.Profile, "proxy_image": proxyImage, "baseline_includes_front_proxy": true, "load": loadProof, "memory_bytes": 96 << 20, "milli_cpus": 100, "loopback_ports_only": true, "public_mount_read_only": true, "source_admission": "separate fixtures", "result": "passed"})
 	fmt.Println(string(proof))
 }
