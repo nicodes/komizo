@@ -32,7 +32,7 @@ class Preparation(unittest.TestCase):
                 else:
                     (root/'candidate.sh').unlink(); (root/'candidate.sh').symlink_to('review.json')
                 review.write_text(json.dumps(document))
-                with self.protected_fixture(root), self.assertRaises(ValueError): m.authority_inputs(review)
+                with self.protected_fixture(root), self.assertRaises(ValueError): m.authority_inputs(review, owner=os.getuid())
 
     def test_authority_plan_is_read_only_records_absence_and_requires_installed_executor(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:
@@ -48,7 +48,8 @@ class Preparation(unittest.TestCase):
                 if command=='komizo-box version':return version.encode()
                 if command=='komizo-box report':return b'{"apps":[{"name":"example"}]}'
                 raise AssertionError(args)
-            with self.protected_fixture(root),patch.object(m,'verify',return_value='fixture template'),patch.object(m,'run',side_effect=run),patch.object(m,'remote_identity',return_value=(None,None)):
+            inputs=m.authority_inputs
+            with self.protected_fixture(root),patch.object(m,'verify',return_value='fixture template'),patch.object(m,'run',side_effect=run),patch.object(m,'remote_identity',return_value=(None,None)),patch.object(m,'authority_inputs',side_effect=lambda path: inputs(path,owner=os.getuid())):
                 plan=m.prepare('box.example.test','v0.0.88','a'*40,release,None,root/'authority-plan',authority_review=review)
                 self.assertFalse(plan['applied']);self.assertTrue(all(body is None for _,body in calls))
                 value=json.loads((root/'authority-plan/manifest.json').read_bytes())

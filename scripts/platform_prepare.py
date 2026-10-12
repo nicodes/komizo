@@ -140,11 +140,11 @@ def protected_directory(path, *, root=Path('/'), owner=0):
         if ancestor == root: break
 
 
-def authority_inputs(review):
+def authority_inputs(review, owner=0):
     review = Path(review)
     protected_directory(review.parent)
     info = review.lstat()
-    if not review.is_file() or review.is_symlink() or info.st_uid != 0 or info.st_mode & 0o077 or info.st_size > 1<<20:
+    if not review.is_file() or review.is_symlink() or info.st_uid != owner or info.st_mode & 0o077 or info.st_size > 1<<20:
         raise ValueError('authority review must be a bounded private root-owned file')
     document = json.loads(review.read_bytes())
     if set(document) != {'version', 'files'} or document['version'] != 1 or not isinstance(document['files'], list) or not 1 <= len(document['files']) <= 131:
@@ -162,7 +162,7 @@ def authority_inputs(review):
             raise ValueError('authority review path or permissions are outside the migration contract')
         candidate = review.parent/row['source']
         info = candidate.lstat()
-        if not candidate.is_file() or candidate.is_symlink() or info.st_uid != 0 or info.st_mode & 0o077 or not 0 < info.st_size <= 1<<20:
+        if not candidate.is_file() or candidate.is_symlink() or info.st_uid != owner or info.st_mode & 0o077 or not 0 < info.st_size <= 1<<20:
             raise ValueError('authority candidate must be a bounded private root-owned file')
         inputs.append((row['path'], 'authority-'+str(index), candidate.read_bytes(), row['mode']))
     return inputs
