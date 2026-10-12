@@ -39,7 +39,7 @@ class Platform:
     def path(self, absolute):
         return self.root / absolute.lstrip('/')
 
-    def protected(self, path, private=False):
+    def protected(self, path, private=False, directory=False):
         path = Path(path)
         for parent in [path, *path.parents]:
             info = parent.lstat()
@@ -48,9 +48,22 @@ class Platform:
             if parent == self.root:
                 break
         info = path.lstat()
-        if not stat.S_ISREG(info.st_mode) or private and info.st_mode & 0o077:
+        if directory:
+            if not stat.S_ISDIR(info.st_mode):
+                raise ValueError('platform parent must be a protected directory')
+        elif not stat.S_ISREG(info.st_mode) or private and info.st_mode & 0o077:
             raise ValueError('platform input must be a protected regular file')
         return info
+
+    def agent_configuration(self):
+        # Default public installations do not require the optional operator
+        # configuration. Bind its absence as carefully as its existing bytes.
+        path=self.path('/etc/komizo/agent.json')
+        try:
+            return self.digest(path)
+        except FileNotFoundError:
+            self.protected(path.parent, directory=True)
+            return None
 
     def read(self, path, maximum=65536, private=False):
         self.protected(path, private)
@@ -346,6 +359,8 @@ class Platform:
                     side = 'after' if record['phase'] == 'complete' else 'before'
                     if any(self.digest(self.path(row['path'])) != row[side] for row in value['files']):
                         raise ValueError('completed platform identity changed; fence retained')
+                    if value['kind']=='self-upgrade' and self.agent_configuration()!=record['agent_configuration_sha256']:
+                        raise ValueError('agent configuration changed; fence retained')
                     if value['kind'] == 'proxy-upgrade' and side == 'after':
                         self.verify_proxy(value)
                     if pending.exists():
@@ -364,7 +379,7 @@ class Platform:
                 services = [s for s in SERVICES if self.run(['rc-service', s, 'status'], False)[0] == 0]
                 if 'komizo-rootd' not in services:
                     raise ValueError('self-upgrade requires the existing root worker')
-                configuration = self.digest(self.path('/etc/komizo/agent.json'))
+                configuration = self.agent_configuration()
             else:
                 self.proxy_preflight(stage, value)
             backup = stage/'previous'
@@ -396,7 +411,7 @@ class Platform:
                 if value['kind'] == 'self-upgrade':
                     if self.run(['komizo-box', 'version'])[1].strip().removeprefix('v') != value['release'].removeprefix('v'):
                         raise ValueError('installed platform version differs')
-                    if self.digest(self.path('/etc/komizo/agent.json')) != configuration:
+                    if self.agent_configuration() != configuration:
                         raise ValueError('agent configuration changed during platform upgrade')
                     for service in services:
                         self.run(['rc-service', service, 'start'])
@@ -423,7 +438,7 @@ class Platform:
         for index, row in enumerate(value['files']):
             if self.digest(self.path(row['path'])) not in (row['before'], row['after']) or self.digest(stage/'previous'/str(index)) != row['before']:
                 raise ValueError('platform recovery refuses changed installed or backup bytes')
-        if value['kind'] == 'self-upgrade' and self.digest(self.path('/etc/komizo/agent.json')) != record['agent_configuration_sha256']:
+        if value['kind'] == 'self-upgrade' and self.agent_configuration() != record['agent_configuration_sha256']:
             raise ValueError('platform recovery preserves changed agent configuration')
         record['phase'] = 'recovering'
         self.journal(stage, record)
