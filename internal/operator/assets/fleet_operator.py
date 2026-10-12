@@ -53,7 +53,10 @@ def private_json(path):
 
 
 def private_policy(path):
-    value = private_json(path)
+    return validate_policy(private_json(path))
+
+
+def validate_policy(value):
     required = {'version', 'repositories', 'hosts'}
     if value.get('version') != 3 or not required <= set(value) or set(value) - required - {'deployments', 'owner_workflows'}:
         raise ValueError('unsupported operator policy')
@@ -469,7 +472,16 @@ def authorize_delivery(repository, revision, integration, policy, run, kind='mer
     remote='komizo-box workload delivery-authorize --policy /etc/komizo/workloads/'+binding['app']+'.json --authorization '+wire
     run(['ssh','-T','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes',
          '-o','UpdateHostKeys=no','-o','ForwardAgent=no','root@'+binding['host'],remote])
+    retain_delivery(authorization)
     return True
+
+
+def retain_delivery(authorization):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('protected_publisher', Path(__file__).with_name('fleet_publisher.py'))
+    publisher = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(publisher)
+    publisher.persist_delivery(authorization)
 
 def inspect_outcome(request, policy, run=command):
     """Observe an interrupted merge; this route cannot merge or replay effects."""

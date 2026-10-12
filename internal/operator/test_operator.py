@@ -27,6 +27,7 @@ class OperatorBoundary(unittest.TestCase):
         import base64
         wire=deliveries[0][-1].split(' --authorization ')[1]
         authorization=json.loads(base64.b64decode(wire))
+        self.retention.assert_called_once_with(authorization)
         self.assertEqual(authorization['revision'],self.pr['merge_commit_sha'])
         self.assertEqual(authorization['tree'],self.integration['tree'])
         self.assertEqual(authorization['integration_artifact_id'],55)
@@ -62,6 +63,8 @@ class OperatorBoundary(unittest.TestCase):
                 operator.command(['gh','-c','import time;time.sleep(10)'])
 
     def setUp(self):
+        retention=patch.object(operator, 'retain_delivery')
+        self.retention=retention.start();self.addCleanup(retention.stop)
         self.pr={'state':'open','draft':False,'merged':False,'base':{'ref':'main'},'head':{'sha':HEAD,'repo':{'full_name':'owner/product'}},'merge_commit_sha':'b'*40}
         self.evidence={'headRefOid':HEAD,'statusCheckRollup':[{'__typename':'CheckRun','name':'check','status':'COMPLETED','conclusion':'SUCCESS','detailsUrl':'https://github.com/owner/product/actions/runs/42/job/101'}]}
         self.workflow={'id':42,'workflow_id':100,'path':'.github/workflows/ci.yml','event':'pull_request','head_sha':HEAD,'repository':{'full_name':'owner/product'},'head_repository':{'full_name':'owner/product'},'status':'completed','conclusion':'success','run_attempt':2,'check_suite_id':300}
