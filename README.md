@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: af59836d6a3d8cbd06e12bc13e0507d1445b4891675a644bf638d5f469aa1f66 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: b057d9182cb1ff2a53564c796d069a67171360eeb73d6f07b1fe21353379bdb9 -->
 
 # komizo
 
@@ -90,3 +90,29 @@ The new output directory contains exactly `release.json` and `images.tar`. Uploa
 This command saves local image bytes. It requires no registry credential and does not push images. Root publication remains a separate authenticated operation requiring its protected policy, final-source grant, exact producer evidence and package permissions.
 
 `platform proxy plan|apply --bind-static` explicitly adds the existing protected `/srv/_public` tree at `/srv/public` read-only. Create its Root-owned parent beforehand. The plan retains all other mounts, certificates, networks and security settings; apply verifies the actual Docker mount and recovery restores its prior presence or absence. Existing writable or foreign mounts require separate review. This mount alone does not enable any application's static policy.
+
+## Authorize routine ciphertext export
+
+Install a signed release containing `workload routine-backup` before reviewing
+this capability. The protected app policy's optional `routine_backup` object
+binds `workflow_repository`, exact `workflow_revision`, `program_sha256` and
+`timeout_seconds` (1–900). The reusable workflow path is fixed to
+`.github/workflows/backup.yml`. The only export program is the protected
+`/usr/local/bin/export-APP-backup`; CI cannot select a program or supply arguments.
+Root reviews its ciphertext-only behavior and finite database cleanup separately.
+
+A fixed app adapter invokes `komizo-box workload routine-backup --policy PATH`
+and accepts one `komizo-operation/v1:` proof frame on stdin. The fresh GitHub
+identity binds the complete routine-backup manifest, repository ID, run/attempt,
+scheduled/dispatched main caller and immutable reusable workflow. Its revision
+must match the host's accepted ready serving operation. Pending activation,
+changed authority, stale proof and replay refuse before export. This capability
+does not renew a delivery grant or authorize restoration, arbitrary tasks or
+secret updates. The current contract requires a GitHub-hosted runner.
+
+The host durably claims each run/attempt before invoking the fixed exporter.
+Use `komizo-box workload backup-inspect --policy PATH --run ID --attempt N`
+to inspect completed, claimed or ambiguous outcomes. An interrupted export is
+never replayed automatically. Proof tokens are not stored in the operation journal.
+`workload policy-check --policy PATH` validates a protected policy candidate
+without Compose inputs, output files or activation.

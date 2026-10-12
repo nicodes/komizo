@@ -15,6 +15,10 @@ import (
 func runWorkload(args []string) error {
 	if len(args) > 0 {
 		switch args[0] {
+		case "policy-check":
+			return runWorkloadPolicyCheck(args[1:])
+		case "routine-backup", "backup-inspect":
+			return runRoutineBackup(args)
 		case "owner-task":
 			return runWorkloadTask(args[1:], true)
 		case "task":
@@ -103,6 +107,7 @@ func runWorkload(args []string) error {
 			authority.RequireStatefulContract = false // provisioning retains root's requirement
 			authority.Static = nil                    // provisioning retains root's opt-in profile
 			authority.Deployment = nil
+			authority.RoutineBackup = nil
 			if authority != p {
 				return errors.New("existing workload policy differs; review an operator policy update")
 			}
@@ -167,6 +172,21 @@ func runWorkload(args []string) error {
 	}
 	fmt.Fprintln(os.Stdout, "workload: host policy accepted")
 	return nil
+}
+
+// Authority migration validates a policy without Compose or output paths.
+// The ordinary validate verb still requires and bounds a complete workload.
+func runWorkloadPolicyCheck(args []string) error {
+	fs := flag.NewFlagSet("workload policy-check", flag.ContinueOnError)
+	path := fs.String("policy", "", "protected policy candidate")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if os.Geteuid() != 0 || *path == "" || fs.NArg() != 0 {
+		return errors.New("policy-check needs the root executor, one policy and no positional arguments")
+	}
+	_, err := readWorkloadPolicy(*path)
+	return err
 }
 
 func readWorkloadPolicy(path string) (workload.Policy, error) {
