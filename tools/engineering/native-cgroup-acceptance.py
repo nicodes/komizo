@@ -107,6 +107,12 @@ def main():
         if (row['Id'] != cid or row['HostConfig']['Binds'] or row['Mounts']
                 or row['HostConfig']['CgroupnsMode'] != 'private'
                 or row['HostConfig']['PidMode'] or row['HostConfig']['PortBindings']
+                or row['HostConfig']['Memory'] != 1 << 30
+                or row['HostConfig']['MemorySwap'] != 1536 << 20
+                or row['HostConfig']['NanoCpus'] != 1_000_000_000
+                or row['HostConfig']['PidsLimit'] != 512
+                or not row['HostConfig']['Init']
+                or not row['HostConfig']['Privileged']
                 or row['Config']['Labels'].get('org.komizo.fixture') != name):
             raise ValueError('fixture isolation differs')
         run(['docker', 'exec', cid, 'apk', 'add', '--no-cache', 'python3'])
