@@ -305,7 +305,7 @@ class Platform:
                 document = json.loads(self.read(candidate, private=True, maximum=1<<20))
                 if document.get('app') != Path(row['path']).stem:
                     raise ValueError('workload policy names a different app')
-                self.run(['komizo-box', 'workload', 'validate', '--policy', str(candidate)])
+                self.run(['komizo-box', 'workload', 'policy-check', '--policy', str(candidate)])
             elif row['path'] == '/etc/doas.conf':
                 self.run(['doas', '-C', str(candidate)])
             else:

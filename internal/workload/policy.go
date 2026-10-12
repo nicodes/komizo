@@ -35,6 +35,7 @@ type Policy struct {
 	RequireDeliveryAuthorization bool              `json:"require_delivery_authorization,omitempty"`
 	Static                       *StaticPolicy     `json:"static,omitempty"`
 	Deployment                   *DeploymentPolicy `json:"deployment,omitempty"`
+	RoutineBackup                *BackupPolicy     `json:"routine_backup,omitempty"`
 }
 
 var identifier = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,62}$`)
@@ -43,6 +44,14 @@ var revision = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 var digest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
 func (p Policy) Check() error {
+	if p.RoutineBackup != nil {
+		if p.SourceRepository == "" {
+			return errors.New("routine backup requires authenticated source authority")
+		}
+		if err := p.RoutineBackup.Check(); err != nil {
+			return err
+		}
+	}
 	if p.Static != nil {
 		if p.SourceRepository == "" || p.RequireStatefulContract || p.Readiness == nil {
 			return errors.New("static profiles require authenticated gate-only releases and explicit readiness")

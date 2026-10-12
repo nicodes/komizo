@@ -119,6 +119,9 @@ func usage() {
   komizo-box unenrol                                as root
 
   komizo-box workload init|validate --policy PATH    as root
+  komizo-box workload policy-check --policy PATH     read-only authority preflight
+  komizo-box workload routine-backup --policy PATH   authenticated ciphertext export
+  komizo-box workload backup-inspect --policy PATH --run ID --attempt N
 
   komizo-box preview-capabilities  credential-free preview runtime support
   komizo-box version
