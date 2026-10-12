@@ -159,7 +159,7 @@ class PlatformTests(unittest.TestCase):
             self.assertEqual(f.p.apply(f.stage, f.expected)['phase'], 'complete')
             self.assertEqual(f.active, before)
             self.assertFalse(any(c[0] in ('docker','rc-service') for c in f.calls))
-            self.assertTrue(any(c[:3] == ['komizo-box','workload','validate'] for c in f.calls))
+            self.assertTrue(any(c[:3] == ['komizo-box','workload','policy-check'] for c in f.calls))
             for row in rows:
                 self.assertEqual(f.p.identity(f.root/row['path'].lstrip('/')), (row['after'],row['mode']))
             with self.assertRaisesRegex(ValueError,'already exists'): f.p.apply(f.stage,f.expected)

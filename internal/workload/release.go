@@ -159,6 +159,9 @@ type actionsClaims struct {
 	WorkflowRef       string `json:"workflow_ref"`
 	WorkflowSHA       string `json:"workflow_sha"`
 	RunID             string `json:"run_id"`
+	RunAttempt        string `json:"run_attempt"`
+	JobWorkflowRef    string `json:"job_workflow_ref"`
+	JobWorkflowSHA    string `json:"job_workflow_sha"`
 	EventName         string `json:"event_name"`
 	RunnerEnvironment string `json:"runner_environment"`
 }
