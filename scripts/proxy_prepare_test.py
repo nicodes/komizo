@@ -13,6 +13,22 @@ spec=importlib.util.spec_from_file_location('komizo_proxy_prepare',Path(__file__
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 
 class ProxyPreparation(unittest.TestCase):
+    def test_static_mount_opt_in_preserves_other_mounts_and_rejects_foreign_tree(self):
+        doc={'name':'komizo-proxy','services':{'komizo-proxy':{'image':'previous','volumes':[
+            {'type':'volume','source':'certificates','target':'/data'},
+            {'type':'bind','source':'/srv/_proxy/routes','target':'/etc/caddy/routes','read_only':True}],
+            'networks':['edge'],'cap_drop':['ALL']}}}
+        original=json.dumps(doc).encode()
+        candidate=m.compose_candidate(original,'candidate',bind_static=True)
+        service=json.loads(candidate)['services']['komizo-proxy']
+        self.assertEqual(service['volumes'][:-1],doc['services']['komizo-proxy']['volumes'])
+        self.assertEqual(service['volumes'][-1],m.STATIC_MOUNT)
+        self.assertEqual(service['networks'],['edge'])
+        self.assertEqual(m.compose_candidate(candidate,'candidate',bind_static=True),candidate)
+        service['volumes'][-1]['read_only']=False
+        with self.assertRaisesRegex(ValueError,'explicit review'):
+            m.compose_candidate(json.dumps({'name':'komizo-proxy','services':{'komizo-proxy':service}}).encode(),'candidate',bind_static=True)
+
     def test_resource_binding_preserves_tls_volumes_and_sets_finite_leaf_limits(self):
         budget={'version':1,'memory_bytes':96<<20,'total_memory_swap_bytes':128<<20,
                 'milli_cpus':100,'pids':128,'cgroup_parent':'/komizo-proxy','policy_sha256':'a'*64}
