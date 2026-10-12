@@ -27,6 +27,26 @@ class ProxyPreparation(unittest.TestCase):
         for field,value in (('memory_bytes',0),('milli_cpus',True),('cgroup_parent','/foreign'),('policy_sha256',None)):
             with self.subTest(field=field),self.assertRaises(ValueError):m.resource_budget({**budget,field:value})
 
+    def test_cold_yaml_normalizes_with_existing_project_without_resolving_private_environment(self):
+        previous=b'services:\n  komizo-proxy:\n    image: previous\n'
+        labels={'com.docker.compose.project':'komizo-proxy','com.docker.compose.service':'komizo-proxy'}
+        normalized={'name':'komizo-proxy','services':{'komizo-proxy':{'image':'previous','volumes':[{'type':'volume','source':'caddy_data','target':'/data'}]}},'volumes':{'caddy_data':{'name':'komizo-proxy_caddy_data'}}}
+        calls=[]
+        def run(args,**kwargs):
+            calls.append(args)
+            return json.dumps(labels if args[-1].startswith('docker inspect') else normalized).encode()
+        with patch.object(m,'run',side_effect=run):
+            candidate=json.loads(m.compose_candidate(m.installed_compose(['ssh','root@fixture'],previous),'candidate'))
+        self.assertEqual(candidate['volumes']['caddy_data']['name'],'komizo-proxy_caddy_data')
+        self.assertIn('--project-name komizo-proxy',calls[1][-1]);self.assertIn('--no-interpolate',calls[1][-1]);self.assertIn('--no-env-resolution',calls[1][-1])
+        self.assertEqual(previous,b'services:\n  komizo-proxy:\n    image: previous\n')
+        for bad in ({**labels,'com.docker.compose.project':'foreign'},{**labels,'com.docker.compose.service':'foreign'}):
+            with patch.object(m,'run',return_value=json.dumps(bad).encode()) as run,self.assertRaises(ValueError):m.installed_compose(['ssh'],previous)
+            self.assertEqual(run.call_count,1)
+        with patch.object(m,'run',side_effect=[json.dumps(labels).encode(),b'{"name":"komizo-proxy","services":{"foreign":{}}}']),self.assertRaises(ValueError):m.installed_compose(['ssh'],previous)
+        raw=json.dumps(normalized).encode()
+        with patch.object(m,'run') as run:self.assertEqual(m.installed_compose(['ssh'],raw),raw);run.assert_not_called()
+
     def protection(self,root):
         protect=m.protected_directory
         return patch.object(m,'protected_directory',side_effect=lambda path:protect(path,root=root,owner=os.getuid()))

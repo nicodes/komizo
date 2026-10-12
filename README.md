@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 240bdb459477eeb30dcd75f26d19b44c0c3d7b513a446b2b977b5d9872a48a26 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: a686a8729d76e8452e05dfab1b639fb80843ebbfcbcce0cefe41cc2642bd5e64 -->
 
 # komizo
 
@@ -9,7 +9,7 @@ CLI for preparing and operating your own Compose hosts over SSH. No hosted accou
 Use a verified release archive or the Go toolchain matching `go.mod` and `.mise.toml`.
 
 ```sh
-go run github.com/nicodes/komizo@v0.0.80 init --host root@your-server
+go run github.com/nicodes/komizo@v0.0.85 init --host root@your-server
 ```
 
 `init` prepares the host and requires privileged access. Review its changes before using it on an existing host. `komizo list`, `komizo report` and `komizo logs` inspect applications; see command help for current flags. The local UI is available through the CLI’s `ui` command.
@@ -18,10 +18,10 @@ The supported deployment operation is app-scoped Compose deployment. Historical 
 
 ## Release archive without Go
 
-Example for Linux x86_64, using the reviewed release v0.0.80:
+Example for Linux x86_64, using the reviewed release v0.0.85:
 
 ```sh
-gh release download v0.0.80 --repo nicodes/komizo \
+gh release download v0.0.85 --repo nicodes/komizo \
   -p 'komizo_Linux_x86_64.tar.gz' -p checksums.txt
 sha256sum -c checksums.txt --ignore-missing
 gh attestation verify komizo_Linux_x86_64.tar.gz --repo nicodes/komizo
@@ -46,14 +46,24 @@ The existing `fleet-editor` group, protected `/etc/fleet-operator.json` policy a
 
 The application host remains one box. App-scoped deployment, workload budgets, ingress and release admission are enforced by the host executor. Explicit static profiles and delivery-authorization requirements require an operator-reviewed migration; upgrading a binary alone does not enable them.
 
-The operator bundle includes an optional Root-only registry publisher. Its protected policy selects source workflows, image destinations and a private credential path. It accepts a final delivery receipt and an authenticated, checksum-bound Actions artifact containing `release.json` and a classic Docker archive. Source, CI, image configuration and layer checks precede credential access. Registry authentication uses stdin and protected tmpfs storage; unsupported archives or disk-backed credential storage refuse. Interrupted publication requires inspection and read-only reconciliation, with no upload replay. Product repositories must separately have Read access to the protected packages before adopting this boundary; installing the program does not change GitHub package permissions or production delivery.
+## Plan an application-host upgrade
 
-
-The authenticated CLI also prepares shared proxy upgrades:
+Use the verified CLI, an exact release source commit and protected absolute local directories:
 
 ```sh
-komizo platform proxy plan --host box.example.test --reference ghcr.io/nicodes/platform-proxy@sha256:IMAGE_DIGEST --source PUBLISHER_COMMIT --stage /root/proxy-plan --probes /root/proxy-probes.json
-komizo platform proxy apply --host box.example.test --reference ghcr.io/nicodes/platform-proxy@sha256:IMAGE_DIGEST --source PUBLISHER_COMMIT --stage /root/proxy-plan --probes /root/proxy-probes.json --expected-manifest PLAN_SHA256
+./komizo platform plan --host your-server --release v0.0.85 \
+  --source 2eeffef9a67bc1d5e6f4d85db52d86a26664d769 \
+  --release-dir /root/komizo/releases/v0.0.85 --stage /root/komizo/plans/upgrade
+./komizo platform apply --host your-server --release v0.0.85 \
+  --source 2eeffef9a67bc1d5e6f4d85db52d86a26664d769 \
+  --release-dir /root/komizo/releases/v0.0.85 --stage /root/komizo/plans/upgrade \
+  --resume --expected-manifest <reviewed-manifest-sha256>
 ```
 
-The root-owned private probe file is a JSON array with one explicit URL and current serving revision per running hostname, for example `[{"url":"https://app.example.test/health","revision":"FORTY_CHARACTER_COMMIT"}]`. HTTPS and TLS WebSocket probes are supported. Planning verifies publisher provenance and prefetches the immutable image without replacing files or restarting services. Apply requires the exact reviewed plan, rechecks serving identity, and uses the installed durable executor. Interrupted operations use `komizo-box platform inspect` and `recover`; deleting a journal or repeating an ambiguous operation is unsupported. The current proxy artifact supports Linux/amd64.
+Create the parent directories as Root first. Planning authenticates the release and records installed identities; applying the exact digest journals prior files and service state. Applications are not restarted by this upgrade. Inspect interrupted operations with `komizo-box platform inspect <remote-stage> <manifest-sha256>` on the host, then use `recover` with the same arguments. An operation with a journal must be inspected or recovered before another attempt.
+
+`komizo platform proxy plan|apply` accepts an attested immutable `--reference`, exact publisher `--source`, protected `--stage` and operator-reviewed `--probes` JSON. Every running hostname needs its own HTTPS or WebSocket probe and exact serving revision. API routes use their readiness path; intentional redirects require their exact status and destination. The proxy publisher currently supports Linux amd64. Certificate volumes and retained previous images remain available for recovery.
+
+New cold proxies have finite memory, swap, CPU and PID limits. To move an existing proxy into a declared host resource group, explicitly add `--bind-resources` to both proxy planning and application. The manifest binds the protected allocation and policy hash; application recreates the proxy and verifies its actual Docker group and limits. Measure resource policy before migrating serving workloads.
+
+Protected container publication uses the Komizo-owned operator bundle with a separate Root policy and package credential. The publisher verifies finite final-source authorization, authenticated CI, immutable artifact/image/layer identities and package destinations before credentials. It durably refuses replay; ambiguous uploads require read-only inspection/reconciliation. Installing the bundle alone does not configure registry permissions or enable delivery authorization.
