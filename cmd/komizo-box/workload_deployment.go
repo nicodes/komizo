@@ -54,11 +54,15 @@ func runWorkloadDeployment(args []string) error {
 	registry := fs.String("registry", "", "registry")
 	user := fs.String("registry-user", "", "registry username")
 	generation := fs.String("generation", "", "scoped generation")
+	localOnly := fs.Bool("local-only", false, "root owner reconfiguration of the retained current local release; no registry access")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
 		return errors.New("deployment accepts no positional arguments")
+	}
+	if *localOnly && (args[0] != "deployment-submit" || *registry != "" || *user != "") {
+		return errors.New("local owner reconfiguration accepts no registry credential or other operation")
 	}
 	p, err := readWorkloadPolicy(*policyPath)
 	if err != nil {
@@ -117,8 +121,10 @@ func runWorkloadDeployment(args []string) error {
 	}
 	// Refuse an unreviewed revision before locks, staging directories, accepted
 	// files, registry credentials or any activation state can be created.
-	if err := checkDeliveryAuthorization(p, *version, time.Now().UTC()); err != nil {
-		return err
+	if !*localOnly {
+		if err := checkDeliveryAuthorization(p, *version, time.Now().UTC()); err != nil {
+			return err
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -141,6 +147,9 @@ func runWorkloadDeployment(args []string) error {
 	proof, err := io.ReadAll(io.LimitReader(reader, 128<<10+1))
 	if err != nil || len(proof) > 128<<10 {
 		return errors.New("release proof exceeds its bound")
+	}
+	if *localOnly && len(bytesTrim(proof)) != 0 {
+		return errors.New("local owner reconfiguration accepts no CI proof")
 	}
 	if len(bytesTrim(proof)) != 0 {
 		if err := verifyTaskRelease(ctx, p, proof); err != nil {
@@ -179,8 +188,28 @@ func runWorkloadDeployment(args []string) error {
 	output.Close()
 	os.Remove(outPath)
 	defer os.Remove(outPath)
-	if err := admitWorkloadReleaseContext(ctx, p, *version, dir, outPath, bytes.NewReader(proof)); err != nil {
-		return err
+	if *localOnly {
+		if len(bytesTrim(proof)) != 0 || *version != previous || !cachedRollbackAllowed(p, *version) {
+			return errors.New("local owner reconfiguration requires the retained current revision and no CI proof")
+		}
+		var prior workload.Operation
+		if err := protectedActivationJSON(filepath.Join(dir, "operation.json"), &prior); err != nil || prior.Candidate != previous || (prior.Phase != "ready" && prior.Phase != "prepared_stopped") {
+			return errors.New("reconcile the current deployment before local reconfiguration")
+		}
+		var accepted workload.ReleaseAcceptance
+		if err := readPrivateRelease(filepath.Join(dir, *version+".json"), &accepted); err != nil {
+			return err
+		}
+		if err := accepted.Check(p, *version); err != nil {
+			return err
+		}
+		if err := workload.WritePrivateJSON(outPath, accepted); err != nil {
+			return err
+		}
+	} else {
+		if err := admitWorkloadReleaseContext(ctx, p, *version, dir, outPath, bytes.NewReader(proof)); err != nil {
+			return err
+		}
 	}
 	if err := workload.RecordOperation(filepath.Join(dir, "operation.json"), p.App, *version, previous, "admitted", time.Now().UTC()); err != nil {
 		return err
@@ -205,7 +234,7 @@ func runWorkloadDeployment(args []string) error {
 	if err != nil {
 		return err
 	}
-	r := workload.ActivationRequest{Version: 2, ID: op.ID, App: p.App, Candidate: *version, Previous: previous, PolicySHA256: deploymentHash(policyBytes), RoutePath: p.Deployment.RoutePath, Proxy: p.Deployment.Proxy, Deadline: op.Deadline, Stage: &workload.DeploymentStage{CredentialSHA256: deploymentHash(body), Generation: *generation}}
+	r := workload.ActivationRequest{Version: 2, ID: op.ID, App: p.App, Candidate: *version, Previous: previous, PolicySHA256: deploymentHash(policyBytes), RoutePath: p.Deployment.RoutePath, Proxy: p.Deployment.Proxy, Deadline: op.Deadline, Stage: &workload.DeploymentStage{CredentialSHA256: deploymentHash(body), Generation: *generation, LocalOnly: *localOnly}}
 	if err := r.Check(time.Now()); err != nil {
 		os.RemoveAll(filepath.Dir(slot))
 		return err
@@ -383,8 +412,14 @@ func (h *hostActivation) stageDeployment(parent context.Context, r workload.Acti
 	if login == nil {
 		login = loginDeployment
 	}
-	if err := login(ctx, credentials, dockerDir); err != nil {
-		return configured, err
+	if r.Stage.LocalOnly {
+		if r.Candidate != r.Previous || credentials != (deploymentCredentials{}) {
+			return configured, errors.New("local current reconfiguration cannot carry registry authority")
+		}
+	} else {
+		if err := login(ctx, credentials, dockerDir); err != nil {
+			return configured, err
+		}
 	}
 	credentials.Password = ""
 	credentialsBody = nil
@@ -393,8 +428,10 @@ func (h *hostActivation) stageDeployment(parent context.Context, r workload.Acti
 	}
 	h.deploymentCheckpoint("registry-login")
 	configRef := p.ImagePrefix + "config:" + r.Candidate
-	if _, err := h.run(ctx, "pull", "-q", configRef); err != nil {
-		return configured, errors.New("configuration image pull failed")
+	if !r.Stage.LocalOnly {
+		if _, err := h.run(ctx, "pull", "-q", configRef); err != nil {
+			return configured, errors.New("configuration image pull failed")
+		}
 	}
 	// Validate its configuration identity before allowing even a stopped copy.
 	if _, err := workload.BindLocalRelease(ctx, h.run, p, accepted, r.Candidate, configRef, []byte(`{"services":{}}`)); err != nil {
@@ -435,7 +472,11 @@ func (h *hostActivation) stageDeployment(parent context.Context, r workload.Acti
 	if err != nil {
 		return configured, err
 	}
-	canonical, err = workload.BindRelease(ctx, h.run, p, accepted, r.Candidate, configRef, canonical)
+	bind := workload.BindRelease
+	if r.Stage.LocalOnly {
+		bind = workload.BindLocalRelease
+	}
+	canonical, err = bind(ctx, h.run, p, accepted, r.Candidate, configRef, canonical)
 	if err != nil {
 		return configured, err
 	}
@@ -452,8 +493,22 @@ func (h *hostActivation) stageDeployment(parent context.Context, r workload.Acti
 	if err := h.verifyDeploymentSecrets(ctx, p, r.Stage.Generation, validated); err != nil {
 		return configured, err
 	}
-	if _, err := h.run(ctx, "compose", "--project-name", p.App, "--project-directory", p.AppDir, "-f", validated, "--profile", "*", "pull"); err != nil {
-		return configured, errors.New("complete approved image pull failed")
+	if r.Stage.LocalOnly {
+		images, err := workload.JSONImageReferences(bytes.NewReader(canonical))
+		if err != nil {
+			return configured, err
+		}
+		for _, image := range images {
+			id, err := h.run(ctx, "image", "inspect", "--format", "{{.Id}}", image)
+			id = strings.TrimSpace(id)
+			if err != nil || len(id) != 71 || !strings.HasPrefix(id, "sha256:") || strings.Trim(id[7:], "0123456789abcdef") != "" {
+				return configured, errors.New("local current reconfiguration requires every approved cached image")
+			}
+		}
+	} else {
+		if _, err := h.run(ctx, "compose", "--project-name", p.App, "--project-directory", p.AppDir, "-f", validated, "--profile", "*", "pull"); err != nil {
+			return configured, errors.New("complete approved image pull failed")
+		}
 	}
 	proxyConfig, err := h.readBytes(filepath.Join(p.Deployment.ProxyDir, "Caddyfile"))
 	if err != nil && len(bytes.TrimSpace(hostnames)) > 0 {
