@@ -31,12 +31,14 @@ type HostResources struct {
 // app's hard ceiling leaves room for every other app's declared reserve.
 type ApplicationGroup struct {
 	HostGroup
-	BaselineMemoryBytes int64            `json:"baseline_memory_bytes"`
-	MemoryLowBytes      int64            `json:"memory_low_bytes"`
-	MemoryHighBytes     int64            `json:"memory_high_bytes"`
-	CPUWeight           int64            `json:"cpu_weight"`
-	IOWeight            int64            `json:"io_weight"`
-	IOMax               []DeviceIOBudget `json:"io_max,omitempty"`
+	BaselineMemoryBytes int64 `json:"baseline_memory_bytes"`
+	MemoryLowBytes      int64 `json:"memory_low_bytes"`
+	MemoryHighBytes     int64 `json:"memory_high_bytes"`
+	CPUWeight           int64 `json:"cpu_weight"`
+	// Zero uses explicit device rate limits without assuming a proportional
+	// I/O scheduler. Positive weights require the io.weight interface.
+	IOWeight int64            `json:"io_weight,omitempty"`
+	IOMax    []DeviceIOBudget `json:"io_max,omitempty"`
 }
 
 // Rate limits enforce disk admission independently of the device scheduler.
@@ -107,7 +109,7 @@ func (p HostResources) checkApps() error {
 			group.MemoryLowBytes < group.BaselineMemoryBytes || group.MemoryHighBytes < group.MemoryLowBytes ||
 			group.MemoryBytes < group.MemoryHighBytes || group.MemoryBytes > p.Production.MemoryBytes ||
 			group.SwapBytes < 0 || group.SwapBytes > p.Production.SwapBytes || group.MilliCPUs < 1 || group.MilliCPUs > p.Production.MilliCPUs ||
-			group.PIDs < 16 || group.PIDs > p.Production.PIDs || group.CPUWeight < 1 || group.CPUWeight > 10000 || group.IOWeight < 1 || group.IOWeight > 10000 {
+			group.PIDs < 16 || group.PIDs > p.Production.PIDs || group.CPUWeight < 1 || group.CPUWeight > 10000 || group.IOWeight < 0 || group.IOWeight > 10000 || (group.IOWeight == 0 && len(group.IOMax) == 0) {
 			return errors.New("application group requires measured baseline, pressure threshold and finite host-owned limits")
 		}
 		reserved += group.MemoryLowBytes
@@ -142,6 +144,11 @@ func (p HostResources) Preflight(root string, measuredMemory, measuredCPU int64)
 	}
 	// Preflight every new subgroup before changing any controller or limit.
 	for name, group := range p.Apps {
+		if group.IOWeight > 0 {
+			if info, err := os.Stat(filepath.Join(root, "komizo-production", "io.weight")); err != nil || !info.Mode().IsRegular() {
+				return errors.New("requested I/O weighting controller unavailable; select explicit device rate limits or a supported weighting backend")
+			}
+		}
 		if root == "/sys/fs/cgroup" {
 			for _, limit := range group.IOMax {
 				if _, err := os.Stat(filepath.Join("/sys/dev/block", limit.Device)); err != nil {
@@ -240,7 +247,10 @@ func (p HostResources) Apply(root string, measuredMemory, measuredCPU int64) err
 			settings := map[string]string{"memory.low": fmt.Sprint(group.MemoryLowBytes), "memory.high": fmt.Sprint(group.MemoryHighBytes),
 				"memory.max": fmt.Sprint(group.MemoryBytes), "memory.swap.max": fmt.Sprint(group.SwapBytes),
 				"cpu.max": fmt.Sprintf("%d 100000", group.MilliCPUs*100), "cpu.weight": fmt.Sprint(group.CPUWeight),
-				"pids.max": fmt.Sprint(group.PIDs), "io.weight": fmt.Sprintf("default %d", group.IOWeight), "cgroup.subtree_control": control}
+				"pids.max": fmt.Sprint(group.PIDs), "cgroup.subtree_control": control}
+			if group.IOWeight > 0 {
+				settings["io.weight"] = fmt.Sprintf("default %d", group.IOWeight)
+			}
 			for file, value := range settings {
 				if err := os.WriteFile(filepath.Join(dir, file), []byte(value), 0600); err != nil {
 					return fmt.Errorf("apply application group %s/%s: %w", name, file, err)
