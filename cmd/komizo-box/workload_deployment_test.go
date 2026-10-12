@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -116,6 +117,97 @@ func newDeploymentFixture(t *testing.T) *deploymentFixture {
 	}
 	return f
 }
+func TestLocalCurrentStagingUsesNoRegistryAndPreservesSourceAndSecrets(t *testing.T) {
+	f := newDeploymentFixture(t)
+	if err := f.h.readJSON(filepath.Join(f.h.policies, f.r.App+".json"), &f.h.policy); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(f.h.policy.AppDir, ".env")
+	env, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env = bytes.ReplaceAll(env, []byte(f.r.Previous), []byte(f.r.Candidate))
+	if err := os.WriteFile(path, env, 0600); err != nil {
+		t.Fatal(err)
+	}
+	opPath := filepath.Join(f.h.releases, f.r.App, "operation.json")
+	var op workload.Operation
+	if err := f.h.readJSON(opPath, &op); err != nil {
+		t.Fatal(err)
+	}
+	op.Previous = f.r.Candidate
+	if err := workload.WritePrivateJSON(opPath, op); err != nil {
+		t.Fatal(err)
+	}
+	f.r.Previous = f.r.Candidate
+	f.r.Stage.LocalOnly = true
+	configured, err := f.h.stageDeployment(context.Background(), f.r, f.queue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configured.Version != 1 || configured.Candidate != f.r.Candidate || configured.Previous != f.r.Candidate {
+		t.Fatal("local staging changed release identity", configured)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(env, after) {
+		t.Fatal("local reconfiguration changed private environment", err)
+	}
+	for _, call := range f.calls {
+		if call == "login" || strings.HasPrefix(call, "pull ") || strings.HasSuffix(call, " pull") {
+			t.Fatal("local mode obtained registry authority", call)
+		}
+	}
+}
+
+func TestLocalCurrentCannotStageAnotherRevisionOrCarryRegistryCredentials(t *testing.T) {
+	for _, registry := range []bool{false, true} {
+		f := newDeploymentFixture(t)
+		if err := f.h.readJSON(filepath.Join(f.h.policies, f.r.App+".json"), &f.h.policy); err != nil {
+			t.Fatal(err)
+		}
+		f.r.Stage.LocalOnly = true
+		if registry {
+			f.r.Previous = f.r.Candidate
+			path := filepath.Join(f.h.policy.AppDir, ".env")
+			env, _ := os.ReadFile(path)
+			env = bytes.ReplaceAll(env, []byte(strings.Repeat("a", 40)), []byte(f.r.Candidate))
+			if err := os.WriteFile(path, env, 0600); err != nil {
+				t.Fatal(err)
+			}
+			var op workload.Operation
+			opPath := filepath.Join(f.h.releases, f.r.App, "operation.json")
+			if err := f.h.readJSON(opPath, &op); err != nil {
+				t.Fatal(err)
+			}
+			op.Previous = f.r.Candidate
+			if err := workload.WritePrivateJSON(opPath, op); err != nil {
+				t.Fatal(err)
+			}
+			slot := deploymentCredentialPath(f.queue, f.r.ID)
+			if err := workload.WritePrivateJSON(slot, deploymentCredentials{Registry: "ghcr.io", User: "example", Password: "synthetic-only"}); err != nil {
+				t.Fatal(err)
+			}
+			raw, _ := os.ReadFile(slot)
+			f.r.Stage.CredentialSHA256 = deploymentHash(raw)
+		}
+		writes := 0
+		writer := f.h.deploymentWrite
+		f.h.deploymentWrite = func(path string, body []byte, mode os.FileMode) error { writes++; return writer(path, body, mode) }
+		if _, err := f.h.stageDeployment(context.Background(), f.r, f.queue); err == nil {
+			t.Fatal("local mode widened authority", registry)
+		}
+		if writes != 0 {
+			t.Fatal("refused local staging changed installed files")
+		}
+		for _, call := range f.calls {
+			if call == "login" || strings.HasPrefix(call, "pull ") || strings.HasSuffix(call, " pull") {
+				t.Fatal("refused local staging obtained registry authority", call)
+			}
+		}
+	}
+}
+
 func TestTypedDeploymentOwnsDisconnectedStagingAndStop(t *testing.T) {
 	for _, stop := range []bool{false, true} {
 		t.Run(map[bool]string{false: "running", true: "stopped"}[stop], func(t *testing.T) {

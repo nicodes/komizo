@@ -67,6 +67,9 @@ func (r ActivationRequest) CheckIdentity() error {
 		if r.ScopedGeneration != "" || r.Stage == nil || r.ComposeSHA256 != "" || r.RouteSHA256 != "" || !commitID.MatchString(r.Candidate) || (r.Previous != "" && !commitID.MatchString(r.Previous)) {
 			return errors.New("invalid staging identity")
 		}
+		if r.Stage.LocalOnly && r.Candidate != r.Previous {
+			return errors.New("local reconfiguration requires the current serving revision")
+		}
 		return r.Stage.Check()
 	default:
 		return errors.New("unknown host operation version")
