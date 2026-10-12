@@ -21,7 +21,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.request
 import urllib.parse
 
 SHA = re.compile(r'[a-f0-9]{64}\Z')
@@ -40,7 +39,7 @@ class Platform:
     def path(self, absolute):
         return self.root / absolute.lstrip('/')
 
-    def protected(self, path, private=False):
+    def protected(self, path, private=False, directory=False):
         path = Path(path)
         for parent in [path, *path.parents]:
             info = parent.lstat()
@@ -49,9 +48,22 @@ class Platform:
             if parent == self.root:
                 break
         info = path.lstat()
-        if not stat.S_ISREG(info.st_mode) or private and info.st_mode & 0o077:
+        if directory:
+            if not stat.S_ISDIR(info.st_mode):
+                raise ValueError('platform parent must be a protected directory')
+        elif not stat.S_ISREG(info.st_mode) or private and info.st_mode & 0o077:
             raise ValueError('platform input must be a protected regular file')
         return info
+
+    def agent_configuration(self):
+        # Default public installations do not require the optional operator
+        # configuration. Bind its absence as carefully as its existing bytes.
+        path=self.path('/etc/komizo/agent.json')
+        try:
+            return self.digest(path)
+        except FileNotFoundError:
+            self.protected(path.parent, directory=True)
+            return None
 
     def read(self, path, maximum=65536, private=False):
         self.protected(path, private)
@@ -224,9 +236,17 @@ class Platform:
                 or not 1 <= len(value['probes']) <= 64):
             raise ValueError('proxy grant requires exact image and route probes')
         for probe in value['probes']:
-            if (set(probe) != {'url', 'revision'} or not re.fullmatch(r'(?:https|wss)://[A-Za-z0-9.-]+/[A-Za-z0-9/_?=&.-]*', probe['url'])
+            if (set(probe) not in ({'url', 'revision'}, {'url','revision','status','location'}) or not re.fullmatch(r'(?:https|wss)://[A-Za-z0-9.-]+/[A-Za-z0-9/_.-]*', probe['url'])
                     or not REV.fullmatch(probe['revision'])):
                 raise ValueError('invalid platform readiness probe')
+            if 'status' in probe:
+                target=urllib.parse.urlsplit(probe['location'])
+                hosts={urllib.parse.urlsplit(row['url']).hostname for row in value['probes']}
+                if (not probe['url'].startswith('https://') or type(probe['status']) is not int
+                        or probe['status'] not in (301,302,303,307,308) or target.scheme != 'https'
+                        or target.hostname not in hosts or target.username or target.password
+                        or target.port not in (None,443) or target.query or target.fragment or not target.path.startswith('/')):
+                    raise ValueError('invalid explicit redirect readiness contract')
         return value
 
     def compose(self, file, *args):
@@ -306,10 +326,18 @@ class Platform:
                         and response.getheader('Sec-WebSocket-Accept')==expected)
             finally:
                 connection.close()
-        request=urllib.request.Request(probe['url'],headers={'Cache-Control':'no-cache'})
-        with urllib.request.urlopen(request,timeout=timeout) as response:
-            return (response.status==200 and response.headers.get('X-Komizo-Revision')==probe['revision']
+        parsed=urllib.parse.urlsplit(probe['url'])
+        connection=http.client.HTTPSConnection(parsed.hostname,timeout=timeout)
+        try:
+            connection.request('GET',parsed.path,headers={'Cache-Control':'no-cache'})
+            response=connection.getresponse()
+            if 'status' in probe:
+                return (response.status==probe['status'] and response.getheader('Location')==probe['location']
+                        and response.getheader('X-Komizo-Revision')==probe['revision'])
+            return (response.status==200 and response.getheader('X-Komizo-Revision')==probe['revision']
                     and bool(response.read(512).strip()))
+        finally:
+            connection.close()
 
     def apply(self, stage, expected, recover=False):
         stage = Path(stage)
@@ -331,6 +359,8 @@ class Platform:
                     side = 'after' if record['phase'] == 'complete' else 'before'
                     if any(self.digest(self.path(row['path'])) != row[side] for row in value['files']):
                         raise ValueError('completed platform identity changed; fence retained')
+                    if value['kind']=='self-upgrade' and self.agent_configuration()!=record['agent_configuration_sha256']:
+                        raise ValueError('agent configuration changed; fence retained')
                     if value['kind'] == 'proxy-upgrade' and side == 'after':
                         self.verify_proxy(value)
                     if pending.exists():
@@ -349,7 +379,7 @@ class Platform:
                 services = [s for s in SERVICES if self.run(['rc-service', s, 'status'], False)[0] == 0]
                 if 'komizo-rootd' not in services:
                     raise ValueError('self-upgrade requires the existing root worker')
-                configuration = self.digest(self.path('/etc/komizo/agent.json'))
+                configuration = self.agent_configuration()
             else:
                 self.proxy_preflight(stage, value)
             backup = stage/'previous'
@@ -381,7 +411,7 @@ class Platform:
                 if value['kind'] == 'self-upgrade':
                     if self.run(['komizo-box', 'version'])[1].strip().removeprefix('v') != value['release'].removeprefix('v'):
                         raise ValueError('installed platform version differs')
-                    if self.digest(self.path('/etc/komizo/agent.json')) != configuration:
+                    if self.agent_configuration() != configuration:
                         raise ValueError('agent configuration changed during platform upgrade')
                     for service in services:
                         self.run(['rc-service', service, 'start'])
@@ -408,7 +438,7 @@ class Platform:
         for index, row in enumerate(value['files']):
             if self.digest(self.path(row['path'])) not in (row['before'], row['after']) or self.digest(stage/'previous'/str(index)) != row['before']:
                 raise ValueError('platform recovery refuses changed installed or backup bytes')
-        if value['kind'] == 'self-upgrade' and self.digest(self.path('/etc/komizo/agent.json')) != record['agent_configuration_sha256']:
+        if value['kind'] == 'self-upgrade' and self.agent_configuration() != record['agent_configuration_sha256']:
             raise ValueError('platform recovery preserves changed agent configuration')
         record['phase'] = 'recovering'
         self.journal(stage, record)
