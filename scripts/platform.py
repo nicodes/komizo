@@ -21,7 +21,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.request
 import urllib.parse
 
 SHA = re.compile(r'[a-f0-9]{64}\Z')
@@ -224,9 +223,17 @@ class Platform:
                 or not 1 <= len(value['probes']) <= 64):
             raise ValueError('proxy grant requires exact image and route probes')
         for probe in value['probes']:
-            if (set(probe) != {'url', 'revision'} or not re.fullmatch(r'(?:https|wss)://[A-Za-z0-9.-]+/[A-Za-z0-9/_?=&.-]*', probe['url'])
+            if (set(probe) not in ({'url', 'revision'}, {'url','revision','status','location'}) or not re.fullmatch(r'(?:https|wss)://[A-Za-z0-9.-]+/[A-Za-z0-9/_.-]*', probe['url'])
                     or not REV.fullmatch(probe['revision'])):
                 raise ValueError('invalid platform readiness probe')
+            if 'status' in probe:
+                target=urllib.parse.urlsplit(probe['location'])
+                hosts={urllib.parse.urlsplit(row['url']).hostname for row in value['probes']}
+                if (not probe['url'].startswith('https://') or type(probe['status']) is not int
+                        or probe['status'] not in (301,302,303,307,308) or target.scheme != 'https'
+                        or target.hostname not in hosts or target.username or target.password
+                        or target.port not in (None,443) or target.query or target.fragment or not target.path.startswith('/')):
+                    raise ValueError('invalid explicit redirect readiness contract')
         return value
 
     def compose(self, file, *args):
@@ -306,10 +313,18 @@ class Platform:
                         and response.getheader('Sec-WebSocket-Accept')==expected)
             finally:
                 connection.close()
-        request=urllib.request.Request(probe['url'],headers={'Cache-Control':'no-cache'})
-        with urllib.request.urlopen(request,timeout=timeout) as response:
-            return (response.status==200 and response.headers.get('X-Komizo-Revision')==probe['revision']
+        parsed=urllib.parse.urlsplit(probe['url'])
+        connection=http.client.HTTPSConnection(parsed.hostname,timeout=timeout)
+        try:
+            connection.request('GET',parsed.path,headers={'Cache-Control':'no-cache'})
+            response=connection.getresponse()
+            if 'status' in probe:
+                return (response.status==probe['status'] and response.getheader('Location')==probe['location']
+                        and response.getheader('X-Komizo-Revision')==probe['revision'])
+            return (response.status==200 and response.getheader('X-Komizo-Revision')==probe['revision']
                     and bool(response.read(512).strip()))
+        finally:
+            connection.close()
 
     def apply(self, stage, expected, recover=False):
         stage = Path(stage)

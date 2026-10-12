@@ -55,6 +55,9 @@ def existing_probe(probe):
         # Direct HTTPS does not follow redirects or use environment proxies.
         connection.request('GET',url.path)
         response=connection.getresponse()
+        if 'status' in probe:
+            return (response.status==probe['status'] and response.getheader('Location')==probe['location']
+                    and response.getheader('X-Komizo-Revision')==probe['revision'])
         return (response.status==200 and response.getheader('X-Komizo-Revision')==probe['revision']
                 and bool(response.read(512).strip()))
     finally:connection.close()
@@ -169,12 +172,18 @@ def prepare(host, reference, source, stage, probes, apply=False, expected_manife
             expected[hostname]=app['version']
     observed={}
     for probe in probes:
-        if set(probe) != {'url','revision'}: raise ValueError('invalid probe contract')
+        if set(probe) not in ({'url','revision'}, {'url','revision','status','location'}): raise ValueError('invalid probe contract')
         url=urllib.parse.urlsplit(probe['url'])
         if url.scheme not in ('https','wss') or url.username or url.password or url.port not in (None,443) or url.query or url.fragment or not url.path.startswith('/'):
             raise ValueError('invalid serving probe URL')
         if url.hostname in observed or expected.get(url.hostname) != probe['revision']:
             raise ValueError('probe differs from installed serving identity')
+        if 'status' in probe:
+            target=urllib.parse.urlsplit(probe['location'])
+            if (url.scheme != 'https' or type(probe['status']) is not int or probe['status'] not in (301,302,303,307,308)
+                    or target.scheme != 'https' or target.hostname not in expected or target.username or target.password
+                    or target.port not in (None,443) or target.query or target.fragment or not target.path.startswith('/')):
+                raise ValueError('redirect probe requires an explicit status and installed HTTPS destination')
         observed[url.hostname]=probe['revision']
     if observed != expected: raise ValueError('every running installed hostname requires an explicit readiness probe')
     if not 1 <= len(probes) <= 64:

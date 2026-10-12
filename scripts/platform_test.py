@@ -142,25 +142,61 @@ class PlatformTests(unittest.TestCase):
             Connection.valid=True;Connection.source='b'*40
             self.assertFalse(module.Platform.probe_route(probe,1))
 
+    def test_explicit_redirect_never_follows_an_unreviewed_location(self):
+        probe={'url':'https://alias.example.test/','revision':'a'*40,'status':301,'location':'https://app.example.test/'}
+        for status,location,source,accepted in ((301,probe['location'],'a'*40,True),
+                (302,probe['location'],'a'*40,False),(301,'https://foreign.example.test/','a'*40,False),
+                (301,probe['location'],'b'*40,False)):
+            with patch.object(module.http.client,'HTTPSConnection') as connect:
+                response=connect.return_value.getresponse.return_value;response.status=status
+                response.getheader.side_effect=lambda name,default=None:{'Location':location,'X-Komizo-Revision':source}.get(name,default)
+                self.assertEqual(module.Platform.probe_route(probe,1),accepted)
+                connect.assert_called_once_with('alias.example.test',timeout=1)
+                connect.return_value.request.assert_called_once_with('GET','/',headers={'Cache-Control':'no-cache'})
+                connect.return_value.close.assert_called_once()
+
+    def test_proxy_grant_rejects_uninstalled_redirect_targets(self):
+        for location,accepted in (('https://app.example.test/',True),('https://foreign.example.test/',False),
+                                  ('http://app.example.test/',False),('https://app.example.test/?token=synthetic',False)):
+            with tempfile.TemporaryDirectory() as root:
+                f=Fixture(root)
+                value=json.loads((f.stage/'manifest.json').read_text())
+                value.update(kind='proxy-upgrade', files=[{**value['files'][0],'path':'/srv/_proxy/compose.yml'}],
+                    image={'reference':'ghcr.io/nicodes/platform-proxy@sha256:'+'b'*64,'id':'sha256:'+'b'*64,'previous_id':'sha256:'+'c'*64},
+                    probes=[{'url':'https://app.example.test/','revision':'a'*40},
+                            {'url':'https://alias.example.test/','revision':'a'*40,'status':301,'location':location}])
+                receipt={'version':1,'kind':value['kind'],'source':value['source'],'authenticated':True,'files':value['files'],'image':value['image']}
+                raw=json.dumps(receipt).encode();(f.stage/'verified-release.json').write_bytes(raw)
+                value['receipt_sha256']=hashlib.sha256(raw).hexdigest()
+                raw=json.dumps(value).encode();(f.stage/'manifest.json').write_bytes(raw)
+                expected=hashlib.sha256(raw).hexdigest()
+                if accepted:self.assertEqual(f.p.manifest(f.stage,expected)['probes'],value['probes'])
+                else:
+                    with self.assertRaises(ValueError):f.p.manifest(f.stage,expected)
+                self.assertEqual(f.calls,[])
+
     def test_proxy_acceptance_waits_for_listener_but_preserves_exact_identity(self):
         class Response:
             status=200
             headers={'X-Komizo-Revision':'a'*40}
-            def __enter__(self):return self
-            def __exit__(self,*args):pass
+            def getheader(self,name,default=None):return self.headers.get(name,default)
             def read(self,maximum):return b'ready'
         with tempfile.TemporaryDirectory() as root:
             f=Fixture(root)
             f.p.run=lambda args,required=True:(0,'sha256:'+'b'*64)
             value={'image':{'id':'sha256:'+'b'*64},'probes':[{'url':'https://example.test/readyz','revision':'a'*40}]}
-            with patch.object(module.urllib.request,'urlopen',side_effect=[OSError('starting'),Response()]) as request:
+            with patch.object(module.http.client,'HTTPSConnection') as connect:
+                request=connect.return_value.getresponse
+                request.side_effect=[OSError('starting'),Response()]
                 f.p.verify_proxy(value,1)
                 self.assertEqual(request.call_count,2)
             Response.headers={'X-Komizo-Revision':'c'*40}
-            with patch.object(module.urllib.request,'urlopen',return_value=Response()):
+            with patch.object(module.http.client,'HTTPSConnection') as connect:
+                connect.return_value.getresponse.return_value=Response()
                 with self.assertRaisesRegex(ValueError,'deadline'):
                     f.p.verify_proxy(value,.02)
-            with patch.object(module.urllib.request,'urlopen',side_effect=OSError('unavailable')):
+            with patch.object(module.http.client,'HTTPSConnection') as connect:
+                connect.return_value.getresponse.side_effect=OSError('unavailable')
                 with self.assertRaisesRegex(ValueError,'deadline'):
                     f.p.verify_proxy(value,.02)
 

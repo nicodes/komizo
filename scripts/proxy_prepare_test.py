@@ -78,6 +78,33 @@ class ProxyPreparation(unittest.TestCase):
             self.assertFalse(m.existing_probe({'url':'https://app.example.test/readyz','revision':'a'*40}))
             conn.request.assert_called_once_with('GET','/readyz')
             conn.close.assert_called_once()
+
+    def test_explicit_redirect_checks_exact_location_status_and_source_without_following(self):
+        probe={'url':'https://alias.example.test/','revision':'a'*40,'status':301,'location':'https://app.example.test/'}
+        for status,location,source,accepted in ((301,probe['location'],'a'*40,True),
+                (302,probe['location'],'a'*40,False),(301,'https://foreign.example.test/','a'*40,False),
+                (301,probe['location'],'b'*40,False),(200,probe['location'],'a'*40,False)):
+            with patch.object(m.http.client,'HTTPSConnection') as connect:
+                response=connect.return_value.getresponse.return_value;response.status=status
+                response.getheader.side_effect=lambda name,default=None:{'Location':location,'X-Komizo-Revision':source}.get(name,default)
+                self.assertEqual(m.existing_probe(probe),accepted)
+                connect.assert_called_once_with('alias.example.test',port=443,timeout=10)
+                connect.return_value.request.assert_called_once_with('GET','/')
+
+    def test_uninstalled_redirect_destination_refuses_before_any_pull(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as tmp:
+            root=Path(tmp);root.chmod(0o700);calls=[]
+            def run(args,body=None,**kwargs):
+                calls.append(args[-1])
+                if args[-1]=='komizo-box report':return json.dumps({'server':{'komizo':{'version':'0.0.83'}},'apps':[{'runtime_state':'running','version':'a'*40,'hosts':[{'name':'alias.example.test'}]}]}).encode()
+                if args[-1]=='uname -m':return b'x86_64'
+                raise AssertionError(args)
+            probe={'url':'https://alias.example.test/','revision':'a'*40,'status':301,'location':'https://foreign.example.test/'}
+            with self.protection(root),patch.object(m,'verify',return_value=b'fixture provenance'),patch.object(m,'run',side_effect=run):
+                with self.assertRaises(ValueError):m.prepare('box.example.test','ghcr.io/nicodes/platform-proxy@sha256:'+'b'*64,'a'*40,root/'plan',[probe])
+            self.assertFalse(any(c.startswith('docker pull') for c in calls))
+
+    def test_websocket_retains_its_reviewed_path_and_challenge(self):
         with patch.object(m.http.client,'HTTPSConnection') as connect:
             conn=connect.return_value;response=conn.getresponse.return_value;response.status=101
             def header(name,default=None):
