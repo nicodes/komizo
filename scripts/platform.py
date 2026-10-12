@@ -99,7 +99,7 @@ class Platform:
         return self.digest(path), stat.S_IMODE(info.st_mode)
 
     def authority_mode(self, destination):
-        if destination == '/etc/doas.conf':
+        if destination in ('/etc/doas.conf', '/etc/komizo/resources.json'):
             return 0o600
         patterns = ((r'/etc/komizo/workloads/([a-z][a-z0-9_-]{0,62})\.json', 0o600),
                     (r'/var/lib/komizo/tasks/([a-z][a-z0-9_-]{0,62})\.sh', 0o700),
@@ -306,6 +306,10 @@ class Platform:
                 if document.get('app') != Path(row['path']).stem:
                     raise ValueError('workload policy names a different app')
                 self.run(['komizo-box', 'workload', 'policy-check', '--policy', str(candidate)])
+            elif row['path'] == '/etc/komizo/resources.json':
+                if row['before'] is None:
+                    raise ValueError('resource migration requires an existing protected policy')
+                self.run(['komizo-box', 'workload', 'host-resources', '--check', '--policy', str(candidate), '--check-usage'])
             elif row['path'] == '/etc/doas.conf':
                 self.run(['doas', '-C', str(candidate)])
             else:
@@ -535,6 +539,8 @@ class Platform:
                     self.compose(self.path('/srv/_proxy/compose.yml'), 'up', '-d', *recreate, '--no-build', '--pull', 'never', 'komizo-proxy')
                     self.verify_proxy(value)
                     self.check_resource_budget(value,installed=True)
+                elif any(row['path'] == '/etc/komizo/resources.json' for row in value['files']):
+                    self.run(['komizo-box', 'workload', 'host-resources', '--apply'])
                 for row in value['files']:
                     if self.identity(self.path(row['path'])) != (row['after'], row['mode']):
                         raise ValueError('installed platform bytes differ')
@@ -589,6 +595,10 @@ class Platform:
                     raise ValueError('previous static mount differs; recovery fence retained')
         for service in record['services']:
             self.run(['rc-service', service, 'start'])
+        if value['kind'] == 'workload-authority' and any(row['path'] == '/etc/komizo/resources.json' for row in value['files']):
+            # Restoring bytes is insufficient after a partial controller write.
+            # Failure leaves the durable fence for a measured operator drain.
+            self.run(['komizo-box', 'workload', 'host-resources', '--apply'])
         record['phase'] = 'recovered'
         self.journal(stage, record)
         pending = self.path('/var/lib/komizo/upgrades/pending.json')
