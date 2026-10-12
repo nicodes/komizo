@@ -333,6 +333,9 @@ func (h *hostActivation) stageDeployment(parent context.Context, r workload.Acti
 	if err := h.deploymentCapacity(); err != nil {
 		return configured, err
 	}
+	if err := h.startupCapacity(p); err != nil {
+		return configured, err
+	}
 	var accepted workload.ReleaseAcceptance
 	if err := h.readJSON(filepath.Join(h.releases, r.App, r.Candidate+".json"), &accepted); err != nil {
 		return configured, err

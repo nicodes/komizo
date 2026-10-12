@@ -69,6 +69,9 @@ func (h *hostActivation) performTypedOwner(parent context.Context, verb string, 
 		return errors.New("protected lifecycle policy changed while acquiring deployment locks")
 	}
 	if verb != "stop" {
+		if err := h.startupCapacity(p); err != nil {
+			return err
+		}
 		if err := activationIdle(queue); err != nil {
 			return err
 		}

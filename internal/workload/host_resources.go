@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -30,12 +31,24 @@ type HostResources struct {
 // app's hard ceiling leaves room for every other app's declared reserve.
 type ApplicationGroup struct {
 	HostGroup
-	BaselineMemoryBytes int64 `json:"baseline_memory_bytes"`
-	MemoryLowBytes      int64 `json:"memory_low_bytes"`
-	MemoryHighBytes     int64 `json:"memory_high_bytes"`
-	CPUWeight           int64 `json:"cpu_weight"`
-	IOWeight            int64 `json:"io_weight"`
+	BaselineMemoryBytes int64            `json:"baseline_memory_bytes"`
+	MemoryLowBytes      int64            `json:"memory_low_bytes"`
+	MemoryHighBytes     int64            `json:"memory_high_bytes"`
+	CPUWeight           int64            `json:"cpu_weight"`
+	IOWeight            int64            `json:"io_weight"`
+	IOMax               []DeviceIOBudget `json:"io_max,omitempty"`
 }
+
+// Rate limits enforce disk admission independently of the device scheduler.
+// Devices and rates belong to the installed operator policy, never Compose.
+type DeviceIOBudget struct {
+	Device              string `json:"device"`
+	ReadBytesPerSecond  int64  `json:"read_bytes_per_second"`
+	WriteBytesPerSecond int64  `json:"write_bytes_per_second"`
+}
+
+var blockDeviceID = regexp.MustCompile(`^(0|[1-9][0-9]{0,6}):(0|[1-9][0-9]{0,6})$`)
+
 type HostGroup struct {
 	MemoryBytes int64 `json:"memory_bytes"`
 	SwapBytes   int64 `json:"swap_bytes"` // additional swap, unlike Compose's total
@@ -80,6 +93,16 @@ func (p HostResources) checkApps() error {
 	}
 	var reserved int64
 	for name, group := range p.Apps {
+		if len(group.IOMax) > 16 {
+			return errors.New("application disk device inventory exceeds its bound")
+		}
+		seen := map[string]bool{}
+		for _, limit := range group.IOMax {
+			if !blockDeviceID.MatchString(limit.Device) || seen[limit.Device] || limit.ReadBytesPerSecond < 4096 || limit.ReadBytesPerSecond > 1<<30 || limit.WriteBytesPerSecond < 4096 || limit.WriteBytesPerSecond > 1<<30 {
+				return errors.New("disk limits require unique block devices and finite read/write rates")
+			}
+			seen[limit.Device] = true
+		}
 		if !identifier.MatchString(name) || group.BaselineMemoryBytes < 4<<20 ||
 			group.MemoryLowBytes < group.BaselineMemoryBytes || group.MemoryHighBytes < group.MemoryLowBytes ||
 			group.MemoryBytes < group.MemoryHighBytes || group.MemoryBytes > p.Production.MemoryBytes ||
@@ -116,6 +139,13 @@ func (p HostResources) Apply(root string, measuredMemory, measuredCPU int64) err
 	}
 	// Preflight every new subgroup before changing any controller or limit.
 	for name, group := range p.Apps {
+		if root == "/sys/fs/cgroup" {
+			for _, limit := range group.IOMax {
+				if _, err := os.Stat(filepath.Join("/sys/dev/block", limit.Device)); err != nil {
+					return errors.New("reviewed disk device is unavailable")
+				}
+			}
+		}
 		dir := filepath.Join(root, "komizo-production", name)
 		info, err := os.Lstat(dir)
 		if os.IsNotExist(err) {
@@ -123,6 +153,9 @@ func (p HostResources) Apply(root string, measuredMemory, measuredCPU int64) err
 		}
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return errors.New("application cgroup path is not a real directory")
+		}
+		if _, err := currentIOLimitDevices(filepath.Join(dir, "io.max")); err != nil {
+			return err
 		}
 		for file, limit := range map[string]int64{"memory.current": group.MemoryBytes, "memory.swap.current": group.SwapBytes, "pids.current": group.PIDs} {
 			body, err := os.ReadFile(filepath.Join(dir, file))
@@ -203,10 +236,90 @@ func (p HostResources) Apply(root string, measuredMemory, measuredCPU int64) err
 					return fmt.Errorf("apply application group %s/%s: %w", name, file, err)
 				}
 			}
+			// This operator-owned group is an exact policy replacement. Clearing
+			// prior device limits also lets recovery restore a previous empty set.
+			devices, err := currentIOLimitDevices(filepath.Join(dir, "io.max"))
+			if err != nil {
+				return err
+			}
+			for _, device := range devices {
+				if err := os.WriteFile(filepath.Join(dir, "io.max"), []byte(device+" rbps=max wbps=max riops=max wiops=max"), 0600); err != nil {
+					return err
+				}
+			}
+			for _, limit := range group.IOMax {
+				value := fmt.Sprintf("%s rbps=%d wbps=%d", limit.Device, limit.ReadBytesPerSecond, limit.WriteBytesPerSecond)
+				if err := os.WriteFile(filepath.Join(dir, "io.max"), []byte(value), 0600); err != nil {
+					return fmt.Errorf("apply application disk limit %s: %w", name, err)
+				}
+			}
 		}
 		if err := os.WriteFile(filepath.Join(production, "memory.low"), []byte(fmt.Sprint(reserve)), 0600); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func currentIOLimitDevices(path string) ([]string, error) {
+	body, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil || len(body) > 64<<10 {
+		return nil, errors.New("disk limit inventory is unavailable or oversized")
+	}
+	var devices []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if !blockDeviceID.MatchString(fields[0]) || seen[fields[0]] || len(devices) >= 16 {
+			return nil, errors.New("disk limit inventory is ambiguous")
+		}
+		seen[fields[0]] = true
+		devices = append(devices, fields[0])
+	}
+	return devices, nil
+}
+
+// CheckStartup refuses expensive work before pressure reaches a serving app's
+// soft threshold. It also reserves the unused portion of other apps' memory.low.
+// The host executor serializes startup admission with deployment activation.
+func (p HostResources) CheckStartup(app string, resources *ResourcePolicy, parentUsage int64, usage map[string]int64) error {
+	if resources == nil || resources.CgroupParent != "/komizo-production/"+app {
+		return errors.New("startup requires the installed application allocation")
+	}
+	if err := p.CheckServingBudget(app, resources); err != nil {
+		return err
+	}
+	group, ok := p.Apps[app]
+	current, measured := usage[app]
+	if !ok || !measured || current < 0 || parentUsage < current || parentUsage > p.Production.MemoryBytes || resources.StartupAllowanceBytes <= 0 {
+		return errors.New("startup requires measured application usage and a positive startup allowance")
+	}
+	if current > group.MemoryHighBytes-resources.StartupAllowanceBytes {
+		return errors.New("application serving pressure refuses startup")
+	}
+	available := p.Production.MemoryBytes - parentUsage - resources.StartupAllowanceBytes
+	var children int64
+	for name, other := range p.Apps {
+		observed, exists := usage[name]
+		if !exists || observed < 0 || observed > other.MemoryBytes {
+			return errors.New("application usage is missing or exceeds its installed ceiling")
+		}
+		children += observed
+		if name != app && observed < other.MemoryLowBytes {
+			available -= other.MemoryLowBytes - observed
+		}
+	}
+	if children > parentUsage {
+		return errors.New("startup usage changed while measuring the application inventory")
+	}
+	if available < 0 {
+		return errors.New("startup would consume another application's serving reserve")
 	}
 	return nil
 }
