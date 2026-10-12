@@ -27,6 +27,46 @@ func TestApplicationReservesRefuseStarvationAndPreserveHostFloor(t *testing.T) {
 	}
 }
 
+func TestResourcePreflightCreatesNoControllersAndRecoveryClearsParentReserve(t *testing.T) {
+	g := HostGroup{MemoryBytes: 64 << 20, MilliCPUs: 200, PIDs: 128}
+	p := HostResources{Version: 1, PhysicalMemoryBytes: 512 << 20, OSReserveBytes: 128 << 20,
+		PhysicalMilliCPUs: 1000, OSReserveMilliCPUs: 200, Production: g, Proxy: g, Previews: g, PreviewDatabase: g}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "cgroup.controllers"), []byte("cpu memory pids io"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Preflight(root, 512<<20, 1000); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 1 {
+		t.Fatal("read-only preflight created controller files", entries, err)
+	}
+	if err := p.Apply(root, 512<<20, 1000); err != nil {
+		t.Fatal(err)
+	}
+	for name := range p.groups() {
+		for _, file := range []string{"memory.current", "memory.swap.current", "pids.current"} {
+			if err := os.WriteFile(filepath.Join(root, name, file), []byte("0"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	app := ApplicationGroup{HostGroup: HostGroup{MemoryBytes: 32 << 20, MilliCPUs: 100, PIDs: 32},
+		BaselineMemoryBytes: 8 << 20, MemoryLowBytes: 16 << 20, MemoryHighBytes: 24 << 20, CPUWeight: 200, IOWeight: 100}
+	p.Apps = map[string]ApplicationGroup{"example": app}
+	if err := p.Apply(root, 512<<20, 1000); err != nil {
+		t.Fatal(err)
+	}
+	p.Apps = nil
+	if err := p.Apply(root, 512<<20, 1000); err != nil {
+		t.Fatal(err)
+	}
+	if body, err := os.ReadFile(filepath.Join(root, "komizo-production", "memory.low")); err != nil || string(body) != "0" {
+		t.Fatal("prior layout retained candidate parent reserve", string(body), err)
+	}
+}
+
 func TestApplicationUsagePreflightIsAtomicAndLimitsAreApplied(t *testing.T) {
 	g := HostGroup{MemoryBytes: 64 << 20, MilliCPUs: 200, PIDs: 128}
 	app := ApplicationGroup{HostGroup: HostGroup{MemoryBytes: 32 << 20, MilliCPUs: 100, PIDs: 32}, BaselineMemoryBytes: 8 << 20, MemoryLowBytes: 16 << 20, MemoryHighBytes: 24 << 20, CPUWeight: 200, IOWeight: 100}

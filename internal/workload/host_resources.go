@@ -120,7 +120,10 @@ func (p HostResources) checkApps() error {
 	return nil
 }
 
-func (p HostResources) Apply(root string, measuredMemory, measuredCPU int64) error {
+// Preflight validates capacity, available controllers and current usage without
+// creating a cgroup or writing a controller. The platform journal uses it before
+// replacing the protected policy; Apply repeats it immediately before effects.
+func (p HostResources) Preflight(root string, measuredMemory, measuredCPU int64) error {
 	if err := p.Check(measuredMemory, measuredCPU); err != nil {
 		return err
 	}
@@ -193,6 +196,13 @@ func (p HostResources) Apply(root string, measuredMemory, measuredCPU int64) err
 		}
 	}
 
+	return nil
+}
+
+func (p HostResources) Apply(root string, measuredMemory, measuredCPU int64) error {
+	if err := p.Preflight(root, measuredMemory, measuredCPU); err != nil {
+		return err
+	}
 	control := "+cpu +memory +pids"
 	if len(p.Apps) > 0 {
 		control += " +io"
@@ -215,12 +225,12 @@ func (p HostResources) Apply(root string, measuredMemory, measuredCPU int64) err
 			}
 		}
 	}
+	var reserve int64
 	if len(p.Apps) > 0 {
 		production := filepath.Join(root, "komizo-production")
 		if err := os.WriteFile(filepath.Join(production, "cgroup.subtree_control"), []byte(control), 0600); err != nil {
 			return err
 		}
-		var reserve int64
 		for name, group := range p.Apps {
 			reserve += group.MemoryLowBytes
 			dir := filepath.Join(production, name)
@@ -254,9 +264,11 @@ func (p HostResources) Apply(root string, measuredMemory, measuredCPU int64) err
 				}
 			}
 		}
-		if err := os.WriteFile(filepath.Join(production, "memory.low"), []byte(fmt.Sprint(reserve)), 0600); err != nil {
-			return err
-		}
+	}
+	// Recovery of the previous non-app layout must clear the parent protection
+	// installed by the candidate. Empty unlisted leaves can remain for inspection.
+	if err := os.WriteFile(filepath.Join(root, "komizo-production", "memory.low"), []byte(fmt.Sprint(reserve)), 0600); err != nil {
+		return err
 	}
 	return nil
 }
