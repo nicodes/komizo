@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 47624588c69fcf2fe489e76466ccc75252a6a6e140103b09c10e7f27e524532e -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: fbeb59d7422c85da248b4aae4cef6fa4ff67923c6fbfd61ededc0f25f073d4fa -->
 
 # komizo
 
@@ -87,6 +87,17 @@ python3 tools/engineering/native-cgroup-acceptance.py \
 ```
 
 Run it on a development machine with local Docker and Linux cgroup v2 support. It creates and removes its own privileged container with a private cgroup namespace, no host mounts or Docker socket, and finite outer limits. The synthetic hard-boundary test intentionally kills an over-budget worker while checking the neighboring responder. It verifies kernel behavior; product, installer and OS-boot acceptance are separate.
+
+A reviewed source checkout containing the public lifecycle fixture can run the installer, activation, self/proxy upgrade, executor interruption/recovery, cached deployment and stop-intent checks:
+
+```sh
+python3 tools/engineering/cold-lifecycle-acceptance.py \
+  --release vX.Y.Z --source EXACT_RELEASE_COMMIT \
+  --release-dir /absolute/path/verified-release \
+  --output /absolute/path/fresh-protected-evidence
+```
+
+It requires Root, local Docker, Linux cgroup v2 and at least 4.5 GiB free on the Docker filesystem. It downloads public packages/images and verifies release provenance. Its privileged guest has finite CPU/RAM limits, private PID/cgroup namespaces and an owned 4 GiB filesystem; it removes its guest and disk without pruning shared images. It uses synthetic local images through operator bootstrap and verifies TLS with its own public CA. Root remains trusted. This tests public commands and real process recovery; it does not authenticate a new product CI source or test OS boot or real backup restoration.
 
 For a release supporting current-image reconfiguration, Root can submit `komizo-box workload deployment-submit --policy /etc/komizo/workloads/APP.json --version CURRENT_SOURCE --local-only </dev/null`, then wait with `workload activation-wait --id OPERATION_ID`. This reuses only the retained current accepted source and local immutable images through the ordinary journalled worker. It accepts no registry credential or CI proof, performs no pull, preserves private environment and retained prior images, and refuses unresolved current operations or missing cached images. A scoped app still needs its existing protected `--generation`. This lets an operator apply reviewed resource/serving policy without rebuilding or authorizing another source. Root remains trusted; the flag is not exposed through product CI adapters.
 
