@@ -152,7 +152,7 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 		t.Fatal("owned baseline gate address unavailable", err)
 	}
 	baselineConfig := filepath.Join(t.TempDir(), "Caddyfile")
-	baselineBody := fmt.Sprintf("{\n auto_https off\n admin off\n persist_config off\n}\nhttp://example.test {\n reverse_proxy %s:80 {\n header_up Host %s\n }\n}\nhttp:// {\n respond 404\n}\n", gateIP, baselineHost)
+	baselineBody := fmt.Sprintf("{\n auto_https off\n admin off\n persist_config off\n}\nhttp://example.test {\n header >X-Komizo-Revision %s\n reverse_proxy %s:80 {\n header_up Host %s\n }\n}\nhttp:// {\n respond 404\n}\n", r.Candidate, gateIP, baselineHost)
 	if err := os.WriteFile(baselineConfig, []byte(baselineBody), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 					t.Fatalf("header parity changed %s %s: %s %q/%q", path, encoding, header, old.headers[header], next.headers[header])
 				}
 			}
-			if next.status == "200" && next.headers["x-komizo-revision"] != r.Candidate {
+			if old.headers["x-komizo-revision"] != r.Candidate || next.headers["x-komizo-revision"] != r.Candidate {
 				t.Fatal("shared serving lost candidate identity", path, encoding, next.status, next.headers)
 			}
 		}
@@ -301,7 +301,7 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 			if old.status != next.status || old.checksum != next.checksum || old.size != next.size || !bytes.Equal(old.body, next.body) || old.headers["content-range"] != next.headers["content-range"] || old.headers["content-length"] != next.headers["content-length"] {
 				t.Fatal("HEAD/range parity differs", path, method, old.status, next.status)
 			}
-			for _, header := range []string{"content-type", "content-encoding", "cache-control", "vary", "x-frame-options", "x-content-type-options", "referrer-policy", "cross-origin-opener-policy", "cross-origin-embedder-policy", "content-security-policy"} {
+			for _, header := range []string{"content-type", "content-encoding", "cache-control", "vary", "x-frame-options", "x-content-type-options", "referrer-policy", "cross-origin-opener-policy", "cross-origin-embedder-policy", "content-security-policy", "x-komizo-revision"} {
 				if old.headers[header] != next.headers[header] {
 					t.Fatalf("HEAD/range header parity differs %s %s: %s %q/%q", path, method, header, old.headers[header], next.headers[header])
 				}
