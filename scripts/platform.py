@@ -267,6 +267,17 @@ class Platform:
             raise ValueError('proxy update requires one existing proxy service')
         image = new_doc['services']['komizo-proxy'].pop('image', None)
         old_doc['services']['komizo-proxy'].pop('image', None)
+        if 'resource_budget' in value:
+            budget=value['resource_budget']
+            fields={'mem_limit':budget['memory_bytes'],'memswap_limit':budget['total_memory_swap_bytes'],
+                    'cpus':budget['milli_cpus']/1000,'pids_limit':budget['pids'],
+                    'cgroup_parent':budget['cgroup_parent']}
+            for field,wanted in fields.items():
+                actual=new_doc['services']['komizo-proxy'].pop(field,'' if field=='cgroup_parent' else None)
+                memory_decimal=(field in ('mem_limit','memswap_limit') and type(actual) is str and actual==str(wanted))
+                if type(actual) is bool or (actual!=wanted and not memory_decimal):
+                    raise ValueError('candidate proxy resources differ from the protected budget')
+                old_doc['services']['komizo-proxy'].pop(field,None)
         if image != value['image']['reference'] or old_doc != new_doc:
             raise ValueError('proxy update may change only its image')
         identity = self.run(['docker', 'image', 'inspect', '--format', '{{.Id}}', image])[1].strip()
