@@ -36,7 +36,7 @@ OPERATOR_ENV = {'HOME': '/root', 'PATH': '/usr/bin:/bin', 'LC_ALL': 'C',
 
 def private_bytes(path):
     # Validate the opened object, not an earlier pathname lookup.
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, 'rb') as stream:
         info = os.fstat(stream.fileno())
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o077
@@ -54,18 +54,23 @@ def private_json(path):
 
 def private_policy(path):
     value = private_json(path)
-    if value.get('version') != 3 or set(value) not in ({'version', 'repositories', 'hosts'}, {'version', 'repositories', 'hosts', 'deployments'}):
+    required = {'version', 'repositories', 'hosts'}
+    if value.get('version') != 3 or not required <= set(value) or set(value) - required - {'deployments', 'owner_workflows'}:
         raise ValueError('unsupported operator policy')
     if not isinstance(value['repositories'], dict) or not isinstance(value['hosts'], list):
         raise ValueError('invalid operator scope')
-    for repo, contract in value['repositories'].items():
+    owners = value.get('owner_workflows', {})
+    if not isinstance(owners, dict) or not set(owners) <= set(value['repositories']):
+        raise ValueError('owner workflows require an existing protected repository scope')
+    for repo, contract, owner in [*( (r, c, False) for r,c in value['repositories'].items()),
+                                 *( (r, c, True) for r,c in owners.items())]:
         if (not REPOSITORY.fullmatch(repo) or not isinstance(contract, dict)
                 or set(contract) != {'workflow_id', 'workflow_path', 'app_id', 'event', 'jobs', 'integration_job'}
                 or type(contract['workflow_id']) is not int or contract['workflow_id'] <= 0
                 or type(contract['app_id']) is not int or contract['app_id'] <= 0
                 or not re.fullmatch(r'\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml', contract['workflow_path'])
                 or not re.fullmatch(r'[a-zA-Z_][a-zA-Z0-9_-]{0,99}', contract['integration_job'])
-                or contract['event'] != 'pull_request'
+                or contract['event'] not in (('push', 'workflow_dispatch') if owner else ('pull_request',))
                 or not isinstance(contract['jobs'], list) or not contract['jobs']
                 or len(set(contract['jobs'])) != len(contract['jobs'])
                 or any(not isinstance(name, str) or not name.strip() for name in contract['jobs'])):
@@ -185,7 +190,7 @@ def review_contract(repository, number, head, run):
         raise ValueError('operator review evidence does not bind the exact verification change')
 
 
-def authenticate_ci(repository, head, contract, checks, run):
+def authenticate_ci(repository, head, contract, checks, run, allow_running=False):
     """Bind mandatory successful checks to the approved Actions run and attempt.
 
     Actions metadata's head_sha is the PR head even when checkout tests the
@@ -220,7 +225,9 @@ def authenticate_ci(repository, head, contract, checks, run):
                     or evidence.get('head_sha') != head
                     or evidence.get('head_repository', {}).get('full_name') != repository
                     or evidence.get('repository', {}).get('full_name') != repository
-                    or evidence.get('status') != 'completed' or evidence.get('conclusion') != 'success'
+                    or not (evidence.get('status') == 'completed' and evidence.get('conclusion') == 'success'
+                            or allow_running and evidence.get('status') == 'in_progress' and evidence.get('conclusion') is None)
+                    or allow_running and evidence.get('head_branch') != 'main'
                     or type(attempt) is not int or attempt <= 0):
                 raise ValueError('mandatory CI workflow identity differs from policy')
             jobs = run(['gh', 'api', f'repos/{repository}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100'])
@@ -284,7 +291,7 @@ def lock_owner(info):
     return info.st_uid == 0
 
 
-def authenticate_integration(repository, head, base, run_id, contract, run):
+def authenticate_integration(repository, head, base, run_id, contract, run, owner=False):
     workflow = run(['gh', 'api', f'repos/{repository}/actions/runs/{run_id}'])
     attempt = workflow['run_attempt']
     result = run(['gh', 'api', f'repos/{repository}/actions/runs/{run_id}/artifacts?per_page=100'])
@@ -299,7 +306,7 @@ def authenticate_integration(repository, head, base, run_id, contract, run):
         raise ValueError('integration artifact exceeds its byte budget')
     value = run(['gh', 'api', f"repos/{repository}/actions/artifacts/{artifact['id']}/zip"])
     if (set(value) != {'version', 'repository', 'run_id', 'attempt', 'job', 'head', 'base', 'commit', 'tree', 'inputs_sha256'}
-            or value['version'] != 1 or value['repository'] != repository
+            or value['version'] != (2 if owner else 1) or value['repository'] != repository
             or value['run_id'] != run_id or value['attempt'] != attempt
             or value['job'] != contract['integration_job'] or value['head'] != head or value['base'] != base
             or not SHA.fullmatch(value['commit']) or not SHA.fullmatch(value['tree'])
@@ -307,7 +314,9 @@ def authenticate_integration(repository, head, base, run_id, contract, run):
         raise ValueError('CI tested a different integration or base')
     commit = run(['gh', 'api', f"repos/{repository}/git/commits/{value['commit']}"])
     if (commit.get('sha') != value['commit'] or commit.get('tree', {}).get('sha') != value['tree']
-            or [parent.get('sha') for parent in commit.get('parents', [])] != [base, head]):
+            or (owner and (value['commit'] != head or not 1 <= len(commit.get('parents', [])) <= 2
+                           or commit['parents'][0].get('sha') != base))
+            or (not owner and [parent.get('sha') for parent in commit.get('parents', [])] != [base, head])):
         raise ValueError('integration receipt differs from immutable Git objects')
     return {**value,'artifact_id':artifact['id']}
 
@@ -320,6 +329,10 @@ def execute(request, policy, run=command):
         checked_repository(policy, request.get('repository', ''))
         with repository_lock(request['repository']):
             return execute_merge(request, policy, run)
+    if operation == 'authorize_owner':
+        checked_repository(policy, request.get('repository', ''))
+        with repository_lock(request['repository']):
+            return execute_owner(request, policy, run)
     if operation == 'delivery':
         fields(request, ('operation', 'repository', 'revision'))
         repo, revision = request['repository'], request['revision']
@@ -395,7 +408,51 @@ def execute_merge(request, policy, run):
     return {'delivery_authorized':delivery, 'operation': 'merge', 'repository': repo, 'head': head,
             'merge_revision': merged['merge_commit_sha'], 'tested_base': base, 'tested_tree': integration['tree'], 'status': 'source_merged'}
 
-def authorize_delivery(repository, revision, integration, policy, run):
+def execute_owner(request, policy, run):
+    """Authorize explicitly reviewed direct-main source using its actual CI tree.
+
+    This is an additional owner route; it never substitutes main jobs for PR
+    merge gates. A completed Test/Build may precede publication in a running CD,
+    but every named check must authenticate to this same current run attempt.
+    """
+    fields(request, ('operation', 'repository', 'revision', 'run_id'))
+    repo, revision, run_id = request['repository'], request['revision'], request['run_id']
+    if not isinstance(revision, str) or not SHA.fullmatch(revision) or type(run_id) is not int or run_id <= 0:
+        raise ValueError('owner delivery requires the exact source and CI run')
+    contract = policy.get('owner_workflows', {}).get(repo)
+    if contract is None or repo not in policy.get('deployments', {}):
+        raise ValueError('owner delivery requires a separately approved main workflow and host binding')
+    ref = ['gh', 'api', f'repos/{repo}/git/ref/heads/main']
+    if run(ref)['object']['sha'] != revision:
+        raise ValueError('owner revision is no longer current main')
+    commit = run(['gh', 'api', f'repos/{repo}/git/commits/{revision}'])
+    parents = commit.get('parents', [])
+    if commit.get('sha') != revision or not 1 <= len(parents) <= 2 or not SHA.fullmatch(parents[0].get('sha', '')):
+        raise ValueError('owner source has an unsupported immutable parent identity')
+    evidence = run(['gh', 'api', f'repos/{repo}/commits/{revision}/check-runs?per_page=100'])
+    if evidence.get('total_count', 0) >= 100:
+        raise ValueError('owner check evidence exceeds its bound')
+    checks = [{'__typename':'CheckRun', 'name':c.get('name'),
+               'status':str(c.get('status', '')).upper(), 'conclusion':str(c.get('conclusion', '')).upper(),
+               'detailsUrl':c.get('details_url')} for c in evidence['check_runs']]
+    if authenticate_ci(repo, revision, contract, checks, run, allow_running=True) != run_id:
+        raise ValueError('owner checks belong to a different CI run')
+    integration = authenticate_integration(repo, revision, parents[0]['sha'], run_id, contract, run, owner=True)
+    review = private_json(Path('/etc/fleet-owner-reviews')/(revision+'.json'))
+    expected = {'version':1, 'repository':repo, 'revision':revision, 'tree':integration['tree'],
+                'ci_run_id':run_id, 'ci_attempt':integration['attempt'],
+                'integration_artifact_id':integration['artifact_id'], 'inputs_sha256':integration['inputs_sha256'],
+                'owner_authorized':True}
+    if review != expected:
+        raise ValueError('protected owner review differs from the actual tested main source')
+    if run(ref)['object']['sha'] != revision:
+        raise ValueError('main advanced before owner delivery authorization')
+    authorized = authorize_delivery(repo, revision, integration, policy, run, kind='owner')
+    return {'operation':'authorize_owner', 'repository':repo, 'revision':revision,
+            'tested_tree':integration['tree'], 'delivery_authorized':authorized}
+
+
+def authorize_delivery(repository, revision, integration, policy, run, kind='merge'):
     binding=policy.get('deployments',{}).get(repository)
     if binding is None:return False
     if not SHA.fullmatch(revision):raise ValueError('invalid actual merge revision')
@@ -404,7 +461,7 @@ def authorize_delivery(repository, revision, integration, policy, run):
         'app':binding['app'],'revision':revision,'tree':integration['tree'],'head':integration['head'],
         'base':integration['base'],'ci_run_id':integration['run_id'],'ci_attempt':integration['attempt'],
         'integration_artifact_id':integration['artifact_id'],'inputs_sha256':integration['inputs_sha256'],
-        'kind':'merge','scope':'production-delivery','issued_at':now.isoformat(),
+        'kind':kind,'scope':'production-delivery','issued_at':now.isoformat(),
         'expires_at':(now+timedelta(hours=4)).isoformat()}
     wire=base64.b64encode(json.dumps(authorization,sort_keys=True).encode()).decode()
     # All command structure and destinations come from protected policy. The
@@ -416,6 +473,8 @@ def authorize_delivery(repository, revision, integration, policy, run):
 
 def inspect_outcome(request, policy, run=command):
     """Observe an interrupted merge; this route cannot merge or replay effects."""
+    if request.get('operation') == 'authorize_owner':
+        return {'status':'ambiguous', 'scope':'inspect the protected host authorization; owner issuance cannot be automatically replayed'}
     if request.get('operation')!='merge':
         return {'status':'failed','scope':'read-only operation can be requested with a fresh grant'}
     fields(request, ('operation','repository','pull_request','head'))
