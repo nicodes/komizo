@@ -62,6 +62,44 @@ class Fixture:
 
 
 class PlatformTests(unittest.TestCase):
+    def test_static_proxy_binding_is_finite_and_refuses_writable_or_foreign_mounts(self):
+        with tempfile.TemporaryDirectory() as root:
+            f=Fixture(root)
+            (f.root/'srv/_public').mkdir(parents=True)
+            reference='ghcr.io/nicodes/platform-proxy@sha256:'+'d'*64
+            value={'files':[{'path':'/srv/_proxy/compose.yml','staged':'candidate'}],
+                   'image':{'reference':reference,'id':'sha256:'+'d'*64,'previous_id':'sha256:'+'e'*64},
+                   'static_mount':module.STATIC_MOUNT}
+            old={'services':{'komizo-proxy':{'image':'previous','volumes':[{'type':'volume','source':'certificates','target':'/data'}]}}}
+            new=json.loads(json.dumps(old));new['services']['komizo-proxy']['image']=reference
+            new['services']['komizo-proxy']['volumes'].append(json.loads(json.dumps(module.STATIC_MOUNT)))
+            f.p.compose=lambda file,*args:(0,json.dumps(old if file==f.p.path('/srv/_proxy/compose.yml') else new))
+            f.p.run=lambda args,required=True:(0,value['image']['id'] if args[:3]==['docker','image','inspect'] else value['image']['previous_id'])
+            f.p.proxy_preflight(f.stage,value)
+            for field,bad in (('source','/etc'),('read_only',False),('bind',{'create_host_path':True})):
+                mount=new['services']['komizo-proxy']['volumes'][-1]
+                previous=mount[field];mount[field]=bad
+                with self.assertRaisesRegex(ValueError,'fixed read-only'):f.p.proxy_preflight(f.stage,value)
+                mount[field]=previous
+            with self.assertRaisesRegex(ValueError,'only its image'):
+                f.p.proxy_preflight(f.stage,{k:v for k,v in value.items() if k!='static_mount'})
+            new['services']['komizo-proxy']['volumes'][0]['source']='foreign-certificates'
+            with self.assertRaisesRegex(ValueError,'only its image'):f.p.proxy_preflight(f.stage,value)
+            new['services']['komizo-proxy']['volumes'][0]['source']='certificates'
+            (f.root/'srv/_public').chmod(0o777)
+            with self.assertRaisesRegex(ValueError,'protected'):f.p.proxy_preflight(f.stage,value)
+
+    def test_static_proxy_acceptance_checks_actual_readonly_mount(self):
+        with tempfile.TemporaryDirectory() as root:
+            f=Fixture(root);(f.root/'srv/_public').mkdir(parents=True)
+            value={'image':{'id':'sha256:'+'d'*64},'static_mount':module.STATIC_MOUNT,'probes':[]}
+            mounts=[{'Destination':'/srv/public','Type':'bind','Source':'/srv/_public','RW':False}]
+            f.p.run=lambda args,required=True:(0,json.dumps(mounts) if '{{json .Mounts}}' in args else value['image']['id'])
+            f.p.verify_proxy(value)
+            for bad in ([],[{**mounts[0],'RW':True}],[{**mounts[0],'Source':'/etc'}]):
+                with patch.object(f.p,'run',side_effect=lambda args,required=True:(0,json.dumps(bad) if '{{json .Mounts}}' in args else value['image']['id'])):
+                    with self.assertRaisesRegex(ValueError,'fixed read-only'):f.p.verify_proxy(value)
+
     def authority_fixture(self, root, absent=True):
         f = Fixture(root)
         for name in ('var/lib/komizo/tasks', 'etc/komizo/workloads'):
@@ -125,6 +163,18 @@ class PlatformTests(unittest.TestCase):
             for row in rows:
                 self.assertEqual(f.p.identity(f.root/row['path'].lstrip('/')), (row['after'],row['mode']))
             with self.assertRaisesRegex(ValueError,'already exists'): f.p.apply(f.stage,f.expected)
+
+    def test_authority_accepts_public_registrar_mode_and_refuses_writable_roster(self):
+        for mode in (0o600, 0o640, 0o644):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as root:
+                f, rows = self.authority_fixture(root)
+                (f.root/'var/lib/komizo/apps/example.env').chmod(mode)
+                self.assertEqual(f.p.manifest(f.stage,f.expected)['kind'],'workload-authority')
+        with tempfile.TemporaryDirectory() as root:
+            f, rows = self.authority_fixture(root)
+            (f.root/'var/lib/komizo/apps/example.env').chmod(0o660)
+            with self.assertRaisesRegex(ValueError,'not protected'):f.p.apply(f.stage,f.expected)
+            self.assertFalse((f.stage/'operation.json').exists())
 
     def test_authority_refuses_path_permission_roster_and_mode_races_without_journal(self):
         for bad in ('path','mode','roster','before-mode','policy-app'):
