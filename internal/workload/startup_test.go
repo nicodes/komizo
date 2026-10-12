@@ -118,3 +118,42 @@ func TestDiskBudgetsRejectUnboundedOrAmbiguousDevices(t *testing.T) {
 		}
 	}
 }
+
+func TestCgroupAggregateModeRequiresProtectedRuntimeAllocation(t *testing.T) {
+	host, resources := startupFixture()
+	resources.MaxMemoryBytes = 128 << 20
+	resources.MaxMemorySwapBytes = 256 << 20
+	resources.MaxMilliCPUs = 500
+	if host.CheckServingBudget("one", &resources) == nil {
+		t.Fatal("implicit service overcommit admitted")
+	}
+	resources.AggregateMode = "cgroup"
+	if err := host.CheckServingBudget("one", &resources); err != nil {
+		t.Fatal(err)
+	}
+	// Runtime limits and unused sibling reserves still govern admission.
+	if err := host.CheckStartup("one", &resources, 32<<20, map[string]int64{"one": 16 << 20, "two": 16 << 20}); err != nil {
+		t.Fatal(err)
+	}
+	if host.CheckStartup("one", &resources, 44<<20, map[string]int64{"one": 16 << 20, "two": 0}) == nil {
+		t.Fatal("runtime sibling reserve bypassed")
+	}
+	for _, mutate := range []func(*ResourcePolicy){
+		func(p *ResourcePolicy) { p.CgroupParent = "/komizo-production" },
+		func(p *ResourcePolicy) { p.CgroupParent = "/komizo-production/two" },
+		func(p *ResourcePolicy) { p.MaxMemoryReserveBytes++ },
+		func(p *ResourcePolicy) { p.StartupAllowanceBytes = 17 << 20 },
+		func(p *ResourcePolicy) { p.StartupAllowanceBytes = 0 },
+		func(p *ResourcePolicy) { p.AggregateMode = "unknown" },
+	} {
+		changed := resources
+		mutate(&changed)
+		if host.CheckServingBudget("one", &changed) == nil {
+			t.Fatal("unbound runtime allocation admitted", changed)
+		}
+	}
+	delete(host.Apps, "one")
+	if host.CheckServingBudget("one", &resources) == nil {
+		t.Fatal("missing installed runtime allocation admitted")
+	}
+}
