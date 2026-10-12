@@ -14,7 +14,7 @@ type zeroReader struct{}
 func (zeroReader) Read(p []byte) (int, error) { clear(p); return len(p), nil }
 
 func TestGodotArchiveHasIndependentStreamingPackEnvelope(t *testing.T) {
-	for _, profile := range []string{"spa-v1", "godot-v1"} {
+	for _, profile := range []string{"spa-v1", "godot-v1", "godot-legacy-v1", "godot-immutable-v1"} {
 		r, w := io.Pipe()
 		done := make(chan error, 1)
 		go func() {
@@ -76,5 +76,38 @@ func TestGodotProfileKeepsIsolationCacheAndParentIdentity(t *testing.T) {
 	}
 	if _, err := StaticRouteForProfile([]byte(parent), "example", rev, []string{"example.invalid"}, "unknown"); err == nil {
 		t.Fatal("unknown profile accepted")
+	}
+}
+
+func TestGodotLegacyLayoutPreservesExistingRootAssets(t *testing.T) {
+	revision := strings.Repeat("a", 40)
+	parent := "example.invalid {\n\theader >X-Komizo-Revision \"" + revision + "\"\n\treverse_proxy example-gate:80 {\n\t\theader_up X-Forwarded-For {remote_host}\n\t}\n}\n"
+	legacy, err := StaticRouteForProfile([]byte(parent), "example", revision, []string{"example.invalid"}, "godot-legacy-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	immutable, err := StaticRouteForProfile([]byte(parent), "example", revision, []string{"example.invalid"}, "godot-v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(legacy), "respond @example_legacy 404") || !strings.Contains(string(immutable), "respond @example_legacy 404") {
+		t.Fatal("layout changed existing asset refusal behavior")
+	}
+	for _, required := range []string{"Cross-Origin-Embedder-Policy", "precompressed br gzip", "no-cache, must-revalidate", "public, max-age=31536000, immutable"} {
+		if !strings.Contains(string(legacy), required) {
+			t.Fatal("legacy layout lost serving contract", required)
+		}
+	}
+}
+
+func TestGodotImmutableLayoutPreservesMissingPathAndCompressionContract(t *testing.T) {
+	body := godotImmutableStaticRoute("example", strings.Repeat("a", 40))
+	for _, required := range []string{"@example_mutable not path /releases/*", "header @example_mutable Cache-Control \"no-cache, no-store, must-revalidate\"", "precompressed gzip", "respond @example_legacy 404", "Cross-Origin-Embedder-Policy"} {
+		if !strings.Contains(body, required) {
+			t.Fatal("immutable layout lost contract", required)
+		}
+	}
+	if strings.Contains(body, "encode gzip") || strings.Contains(body, "precompressed br") || strings.Contains(body, "try_files") {
+		t.Fatal("immutable layout changed compression or missing-file behavior")
 	}
 }
