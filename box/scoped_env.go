@@ -2,6 +2,7 @@ package box
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -48,6 +49,41 @@ func RefuseScopedStart(root, app string) error {
 		return fmt.Errorf("fields-postgres-v2 requires the shared app lock, so nothing was started")
 	}
 	defer flockUnlock(lf.Fd())
+	return checkScopedStart(root, app)
+}
+
+// LockDeploymentForStart checks scoped provenance under the same app and host
+// locks that protect the entire lifecycle operation. Reacquiring the app lock
+// inside that operation would refuse every scoped start or restart.
+func LockDeploymentForStart(ctx context.Context, root, app string) (func(), error) {
+	unlock, err := LockDeployment(ctx, root, app)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkScopedStart(root, app); err != nil {
+		unlock()
+		return nil, err
+	}
+	return unlock, nil
+}
+
+// The caller retains the shared app lock for this check and any startup effects.
+func checkScopedStart(root, app string) error {
+	path, err := appStatePath(root, app)
+	if err != nil {
+		return err
+	}
+	st, err := readState(path)
+	if err != nil {
+		return fmt.Errorf("could not read the app record, so nothing was started: %w", err)
+	}
+	switch st["SCOPED_ENV"] {
+	case "fields-postgres-v1":
+		return fmt.Errorf("fields-postgres-v1 is withdrawn, so nothing was started")
+	case "fields-postgres-v2":
+	default:
+		return nil
+	}
 
 	dir := st["APP_DIR"]
 	id := st["SCOPED_GENERATION"]
