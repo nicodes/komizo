@@ -29,15 +29,18 @@ def validate_request(request):
         raise ValueError('grant request must be an object')
     operation = request.get('operation')
     fields = {'merge': {'operation', 'repository', 'pull_request', 'head'},
+              'authorize_owner': {'operation', 'repository', 'revision', 'run_id'},
               'delivery': {'operation', 'repository', 'revision'},
               'host_report': {'operation', 'host'}}.get(operation)
     if fields is None or set(request) != fields:
         raise ValueError('grant operation has unexpected fields')
-    if operation in ('merge', 'delivery'):
+    if operation in ('merge', 'delivery', 'authorize_owner'):
         if not REPO.fullmatch(request['repository']) or not SHA.fullmatch(request['head' if operation == 'merge' else 'revision']):
             raise ValueError('grant requires exact repository and source revision')
     if operation == 'merge' and (type(request['pull_request']) is not int or request['pull_request'] <= 0):
         raise ValueError('grant requires the reviewed PR')
+    if operation == 'authorize_owner' and (type(request['run_id']) is not int or request['run_id'] <= 0):
+        raise ValueError('owner grant requires the reviewed CI run')
     if operation == 'host_report' and not re.fullmatch('[a-z0-9][a-z0-9.-]{0,252}', request['host']):
         raise ValueError('grant host is invalid')
 
@@ -91,7 +94,7 @@ class Broker:
             try:
                 result = self.execute(message['request'])
             except BaseException:
-                audit.update(status='ambiguous' if message['request']['operation']=='merge' else 'failed', at=self.now())
+                audit.update(status='ambiguous' if message['request']['operation'] in ('merge', 'authorize_owner') else 'failed', at=self.now())
                 self.receipt(grant['id'], audit)
                 raise
             audit.update(status='completed', result=result, at=self.now())

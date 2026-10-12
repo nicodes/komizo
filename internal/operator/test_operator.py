@@ -267,6 +267,61 @@ class OperatorBoundary(unittest.TestCase):
                     operator.execute({'operation':'merge','repository':'owner/product','pull_request':12,'head':HEAD},POLICY,changed)
                 self.assertFalse(self.pr['merged'])
 
+    def test_owner_delivery_authenticates_main_and_refuses_races_before_host_effects(self):
+        import copy
+        import base64
+        for failure in (None, 'unapproved', 'run', 'pending', 'attempt', 'tree', 'review', 'race'):
+            self.setUp()
+            contract = {**CONTRACT, 'event':'push'}
+            policy = {**POLICY, 'owner_workflows':{'owner/product':contract},
+                      'deployments':{'owner/product':{'host':'box.example','app':'product','repository_id':'123'}}}
+            self.base = HEAD
+            self.workflow.update(event='push', head_branch='main', status='in_progress', conclusion=None)
+            self.integration.update(version=2, head=HEAD, commit=HEAD, base='c'*40)
+            review = {'version':1, 'repository':'owner/product', 'revision':HEAD, 'tree':'d'*40,
+                      'ci_run_id':42, 'ci_attempt':2, 'integration_artifact_id':55,
+                      'inputs_sha256':'e'*64, 'owner_authorized':True}
+            if failure == 'unapproved':policy.pop('owner_workflows')
+            if failure == 'pending':self.job['status']='in_progress'
+            if failure == 'attempt':self.integration['attempt']=1
+            if failure == 'tree':self.integration['tree']='9'*40
+            if failure == 'review':review['tree']='9'*40
+            original=self.backend
+            def main_backend(args):
+                if '/commits/' in args[-1] and '/check-runs?' in args[-1]:
+                    self.calls.append(args)
+                    return {'total_count':1, 'check_runs':[copy.deepcopy(self.producer)]}
+                if '/git/commits/' in args[-1]:
+                    self.calls.append(args)
+                    return {'sha':HEAD, 'tree':{'sha':'d'*40}, 'parents':[{'sha':'c'*40}]}
+                result=original(args)
+                if failure=='race' and '/git/ref/heads/main' in args[-1] and self.base_reads==2:
+                    return {'object':{'sha':'9'*40}}
+                return result
+            request={'operation':'authorize_owner','repository':'owner/product','revision':HEAD,
+                     'run_id':43 if failure=='run' else 42}
+            with patch.object(operator, 'private_json', return_value=review):
+                if failure:
+                    with self.assertRaises(ValueError):operator.execute(request,policy,main_backend)
+                    self.assertFalse(any(c[0]=='ssh' for c in self.calls), failure)
+                else:
+                    result=operator.execute(request,policy,main_backend)
+                    self.assertTrue(result['delivery_authorized'])
+                    call=next(c for c in self.calls if c[0]=='ssh')
+                    grant=json.loads(base64.b64decode(call[-1].split(' --authorization ')[1]))
+                    self.assertEqual(grant['kind'],'owner')
+                    self.assertEqual(grant['revision'],HEAD)
+                    self.assertEqual(grant['tree'],'d'*40)
+                    self.assertFalse(any(c[:3]==['gh','pr','merge'] for c in self.calls))
+
+    def test_private_fifo_refuses_without_waiting_for_a_writer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'fifo';os.mkfifo(path,0o600)
+            script='import importlib.util,sys; s=importlib.util.spec_from_file_location("o",sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m);m.private_bytes(sys.argv[2])'
+            result=subprocess.run([sys.executable,'-I','-c',script,operator.__file__,str(path)],capture_output=True,timeout=2)
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn(b'regular file',result.stderr)
+
     def test_private_evidence_bytes_refuse_oversize_and_symlink(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'evidence';path.write_bytes(b'x'*(operator.MAX_BYTES+1));path.chmod(0o600)
