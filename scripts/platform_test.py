@@ -132,6 +132,59 @@ class PlatformTests(unittest.TestCase):
         raw = json.dumps(value).encode(); (f.stage/'manifest.json').write_bytes(raw)
         f.expected = hashlib.sha256(raw).hexdigest()
 
+    def resource_fixture(self, root):
+        f, rows = self.authority_fixture(root)
+        target = f.root/'etc/komizo/resources.json'
+        target.write_bytes(b'{"version":1,"apps":{}}\n'); target.chmod(0o600)
+        body=b'{"version":1,"apps":{"example":{}}}\n'
+        candidate=f.stage/'authority-resources'; candidate.write_bytes(body); candidate.chmod(0o600)
+        before,mode=f.p.identity(target)
+        rows.append({'path':'/etc/komizo/resources.json','staged':candidate.name,'before':before,
+                     'before_mode':mode,'after':hashlib.sha256(body).hexdigest(),'mode':0o600})
+        self.authority_manifest(f,rows)
+        return f, target
+
+    def test_resource_preflight_refuses_before_journal_and_file_effects(self):
+        with tempfile.TemporaryDirectory() as root:
+            f,target=self.resource_fixture(root); old=target.read_bytes(); run=f.run
+            def reject(args,required=True):
+                if '--check-usage' in args: raise ValueError('observed usage exceeds candidate')
+                return run(args,required)
+            f.p.run=reject
+            with self.assertRaisesRegex(ValueError,'observed usage'): f.p.apply(f.stage,f.expected)
+            self.assertEqual(target.read_bytes(),old)
+            self.assertFalse((f.stage/'operation.json').exists())
+            self.assertFalse((f.stage.parent/'pending.json').exists())
+
+    def test_actual_resource_policy_sigkill_recovers_bytes_and_reapplies_prior_controllers(self):
+        with tempfile.TemporaryDirectory() as root:
+            f,target=self.resource_fixture(root); old=target.read_bytes()
+            pid=os.fork()
+            if pid==0:
+                f.p.checkpoint=lambda phase: os.kill(os.getpid(),signal.SIGKILL) if phase=='replaced-3' else None
+                f.p.apply(f.stage,f.expected); os._exit(99)
+            _,status=os.waitpid(pid,0)
+            self.assertTrue(os.WIFSIGNALED(status));self.assertEqual(os.WTERMSIG(status),signal.SIGKILL)
+            self.assertNotEqual(target.read_bytes(),old)
+            self.assertEqual(f.p.apply(f.stage,f.expected,recover=True)['phase'],'recovered')
+            self.assertEqual(target.read_bytes(),old)
+            self.assertIn(['komizo-box','workload','host-resources','--apply'],f.calls)
+            self.assertFalse((f.stage.parent/'pending.json').exists())
+
+    def test_partial_controller_failure_reapplies_prior_policy_and_failed_recovery_keeps_fence(self):
+        for recovery_fails in (False,True):
+            with self.subTest(recovery_fails=recovery_fails),tempfile.TemporaryDirectory() as root:
+                f,target=self.resource_fixture(root);old=target.read_bytes();run=f.run;applied=[]
+                def fail(args,required=True):
+                    if args==['komizo-box','workload','host-resources','--apply']:
+                        applied.append(target.read_bytes())
+                        if len(applied)==1 or recovery_fails:raise ValueError('partial controller failure')
+                    return run(args,required)
+                f.p.run=fail
+                with self.assertRaisesRegex(ValueError,'partial controller failure'):f.p.apply(f.stage,f.expected)
+                self.assertEqual(target.read_bytes(),old);self.assertEqual(applied[-1],old)
+                self.assertEqual((f.stage.parent/'pending.json').exists(),recovery_fails)
+
     def test_actual_sigkill_private_task_creation_recovers_absence_and_prior_modes(self):
         with tempfile.TemporaryDirectory() as root:
             f, rows = self.authority_fixture(root)

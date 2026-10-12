@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: b057d9182cb1ff2a53564c796d069a67171360eeb73d6f07b1fe21353379bdb9 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: d262b799045f63d7e2c335965b1594d0b28373062fb733673f17c488057780f7 -->
 
 # komizo
 
@@ -73,6 +73,8 @@ Protected container publication uses the Komizo-owned operator bundle with a sep
 For a release that supports `--authority-review`, install that same authenticated release on the application host first. Keep the review and candidate files in a protected Root directory. The private JSON review has `version: 1` and a `files` list; each entry names an allowed registered-app destination `path`, a candidate filename `source` beside the review, and its exact `mode`. Workload policies use 0600, private task programs 0700, fixed command adapters 0755 and `/etc/doas.conf` 0600. Existing parent directories must already be protected; secret stores and arbitrary filesystem paths are outside this interface.
 
 Add `--authority-review /root/komizo/review/review.json` to `platform plan`, then apply the resulting stage with its exact reviewed manifest digest. Planning reads only installed identity and permissions. Applying validates policy/shell/doas inputs before replacing files, retains previous bytes, modes and absence, and never activates application containers or routes. If interrupted, inspect and recover the same remote stage; pending recovery blocks workload and preview effects. A foreign file or permission change retains the fence for operator inspection. Root remains the trusted reviewer.
+
+For a release supporting resource-policy migration, the review may also replace the existing `/etc/komizo/resources.json` at mode 0600. The executor validates measured capacity, controller availability and current usage before creating its journal, then applies the installed policy after replacing the reviewed files. Recovery restores both prior policy bytes and its controller settings; a failed controller recovery retains the fence for a measured drain. Empty unused app leaves may remain for inspection. Container membership changes only through later ordinary app deployment. Use `komizo-box workload host-resources --check --policy /root/komizo/review/resources.json --check-usage` for a read-only preflight; a caller-selected file cannot select the apply authority.
 
 ## Prepare image publication
 
