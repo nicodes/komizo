@@ -46,6 +46,8 @@ The existing `fleet-editor` group, protected `/etc/fleet-operator.json` policy a
 
 The application host remains one box. App-scoped deployment, workload budgets, ingress and release admission are enforced by the host executor. Explicit static profiles and delivery-authorization requirements require an operator-reviewed migration; upgrading a binary alone does not enable them.
 
+The operator bundle includes an optional Root-only registry publisher. Its protected policy selects source workflows, image destinations and a private credential path. It accepts a final delivery receipt and an authenticated, checksum-bound Actions artifact containing `release.json` and a classic Docker archive. Source, CI, image configuration and layer checks precede credential access. Registry authentication uses stdin and protected tmpfs storage; unsupported archives or disk-backed credential storage refuse. Interrupted publication requires inspection and read-only reconciliation, with no upload replay. Product repositories must separately have Read access to the protected packages before adopting this boundary; installing the program does not change GitHub package permissions or production delivery.
+
 
 The authenticated CLI also prepares shared proxy upgrades:
 
