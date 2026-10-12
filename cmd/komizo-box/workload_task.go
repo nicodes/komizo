@@ -57,6 +57,9 @@ func runWorkloadTask(args []string, owner bool) error {
 			return err
 		}
 	}
+	if err := newHostActivation().startupCapacity(p); err != nil {
+		return err
+	}
 	program := filepath.Join("/var/lib/komizo/tasks", p.App+".sh")
 	// Check every ancestor and the exact executable; no symlink or writable
 	// project file can become a privileged task through this command.
