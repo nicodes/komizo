@@ -17,6 +17,15 @@ func godotStaticRoute(app, revision string) string {
 		Referrer-Policy "strict-origin-when-cross-origin"
 		Content-Security-Policy "default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
 	}
+	# The previous front proxy supplies this fallback when the scratch gate
+	# leaves a direct Brotli download without a MIME type. Shared file serving
+	# must preserve that response rather than depending on proxy sniffing.
+	@APP_brotli_download {
+		path *.br
+		file {path}
+		not path /index.js* /index.wasm* /index.pck* /index.audio* /index.service.worker* /index.offline*
+	}
+	header @APP_brotli_download Content-Type "application/octet-stream"
 	@APP_html path *.html /
 	header @APP_html Cache-Control "no-cache, no-store, must-revalidate"
 	@APP_gamefiles {
