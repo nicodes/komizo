@@ -53,7 +53,11 @@ func (h *hostActivation) performTypedOwner(parent context.Context, verb string, 
 	defer cancel()
 	lockCtx, lockCancel := context.WithTimeout(ctx, 60*time.Second)
 	defer lockCancel()
-	unlock, err := box.LockDeployment(lockCtx, sub.root, sub.app)
+	lock := box.LockDeployment
+	if verb != "stop" {
+		lock = box.LockDeploymentForStart
+	}
+	unlock, err := lock(lockCtx, sub.root, sub.app)
 	if err != nil {
 		return err
 	}
@@ -120,9 +124,6 @@ func (h *hostActivation) performTypedOwner(parent context.Context, verb string, 
 	}
 	if stopped && (verb == "restart" || svc != "") {
 		return errors.New("start the whole stopped workload explicitly")
-	}
-	if err := box.RefuseScopedStart(sub.root, sub.app); err != nil {
-		return err
 	}
 	env, err := h.readBytes(filepath.Join(p.AppDir, ".env"))
 	if err != nil {
