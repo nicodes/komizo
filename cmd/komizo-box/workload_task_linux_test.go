@@ -5,11 +5,13 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -52,7 +54,9 @@ func TestNamedTaskCancellationTerminatesItsChild(t *testing.T) {
 	deadline := time.Now().Add(time.Second)
 	for {
 		body, err := os.ReadFile(filepath.Join("/proc", child, "stat"))
-		if os.IsNotExist(err) {
+		// procfs can return ESRCH when the task disappears after lookup but
+		// before read. Both outcomes prove this owned child has exited.
+		if os.IsNotExist(err) || errors.Is(err, syscall.ESRCH) {
 			break
 		}
 		if err != nil {
