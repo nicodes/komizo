@@ -92,7 +92,7 @@ func cgroupPressureStats(dir string, cs *ContainerStat) {
 
 func (p *Probe) groupStats() []GroupStat {
 	var groups []GroupStat
-	for _, name := range []string{"komizo-production", "komizo-proxy", "komizo-previews", "komizo-preview-database"} {
+	for _, name := range []string{"komizo-production", "komizo-proxy", "komizo-previews", "komizo-preview-database", "openrc.komizo-rootd", "openrc.komizo-api", "openrc.docker"} {
 		dir := p.path(filepath.Join("/sys/fs/cgroup", name))
 		if !dirExists(dir) {
 			continue

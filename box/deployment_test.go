@@ -33,3 +33,23 @@ func TestDeploymentFailuresAndAbandonedActivationAreReported(t *testing.T) {
 		}
 	}
 }
+
+func TestDeploymentDiagnosisUsesProtectedDeadline(t *testing.T) {
+	now := time.Now()
+	for _, expired := range []bool{false, true} {
+		deadline := now.Add(time.Minute)
+		if expired {
+			deadline = now.Add(-time.Second)
+		}
+		r := Report{At: now, Apps: []App{{Name: "fixture", Deployment: &Deployment{Phase: "activating", At: now.Add(-20 * time.Minute), Deadline: deadline}}}}
+		found := false
+		for _, p := range Diagnose(r) {
+			if p.Kind == ProblemDeploymentIncomplete {
+				found = true
+			}
+		}
+		if found != expired {
+			t.Fatalf("deadline expiration %v: %+v", expired, Diagnose(r))
+		}
+	}
+}
