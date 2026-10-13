@@ -29,6 +29,11 @@ class MaintenanceTests(unittest.TestCase):
                 if args[:2]==['apk','query']:return 0,json.dumps([{'name':'linux-lts','version':'6.18.38-r0'}])
                 if 'upgrade' in args:return 0,'(1/1) Upgrading zlib (1.3.2-r0 -> 1.3.2-r1)\n'
                 if 'fetch' in args:
+                    self.assertNotIn('--recursive',args)
+                    self.assertNotIn('--world',args)
+                    self.assertEqual(args[args.index('--match')+1],'package')
+                    self.assertEqual(args[args.index('--from')+1],'repositories')
+                    self.assertEqual(args[args.index('--output')+2:],['zlib-1.3.2-r1'])
                     cache=Path(args[args.index('--output')+1]);(cache/'zlib-1.3.2-r1.apk').write_bytes(b'fixture package')
                 if 'add' in args:
                     self.assertIn('linux-lts=6.18.38-r0',(root/'etc/apk/world').read_text())
