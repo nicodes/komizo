@@ -14,7 +14,6 @@ import signal
 import subprocess
 import time
 import urllib.parse
-import uuid
 
 SHA = re.compile('[a-f0-9]{40}')
 HASH = re.compile('[a-f0-9]{64}')
@@ -84,7 +83,7 @@ def run_case(p,case,repetition):
     baseline={q['url']:probe_route(q) for q in p['probes']};unchanged=identity(p)
     if not unchanged['fences_clear']:raise ValueError('host recovery fence must be clear')
     groups=[parent,*[parent/a for a in p['app_revisions'] if (parent/a).is_dir()]]
-    before=snapshot(groups);leaf=root/('acceptance-'+uuid.uuid4().hex[:10]);scratch=Path('/srv')/('komizo-synthetic-'+uuid.uuid4().hex[:10])
+    before=snapshot(groups);leaf=root/('acceptance-'+os.urandom(5).hex());scratch=Path('/srv')/('komizo-synthetic-'+os.urandom(5).hex())
     children=[]
     result={'app':app,'operator':case['operator'],'repetition':repetition,'baseline_seconds':baseline,'before':before,'accepted':False,'cleanup':False,'latencies_seconds':{q['url']:[] for q in p['probes']},'operator_seconds':[]}
     def child(code):
