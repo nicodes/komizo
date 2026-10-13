@@ -31,20 +31,24 @@ import (
 
 // dockerInventory is every container on the box, indexed two ways.
 type dockerInventory struct {
-	byID map[string]*containerInfo
+	status  string
+	failure string
+	byID    map[string]*containerInfo
 	// byDir is the containers of one app, keyed by the directory its compose
 	// file lives in -- which is what an app's state file records as APP_DIR.
 	byDir map[string][]*containerInfo
 }
 
 type containerInfo struct {
-	id      string
-	name    string
-	state   string
-	health  string
-	status  string
-	service string
-	image   string
+	inspectionUnavailable bool
+	tty                   bool
+	id                    string
+	name                  string
+	state                 string
+	health                string
+	status                string
+	service               string
+	image                 string
 	// workingDir is the compose project directory this container belongs to.
 	// Empty for anything docker is running that compose did not create, which
 	// is not komizo's business and is left out of every app.
@@ -81,7 +85,7 @@ func (p *Probe) dockerInventory(ctx context.Context) dockerInventory {
 	if p.engine != nil {
 		return p.engine.inventory(ctx)
 	}
-	inv := dockerInventory{byID: map[string]*containerInfo{}, byDir: map[string][]*containerInfo{}}
+	inv := dockerInventory{status: "current", byID: map[string]*containerInfo{}, byDir: map[string][]*containerInfo{}}
 
 	// .State is the machine-readable word (running, exited); .Status is docker's
 	// own prose (Up 3 hours), which is what a person actually wants to read.
@@ -92,16 +96,22 @@ func (p *Probe) dockerInventory(ctx context.Context) dockerInventory {
 			`{{.Label "com.docker.compose.project.working_dir"}}`,
 		}, dsep))
 	if err != nil {
+		inv.status, inv.failure = "unavailable", "list_unavailable"
 		return inv
 	}
 	var ids []string
 	for _, ln := range strings.Split(out, "\n") {
+		if strings.TrimSpace(ln) == "" {
+			continue
+		}
 		f := strings.Split(strings.TrimRight(ln, "\r"), dsep)
 		if len(f) < 7 || f[0] == "" {
+			inv.status, inv.failure = "partial", "list_invalid"
 			continue
 		}
 		c := &containerInfo{
-			id: f[0], name: f[1], state: f[2], status: f[3],
+			inspectionUnavailable: true,
+			id:                    f[0], name: f[1], state: f[2], status: f[3],
 			service: f[4], image: f[5], workingDir: f[6],
 		}
 		inv.byID[c.id] = c
@@ -129,6 +139,7 @@ func (p *Probe) dockerInventory(ctx context.Context) dockerInventory {
 	}, dsep)}, ids...)
 	out, err = p.docker(ctx, args...)
 	if err != nil {
+		inv.status, inv.failure = "partial", "inspection_unavailable"
 		return inv
 	}
 	for _, ln := range strings.Split(out, "\n") {
@@ -140,6 +151,7 @@ func (p *Probe) dockerInventory(ctx context.Context) dockerInventory {
 		if !ok {
 			continue
 		}
+		c.inspectionUnavailable = false
 		c.startedAt = parseStamp(f[1])
 		c.finishedAt = parseStamp(f[2])
 		c.exitCode, _ = strconv.Atoi(f[3])
@@ -148,6 +160,11 @@ func (p *Probe) dockerInventory(ctx context.Context) dockerInventory {
 		c.mounts = parseMounts(f[6])
 		if len(f) > 7 {
 			c.health = f[7]
+		}
+	}
+	for _, c := range inv.byID {
+		if c.inspectionUnavailable {
+			inv.status, inv.failure = "partial", "inspection_unavailable"
 		}
 	}
 	return inv
@@ -215,7 +232,12 @@ func (p *Probe) containers(dir string, inv dockerInventory) []Container {
 	cs := inv.forDir(dir)
 	out := make([]Container, 0, len(cs))
 	for _, ci := range cs {
+		inspection := "current"
+		if ci.inspectionUnavailable {
+			inspection = "unavailable"
+		}
 		out = append(out, Container{
+			Inspection: inspection,
 			Service:    ci.service,
 			Name:       ci.name,
 			State:      ci.state,
