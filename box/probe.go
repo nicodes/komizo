@@ -1,8 +1,10 @@
 package box
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,8 +61,29 @@ func (p *Probe) docker(ctx context.Context, args ...string) (string, error) {
 		return p.Docker(ctx, args...)
 	}
 	cmd := exec.CommandContext(ctx, "docker", args...)
-	out, err := cmd.Output()
-	return string(out), err
+	output := &metadataOutput{remaining: 64 << 20}
+	cmd.Stdout = output
+	cmd.WaitDelay = 2 * time.Second
+	err := cmd.Run()
+	if output.exceeded {
+		return "", errors.New("Docker metadata exceeded its output bound")
+	}
+	return output.String(), err
+}
+
+type metadataOutput struct {
+	bytes.Buffer
+	remaining int
+	exceeded  bool
+}
+
+func (w *metadataOutput) Write(p []byte) (int, error) {
+	if len(p) > w.remaining {
+		w.exceeded = true
+		return 0, errors.New("metadata bound exceeded")
+	}
+	w.remaining -= len(p)
+	return w.Buffer.Write(p)
 }
 
 // dockerOK reports whether there is a daemon to talk to.
@@ -79,10 +102,9 @@ func (p *Probe) Report(ctx context.Context) Report {
 	// Keep the connection and negotiated metadata private to this reading.
 	local := *p
 	p = &local
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
 	if p.engine == nil && p.localEngineEligible() {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, 8*time.Second)
-		defer cancel()
 		p.engine = localDockerEngine(ctx)
 	}
 	if p.engine != nil {
@@ -98,6 +120,7 @@ func (p *Probe) Report(ctx context.Context) Report {
 	}
 
 	inv := p.dockerInventory(ctx)
+	r.Inventory = &Observation{Status: inv.status, At: r.At, Failure: inv.failure}
 	r.Apps = p.apps(inv)
 	r.Proxy = p.proxy(inv)
 	r.Network = p.network(ctx, r.Proxy, inv)
@@ -245,6 +268,9 @@ func (p *Probe) apps(inv dockerInventory) []App {
 		}
 		a.Static = p.staticServing(a, &inv)
 		a.RuntimeState = p.runtimeState(a)
+		if inv.status == "unavailable" && !a.Stopped && a.Static == nil {
+			a.RuntimeState = "unknown"
+		}
 		out = append(out, a)
 	}
 	return out

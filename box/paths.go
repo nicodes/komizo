@@ -175,6 +175,28 @@ func (p *Probe) appStates() []appState {
 	return out
 }
 
+// Collectors may remove old output only after every registered state was read.
+func (p *Probe) appStatesAvailable() ([]appState, error) {
+	ents, err := os.ReadDir(p.path(AppsDir))
+	if err != nil {
+		return nil, err
+	}
+	var out []appState
+	for _, e := range ents {
+		name := strings.TrimSuffix(e.Name(), ".env")
+		if name == e.Name() || e.IsDir() {
+			continue
+		}
+		st, err := readState(filepath.Join(p.path(AppsDir), e.Name()))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, appState{name: name, st: st})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	return out, nil
+}
+
 type appState struct {
 	name string
 	st   state

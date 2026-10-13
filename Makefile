@@ -45,6 +45,7 @@ product-build: agents
 help:
 	@printf '%s\n' 'make install: pinned tools, Go modules and locked UI dependencies' 'make lint / unit / integration: selectable layers' 'make test: unit + integration' 'make build: exact release archives, no publication' 'make artifact-check: checksums and archived binary identity' 'make check: all applicable checks'
 install:
+	python3 scripts/workspace_storage.py check --path ui/node_modules --reserve-bytes 1073741824
 	mise trust .mise.toml
 	mise install
 	go mod download

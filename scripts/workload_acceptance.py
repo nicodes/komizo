@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+"""Exercise bounded synthetic serving pressure using operator-owned inputs."""
+import argparse
+import base64
+import hashlib
+import http.client
+import json
+import os
+from pathlib import Path
+import re
+import select
+import shutil
+import signal
+import subprocess
+import time
+import urllib.parse
+import uuid
+
+SHA = re.compile('[a-f0-9]{40}')
+HASH = re.compile('[a-f0-9]{64}')
+APP = re.compile('[a-z][a-z0-9-]{0,63}')
+BOX = '/usr/local/bin/komizo-box'
+
+def validate(p):
+    if set(p) != {'version','binary_sha256','resources_sha256','app_revisions','probes','cases'} or p['version'] != 1:
+        raise ValueError('unsupported workload profile')
+    if not HASH.fullmatch(p['binary_sha256']) or not HASH.fullmatch(p['resources_sha256']):
+        raise ValueError('exact installed binary and allocation hashes required')
+    if not isinstance(p['app_revisions'],dict) or not 1 <= len(p['app_revisions']) <= 16:
+        raise ValueError('finite application inventory required')
+    if any(not APP.fullmatch(a) or not SHA.fullmatch(r) for a,r in p['app_revisions'].items()):
+        raise ValueError('invalid application identity')
+    if not 1 <= len(p['probes']) <= 32 or not 1 <= len(p['cases']) <= 8:
+        raise ValueError('finite probe and case inventory required')
+    for probe in p['probes']:
+        if set(probe) != {'url','app','revision'} or probe['app'] not in p['app_revisions'] or probe['revision'] != p['app_revisions'][probe['app']]:
+            raise ValueError('probe identity differs')
+        u=urllib.parse.urlsplit(probe['url'])
+        if u.scheme not in ('https','wss') or not u.hostname or u.username or u.password or u.query or u.fragment or len(probe['url'])>512:
+            raise ValueError('probe must be a literal bounded TLS read')
+    for case in p['cases']:
+        if set(case) != {'app','operator','repetitions'} or case['app'] not in p['app_revisions'] or case['operator'] not in ('full_inventory','operation_inspection') or type(case['repetitions']) is not int or not 1 <= case['repetitions'] <= 3:
+            raise ValueError('unsupported workload case')
+    return p
+
+def probe_route(probe):
+    u=urllib.parse.urlsplit(probe['url']);c=http.client.HTTPSConnection(u.hostname,u.port,timeout=2)
+    start=time.monotonic()
+    try:
+        headers={'Cache-Control':'no-cache'};expected=None
+        if u.scheme=='wss':
+            key=base64.b64encode(os.urandom(16)).decode()
+            expected=base64.b64encode(hashlib.sha1((key+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode()
+            headers.update({'Connection':'Upgrade','Upgrade':'websocket','Sec-WebSocket-Version':'13','Sec-WebSocket-Key':key})
+        c.request('GET',u.path or '/',headers=headers);r=c.getresponse()
+        ok=r.getheader('X-Komizo-Revision')==probe['revision']
+        if expected:ok=ok and r.status==101 and r.getheader('Upgrade','').lower()=='websocket' and r.getheader('Sec-WebSocket-Accept')==expected
+        else:ok=ok and r.status==200 and bool(r.read(512).strip())
+        elapsed=time.monotonic()-start
+        if not ok or elapsed>=2:raise AssertionError('core-read contract failed')
+        return elapsed
+    finally:c.close()
+
+def command(args,timeout=20):
+    return subprocess.check_output(args,timeout=timeout)
+
+def identity(p):
+    ids=command(['docker','ps','-q']).decode().split()
+    rows=json.loads(command(['docker','inspect',*ids])) if ids else []
+    containers={r['Id']:{'pid':r['State']['Pid'],'started':r['State']['StartedAt'],'image':r['Image'],'env_sha256':hashlib.sha256(json.dumps(r['Config']['Env'],sort_keys=True).encode()).hexdigest()} for r in rows if r['Config']['Labels'].get('com.docker.compose.project') in p['app_revisions']}
+    paths=[Path('/etc/komizo/resources.json'),Path('/etc/komizo/agent.json')]
+    for a in p['app_revisions']:paths.extend([Path('/srv')/a/'.env',Path('/etc/komizo/workloads')/(a+'.json'),Path('/var/lib/komizo/releases')/a/'operation.json'])
+    return {'containers':containers,'files':{str(f):hashlib.sha256(f.read_bytes()).hexdigest() for f in paths},'fences_clear':not any((Path('/var/lib/komizo')/n/'pending.json').exists() for n in ('activations','upgrades'))}
+
+def snapshot(groups):
+    return {str(g):{k:(g/k).read_text() for k in ('memory.current','memory.swap.current','memory.events','cpu.stat','io.stat')} for g in groups}
+
+def run_case(p,case,repetition):
+    app=case['app'];parent=Path('/sys/fs/cgroup/komizo-production');root=parent/app
+    policy=json.loads((Path('/etc/komizo/workloads')/(app+'.json')).read_bytes())
+    allowance=policy['resources']['startup_allowance_bytes'];high=int((root/'memory.high').read_text());hard=int((root/'memory.max').read_text())
+    target=high-allowance+(12<<20);offered=hard-(32<<20)
+    if not 16<<20 <= offered <= 1<<30:raise ValueError('unsupported finite pressure envelope')
+    baseline={q['url']:probe_route(q) for q in p['probes']};unchanged=identity(p)
+    if not unchanged['fences_clear']:raise ValueError('host recovery fence must be clear')
+    groups=[parent,*[parent/a for a in p['app_revisions'] if (parent/a).is_dir()]]
+    before=snapshot(groups);leaf=root/('acceptance-'+uuid.uuid4().hex[:10]);scratch=Path('/srv')/('komizo-synthetic-'+uuid.uuid4().hex[:10])
+    children=[]
+    result={'app':app,'operator':case['operator'],'repetition':repetition,'baseline_seconds':baseline,'before':before,'accepted':False,'cleanup':False,'latencies_seconds':{q['url']:[] for q in p['probes']},'operator_seconds':[]}
+    def child(code):
+        worker=subprocess.Popen(['python3','-I','-c','import sys,os;assert sys.stdin.buffer.read(1)==b"g";os.setgroups([]);os.setgid(65534);os.setuid(65534);'+code],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+        children.append(worker);(leaf/'cgroup.procs').write_text(str(worker.pid));worker.stdin.write(b'g');worker.stdin.close();return worker
+    try:
+        leaf.mkdir();scratch.mkdir(mode=0o700);os.chown(scratch,65534,65534)
+        for name,value in [('memory.max',str(offered+(16<<20))),('memory.swap.max','0'),('pids.max','16'),('cpu.max','20000 100000')]: (leaf/name).write_text(value)
+        memory=child("import time,json;from pathlib import Path;chunks=[];charged=Path("+repr(str(root/'memory.current'))+")\nwhile int(charged.read_text())<"+str(target)+":\n if sum(map(len,chunks))+(4<<20)>"+str(offered)+":raise RuntimeError('hot memory offer exhausted')\n data=bytearray(4<<20)\n for offset in range(0,len(data),4096):data[offset]=1\n chunks.append(data);time.sleep(.02)\nprint(json.dumps({'ready':True,'hot_bytes':sum(map(len,chunks))}),flush=True);end=time.monotonic()+40\nwhile time.monotonic()<end:\n for data in chunks:\n  for offset in range(0,len(data),4096):data[offset]=(data[offset]+1)%256")
+        if not select.select([memory.stdout],[],[],30)[0]:raise AssertionError('hot pages not ready')
+        ready=json.loads(memory.stdout.readline());result['actual_hot_memory_bytes']=ready['hot_bytes'];result['maximum_offered_hot_memory_bytes']=offered
+        result['pressure']=snapshot(groups)
+        if int((root/'memory.current').read_text())<=high-allowance+(8<<20):raise AssertionError('pressure target absent')
+        refusal=subprocess.run([BOX,'app','restart','--app',app],capture_output=True,timeout=20)
+        if refusal.returncode==0 or b'application serving pressure refuses startup' not in refusal.stderr or identity(p)!=unchanged:raise AssertionError('startup did not refuse before effects')
+        result['startup_refused_before_effects']=True
+        writer=child('import os,time,json;from pathlib import Path;p=Path('+repr(str(scratch/'io.bin'))+');start=time.monotonic()\nwith p.open("xb",buffering=0) as f:\n for index in range(8):f.write(b"x"*(1<<20));os.fsync(f.fileno())\nprint(json.dumps({"bytes":8<<20,"seconds":time.monotonic()-start}),flush=True)')
+        started=time.monotonic();samples=[]
+        while memory.poll() is None:
+            if time.monotonic()-started>65:raise AssertionError('pressure deadline exceeded')
+            for q in p['probes']:result['latencies_seconds'][q['url']].append(probe_route(q))
+            start=time.monotonic()
+            if case['operator']=='full_inventory':
+                report=json.loads(command([BOX,'report'],10))
+                if report['server']['state']!='ready' or report.get('inventory',{}).get('status')!='current':raise AssertionError('full observation unavailable')
+                revisions={a['name']:a['version'] for a in report['apps']}
+                if any(revisions.get(a)!=r for a,r in p['app_revisions'].items()):raise AssertionError('serving source changed')
+            else:
+                report=json.loads(command([BOX,'workload','inspect','--policy','/etc/komizo/workloads/'+app+'.json'],10))
+                if report['operation']['phase']!='ready' or not report['private_bodies_omitted']:raise AssertionError('operation observation unavailable')
+            elapsed=time.monotonic()-start;result['operator_seconds'].append(elapsed)
+            if elapsed>=5:raise AssertionError('operator exceeded five seconds')
+            samples.append(snapshot(groups));time.sleep(.5)
+        if memory.returncode!=0 or writer.wait(timeout=15)!=0:raise AssertionError('synthetic worker failed')
+        io=json.loads(writer.stdout.read());result['io_transfer']=io
+        if io['bytes']!=8<<20 or io['seconds']<.75:raise AssertionError('fsync workload differs')
+        after=snapshot(groups);result['after']=after;result['samples']=samples
+        if identity(p)!=unchanged:raise AssertionError('private identity changed')
+        for group in before:
+            def events(s):return dict((k,int(v)) for k,v in (l.split() for l in s[group]['memory.events'].splitlines()))
+            if any(events(after)[k]!=events(before)[k] for k in ('oom','oom_kill')):raise AssertionError('new OOM event')
+        if not all(result['latencies_seconds'].values()) or not result['operator_seconds']:raise AssertionError('empty pressure reading')
+        result.update(accepted=True,private_identity_preserved=True,oom_delta=0)
+    except Exception as error:
+        result.update(error_type=type(error).__name__,error=str(error) if isinstance(error,AssertionError) else 'fixture failed; inspect retained measurements',after_failure=snapshot(groups),private_identity_preserved=identity(p)==unchanged)
+    finally:
+        try:
+            for worker in children:
+                if worker.poll() is None:os.killpg(worker.pid,signal.SIGKILL)
+                worker.wait(timeout=30)
+                for stream in [worker.stdout,worker.stderr]:stream.close()
+            if scratch.exists():shutil.rmtree(scratch)
+            if leaf.exists():leaf.rmdir()
+            result['cleanup']=True
+        except Exception:
+            result.update(accepted=False,cleanup_error='owned fixture cleanup requires inspection')
+    return result
+
+def run(p):
+    validate(p)
+    if os.geteuid()!=0:raise ValueError('pressure acceptance requires the trusted host operator')
+    if hashlib.sha256(Path(BOX).read_bytes()).hexdigest()!=p['binary_sha256'] or hashlib.sha256(Path('/etc/komizo/resources.json').read_bytes()).hexdigest()!=p['resources_sha256']:raise ValueError('installed identity differs from profile')
+    results=[]
+    for case in p['cases']:
+        for repetition in range(case['repetitions']):
+            try:result=run_case(p,case,repetition)
+            except Exception as error:result={'app':case['app'],'repetition':repetition,'accepted':False,'attempted':True,'error_type':type(error).__name__}
+            results.append(result)
+    return {'version':1,'observed_at_unix':time.time(),'profile_sha256':hashlib.sha256(json.dumps(p,sort_keys=True).encode()).hexdigest(),'binary_sha256':p['binary_sha256'],'resources_sha256':p['resources_sha256'],'results':results,'accepted':bool(results) and all(r['accepted'] and r.get('cleanup') for r in results),'provider_calls':False,'real_backup_restore':False,'scope':'declared sequential host-origin TLS/WSS reads below two seconds; touched hot memory and 200m CPU for forty seconds; eight 1MiB fsync writes; startup refusal before effects; chosen fresh full report or light operation inspection below five seconds; no universal or concurrent-request SLO'}
+
+def main(argv=None):
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--profile',type=Path,required=True);p.add_argument('--host');p.add_argument('--output',type=Path,required=True)
+    args=p.parse_args(argv);raw=args.profile.read_bytes()
+    if len(raw)>32768:raise ValueError('profile too large')
+    profile=validate(json.loads(raw))
+    if args.output.exists() or args.output.is_symlink():raise ValueError('new output file required')
+    args.output.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+    if args.host:
+        if not re.fullmatch(r'root@[a-z0-9]+(?:[.-][a-z0-9]+)+',args.host):raise ValueError('literal trusted operator host required')
+        source=globals().get('_SOURCE') or Path(__file__).read_text()
+        source=source[:source.rindex("if __name__")]+"\nfor _signal in [signal.SIGHUP,signal.SIGTERM,signal.SIGINT]:signal.signal(_signal,lambda *_: (_ for _ in ()).throw(InterruptedError()))\nprint(json.dumps(run("+repr(profile)+")),flush=True)\n"
+        proc=subprocess.run(['ssh','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ForwardAgent=no','-o','ConnectTimeout=10',args.host,'python3 -I -'],input=source.encode(),capture_output=True,timeout=1800)
+        if proc.returncode:raise ValueError('remote fixture failed; no acceptance inferred')
+        if len(proc.stdout)>8<<20:raise ValueError('fixture evidence exceeds its bound')
+        result=json.loads(proc.stdout)
+    else:result=run(profile)
+    with args.output.open('x') as f:os.chmod(args.output,0o600);json.dump(result,f,indent=2);f.write('\n')
+    print(json.dumps({'accepted':result['accepted'],'results':len(result['results']),'evidence':str(args.output)}));return int(not result['accepted'])
+
+if __name__=='__main__':raise SystemExit(main())

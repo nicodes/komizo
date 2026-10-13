@@ -189,6 +189,10 @@ func Main(args []string) error {
 		err = RunPublication(args[1:])
 	case "operator":
 		err = RunOperator(args[1:])
+	case "workspace":
+		err = RunWorkspace(args[1:])
+	case "workload":
+		err = RunWorkloadAcceptance(args[1:])
 	case "artifact":
 		err = RunArtifact(args[1:])
 	case "script":
@@ -269,6 +273,10 @@ hand.
   komizo publication prepare --image ghcr.io/OWNER/IMAGE:SOURCE --output NEW_DIRECTORY
   komizo artifact --arch amd64|arm64 --output NEW_FILE
   komizo operator plan|export [--directory NEW_ABSOLUTE_DIRECTORY]
+  komizo workspace check --path OUTPUT --reserve-bytes BYTES
+  komizo workspace plan --root WORKTREE --path GENERATED_OUTPUT
+  komizo workspace clean --manifest PLAN_JSON --expected-plan SHA256
+  komizo workload acceptance --profile PROFILE_JSON --host root@HOST --output NEW_FILE
 
 THE SERVICE IS DECOMMISSIONED. komizo-be is gone (board decision) and this CLI
 is the whole product: you manage your servers from it directly, over SSH, with

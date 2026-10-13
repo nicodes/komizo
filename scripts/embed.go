@@ -27,6 +27,12 @@ var ProxyPrepare string
 //go:embed publication_prepare.py
 var PublicationPrepare string
 
+//go:embed workspace_storage.py
+var WorkspaceStorage string
+
+//go:embed workload_acceptance.py
+var WorkloadAcceptance string
+
 // The server-side shell, shipped over SSH and run as root on the box.
 //
 // ALL of it lives here as .sh files, and none of it is built with fmt.Sprintf.
