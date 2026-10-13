@@ -53,6 +53,10 @@ func TestControlReclaimIsFiniteAndSkipsHealthyGroups(t *testing.T) {
 	if len(rows) != 3 || rows[0].Name != "openrc.docker" || rows[0].RequestedBytes != 24<<20 {
 		t.Fatal(rows)
 	}
+	request, _ := os.ReadFile(filepath.Join(root, "openrc.docker", "memory.reclaim"))
+	if string(request) != "25165824 swappiness=0" {
+		t.Fatal("cache drain must explicitly disable anonymous-memory swapping")
+	}
 	b, _ := os.ReadFile(filepath.Join(root, "openrc.komizo-rootd", "memory.reclaim"))
 	if string(b) != "unchanged" {
 		t.Fatal("healthy daemon touched")

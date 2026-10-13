@@ -94,7 +94,10 @@ func (p HostResources) ReclaimControlCache(root string) ([]ControlReclaim, error
 			continue
 		}
 		dir := filepath.Join(root, rows[i].Name)
-		if err := os.WriteFile(filepath.Join(dir, "memory.reclaim"), []byte(strconv.FormatInt(rows[i].RequestedBytes, 10)), 0600); err != nil {
+		// Explicitly avoid anonymous-memory swapping during this cache drain.
+		// Unsupported kernels refuse the write rather than falling back.
+		request := strconv.FormatInt(rows[i].RequestedBytes, 10) + " swappiness=0"
+		if err := os.WriteFile(filepath.Join(dir, "memory.reclaim"), []byte(request), 0600); err != nil {
 			return rows, errors.New("kernel reclaim incomplete; inspect retained receipt and current usage")
 		}
 		value, err := controlCounter(filepath.Join(dir, "memory.current"))
