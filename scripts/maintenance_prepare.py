@@ -16,6 +16,7 @@ def main():
     parser.add_argument('--stage',required=True)
     parser.add_argument('--binary-sha256',required=True)
     parser.add_argument('--manifest-sha256')
+    parser.add_argument('--hold-kernel',action='store_true',help='plan userspace updates while retaining the exact installed kernel')
     parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args()
     if not re.fullmatch(r'root@[a-zA-Z0-9][a-zA-Z0-9.-]{0,252}',args.host) or not 1<=args.port<=65535:raise ValueError('literal Root host required')
@@ -23,13 +24,14 @@ def main():
     if not re.fullmatch('[a-f0-9]{64}',args.binary_sha256):raise ValueError('authenticated installed binary hash required')
     if args.operation!='plan' and not re.fullmatch('[a-f0-9]{64}',args.manifest_sha256 or ''):raise ValueError('exact reviewed manifest required')
     if args.operation=='plan' and args.manifest_sha256:raise ValueError('plan has no previous manifest')
+    if args.hold_kernel and args.operation!='plan':raise ValueError('hold-kernel applies to planning only')
     # Refuse before effects if output cannot be retained. The SSH return alone
     # is never acceptance; durable host inspect resolves an interrupted client.
     with args.output.open('xb') as output:
         args.output.chmod(0o600)
         command='set -eu; test "$(sha256sum /usr/local/bin/komizo-box | cut -d " " -f 1)" = '+shlex.quote(args.binary_sha256)+'; '
         if args.operation=='plan':command+='mkdir -m 700 -p /var/lib/komizo/maintenance; mkdir -m 700 '+shlex.quote(args.stage)+'; '
-        command+='exec /usr/local/bin/komizo-box platform maintenance '+shlex.join([args.operation,args.stage,*([args.manifest_sha256] if args.manifest_sha256 else [])])
+        command+='exec /usr/local/bin/komizo-box platform maintenance '+shlex.join([args.operation,args.stage,*([args.manifest_sha256] if args.manifest_sha256 else []),*(['--hold-kernel'] if args.hold_kernel else [])])
         result=subprocess.run(['ssh','-oBatchMode=yes','-oStrictHostKeyChecking=yes','-oForwardAgent=no','-oConnectTimeout=10','-p',str(args.port),args.host,command],stdin=subprocess.DEVNULL,stdout=output,timeout=1100)
     if result.returncode:raise ValueError('maintenance refused; inspect retained host operation')
     data=args.output.read_bytes()

@@ -91,13 +91,18 @@ class Maintenance:
         (root/'etc/apk/arch').write_text(architecture+'\n')
         (root/'etc/apk/world').write_text(held_world((root/'etc/apk/world').read_text()))
         return root
-    def plan(self,path):
+    def plan(self,path,hold_kernel=False):
         stage=self.stage(path)
         with self.p.locks():
             if self.p.path('/var/lib/komizo/upgrades/pending.json').exists():raise ValueError('existing recovery fence')
             space=os.statvfs(self.p.path('/'))
             if space.f_bavail*space.f_frsize<1<<30 or space.f_favail<4096:raise ValueError('insufficient ordinary maintenance staging space')
             before=self.inventory();serving=self.serving();solver=self.clone(stage)
+            if hold_kernel:
+                rows=json.loads(self.run(['apk','query','--installed','--format','json','--fields','name,version','linux-lts'],30))
+                if len(rows)!=1 or rows[0].get('name')!='linux-lts' or not re.fullmatch('[a-zA-Z0-9+_.-]+',rows[0].get('version','')):raise ValueError('installed kernel package identity unavailable')
+                world=solver/'etc/apk/world';lines=world.read_text().splitlines()
+                world.write_text('\n'.join('linux-lts='+rows[0]['version'] if re.split('[=<>~@]',line)[0]=='linux-lts' else line for line in lines)+'\n')
             self.run(['apk','--root',str(solver),'--cache-dir',str(solver/'var/cache/apk'),'--timeout','30','update'],120)
             output=self.run(['apk','--root',str(solver),'--no-scripts','--no-commit-hooks','--no-logfile','--no-progress','--cache-dir',str(solver/'var/cache/apk'),'--timeout','30','upgrade','--simulate','--no-preupgrade'],120)
             packages=changes(output);cache=stage/'packages';cache.mkdir(mode=0o700)
@@ -110,17 +115,23 @@ class Maintenance:
                 self.run(['apk','verify',str(file)],60)
                 files.append({**row,'file':file.name,'bytes':file.stat().st_size,'sha256':checksum(file)})
             old=stage/'previous-world';shutil.copyfile(self.p.path('/etc/apk/world'),old);old.chmod(0o600)
-            candidate=stage/'candidate-world';candidate.write_text((solver/'etc/apk/world').read_text());candidate.chmod(0o600)
-            manifest={'version':1,'kind':'host-maintenance','before':before,'serving':serving,'required_packages':list(REQUIRED),'files':files,'candidate_world_sha256':checksum(candidate),'reboot_required':any(r['name']=='linux-lts' for r in packages),'expires_at_unix':time.time()+7200}
+            candidate=stage/'candidate-world';candidate.write_text(held_world(old.read_text()));candidate.chmod(0o600)
+            transaction=stage/'transaction-world';transaction.write_text((solver/'etc/apk/world').read_text());transaction.chmod(0o600)
+            manifest={'version':1,'kind':'host-maintenance','before':before,'serving':serving,'required_packages':list(REQUIRED),'files':files,'candidate_world_sha256':checksum(candidate),'transaction_world_sha256':checksum(transaction),'kernel_held':hold_kernel,'reboot_required':any(r['name']=='linux-lts' for r in packages),'expires_at_unix':time.time()+7200}
+            if hold_kernel:manifest['held_kernel_version']=rows[0]['version']
+            if hold_kernel and manifest['reboot_required']:raise ValueError('held kernel changed in solver')
             self.p.journal(stage,{'phase':'planned','manifest':manifest})
             target=stage/'manifest.json';target.write_text(json.dumps(manifest,sort_keys=True)+'\n');target.chmod(0o600);self.p.sync(stage)
-            return {'manifest_sha256':checksum(target),'packages':len(files),'reboot_required':manifest['reboot_required'],'removals':0,'required_packages':list(REQUIRED)}
+            return {'manifest_sha256':checksum(target),'packages':len(files),'reboot_required':manifest['reboot_required'],'kernel_held':hold_kernel,'removals':0,'required_packages':list(REQUIRED)}
     def manifest(self,stage,expected):
         file=stage/'manifest.json';body=self.p.read(file,private=True)
         if hashlib.sha256(body).hexdigest()!=expected:raise ValueError('maintenance manifest changed')
         value=json.loads(body)
         required={'version','kind','before','serving','required_packages','files','candidate_world_sha256','reboot_required','expires_at_unix'}
-        if set(value)!=required or value['kind']!='host-maintenance' or value['version']!=1 or value['required_packages']!=list(REQUIRED):raise ValueError('unsupported maintenance plan')
+        if not required<=set(value) or set(value)-required-{'transaction_world_sha256','kernel_held','held_kernel_version'} or value['kind']!='host-maintenance' or value['version']!=1 or value['required_packages']!=list(REQUIRED):raise ValueError('unsupported maintenance plan')
+        if 'transaction_world_sha256' in value and not re.fullmatch('[a-f0-9]{64}',value['transaction_world_sha256']):raise ValueError('invalid transaction world')
+        if 'kernel_held' in value and (type(value['kernel_held']) is not bool or value['kernel_held'] and value['reboot_required']):raise ValueError('invalid held kernel')
+        if value.get('kernel_held') and not re.fullmatch('[a-zA-Z0-9+_.-]+',value.get('held_kernel_version','')):raise ValueError('held kernel version required')
         if not isinstance(value['files'],list) or len(value['files'])>256:raise ValueError('invalid package inventory')
         names=set()
         for row in value['files']:
@@ -142,18 +153,20 @@ class Maintenance:
                 self.run(['apk','verify',str(stage/'packages'/row['file'])],60)
             candidate=stage/'candidate-world'
             if self.p.digest(candidate)!=manifest['candidate_world_sha256']:raise ValueError('world changed')
+            transaction=stage/'transaction-world' if 'transaction_world_sha256' in manifest else candidate
+            if self.p.digest(transaction)!=manifest.get('transaction_world_sha256',manifest['candidate_world_sha256']):raise ValueError('transaction world changed')
             space=os.statvfs(self.p.path('/'))
             if space.f_bavail*space.f_frsize < max(256<<20,3*sum(r['bytes'] for r in manifest['files'])) or space.f_favail<4096:raise ValueError('insufficient ordinary package transaction space')
             self.p.journal(stage,{'phase':'applying','manifest_sha256':expected,'before':manifest['before']})
             fence.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
             with fence.open('x') as f:os.fchmod(f.fileno(),0o600);json.dump({'kind':'host-maintenance','stage':str(stage),'manifest_sha256':expected},f);f.flush();os.fsync(f.fileno())
             self.p.sync(fence.parent)
-            self.p.atomic(self.p.path('/etc/apk/world'),candidate,0o644)
+            self.p.atomic(self.p.path('/etc/apk/world'),transaction,0o644)
             if manifest['files']:
                 self.run(['apk','--no-network','--timeout','30','add',*[str(stage/'packages'/r['file']) for r in manifest['files']]],900)
                 # Local package filenames temporarily add exact world pins.
                 # Restore the reviewed caller world with explicit firewall intent.
-                self.p.atomic(self.p.path('/etc/apk/world'),candidate,0o644)
+            self.p.atomic(self.p.path('/etc/apk/world'),candidate,0o644)
             for package in REQUIRED:self.run(['apk','info','--exists',package],10)
             self.run(['nft','list','ruleset'],10)
             self.verify_packages(manifest)
@@ -167,6 +180,9 @@ class Maintenance:
         for row in manifest['files']:
             if self.run(['apk','info','--exists',row['name']+'='+row['version']],10).strip() not in ('',row['name']):raise ValueError('installed package identity differs')
         if self.p.digest(self.p.path('/etc/apk/world'))!=manifest['candidate_world_sha256']:raise ValueError('reviewed world differs')
+        if manifest.get('kernel_held'):
+            self.run(['apk','info','--exists','linux-lts='+manifest['held_kernel_version']],10)
+            if self.run(['busybox','uname','-r']).strip()!=manifest['before']['running_kernel']:raise ValueError('held running kernel changed')
     def finish(self,path,expected):
         stage=self.stage(path);manifest=self.manifest(stage,expected)
         with self.p.locks():
@@ -191,8 +207,8 @@ def main():
     if os.geteuid()!=0 or len(sys.argv) not in (3,4) or sys.argv[1] not in ('plan','apply','inspect','finish'):raise ValueError('maintenance requires root, fixed operation and protected stage')
     m=Maintenance(Platform())
     if sys.argv[1]=='plan':
-        if len(sys.argv)!=3:raise ValueError('plan accepts stage only')
-        result=m.plan(sys.argv[2])
+        if len(sys.argv)==4 and sys.argv[3]!='--hold-kernel':raise ValueError('unsupported plan option')
+        result=m.plan(sys.argv[2],len(sys.argv)==4)
     else:
         if len(sys.argv)!=4 or not re.fullmatch('[a-f0-9]{64}',sys.argv[3]):raise ValueError('exact reviewed manifest required')
         result=getattr(m,sys.argv[1])(sys.argv[2],sys.argv[3])
