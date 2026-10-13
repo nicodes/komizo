@@ -108,7 +108,7 @@ func readyBox(t *testing.T) *fakeBox {
 	//
 	// ps:      id, name, state, status, service, image, compose working_dir
 	// inspect: id, startedAt, finishedAt, exitCode, pid, networks, mounts
-	f.reply("info", "29.1.3").
+	f.reply("version --format", "29.1.3").
 		reply("--version", "Docker version 29.1.3, build f52814d").
 		reply("ps -a --no-trunc", ps(
 			"cid1\tblog-web-1\trunning\tUp 3 hours\tweb\tghcr.io/n/blog:e1b2557\t"+"/srv/blog")).
@@ -201,6 +201,23 @@ func TestReportReadsTheBox(t *testing.T) {
 	}
 	if r.System.Mem.Available != 400*1024 {
 		t.Errorf("mem available = %d, want MemAvailable %d not MemFree", r.System.Mem.Available, 400*1024)
+	}
+}
+
+func TestDaemonReachabilityUsesServerVersionWithoutDaemonInventory(t *testing.T) {
+	for _, reachable := range []bool{true, false} {
+		p := &Probe{Docker: func(_ context.Context, args ...string) (string, error) {
+			if strings.Join(args, " ") != "version --format {{.Server.Version}}" {
+				t.Fatalf("unexpected daemon reachability command: %q", args)
+			}
+			if !reachable {
+				return "", fmt.Errorf("daemon unavailable")
+			}
+			return "29.1.3", nil
+		}}
+		if got := p.dockerOK(context.Background()); got != reachable {
+			t.Fatalf("daemon reachable = %v, want %v", got, reachable)
+		}
 	}
 }
 

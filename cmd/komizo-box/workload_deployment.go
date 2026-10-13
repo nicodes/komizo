@@ -44,6 +44,12 @@ func deploymentCredentialPath(dir, id string) string {
 }
 func deploymentHash(b []byte) string { sum := sha256.Sum256(b); return hex.EncodeToString(sum[:]) }
 
+// Reconciliation establishes the exact serving release without replaying work.
+// Its terminal state is valid for later cached owner reconfiguration too.
+func localCurrentOperationAllowed(prior workload.Operation, serving string) bool {
+	return prior.Candidate == serving && (prior.Phase == "ready" || prior.Phase == "prepared_stopped" || prior.Phase == "reconciled")
+}
+
 func runWorkloadDeployment(args []string) error {
 	if os.Geteuid() != 0 {
 		return errors.New("typed deployment requires the local root operator")
@@ -193,7 +199,7 @@ func runWorkloadDeployment(args []string) error {
 			return errors.New("local owner reconfiguration requires the retained current revision and no CI proof")
 		}
 		var prior workload.Operation
-		if err := protectedActivationJSON(filepath.Join(dir, "operation.json"), &prior); err != nil || prior.Candidate != previous || (prior.Phase != "ready" && prior.Phase != "prepared_stopped") {
+		if err := protectedActivationJSON(filepath.Join(dir, "operation.json"), &prior); err != nil || !localCurrentOperationAllowed(prior, previous) {
 			return errors.New("reconcile the current deployment before local reconfiguration")
 		}
 		var accepted workload.ReleaseAcceptance
