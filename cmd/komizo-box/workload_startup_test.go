@@ -53,8 +53,11 @@ func TestServingPressureRefusesBeforeRegistryOrConfigurationEffects(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if op.Phase != "admitted" {
-		t.Fatal("refusal changed operation phase", op.Phase)
+	if op.Phase != "staging_failed" || op.ID != f.r.ID || op.Candidate != f.r.Candidate || op.Previous != f.r.Previous {
+		t.Fatal("refusal lost its durable terminal identity", op)
+	}
+	if _, err := os.Lstat(filepath.Dir(deploymentCredentialPath(f.queue, f.r.ID))); !os.IsNotExist(err) {
+		t.Fatal("serving-pressure refusal retained credential slot", err)
 	}
 }
 
