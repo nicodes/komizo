@@ -13,6 +13,14 @@ import (
 // Preparation authenticates released bytes and emits a reviewable finite plan.
 // Execution requires the operator's exact prepared manifest, not an implicit yes.
 func RunPlatform(args []string) error {
+	if len(args) > 0 && args[0] == "maintenance" {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+		defer cancel()
+		command := exec.CommandContext(ctx, "/usr/bin/python3", append([]string{"-I", "-c", scripts.MaintenancePrepare}, args[1:]...)...)
+		command.WaitDelay = 2 * time.Second
+		command.Stdout, command.Stderr = os.Stdout, os.Stderr
+		return command.Run()
+	}
 	proxy := len(args) > 0 && args[0] == "proxy"
 	if proxy {
 		args = args[1:]

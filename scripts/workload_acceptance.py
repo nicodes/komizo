@@ -54,9 +54,12 @@ def probe_route(probe):
         c.request('GET',u.path or '/',headers=headers);r=c.getresponse()
         ok=r.getheader('X-Komizo-Revision')==probe['revision']
         if expected:ok=ok and r.status==101 and r.getheader('Upgrade','').lower()=='websocket' and r.getheader('Sec-WebSocket-Accept')==expected
-        else:ok=ok and r.status==200 and bool(r.read(512).strip())
+        else:
+            nonempty=bool(r.read(512).strip())
+            ok=ok and r.status==200 and nonempty
         elapsed=time.monotonic()-start
-        if not ok or elapsed>=2:raise AssertionError('core-read contract failed')
+        if not ok or elapsed>=2:
+            raise AssertionError(json.dumps({'contract':'core_read','url':probe['url'],'seconds':elapsed,'http_status':r.status,'revision_matches':r.getheader('X-Komizo-Revision')==probe['revision'],'content_present':nonempty if expected is None else None,'upgrade_matches':r.getheader('Sec-WebSocket-Accept')==expected if expected is not None else None},sort_keys=True))
         return elapsed
     finally:c.close()
 
