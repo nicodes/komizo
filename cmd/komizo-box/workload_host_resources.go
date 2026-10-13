@@ -21,16 +21,18 @@ func runHostResources(args []string) error {
 	check := fs.Bool("check", false, "validate stdin against measured capacity without changing policy or controllers")
 	policyPath := fs.String("policy", "", "protected candidate file; accepted only with --check")
 	usage := fs.Bool("check-usage", false, "also preflight installed controllers and usage; requires --check")
+	reclaim := fs.Bool("reclaim-controls", false, "reclaim bounded inactive control cache before a reviewed resource reduction; applies no limits")
+	expected := fs.String("policy-sha256", "", "exact protected candidate hash; required with --reclaim-controls")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if os.Geteuid() != 0 || fs.NArg() != 0 || (*apply && *check) || ((!*check) && (*policyPath != "" || *usage)) {
+	if os.Geteuid() != 0 || fs.NArg() != 0 || (*apply && *check) || (!*check && !*reclaim && (*policyPath != "" || *usage)) || (*reclaim && (*apply || *check || *usage || *policyPath == "" || len(*expected) != 64 || strings.Trim(*expected, "0123456789abcdef") != "")) || (!*reclaim && *expected != "") {
 		return errors.New("host resources require the root operator")
 	}
 	const path = "/etc/komizo/resources.json"
 	var body []byte
 	var err error
-	if *check && *policyPath != "" {
+	if (*check || *reclaim) && *policyPath != "" {
 		if !filepath.IsAbs(*policyPath) || filepath.Clean(*policyPath) != *policyPath {
 			return errors.New("candidate resource policy must be an absolute canonical path")
 		}
@@ -49,6 +51,9 @@ func runHostResources(args []string) error {
 	}
 	if err != nil || len(body) > workload.MaxBytes {
 		return errors.New("host resource policy unavailable or oversized")
+	}
+	if *reclaim && deploymentHash(body) != *expected {
+		return errors.New("reviewed resource policy changed")
 	}
 	decoder := json.NewDecoder(strings.NewReader(string(body)))
 	decoder.DisallowUnknownFields()
@@ -69,6 +74,16 @@ func runHostResources(args []string) error {
 			return policy.Preflight("/sys/fs/cgroup", total, int64(runtime.NumCPU())*1000)
 		}
 		return policy.Check(total, int64(runtime.NumCPU())*1000)
+	}
+	if *reclaim {
+		if err := policy.Check(total, int64(runtime.NumCPU())*1000); err != nil {
+			return err
+		}
+		rows, err := policy.ReclaimControlCache("/sys/fs/cgroup")
+		if encodeErr := json.NewEncoder(os.Stdout).Encode(map[string]any{"version": 1, "policy_sha256": *expected, "limits_applied": false, "groups": rows, "complete": err == nil}); encodeErr != nil {
+			return encodeErr
+		}
+		return err
 	}
 	if err := policy.Apply("/sys/fs/cgroup", total, int64(runtime.NumCPU())*1000); err != nil {
 		return err

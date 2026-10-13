@@ -5,11 +5,51 @@ import unittest
 import json
 import hashlib
 import contextlib
+import os
+from types import SimpleNamespace
+from unittest.mock import patch
 
 spec=importlib.util.spec_from_file_location('maintenance_operator',Path(__file__).with_name('maintenance.py'))
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 
 class MaintenanceTests(unittest.TestCase):
+    def test_held_kernel_is_transaction_only_and_survives_userspace_apply(self):
+        spec=importlib.util.spec_from_file_location('shared_platform_for_hold',Path(__file__).with_name('platform.py'))
+        shared=importlib.util.module_from_spec(spec);spec.loader.exec_module(shared)
+        with tempfile.TemporaryDirectory() as root:
+            root=Path(root)
+            for name in ('etc/apk/keys','lib/apk/db','var/lib/komizo/apps','var/lib/komizo/releases','run/komizo','var/lib/komizo/maintenance/fixture'):
+                (root/name).mkdir(parents=True,exist_ok=True)
+            for name,body in {'etc/apk/world':'linux-lts\ndocker\n','etc/apk/repositories':'https://example.invalid/v3.24/main\n','lib/apk/db/installed':'fixture database','etc/apk/keys/fixture.pub':'fixture key'}.items():(root/name).write_text(body)
+            stage=root/'var/lib/komizo/maintenance/fixture'
+            calls=[]
+            def run(args,required=True,timeout=90):
+                calls.append(args)
+                if args[:2]==['busybox','uname']:return 0,'x86_64' if args[-1]=='-m' else '6.18.38-0-lts'
+                if args[:2]==['apk','query']:return 0,json.dumps([{'name':'linux-lts','version':'6.18.38-r0'}])
+                if 'upgrade' in args:return 0,'(1/1) Upgrading zlib (1.3.2-r0 -> 1.3.2-r1)\n'
+                if 'fetch' in args:
+                    cache=Path(args[args.index('--output')+1]);(cache/'zlib-1.3.2-r1.apk').write_bytes(b'fixture package')
+                if 'add' in args:
+                    self.assertIn('linux-lts=6.18.38-r0',(root/'etc/apk/world').read_text())
+                if args[:3]==['apk','info','--exists']:return 0,args[-1].split('=')[0]
+                if args==['komizo-box','report']:return 0,json.dumps({'inventory':{'status':'current'},'server':{'state':'ready'},'apps':[]})
+                return 0,''
+            p=shared.Platform(root,run,owner=os.getuid());operator=m.Maintenance(p)
+            operator.inventory=lambda :{'boot_id':'original','running_kernel':'6.18.38-0-lts'}
+            operator.serving=lambda :{'unchanged':True}
+            with patch.object(m.os,'statvfs',return_value=SimpleNamespace(f_bavail=4<<30,f_frsize=1,f_favail=100000)):
+                plan=operator.plan(str(stage),True)
+                manifest=operator.manifest(stage,plan['manifest_sha256'])
+                self.assertTrue(plan['kernel_held']);self.assertFalse(plan['reboot_required'])
+                self.assertEqual(manifest['held_kernel_version'],'6.18.38-r0')
+                self.assertNotIn('linux-lts=6.18.38-r0',(stage/'candidate-world').read_text())
+                operator.apply(str(stage),plan['manifest_sha256'])
+            self.assertNotIn('linux-lts=',(root/'etc/apk/world').read_text())
+            self.assertTrue(any('add' in args for args in calls))
+            fence=root/'var/lib/komizo/upgrades/pending.json';self.assertTrue(fence.exists())
+            self.assertEqual(operator.finish(str(stage),plan['manifest_sha256'])['phase'],'accepted')
+            self.assertFalse(fence.exists())
     def test_firewall_world_preserves_constraints_and_requires_both_packages(self):
         self.assertEqual(m.held_world('docker\nnftables=1.1.9-r0\n'), 'docker\nnftables=1.1.9-r0\nnftables-openrc\nopenssh\nlinux-lts\n')
     def test_transaction_refuses_removal_downgrade_duplicate_or_unsafe_version(self):
