@@ -201,6 +201,70 @@ func TestHostGroupsCannotBorrowProductionAndOSReservation(t *testing.T) {
 	}
 }
 
+func TestControlBurstCannotBorrowServingOrBaseOSFloors(t *testing.T) {
+	group := HostGroup{MemoryBytes: 64 << 20, MilliCPUs: 200, PIDs: 128}
+	p := HostResources{Version: 1, PhysicalMemoryBytes: 512 << 20, OSReserveBytes: 128 << 20, PhysicalMilliCPUs: 1000, OSReserveMilliCPUs: 200, Production: group, Proxy: group, Previews: group, PreviewDatabase: group}
+	p.Controls = map[string]ControlGroup{}
+	for _, name := range []string{"openrc.komizo-rootd", "openrc.komizo-api", "openrc.docker"} {
+		p.Controls[name] = ControlGroup{HostGroup: HostGroup{MemoryBytes: 64 << 20, PIDs: 128}, MemoryLowBytes: 16 << 20, MemoryHighBytes: 48 << 20, CPUWeight: 100}
+	}
+	if err := p.Check(512<<20, 1000); err != nil {
+		t.Fatal(err)
+	}
+	g := p.Controls["openrc.docker"]
+	g.MemoryBytes = 161 << 20
+	p.Controls["openrc.docker"] = g
+	if p.Check(512<<20, 1000) == nil {
+		t.Fatal("controller consumed another serving floor")
+	}
+	g.MemoryBytes = 64 << 20
+	g.MemoryLowBytes = 49 << 20
+	g.MemoryHighBytes = 49 << 20
+	p.Controls["openrc.docker"] = g
+	if p.Check(512<<20, 1000) == nil {
+		t.Fatal("controller consumed base OS reserve")
+	}
+	delete(p.Controls, "openrc.komizo-api")
+	if p.Check(512<<20, 1000) == nil {
+		t.Fatal("partial control roster accepted")
+	}
+}
+
+func TestControlUnavailableOrBusyRefusesBeforeWriting(t *testing.T) {
+	group := HostGroup{MemoryBytes: 64 << 20, MilliCPUs: 200, PIDs: 128}
+	p := HostResources{Version: 1, PhysicalMemoryBytes: 512 << 20, OSReserveBytes: 128 << 20, PhysicalMilliCPUs: 1000, OSReserveMilliCPUs: 200, Production: group, Proxy: group, Previews: group, PreviewDatabase: group, Controls: map[string]ControlGroup{}}
+	root := t.TempDir()
+	for _, name := range []string{"openrc.komizo-rootd", "openrc.komizo-api", "openrc.docker"} {
+		p.Controls[name] = ControlGroup{HostGroup: HostGroup{MemoryBytes: 64 << 20, PIDs: 128}, MemoryLowBytes: 16 << 20, MemoryHighBytes: 48 << 20, CPUWeight: 100}
+	}
+	os.WriteFile(filepath.Join(root, "cgroup.controllers"), []byte("cpu memory pids"), 0600)
+	os.WriteFile(filepath.Join(root, "cgroup.subtree_control"), []byte("unchanged"), 0600)
+	if err := p.Preflight(root, 512<<20, 1000); err != nil {
+		t.Fatal("cold OpenRC groups must be admitted before daemon startup", err)
+	}
+	for name := range p.Controls {
+		dir := filepath.Join(root, name)
+		os.Mkdir(dir, 0700)
+		for _, file := range []string{"memory.current", "memory.swap.current", "pids.current"} {
+			os.WriteFile(filepath.Join(dir, file), []byte("0"), 0600)
+		}
+	}
+	os.WriteFile(filepath.Join(root, "openrc.docker", "memory.current"), []byte("67108865"), 0600)
+	if p.Apply(root, 512<<20, 1000) == nil {
+		t.Fatal("busy control reduction accepted")
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "cgroup.subtree_control")); string(b) != "unchanged" {
+		t.Fatal("preflight modified controllers")
+	}
+	os.WriteFile(filepath.Join(root, "openrc.docker", "memory.current"), []byte("0"), 0600)
+	if err := p.Apply(root, 512<<20, 1000); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(root, "openrc.docker", "memory.max")); string(b) != "67108864" {
+		t.Fatal("daemon ceiling missing", string(b))
+	}
+}
+
 func TestHostResourceReductionPreflightsEveryUsageBeforeWriting(t *testing.T) {
 	for _, fixture := range []struct{ file, value string }{
 		{"memory.current", "67108865"},

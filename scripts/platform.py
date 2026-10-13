@@ -147,10 +147,13 @@ class Platform:
         os.replace(temporary, target)
         self.sync(stage)
 
-    def command(self, args, required=True):
+    def command(self, args, required=True, timeout=90):
         # Fixed executable, cwd, environment and output bound; no user shell.
+        if type(timeout) is not int or not 1 <= timeout <= 900:
+            raise ValueError('invalid platform command deadline')
         executables = {'rc-service': '/sbin/rc-service', 'docker': '/usr/bin/docker',
-                       'komizo-box': '/usr/local/bin/komizo-box', 'doas': '/usr/bin/doas', 'busybox': '/bin/busybox'}
+                       'komizo-box': '/usr/local/bin/komizo-box', 'doas': '/usr/bin/doas', 'busybox': '/bin/busybox',
+                       'apk': '/sbin/apk', 'nft': '/usr/sbin/nft', 'uname': '/bin/uname', 'reboot': '/sbin/reboot'}
         executable = self.path(executables[args[0]])
         self.protected(executable)
         body = bytearray()
@@ -158,7 +161,7 @@ class Platform:
                 env={'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'HOME': '/root', 'LC_ALL': 'C'},
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 start_new_session=True)
-        end = time.monotonic()+90
+        end = time.monotonic()+timeout
         try:
             with selectors.DefaultSelector() as selector:
                 selector.register(process.stdout, selectors.EVENT_READ)

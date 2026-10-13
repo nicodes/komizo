@@ -12,6 +12,12 @@ import (
 //go:embed platform.py
 var Platform string
 
+//go:embed maintenance.py
+var Maintenance string
+
+//go:embed maintenance_prepare.py
+var MaintenancePrepare string
+
 // PlatformPrepare authenticates and plans upgrades from released embedded bytes.
 //
 //go:embed platform_prepare.py
