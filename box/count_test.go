@@ -30,7 +30,7 @@ func TestDockerCallsDoNotGrowWithTheBox(t *testing.T) {
 					id+"\t2026-08-02T09:00:00Z\t0001-01-01T00:00:00Z\t0\t1234\tedge="+svc+", \tvol-"+id+"=/v/"+id+" ")
 			}
 		}
-		f.reply("info", "29.1.3").
+		f.reply("version", "29.1.3").
 			reply("--version", "Docker version 29.1.3").
 			reply("ps -a --no-trunc", ps(psLines...)).
 			reply("inspect --format {{.Id}}", inspect(inspectLines...)).

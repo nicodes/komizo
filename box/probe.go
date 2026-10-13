@@ -64,7 +64,9 @@ func (p *Probe) docker(ctx context.Context, args ...string) (string, error) {
 
 // dockerOK reports whether there is a daemon to talk to.
 func (p *Probe) dockerOK(ctx context.Context) bool {
-	_, err := p.docker(ctx, "info", "--format", "{{.ServerVersion}}")
+	// Reachability needs the small version endpoint, not daemon-wide storage,
+	// plugin and resource inventory collected by docker info.
+	_, err := p.docker(ctx, "version", "--format", "{{.Server.Version}}")
 	return err == nil
 }
 
