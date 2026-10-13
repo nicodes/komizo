@@ -21,7 +21,14 @@ APP = re.compile('[a-z][a-z0-9-]{0,63}')
 BOX = '/usr/local/bin/komizo-box'
 
 def validate(p):
-    if set(p) != {'version','binary_sha256','resources_sha256','app_revisions','probes','cases'} or p['version'] != 1:
+    fields={'version','binary_sha256','resources_sha256','app_revisions','probes','cases'}
+    if type(p.get('version')) is not int or p['version'] not in (1,2):
+        raise ValueError('unsupported workload profile')
+    if p['version']==2:
+        fields.add('probe_interval_seconds')
+        interval=p.get('probe_interval_seconds')
+        if type(interval) is not int or not 1<=interval<=10:raise ValueError('finite declared probe cadence required')
+    if set(p) != fields:
         raise ValueError('unsupported workload profile')
     if not HASH.fullmatch(p['binary_sha256']) or not HASH.fullmatch(p['resources_sha256']):
         raise ValueError('exact installed binary and allocation hashes required')
@@ -75,7 +82,17 @@ def identity(p):
     return {'containers':containers,'files':{str(f):hashlib.sha256(f.read_bytes()).hexdigest() for f in paths},'fences_clear':not any((Path('/var/lib/komizo')/n/'pending.json').exists() for n in ('activations','upgrades'))}
 
 def snapshot(groups):
-    return {str(g):{k:(g/k).read_text() for k in ('memory.current','memory.swap.current','memory.events','cpu.stat','io.stat')} for g in groups}
+    result={}
+    for g in groups:
+        row={k:(g/k).read_text() for k in ('memory.current','memory.swap.current','memory.events','memory.high','memory.max','cpu.stat','io.stat')}
+        charges=dict((k,int(v)) for k,v in (line.split() for line in (g/'memory.stat').read_text().splitlines()))
+        row['memory_charges']={k:charges.get(k) for k in ('anon','file','kernel','inactive_file')}
+        result[str(g)]=row
+    return result
+
+def wait_for_probe_round(round_started,interval):
+    delay=max(0,round_started+interval-time.monotonic())
+    if delay:time.sleep(delay)
 
 def run_case(p,case,repetition):
     app=case['app'];parent=Path('/sys/fs/cgroup/komizo-production');root=parent/app
@@ -86,6 +103,7 @@ def run_case(p,case,repetition):
     baseline={q['url']:probe_route(q) for q in p['probes']};unchanged=identity(p)
     if not unchanged['fences_clear']:raise ValueError('host recovery fence must be clear')
     groups=[parent,*[parent/a for a in p['app_revisions'] if (parent/a).is_dir()]]
+    groups.extend(g for g in (parent.parent/n for n in ('openrc.docker','openrc.komizo-rootd','openrc.komizo-api')) if g.is_dir())
     before=snapshot(groups);leaf=root/('acceptance-'+os.urandom(5).hex());scratch=Path('/srv')/('komizo-synthetic-'+os.urandom(5).hex())
     children=[]
     result={'app':app,'operator':case['operator'],'repetition':repetition,'baseline_seconds':baseline,'before':before,'accepted':False,'cleanup':False,'latencies_seconds':{q['url']:[] for q in p['probes']},'operator_seconds':[]}
@@ -107,6 +125,7 @@ def run_case(p,case,repetition):
         started=time.monotonic();samples=[]
         while memory.poll() is None:
             if time.monotonic()-started>65:raise AssertionError('pressure deadline exceeded')
+            round_started=time.monotonic()
             for q in p['probes']:result['latencies_seconds'][q['url']].append(probe_route(q))
             start=time.monotonic()
             if case['operator']=='full_inventory':
@@ -119,7 +138,9 @@ def run_case(p,case,repetition):
                 if report['operation']['phase']!='ready' or not report['private_bodies_omitted']:raise AssertionError('operation observation unavailable')
             elapsed=time.monotonic()-start;result['operator_seconds'].append(elapsed)
             if elapsed>=5:raise AssertionError('operator exceeded five seconds')
-            samples.append(snapshot(groups));time.sleep(.5)
+            samples.append(snapshot(groups))
+            if p['version']==2:wait_for_probe_round(round_started,p['probe_interval_seconds'])
+            else:time.sleep(.5) # Retain the historical v1 workload definition.
         if memory.returncode!=0 or writer.wait(timeout=15)!=0:raise AssertionError('synthetic worker failed')
         io=json.loads(writer.stdout.read());result['io_transfer']=io
         if io['bytes']!=8<<20 or io['seconds']<.75:raise AssertionError('fsync workload differs')
@@ -153,9 +174,9 @@ def run(p):
     for case in p['cases']:
         for repetition in range(case['repetitions']):
             try:result=run_case(p,case,repetition)
-            except Exception as error:result={'app':case['app'],'repetition':repetition,'accepted':False,'attempted':True,'error_type':type(error).__name__}
+            except Exception as error:result={'app':case['app'],'operator':case['operator'],'repetition':repetition,'accepted':False,'attempted':True,'error_type':type(error).__name__,'error':str(error)[:2048]}
             results.append(result)
-    return {'version':1,'observed_at_unix':time.time(),'profile_sha256':hashlib.sha256(json.dumps(p,sort_keys=True).encode()).hexdigest(),'binary_sha256':p['binary_sha256'],'resources_sha256':p['resources_sha256'],'results':results,'accepted':bool(results) and all(r['accepted'] and r.get('cleanup') for r in results),'provider_calls':False,'real_backup_restore':False,'scope':'declared sequential host-origin TLS/WSS reads below two seconds; touched hot memory and 200m CPU for forty seconds; eight 1MiB fsync writes; startup refusal before effects; chosen fresh full report or light operation inspection below five seconds; no universal or concurrent-request SLO'}
+    return {'version':p['version'],'probe_interval_seconds':p.get('probe_interval_seconds'),'observed_at_unix':time.time(),'profile_sha256':hashlib.sha256(json.dumps(p,sort_keys=True).encode()).hexdigest(),'binary_sha256':p['binary_sha256'],'resources_sha256':p['resources_sha256'],'results':results,'accepted':bool(results) and all(r['accepted'] and r.get('cleanup') for r in results),'provider_calls':False,'real_backup_restore':False,'scope':'declared sequential host-origin TLS/WSS reads below two seconds; touched hot memory and 200m CPU for forty seconds; eight 1MiB fsync writes; startup refusal before effects; chosen fresh full report or light operation inspection below five seconds; no universal or concurrent-request SLO'}
 
 def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--profile',type=Path,required=True);p.add_argument('--host');p.add_argument('--output',type=Path,required=True)
