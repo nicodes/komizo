@@ -51,23 +51,26 @@ def validate(p):
 
 def probe_route(probe):
     u=urllib.parse.urlsplit(probe['url']);c=http.client.HTTPSConnection(u.hostname,u.port,timeout=2)
-    start=time.monotonic()
+    start=time.monotonic();phase='request'
     try:
         headers={'Cache-Control':'no-cache'};expected=None
         if u.scheme=='wss':
             key=base64.b64encode(os.urandom(16)).decode()
             expected=base64.b64encode(hashlib.sha1((key+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode()
             headers.update({'Connection':'Upgrade','Upgrade':'websocket','Sec-WebSocket-Version':'13','Sec-WebSocket-Key':key})
-        c.request('GET',u.path or '/',headers=headers);r=c.getresponse()
+        c.request('GET',u.path or '/',headers=headers);phase='headers';r=c.getresponse()
         ok=r.getheader('X-Komizo-Revision')==probe['revision']
         if expected:ok=ok and r.status==101 and r.getheader('Upgrade','').lower()=='websocket' and r.getheader('Sec-WebSocket-Accept')==expected
         else:
+            phase='body'
             nonempty=bool(r.read(512).strip())
             ok=ok and r.status==200 and nonempty
         elapsed=time.monotonic()-start
         if not ok or elapsed>=2:
             raise AssertionError(json.dumps({'contract':'core_read','url':probe['url'],'seconds':elapsed,'http_status':r.status,'revision_matches':r.getheader('X-Komizo-Revision')==probe['revision'],'content_present':nonempty if expected is None else None,'upgrade_matches':r.getheader('Sec-WebSocket-Accept')==expected if expected is not None else None},sort_keys=True))
         return elapsed
+    except (OSError,http.client.HTTPException) as error:
+        raise AssertionError(json.dumps({'contract':'core_read','url':probe['url'],'seconds':time.monotonic()-start,'phase':phase,'error_kind':type(error).__name__},sort_keys=True)) from error
     finally:c.close()
 
 def command(args,timeout=20):
@@ -94,7 +97,18 @@ def wait_for_probe_round(round_started,interval):
     delay=max(0,round_started+interval-time.monotonic())
     if delay:time.sleep(delay)
 
+def verify_control_limits(policy,root=Path('/sys/fs/cgroup')):
+    fields={'memory.low':'memory_low_bytes','memory.high':'memory_high_bytes','memory.max':'memory_bytes','memory.swap.max':'swap_bytes','pids.max':'pids','cpu.weight':'cpu_weight'}
+    for name,group in policy.get('controls',{}).items():
+        if name not in ('openrc.docker','openrc.komizo-rootd','openrc.komizo-api'):raise ValueError('unknown control group')
+        expected={key:str(group[value]) for key,value in fields.items()};expected['cpu.max']='max 100000'
+        for key,value in expected.items():
+            actual=(root/name/key).read_text().strip()
+            if actual!=value:raise AssertionError(json.dumps({'contract':'control_policy','group':name,'field':key,'expected':value,'actual':actual},sort_keys=True))
+
 def run_case(p,case,repetition):
+    host_policy=json.loads(Path('/etc/komizo/resources.json').read_bytes())
+    verify_control_limits(host_policy)
     app=case['app'];parent=Path('/sys/fs/cgroup/komizo-production');root=parent/app
     policy=json.loads((Path('/etc/komizo/workloads')/(app+'.json')).read_bytes())
     allowance=policy['resources']['startup_allowance_bytes'];high=int((root/'memory.high').read_text());hard=int((root/'memory.max').read_text())
@@ -146,6 +160,7 @@ def run_case(p,case,repetition):
         if io['bytes']!=8<<20 or io['seconds']<.75:raise AssertionError('fsync workload differs')
         after=snapshot(groups);result['after']=after;result['samples']=samples
         if identity(p)!=unchanged:raise AssertionError('private identity changed')
+        verify_control_limits(host_policy)
         for group in before:
             def events(s):return dict((k,int(v)) for k,v in (l.split() for l in s[group]['memory.events'].splitlines()))
             if any(events(after)[k]!=events(before)[k] for k in ('oom','oom_kill')):raise AssertionError('new OOM event')

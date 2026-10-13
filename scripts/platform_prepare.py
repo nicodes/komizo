@@ -153,7 +153,7 @@ def authority_inputs(review, owner=0):
     for index, row in enumerate(document['files']):
         if set(row) != {'path', 'source', 'mode'} or not re.fullmatch('[A-Za-z0-9_.-]{1,128}', row['source']) or row['source'] in ('.', '..'):
             raise ValueError('authority candidates must be named files beside the review')
-        permitted = row['path'] in ('/etc/doas.conf', '/etc/komizo/resources.json') and row['mode'] == 0o600
+        permitted = row['path'] in ('/etc/doas.conf', '/etc/komizo/resources.json','/etc/conf.d/docker','/etc/conf.d/komizo-rootd','/etc/conf.d/komizo-api') and row['mode'] == 0o600
         for pattern, mode in ((r'/etc/komizo/workloads/[a-z][a-z0-9_-]{0,62}\.json', 0o600),
                               (r'/var/lib/komizo/tasks/[a-z][a-z0-9_-]{0,62}\.sh', 0o700),
                               (r'/usr/local/bin/(?:deploy|task|set-secret|set-release-secrets|export-backup)-[a-z][a-z0-9_-]{0,62}', 0o755)):
@@ -265,7 +265,7 @@ def prepare(host, release, source, release_dir, worktree, stage, apply=False, re
             raise ValueError('install this authenticated executor before changing workload authority')
         inputs = authority_inputs(authority_review)
         for path, _, _, _ in inputs:
-            if path in ('/etc/doas.conf', '/etc/komizo/resources.json'): continue
+            if path in ('/etc/doas.conf', '/etc/komizo/resources.json','/etc/conf.d/docker','/etc/conf.d/komizo-rootd','/etc/conf.d/komizo-api'): continue
             app = Path(path).stem if path.startswith(('/etc/komizo/workloads/', '/var/lib/komizo/tasks/')) else re.sub(r'^(deploy|task|set-secret|set-release-secrets|export-backup)-', '', Path(path).name)
             if app not in apps: raise ValueError('authority review names an unregistered app')
         (stage/'box').write_bytes((release_dir/'komizo-box-linux-amd64').read_bytes()); (stage/'box').chmod(0o755)

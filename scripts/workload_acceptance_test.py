@@ -13,6 +13,25 @@ def profile():
     return {'version':1,'binary_sha256':h,'resources_sha256':h,'app_revisions':{'example':'a'*40},'probes':[{'url':'https://example.invalid/health','app':'example','revision':'a'*40}],'cases':[{'app':'example','operator':'full_inventory','repetitions':1},{'app':'example','operator':'operation_inspection','repetitions':1}]}
 
 class WorkloadFixtureContract(unittest.TestCase):
+    def test_declared_control_drift_is_refused_without_pressure_or_writes(self):
+        group={'memory_low_bytes':24,'memory_high_bytes':160,'memory_bytes':176,'swap_bytes':128,'pids':256,'cpu_weight':50}
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);path=root/'openrc.komizo-rootd';path.mkdir()
+            values={'memory.low':'24','memory.high':'160','memory.max':'176','memory.swap.max':'128','pids.max':'256','cpu.weight':'50','cpu.max':'max 100000'}
+            for key,value in values.items():(path/key).write_text(value)
+            policy={'controls':{'openrc.komizo-rootd':group}};fixture.verify_control_limits(policy,root)
+            (path/'memory.max').write_text('max')
+            with self.assertRaisesRegex(AssertionError,'control_policy'):fixture.verify_control_limits(policy,root)
+            self.assertEqual((path/'memory.max').read_text(),'max')
+
+    def test_timed_out_read_names_route_phase_and_elapsed_time_without_retry(self):
+        from types import SimpleNamespace
+        connection=SimpleNamespace(request=lambda *a,**k:None,getresponse=lambda:(_ for _ in ()).throw(TimeoutError()),close=lambda:None)
+        with patch.object(fixture.http.client,'HTTPSConnection',return_value=connection) as client,patch.object(fixture.time,'monotonic',side_effect=[10.0,12.0]):
+            with self.assertRaises(AssertionError) as error:fixture.probe_route(profile()['probes'][0])
+        import json
+        result=json.loads(str(error.exception));self.assertEqual(result['url'],'https://example.invalid/health');self.assertEqual(result['phase'],'headers');self.assertEqual(result['seconds'],2);self.assertEqual(result['error_kind'],'TimeoutError');self.assertEqual(client.call_count,1)
+
     def test_snapshot_distinguishes_cache_and_live_charges_with_actual_limits(self):
         with tempfile.TemporaryDirectory() as directory:
             group=Path(directory)/'openrc.docker';group.mkdir()
