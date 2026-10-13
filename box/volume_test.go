@@ -13,7 +13,7 @@ func volumeBox(t *testing.T) *fakeBox {
 	f := newFakeBox(t)
 	f.write("/var/lib/komizo/apps/blog.env", "APP_DIR=/srv/blog\n")
 	f.write("/var/lib/komizo/apps/shop.env", "APP_DIR=/srv/shop\n")
-	f.reply("info", "29.1.3").
+	f.reply("version", "29.1.3").
 		reply("--version", "Docker version 29.1.3").
 		reply("ps -a --no-trunc", ps(
 			"c1\tblog-api-1\trunning\tUp\tapi\timg\t/srv/blog",

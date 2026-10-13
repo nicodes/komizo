@@ -160,6 +160,25 @@ func TestLocalCurrentStagingUsesNoRegistryAndPreservesSourceAndSecrets(t *testin
 	}
 }
 
+func TestReconciledCurrentOperationPermitsLaterCachedReconfiguration(t *testing.T) {
+	version := strings.Repeat("a", 40)
+	prior := workload.Operation{Candidate: version, Previous: version, Phase: "reconciled"}
+	if !localCurrentOperationAllowed(prior, version) {
+		t.Fatal("verified serving reconciliation could not be reconfigured")
+	}
+	prior.Candidate = strings.Repeat("b", 40)
+	if localCurrentOperationAllowed(prior, version) {
+		t.Fatal("another candidate became the retained current release")
+	}
+	prior.Candidate = version
+	for _, phase := range []string{"admitted", "staging", "staging_failed", "configured", "activating", "activation_failed", "readiness_failed", "unknown"} {
+		prior.Phase = phase
+		if localCurrentOperationAllowed(prior, version) {
+			t.Fatalf("unreconciled phase %s admitted local reconfiguration", phase)
+		}
+	}
+}
+
 func TestLocalCurrentCannotStageAnotherRevisionOrCarryRegistryCredentials(t *testing.T) {
 	for _, registry := range []bool{false, true} {
 		f := newDeploymentFixture(t)

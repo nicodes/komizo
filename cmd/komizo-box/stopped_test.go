@@ -396,7 +396,7 @@ func stoppedFixture(t *testing.T) fixture {
 			switch {
 			case strings.Contains(joined, "--version"):
 				return "Docker version 29.1.3, build f52814d", nil
-			case strings.HasPrefix(joined, "info"):
+			case strings.HasPrefix(joined, "version"):
 				return "29.1.3", nil
 			case strings.HasPrefix(joined, "ps -a"):
 				return "cid1\tweb-web-1\texited\tExited (0) 2 seconds ago\tweb\tghcr.io/n/web:abc123\t/srv/web", nil
