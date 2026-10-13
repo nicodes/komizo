@@ -61,6 +61,10 @@ func TestNativeReportReadsFreshStoppedHealthyAndUncheckedMetadataWithoutCLI(t *t
 		default:
 			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1.45/containers/"), "/json")
 			state := map[string]any{"StartedAt": "2026-10-13T00:00:00Z", "FinishedAt": "0001-01-01T00:00:00Z", "ExitCode": 0, "Pid": pid}
+			state["Status"] = "running"
+			if id == ids[2] {
+				state["Status"] = "exited"
+			}
 			if id == ids[0] {
 				state["Health"] = map[string]string{"Status": "healthy"}
 			}
@@ -90,6 +94,49 @@ func TestNativeReportReadsFreshStoppedHealthyAndUncheckedMetadataWithoutCLI(t *t
 	inv = newDockerEngine(context.Background(), client).inventory(context.Background())
 	if inv.byID[ids[0]].pid != 456 {
 		t.Fatal("later reading reused stale inspection")
+	}
+}
+
+func TestInventoryFailureIsExplicitAndDoesNotInventSuccessfulOneShot(t *testing.T) {
+	f := newFakeBox(t)
+	f.write("/var/lib/komizo/apps/blog.env", "APP_DIR=/srv/blog\n")
+	f.write("/srv/blog/compose.yml", `{"services":{"init":{"restart":"no"}}}`)
+	id := strings.Repeat("a", 64)
+	for _, failure := range []string{"list", "inspect", "incomplete"} {
+		t.Run(failure, func(t *testing.T) {
+			client := metadataClient(t, func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/version":
+					json.NewEncoder(w).Encode(map[string]string{"Version": "29.5.3", "ApiVersion": "1.53", "MinAPIVersion": "1.44"})
+				case "/v1.45/containers/json":
+					if failure == "list" {
+						w.WriteHeader(503)
+						return
+					}
+					json.NewEncoder(w).Encode([]map[string]any{{"Id": id, "Names": []string{"/blog-init"}, "State": "exited", "Labels": map[string]string{"com.docker.compose.service": "init", "com.docker.compose.project.working_dir": "/srv/blog"}}})
+				default:
+					if failure == "inspect" {
+						w.WriteHeader(503)
+						return
+					}
+					json.NewEncoder(w).Encode(map[string]any{"Id": id})
+				}
+			})
+			p := &Probe{Root: f.root, engine: newDockerEngine(context.Background(), client)}
+			r := p.Report(context.Background())
+			if r.Inventory == nil || r.Inventory.Status == "current" || r.Apps[0].RuntimeState != "unknown" {
+				t.Fatalf("failure became success: %+v", r)
+			}
+			found := false
+			for _, problem := range r.Problems {
+				if problem.Kind == "observation_incomplete" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("incomplete inventory was silent")
+			}
+		})
 	}
 }
 

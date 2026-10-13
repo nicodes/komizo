@@ -161,23 +161,24 @@ func (e *dockerEngine) read(ctx context.Context, path string, result any, maximu
 }
 
 func (e *dockerEngine) inventory(ctx context.Context) dockerInventory {
-	inv := dockerInventory{byID: map[string]*containerInfo{}, byDir: map[string][]*containerInfo{}}
+	inv := dockerInventory{status: "current", byID: map[string]*containerInfo{}, byDir: map[string][]*containerInfo{}}
 	var rows []struct {
 		Id, State, Status, Image string
 		Names                    []string
 		Labels                   map[string]string
 	}
 	if e.read(ctx, "/v"+reportDockerAPI+"/containers/json?all=1", &rows, 8<<20) != nil || len(rows) > 1024 {
+		inv.status, inv.failure = "unavailable", "list_unavailable"
 		return inv
 	}
 	for _, row := range rows {
 		if len(row.Id) != 64 || strings.Trim(row.Id, "0123456789abcdef") != "" || len(row.Names) == 0 {
-			return dockerInventory{byID: map[string]*containerInfo{}, byDir: map[string][]*containerInfo{}}
+			return dockerInventory{status: "unavailable", failure: "list_invalid", byID: map[string]*containerInfo{}, byDir: map[string][]*containerInfo{}}
 		}
-		c := &containerInfo{id: row.Id, name: strings.TrimPrefix(row.Names[0], "/"), state: row.State, status: row.Status,
+		c := &containerInfo{inspectionUnavailable: true, id: row.Id, name: strings.TrimPrefix(row.Names[0], "/"), state: row.State, status: row.Status,
 			image: row.Image, service: row.Labels["com.docker.compose.service"], workingDir: row.Labels["com.docker.compose.project.working_dir"]}
 		if inv.byID[c.id] != nil {
-			return dockerInventory{byID: map[string]*containerInfo{}, byDir: map[string][]*containerInfo{}}
+			return dockerInventory{status: "unavailable", failure: "list_invalid", byID: map[string]*containerInfo{}, byDir: map[string][]*containerInfo{}}
 		}
 		inv.byID[c.id] = c
 		if c.workingDir != "" {
@@ -186,10 +187,12 @@ func (e *dockerEngine) inventory(ctx context.Context) dockerInventory {
 	}
 	for _, c := range inv.sorted() {
 		var detail struct {
-			Id    string
-			State struct {
+			Id     string
+			Config struct{ Tty bool }
+			State  *struct {
+				Status                string
 				StartedAt, FinishedAt string
-				ExitCode, Pid         int
+				ExitCode, Pid         *int
 				Health                *struct{ Status string }
 			}
 			NetworkSettings struct {
@@ -197,11 +200,15 @@ func (e *dockerEngine) inventory(ctx context.Context) dockerInventory {
 			}
 			Mounts []struct{ Type, Name, Source string }
 		}
-		if e.read(ctx, "/v"+reportDockerAPI+"/containers/"+c.id+"/json", &detail, 4<<20) != nil || detail.Id != c.id {
+		if e.read(ctx, "/v"+reportDockerAPI+"/containers/"+c.id+"/json", &detail, 4<<20) != nil || detail.Id != c.id || detail.State == nil || detail.State.ExitCode == nil || detail.State.Pid == nil || detail.State.Status == "" {
+			inv.status, inv.failure = "partial", "inspection_unavailable"
 			continue // vanished/unavailable metadata remains unknown, not invented
 		}
+		c.inspectionUnavailable = false
+		c.tty = detail.Config.Tty
+		c.state = detail.State.Status
 		c.startedAt, c.finishedAt = parseStamp(detail.State.StartedAt), parseStamp(detail.State.FinishedAt)
-		c.exitCode, c.pid = detail.State.ExitCode, detail.State.Pid
+		c.exitCode, c.pid = *detail.State.ExitCode, *detail.State.Pid
 		if detail.State.Health != nil {
 			c.health = detail.State.Health.Status
 		}

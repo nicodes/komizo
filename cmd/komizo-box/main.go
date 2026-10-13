@@ -41,6 +41,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -171,6 +172,11 @@ func runRootd(args []string) error { return runRootdAt("", args) }
 // runRootdAt is runRootd against a probe root. Production passes "": see
 // probeAt for why this is not a flag.
 func runRootdAt(root string, args []string) error {
+	// Bound retained Go runtime memory without using a hard kill boundary for
+	// the executor. An explicitly configured runtime limit remains authoritative.
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(64 << 20)
+	}
 	fs := flag.NewFlagSet("rootd", flag.ContinueOnError)
 	interval := fs.Duration("interval", time.Minute, "how often to probe")
 	confPath := fs.String("config", box.AgentConfPath, "the credential whose keys commands are verified against")

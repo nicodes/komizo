@@ -41,6 +41,9 @@ const collectTail = 500
 // Errors are not returned: one app whose compose file is broken is not a reason
 // to stop collecting for the others, and rootd's job is to keep running.
 func collectLogs(ctx context.Context, root, dir string) {
+	if box.CollectNativeLogs(ctx, root, dir) {
+		return
+	}
 	names, ok := appNames(root, dir)
 	for _, name := range names {
 		sub, err := resolveSubject(root, name, false)

@@ -22,6 +22,9 @@ import (
 // Ordered most severe first, so a reader that shows one shows the worst.
 func Diagnose(r Report) []Problem {
 	var out []Problem
+	if r.Inventory != nil && r.Inventory.Status != "current" {
+		out = append(out, Problem{Kind: "observation_incomplete", Detail: "container observation is incomplete; inspect again before deciding an operation"})
+	}
 
 	// A stopped proxy is first because it takes down every hostname on the box
 	// at once, whatever the apps behind it are doing.
@@ -56,6 +59,9 @@ func Diagnose(r Report) []Problem {
 	}
 
 	for _, a := range r.Apps {
+		if !a.Stopped && (a.RuntimeState == "degraded" || a.RuntimeState == "down") && a.Running() > 0 {
+			out = append(out, Problem{Kind: ProblemAppDown, App: a.Name, Detail: "one or more required services are unavailable"})
+		}
 		appAttached, network := attached, r.Network
 		if a.Ingress != nil {
 			network = a.Ingress
@@ -75,8 +81,9 @@ func Diagnose(r Report) []Problem {
 			case "failed", "staging_failed", "activation_failed", "readiness_failed":
 				out = append(out, Problem{Kind: ProblemDeploymentIncomplete, App: a.Name, Detail: fmt.Sprintf("%s deployment %s ended in %s; inspect its journal before changing versions", a.Name, op.Candidate, op.Phase)})
 			case "admitted", "staging", "configured", "activating":
-				if r.At.Sub(op.At) > 10*time.Minute {
-					out = append(out, Problem{Kind: ProblemDeploymentIncomplete, App: a.Name, Detail: fmt.Sprintf("%s deployment %s has remained %s for over ten minutes; inspect its journal", a.Name, op.Candidate, op.Phase)})
+				expired := !op.Deadline.IsZero() && !r.At.Before(op.Deadline)
+				if expired || (op.Deadline.IsZero() && r.At.Sub(op.At) > 10*time.Minute) {
+					out = append(out, Problem{Kind: ProblemDeploymentIncomplete, App: a.Name, Detail: fmt.Sprintf("%s deployment %s in %s exceeded its observation deadline; inspect its journal", a.Name, op.Candidate, op.Phase)})
 				}
 			}
 		}

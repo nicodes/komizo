@@ -61,6 +61,8 @@ type Report struct {
 	At time.Time `json:"at"`
 
 	Server Server `json:"server"`
+	// Inventory distinguishes an empty box from an interrupted observation.
+	Inventory *Observation `json:"inventory,omitempty"`
 	// Proxy and Network are absent, not empty, when there is none. A box with no
 	// shared proxy is a state komizo offers to fix; a proxy record full of zeroes
 	// reads as one that is installed and broken.
@@ -102,6 +104,13 @@ type Report struct {
 	// reaped, what it kept, and the quiet line when the answer is nothing.
 	// Absent on a box that has never reaped -- see preview.go.
 	Preview *PreviewReap `json:"preview,omitempty"`
+}
+
+// Observation contains bounded public categories, never daemon response bodies.
+type Observation struct {
+	Status  string    `json:"status"`
+	At      time.Time `json:"at"`
+	Failure string    `json:"failure,omitempty"`
 }
 
 // Schema is the version this document was written against. See Decode.
@@ -234,8 +243,9 @@ func (a App) Routes() []string {
 // you wrote, what the shared proxy is pointed at, and what stays stable across
 // restarts. Name is docker's, derived from it.
 type Container struct {
-	Service string `json:"service"`
-	Name    string `json:"name"`
+	Inspection string `json:"inspection,omitempty"`
+	Service    string `json:"service"`
+	Name       string `json:"name"`
 	// State is docker's machine-readable word (running, exited, created);
 	// Status is docker's own prose ("Up 3 hours"), which is what a person
 	// actually wants to read.

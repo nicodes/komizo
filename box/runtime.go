@@ -37,6 +37,9 @@ func (p *Probe) runtimeState(app App) string {
 	}
 	containers := map[string]Container{}
 	for _, c := range app.Containers {
+		if c.Inspection == "unavailable" {
+			return "unknown"
+		}
 		if _, exists := containers[c.Service]; exists {
 			return "degraded"
 		}
