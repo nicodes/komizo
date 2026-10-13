@@ -28,6 +28,9 @@ var PlatformPrepare string
 //go:embed proxy_prepare.py
 var ProxyPrepare string
 
+//go:embed controls_prepare.py
+var ControlsPrepare string
+
 // PublicationPrepare produces finite image artifacts without registry access.
 //
 //go:embed publication_prepare.py
