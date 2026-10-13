@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: fbeb59d7422c85da248b4aae4cef6fa4ff67923c6fbfd61ededc0f25f073d4fa -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 39704da5960c5ea7aa9adc9b642d3dbe45a47ac2e4a3a88788ea173a87f3eaef -->
 
 # komizo
 
@@ -9,7 +9,7 @@ CLI for preparing and operating your own Compose hosts over SSH. No hosted accou
 Use a verified release archive or the Go toolchain matching `go.mod` and `.mise.toml`.
 
 ```sh
-go run github.com/nicodes/komizo@v0.0.85 init --host root@your-server
+go run github.com/nicodes/komizo@v0.0.102 init --host root@your-server
 ```
 
 `init` prepares the host and requires privileged access. Review its changes before using it on an existing host. `komizo list`, `komizo report` and `komizo logs` inspect applications; see command help for current flags. The local UI is available through the CLI’s `ui` command.
@@ -18,10 +18,10 @@ The supported deployment operation is app-scoped Compose deployment. Historical 
 
 ## Release archive without Go
 
-Example for Linux x86_64, using the reviewed release v0.0.85:
+Example for Linux x86_64, using the reviewed release v0.0.102:
 
 ```sh
-gh release download v0.0.85 --repo nicodes/komizo \
+gh release download v0.0.102 --repo nicodes/komizo \
   -p 'komizo_Linux_x86_64.tar.gz' -p checksums.txt
 sha256sum -c checksums.txt --ignore-missing
 gh attestation verify komizo_Linux_x86_64.tar.gz --repo nicodes/komizo
@@ -51,12 +51,12 @@ The application host remains one box. App-scoped deployment, workload budgets, i
 Use the verified CLI, an exact release source commit and protected absolute local directories:
 
 ```sh
-./komizo platform plan --host your-server --release v0.0.85 \
-  --source 2eeffef9a67bc1d5e6f4d85db52d86a26664d769 \
-  --release-dir /root/komizo/releases/v0.0.85 --stage /root/komizo/plans/upgrade
-./komizo platform apply --host your-server --release v0.0.85 \
-  --source 2eeffef9a67bc1d5e6f4d85db52d86a26664d769 \
-  --release-dir /root/komizo/releases/v0.0.85 --stage /root/komizo/plans/upgrade \
+./komizo platform plan --host your-server --release v0.0.102 \
+  --source 563e61dd6d3211aeca6b49ed79fb66e11d84f33b \
+  --release-dir /root/komizo/releases/v0.0.102 --stage /root/komizo/plans/upgrade
+./komizo platform apply --host your-server --release v0.0.102 \
+  --source 563e61dd6d3211aeca6b49ed79fb66e11d84f33b \
+  --release-dir /root/komizo/releases/v0.0.102 --stage /root/komizo/plans/upgrade \
   --resume --expected-manifest <reviewed-manifest-sha256>
 ```
 
@@ -143,3 +143,46 @@ to inspect completed, claimed or ambiguous outcomes. An interrupted export is
 never replayed automatically. Proof tokens are not stored in the operation journal.
 `workload policy-check --policy PATH` validates a protected policy candidate
 without Compose inputs, output files or activation.
+
+## Engineering storage and workload acceptance
+
+`komizo workspace check --path OUTPUT --reserve-bytes BYTES` checks ordinary
+available bytes and inodes before an install or build. It does not count Root's
+reserved filesystem blocks. `workspace plan --root WORKTREE --path OUTPUT`
+reviews owned generated directories; the response contains `plan` and its
+`sha256`. Save the inner `plan` object as a local JSON file, then use
+`workspace clean --manifest PLAN_JSON --expected-plan SHA256`. Cleanup refuses
+tracked files, mounted paths, active use, changed contents and evidence paths.
+Linux cleanup requires visibility of the relevant processes. Shared caches are
+never pruned by this command.
+
+Use `komizo workload acceptance --profile PROFILE_JSON --host root@HOST
+--output NEW_FILE` for an operator-reviewed synthetic pressure profile. The
+profile binds installed binary/allocation hashes, app revisions, exact TLS/WSS
+read probes and finite cases/repetitions. Each case fully touches hot memory,
+runs 200m CPU work for forty seconds, writes eight 1MiB fsync blocks and checks
+startup refusal before effects. Core reads retain a two-second maximum; the
+chosen complete fresh report or light operation inspection retains five seconds.
+Failed cases and cleanup failures remain in the aggregate while independent
+cases continue. This is a declared engineering workload, not a universal SLO or
+a provider, authenticated-product or real-backup test.
+
+### Reviewed host package maintenance
+
+The Root operator can plan Alpine package updates without changing installed packages. Plans retain firewall dependencies, verify signed package bytes, bind the current serving configuration and expire after two hours. Supply the installed `komizo-box` SHA256 from the authenticated release artifact receipt. Each output filename must be new.
+
+```sh
+komizo platform maintenance plan --host root@HOST --stage /var/lib/komizo/maintenance/update-001 --binary-sha256 BOX_SHA256 --output maintenance-plan.json
+komizo platform maintenance apply --host root@HOST --stage /var/lib/komizo/maintenance/update-001 --binary-sha256 BOX_SHA256 --manifest-sha256 PLAN_SHA256 --output maintenance-applied.json
+komizo platform maintenance inspect --host root@HOST --stage /var/lib/komizo/maintenance/update-001 --binary-sha256 BOX_SHA256 --manifest-sha256 PLAN_SHA256 --output maintenance-status-001.json
+```
+
+Review the returned manifest identity before applying. Applying blocks application deployment until acceptance. Arrange the one-box maintenance window and verify the bootloader and recovery-console route before restarting the machine. If the plan requires a kernel reboot, reboot through your existing Root SSH/provider route, then run:
+
+```sh
+komizo platform maintenance finish --host root@HOST --stage /var/lib/komizo/maintenance/update-001 --binary-sha256 BOX_SHA256 --manifest-sha256 PLAN_SHA256 --output maintenance-accepted.json
+```
+
+`finish` checks exact installed versions, a fresh boot ID and the expected running kernel, unchanged serving configuration and stop intent, required services, complete host observation and firewall access before clearing the deployment block. After a connection failure, inspect the durable host operation. A partially completed package transaction remains blocked; repeating `apply` is refused. `finish` can reconcile a transaction only when its exact installed and serving postconditions hold. Preserve the stage and its original failure evidence.
+
+An optional `controls` field in the Root host resource policy gives the fixed OpenRC Docker, controller and API groups finite memory/swap/PID limits and CPU weights. Their protected working sets fit inside the OS reservation, with an additional 64 MiB base OS allowance. Each controller's ceiling must leave the other declared serving floors. These are per-group limits and declared burst admission, not a promise that every group can reach its ceiling concurrently. Reductions refuse before writes when current usage exceeds the reviewed limits.
