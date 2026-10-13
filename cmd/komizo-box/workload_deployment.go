@@ -365,31 +365,10 @@ func (h *hostActivation) stageDeployment(parent context.Context, r workload.Acti
 	if err != nil || previous != r.Previous {
 		return configured, errors.New("installed revision changed before staging")
 	}
-	if err := h.deploymentCapacity(); err != nil {
-		return configured, err
-	}
-	if err := h.startupCapacity(p); err != nil {
-		return configured, err
-	}
-	var accepted workload.ReleaseAcceptance
-	if err := h.readJSON(filepath.Join(h.releases, r.App, r.Candidate+".json"), &accepted); err != nil {
-		return configured, err
-	}
-	if err := accepted.Check(p, r.Candidate); err != nil {
-		return configured, err
-	}
+	// Authority and the unchanged serving revision are established. Journal
+	// staging before capacity checks so an early refusal has a terminal record
+	// and retires its credential slot without registry/configuration effects.
 	slot := deploymentCredentialPath(queue, r.ID)
-	credentialsBody, err := h.readBytes(slot)
-	if err != nil || deploymentHash(credentialsBody) != r.Stage.CredentialSHA256 {
-		return configured, errors.New("staging credential slot changed")
-	}
-	var credentials deploymentCredentials
-	if err := h.readJSON(slot, &credentials); err != nil {
-		return configured, err
-	}
-	if err := credentials.check(p); err != nil {
-		return configured, err
-	}
 	defer os.RemoveAll(filepath.Dir(slot))
 	if err := h.Phase(r, "staging"); err != nil {
 		return configured, err
@@ -409,6 +388,30 @@ func (h *hostActivation) stageDeployment(parent context.Context, r workload.Acti
 			}
 		}
 	}()
+	if err := h.deploymentCapacity(); err != nil {
+		return configured, err
+	}
+	if err := h.startupCapacity(p); err != nil {
+		return configured, err
+	}
+	var accepted workload.ReleaseAcceptance
+	if err := h.readJSON(filepath.Join(h.releases, r.App, r.Candidate+".json"), &accepted); err != nil {
+		return configured, err
+	}
+	if err := accepted.Check(p, r.Candidate); err != nil {
+		return configured, err
+	}
+	credentialsBody, err := h.readBytes(slot)
+	if err != nil || deploymentHash(credentialsBody) != r.Stage.CredentialSHA256 {
+		return configured, errors.New("staging credential slot changed")
+	}
+	var credentials deploymentCredentials
+	if err := h.readJSON(slot, &credentials); err != nil {
+		return configured, err
+	}
+	if err := credentials.check(p); err != nil {
+		return configured, err
+	}
 	dockerDir := filepath.Join(filepath.Dir(slot), "docker")
 	if err := os.Mkdir(dockerDir, 0700); err != nil {
 		return configured, err
