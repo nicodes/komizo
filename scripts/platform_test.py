@@ -62,6 +62,55 @@ class Fixture:
 
 
 class PlatformTests(unittest.TestCase):
+    def test_restart_and_recovery_restore_declared_control_limits_before_acceptance(self):
+        for recover in (False,True):
+            with tempfile.TemporaryDirectory() as root:
+                f=Fixture(root);(f.root/'etc/komizo/resources.json').write_text('{"version":1}')
+                actual={'limited':True};original=f.run
+                def run(args,required=True):
+                    result=original(args,required)
+                    if args[0]=='rc-service' and args[-1]=='start':actual['limited']=False
+                    if args==['komizo-box','workload','host-resources','--apply']:actual['limited']=True
+                    if args==['komizo-box','rootd','--once']:self.assertTrue(actual['limited'])
+                    return result
+                f.p.run=run
+                if recover:
+                    def checkpoint(phase):
+                        if phase=='replaced-0':raise RuntimeError('interrupted replacement')
+                    f.p.checkpoint=checkpoint
+                    with self.assertRaises(RuntimeError):f.p.apply(f.stage,f.expected)
+                else:f.p.apply(f.stage,f.expected)
+                self.assertTrue(actual['limited']);self.assertFalse((f.stage.parent/'pending.json').exists())
+
+    def test_native_openrc_config_preserves_private_options_and_refuses_foreign_settings(self):
+        import subprocess
+        group={'memory_low_bytes':24,'memory_high_bytes':160,'memory_bytes':176,'swap_bytes':128,'pids':256,'cpu_weight':50,'milli_cpus':0}
+        policy={'controls':{'openrc.'+name:group for name in module.CONTROL_SERVICES}}
+        before=b'DOCKER_OPTS="private caller option"\n'
+        after=module.control_configuration(before,policy,'docker')
+        self.assertTrue(after.startswith(before));self.assertEqual(module.control_configuration(after,policy,'docker'),after)
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/'config';path.write_bytes(after)
+            observed=subprocess.check_output(['/bin/sh','-c','. "$1"; printf "%s" "$rc_cgroup_settings"','fixture',str(path)])
+            self.assertIn(b'memory.max 176\n',observed);self.assertIn(b'cpu.max max 100000',observed)
+        for bad in (b'rc_cgroup_settings="foreign"\n',module.CONTROL_END+module.CONTROL_BEGIN,module.CONTROL_BEGIN):
+            with self.assertRaises(ValueError):module.control_configuration(bad,policy,'docker')
+
+    def test_control_preflight_rejects_other_configuration_changes_before_effects(self):
+        with tempfile.TemporaryDirectory() as root:
+            f=Fixture(root);(f.root/'etc/conf.d').mkdir();group={'memory_low_bytes':24,'memory_high_bytes':160,'memory_bytes':176,'swap_bytes':128,'pids':256,'cpu_weight':50,'milli_cpus':0}
+            policy={'controls':{'openrc.'+n:group for n in module.CONTROL_SERVICES}}
+            (f.stage/'resources').write_text(json.dumps(policy));(f.stage/'resources').chmod(0o600)
+            rows=[{'path':'/etc/komizo/resources.json','staged':'resources','before':'a'*64}]
+            for name in module.CONTROL_SERVICES:
+                path=f.root/'etc/conf.d'/name;path.write_bytes(b'CALLER_OPTION="private"\n')
+                file=f.stage/name;file.write_bytes(module.control_configuration(path.read_bytes(),policy,name));file.chmod(0o600)
+                rows.append({'path':'/etc/conf.d/'+name,'staged':name})
+            f.p.authority_preflight(f.stage,{'files':rows})
+            (f.stage/'docker').write_bytes((f.stage/'docker').read_bytes()+b'CALLER_OPTION="changed"\n')
+            with self.assertRaisesRegex(ValueError,'foreign configuration'):f.p.authority_preflight(f.stage,{'files':rows})
+            self.assertFalse((f.stage.parent/'pending.json').exists())
+
     def test_static_proxy_binding_is_finite_and_refuses_writable_or_foreign_mounts(self):
         with tempfile.TemporaryDirectory() as root:
             f=Fixture(root)

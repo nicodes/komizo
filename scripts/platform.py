@@ -30,6 +30,33 @@ SERVICES = ('komizo-rootd', 'komizo-api', 'komizo-agent')
 TERMINAL = ('ready', 'prepared_stopped', 'reconciled')
 STATIC_MOUNT = {'type': 'bind', 'source': '/srv/_public', 'target': '/srv/public',
                 'read_only': True, 'bind': {'create_host_path': False}}
+CONTROL_SERVICES = ('docker', 'komizo-rootd', 'komizo-api')
+CONTROL_BEGIN = b'# BEGIN KOMIZO OPENRC CONTROL\n'
+CONTROL_END = b'# END KOMIZO OPENRC CONTROL\n'
+
+
+def control_configuration(before, policy, service):
+    """Preserve caller configuration and replace only the managed limit block."""
+    if service not in CONTROL_SERVICES or set(policy.get('controls', {})) != {'openrc.'+name for name in CONTROL_SERVICES}:
+        raise ValueError('declared fixed control policy required')
+    group=policy['controls']['openrc.'+service]
+    fields={'memory.low':'memory_low_bytes','memory.high':'memory_high_bytes','memory.max':'memory_bytes',
+            'memory.swap.max':'swap_bytes','pids.max':'pids','cpu.weight':'cpu_weight'}
+    if any(type(group.get(field)) is not int or group[field]<0 for field in fields.values()) or group.get('milli_cpus')!=0:
+        raise ValueError('invalid control settings')
+    if before.count(CONTROL_BEGIN)!=before.count(CONTROL_END) or before.count(CONTROL_BEGIN)>1:
+        raise ValueError('ambiguous managed control configuration')
+    if CONTROL_BEGIN in before:
+        start=before.index(CONTROL_BEGIN);end_start=before.index(CONTROL_END)
+        if end_start<=start:raise ValueError('invalid managed control block')
+        end=end_start+len(CONTROL_END)
+        outside=before[:start]+before[end:]
+    else:outside=before
+    if re.search(rb'\brc_cgroup_settings\b',outside):raise ValueError('foreign control settings require explicit migration')
+    settings='\n'.join(key+' '+str(group[field]) for key,field in fields.items())+'\ncpu.max max 100000\n'
+    block=CONTROL_BEGIN+('rc_cgroup_settings=\''+settings+'\'\n').encode()+CONTROL_END
+    if CONTROL_BEGIN in before:return before[:start]+block+before[end:]
+    return before+(b'\n' if before and not before.endswith(b'\n') else b'')+block
 
 
 class Platform:
@@ -99,7 +126,7 @@ class Platform:
         return self.digest(path), stat.S_IMODE(info.st_mode)
 
     def authority_mode(self, destination):
-        if destination in ('/etc/doas.conf', '/etc/komizo/resources.json'):
+        if destination in ('/etc/doas.conf', '/etc/komizo/resources.json', *('/etc/conf.d/'+name for name in CONTROL_SERVICES)):
             return 0o600
         patterns = ((r'/etc/komizo/workloads/([a-z][a-z0-9_-]{0,62})\.json', 0o600),
                     (r'/var/lib/komizo/tasks/([a-z][a-z0-9_-]{0,62})\.sh', 0o700),
@@ -302,6 +329,15 @@ class Platform:
         return value
 
     def authority_preflight(self, stage, value):
+        resource=next((stage/row['staged'] for row in value['files'] if row['path']=='/etc/komizo/resources.json'),None)
+        controls=[row for row in value['files'] if row['path'] in ('/etc/conf.d/'+name for name in CONTROL_SERVICES)]
+        if controls:
+            if resource is None or len(controls)!=3:raise ValueError('control configuration binds all three services and the exact resource policy')
+            policy=json.loads(self.read(resource,private=True,maximum=1<<20))
+            for row in controls:
+                path=self.path(row['path']);before=self.read(path,maximum=65536) if path.exists() else b''
+                expected=control_configuration(before,policy,Path(row['path']).name)
+                if self.read(stage/row['staged'],private=True,maximum=65536)!=expected:raise ValueError('control candidate changes foreign configuration or differs from policy')
         for row in value['files']:
             candidate = stage/row['staged']
             if row['path'].startswith('/etc/komizo/workloads/'):
@@ -536,6 +572,10 @@ class Platform:
                         raise ValueError('agent configuration changed during platform upgrade')
                     for service in services:
                         self.run(['rc-service', service, 'start'])
+                    if self.path('/etc/komizo/resources.json').exists():
+                        # OpenRC removes empty service groups on stop. Reapply
+                        # current authority before observing the restarted box.
+                        self.run(['komizo-box', 'workload', 'host-resources', '--apply'])
                     self.run(['komizo-box', 'rootd', '--once'])
                 elif value['kind'] == 'proxy-upgrade':
                     recreate=['--force-recreate'] if 'resource_budget' in value else []
@@ -598,7 +638,8 @@ class Platform:
                     raise ValueError('previous static mount differs; recovery fence retained')
         for service in record['services']:
             self.run(['rc-service', service, 'start'])
-        if value['kind'] == 'workload-authority' and any(row['path'] == '/etc/komizo/resources.json' for row in value['files']):
+        if (value['kind'] == 'self-upgrade' and self.path('/etc/komizo/resources.json').exists()
+                or value['kind'] == 'workload-authority' and any(row['path'] == '/etc/komizo/resources.json' for row in value['files'])):
             # Restoring bytes is insufficient after a partial controller write.
             # Failure leaves the durable fence for a measured operator drain.
             self.run(['komizo-box', 'workload', 'host-resources', '--apply'])
