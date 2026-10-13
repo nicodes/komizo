@@ -107,7 +107,10 @@ class Maintenance:
             output=self.run(['apk','--root',str(solver),'--no-scripts','--no-commit-hooks','--no-logfile','--no-progress','--cache-dir',str(solver/'var/cache/apk'),'--timeout','30','upgrade','--simulate','--no-preupgrade'],120)
             packages=changes(output);cache=stage/'packages';cache.mkdir(mode=0o700)
             if packages:
-                self.run(['apk','--root',str(solver),'--keys-dir',str(solver/'etc/apk/keys'),'--cache-dir',str(solver/'var/cache/apk'),'--timeout','30','fetch','--recursive','--world','--output',str(cache),*[r['name']+'='+r['version'] for r in packages]],600)
+                # The upgrade solver already enumerated the complete change set.
+                # Fetch those exact artifacts only: solving world again can
+                # select unavailable held packages or unrelated firmware.
+                self.run(['apk','--root',str(solver),'--keys-dir',str(solver/'etc/apk/keys'),'--cache-dir',str(solver/'var/cache/apk'),'--timeout','30','fetch','--from','repositories','--match','package','--output',str(cache),*[r['name']+'-'+r['version'] for r in packages]],600)
             files=[]
             for row in packages:
                 file=cache/(row['name']+'-'+row['version']+'.apk')
