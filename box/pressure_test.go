@@ -35,11 +35,15 @@ func TestHostEnvelopeReportsThrottlingAndMemoryEvents(t *testing.T) {
 	f.write("/sys/fs/cgroup/komizo-production/memory.events", "max 7\noom_kill 0\n")
 	f.write("/sys/fs/cgroup/komizo-production/memory.current", "123")
 	f.write("/sys/fs/cgroup/komizo-production/memory.swap.current", "5")
+	f.write("/sys/fs/cgroup/komizo-production/memory.stat", "anon 80\nkernel 20\ninactive_file 0\n")
 	groups := f.probe().groupStats()
 	if len(groups) != 1 {
 		t.Fatalf("unexpected groups: %v", groups)
 	}
 	s := groups[0].Stat
+	if s.MemoryAnon == nil || *s.MemoryAnon != 80 || s.MemoryKernel == nil || *s.MemoryKernel != 20 || s.MemoryInactiveFile == nil || *s.MemoryInactiveFile != 0 {
+		t.Fatal("working memory lost measured zero or kernel charge")
+	}
 	if *s.CPUThrottledUsec != 17 || *s.CPUThrottledPeriods != 3 || *s.MemoryMaxEvents != 7 || *s.OOMKills != 0 || *s.MemoryCurrent != 123 || *s.Swap != 5 {
 		t.Fatalf("counters: %+v", s)
 	}
