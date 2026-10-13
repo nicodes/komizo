@@ -20,6 +20,7 @@ import (
 //
 // The zero value probes the real machine, which is what komizo-box uses.
 type Probe struct {
+	engine *dockerEngine
 	// Root is prefixed to every absolute path this reads. Empty in production.
 	Root string
 	// Docker runs a docker command and returns its stdout. Nil means the real
@@ -72,9 +73,21 @@ func (p *Probe) dockerOK(ctx context.Context) bool {
 
 // Report produces one complete reading.
 //
-// Two docker calls, whatever is on the box. Everything below reads the index
-// they produce -- see docker.go, where that is the property being defended.
+// The local daemon uses bounded read-only HTTP metadata; customized contexts
+// retain the CLI. Everything below shares the same fresh inventory.
 func (p *Probe) Report(ctx context.Context) Report {
+	// Keep the connection and negotiated metadata private to this reading.
+	local := *p
+	p = &local
+	if p.engine == nil && p.localEngineEligible() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 8*time.Second)
+		defer cancel()
+		p.engine = localDockerEngine(ctx)
+	}
+	if p.engine != nil {
+		defer p.engine.client.CloseIdleConnections()
+	}
 	r := Report{V: Version, At: p.now(), Apps: []App{}, Problems: []Problem{}}
 	r.Server = p.server(ctx)
 
@@ -108,7 +121,13 @@ func (p *Probe) Report(ctx context.Context) Report {
 // server is the box itself.
 func (p *Probe) server(ctx context.Context) Server {
 	s := Server{State: "bare"}
-	if v, err := p.docker(ctx, "--version"); err == nil {
+	if p.engine != nil {
+		s.State = "docker-stopped"
+		if p.engine.available {
+			s.State = "ready"
+			s.Docker = "Docker version " + p.engine.version.Version + ", build " + p.engine.version.GitCommit
+		}
+	} else if v, err := p.docker(ctx, "--version"); err == nil {
 		if p.dockerOK(ctx) {
 			s.State = "ready"
 			s.Docker = strings.TrimSpace(strings.SplitN(v, "\n", 2)[0])

@@ -8,7 +8,8 @@ import (
 	"time"
 )
 
-// Everything docker is asked, asked twice.
+// The CLI fallback uses one list and one shared inspection process.
+// Local reports read the same metadata over one bounded reusable connection.
 //
 // TWO calls for the whole box, however many apps are on it: one `ps -a` and one
 // `inspect` over every id it returned. Membership, aliases, mounts, timestamps
@@ -77,6 +78,9 @@ const (
 )
 
 func (p *Probe) dockerInventory(ctx context.Context) dockerInventory {
+	if p.engine != nil {
+		return p.engine.inventory(ctx)
+	}
 	inv := dockerInventory{byID: map[string]*containerInfo{}, byDir: map[string][]*containerInfo{}}
 
 	// .State is the machine-readable word (running, exited); .Status is docker's
@@ -151,7 +155,7 @@ func (p *Probe) dockerInventory(ctx context.Context) dockerInventory {
 
 // parseNetworks reads "netA=alias1,alias2, netB=alias3,".
 //
-// Docker adds the container's own short id as an alias. Harmless: it is unique,
+// Older Docker APIs add the container's own short id as an alias. It is unique,
 // so it cannot cause a false clash.
 func parseNetworks(s string) map[string][]string {
 	out := map[string][]string{}
@@ -282,8 +286,14 @@ func (p *Probe) network(ctx context.Context, pr *Proxy, inv dockerInventory) *Ne
 	if pr != nil && pr.Network != "" && pr.Network != "?" {
 		name = pr.Network
 	}
-	out, err := p.docker(ctx, "network", "inspect", name, "--format",
-		"{{.Driver}}"+dsep+"{{range .IPAM.Config}}{{.Subnet}}{{end}}")
+	var out string
+	var err error
+	if p.engine != nil {
+		out, err = p.engine.network(ctx, name)
+	} else {
+		out, err = p.docker(ctx, "network", "inspect", name, "--format",
+			"{{.Driver}}"+dsep+"{{range .IPAM.Config}}{{.Subnet}}{{end}}")
+	}
 	if err != nil {
 		return nil
 	}
