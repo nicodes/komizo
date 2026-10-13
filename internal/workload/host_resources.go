@@ -25,6 +25,17 @@ type HostResources struct {
 	Previews            HostGroup                   `json:"previews"`
 	PreviewDatabase     HostGroup                   `json:"preview_database"`
 	Apps                map[string]ApplicationGroup `json:"apps,omitempty"`
+	Controls            map[string]ControlGroup     `json:"controls,omitempty"`
+}
+
+// ControlGroup accounts for the OpenRC daemons inside the OS reservation.
+// Low protects their measured working set; high reclaims borrowed cache before
+// the finite hard ceiling. CPU weights retain burst access on the shared CPU.
+type ControlGroup struct {
+	HostGroup
+	MemoryLowBytes  int64 `json:"memory_low_bytes"`
+	MemoryHighBytes int64 `json:"memory_high_bytes"`
+	CPUWeight       int64 `json:"cpu_weight"`
 }
 
 // ApplicationGroup retains a measured serving footprint under pressure. Each
@@ -86,6 +97,42 @@ func (p HostResources) Check(measuredMemory, measuredCPU int64) error {
 	if err := p.checkApps(); err != nil {
 		return err
 	}
+	if err := p.checkControls(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (p HostResources) checkControls() error {
+	if len(p.Controls) == 0 {
+		return nil
+	}
+	if len(p.Controls) != 3 {
+		return errors.New("control resources require rootd, API and Docker together")
+	}
+	var protected int64
+	for name, g := range p.Controls {
+		if (name != "openrc.komizo-rootd" && name != "openrc.komizo-api" && name != "openrc.docker") || g.MemoryLowBytes < 4<<20 || g.MemoryHighBytes < g.MemoryLowBytes || g.MemoryBytes < g.MemoryHighBytes || g.MemoryBytes > p.PhysicalMemoryBytes || g.SwapBytes < 0 || g.SwapBytes > p.PhysicalMemoryBytes || g.MilliCPUs != 0 || g.PIDs < 16 || g.PIDs > 8192 || g.CPUWeight < 1 || g.CPUWeight > 10000 {
+			return errors.New("control resources require finite measured memory, swap, PID and CPU weight limits")
+		}
+		protected += g.MemoryLowBytes
+	}
+	if protected+64<<20 > p.OSReserveBytes {
+		return errors.New("control reserves consume the base OS reserve")
+	}
+	var serving int64
+	for _, g := range p.Apps {
+		serving += g.MemoryLowBytes
+	}
+	if len(p.Apps) == 0 {
+		serving = p.Production.MemoryBytes
+	}
+	other := int64(64<<20) + serving + p.Proxy.MemoryBytes + p.Previews.MemoryBytes + p.PreviewDatabase.MemoryBytes
+	for _, g := range p.Controls {
+		if other+protected-g.MemoryLowBytes+g.MemoryBytes > p.PhysicalMemoryBytes {
+			return errors.New("one controller ceiling consumes another serving reserve")
+		}
+	}
 	return nil
 }
 
@@ -143,6 +190,26 @@ func (p HostResources) Preflight(root string, measuredMemory, measuredCPU int64)
 		}
 	}
 	// Preflight every new subgroup before changing any controller or limit.
+	for name, g := range p.Controls {
+		dir := filepath.Join(root, name)
+		info, err := os.Lstat(dir)
+		if os.IsNotExist(err) {
+			continue
+		} // OpenRC groups are created before daemons at boot.
+		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("required OpenRC control group unavailable")
+		}
+		for file, limit := range map[string]int64{"memory.current": g.MemoryBytes, "memory.swap.current": g.SwapBytes, "pids.current": g.PIDs} {
+			body, err := os.ReadFile(filepath.Join(dir, file))
+			if err != nil {
+				return errors.New("control usage unavailable")
+			}
+			current, err := strconv.ParseInt(strings.TrimSpace(string(body)), 10, 64)
+			if err != nil || current < 0 || current > limit {
+				return errors.New("control reduction requires measurement and drain")
+			}
+		}
+	}
 	for name, group := range p.Apps {
 		if group.IOWeight > 0 {
 			if info, err := os.Stat(filepath.Join(root, "komizo-production", "io.weight")); err != nil || !info.Mode().IsRegular() {
@@ -216,6 +283,16 @@ func (p HostResources) Apply(root string, measuredMemory, measuredCPU int64) err
 	}
 	if err := os.WriteFile(filepath.Join(root, "cgroup.subtree_control"), []byte(control), 0600); err != nil {
 		return err
+	}
+	for name, g := range p.Controls {
+		if err := os.MkdirAll(filepath.Join(root, name), 0755); err != nil {
+			return err
+		}
+		for file, value := range map[string]string{"memory.low": fmt.Sprint(g.MemoryLowBytes), "memory.high": fmt.Sprint(g.MemoryHighBytes), "memory.max": fmt.Sprint(g.MemoryBytes), "memory.swap.max": fmt.Sprint(g.SwapBytes), "pids.max": fmt.Sprint(g.PIDs), "cpu.weight": fmt.Sprint(g.CPUWeight)} {
+			if err := os.WriteFile(filepath.Join(root, name, file), []byte(value), 0600); err != nil {
+				return fmt.Errorf("apply control %s/%s: %w", name, file, err)
+			}
+		}
 	}
 	for name, group := range p.groups() {
 		dir := filepath.Join(root, name)

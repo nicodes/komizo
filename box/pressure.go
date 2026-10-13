@@ -77,6 +77,9 @@ func cgroupPressureStats(dir string, cs *ContainerStat) {
 		{"cpu.stat", "throttled_usec", &cs.CPUThrottledUsec},
 		{"memory.events", "max", &cs.MemoryMaxEvents},
 		{"memory.events", "oom_kill", &cs.OOMKills},
+		{"memory.stat", "anon", &cs.MemoryAnon},
+		{"memory.stat", "kernel", &cs.MemoryKernel},
+		{"memory.stat", "inactive_file", &cs.MemoryInactiveFile},
 	} {
 		if v, ok := fieldFrom(filepath.Join(dir, field.file), field.key); ok {
 			*field.target = &v

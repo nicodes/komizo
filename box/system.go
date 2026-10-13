@@ -112,6 +112,9 @@ type ContainerStat struct {
 	CPUThrottledPeriods *uint64   `json:"cpu_throttled_periods,omitempty"`
 	CPUThrottledUsec    *uint64   `json:"cpu_throttled_usec,omitempty"`
 	MemoryCurrent       *uint64   `json:"memory_current,omitempty"`
+	MemoryAnon          *uint64   `json:"memory_anon,omitempty"`
+	MemoryKernel        *uint64   `json:"memory_kernel,omitempty"`
+	MemoryInactiveFile  *uint64   `json:"memory_inactive_file,omitempty"`
 	MemoryMaxEvents     *uint64   `json:"memory_max_events,omitempty"`
 	OOMKills            *uint64   `json:"oom_kills,omitempty"`
 	Swap                *uint64   `json:"swap,omitempty"`

@@ -3,6 +3,7 @@ set -euo pipefail
 export KOMIZO_REQUIRE_SHELLCHECK=1
 python3 scripts/platform_test.py
 python3 scripts/platform_prepare_test.py
+python3 -m unittest discover -s scripts -p maintenance_test.py -v
 python3 -m unittest discover -s scripts -p workspace_storage_test.py -v
 python3 -m unittest discover -s scripts -p workload_acceptance_test.py -v
 python3 -m unittest discover -s scripts -p publication_prepare_test.py -v
