@@ -503,3 +503,43 @@ func TestTypedDeploymentProcessCrashBoundaries(t *testing.T) {
 		})
 	}
 }
+
+func TestEarlyStagingCapacityRefusalIsDurableAndRemovesCredentialSlot(t *testing.T) {
+	f := newDeploymentFixture(t)
+	var policy workload.Policy
+	if err := f.h.readJSON(filepath.Join(f.h.policies, f.r.App+".json"), &policy); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(f.h.root, box.DeployFloorsPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("MEM_AVAILABLE_FLOOR_BYTES=invalid\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(policy.AppDir, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.h.stageDeployment(context.Background(), f.r, f.queue)
+	if err == nil {
+		t.Fatal("invalid capacity policy admitted staging")
+	}
+	var op workload.Operation
+	if err := f.h.readJSON(filepath.Join(f.h.releases, f.r.App, "operation.json"), &op); err != nil {
+		t.Fatal(err)
+	}
+	if op.Phase != "staging_failed" || op.ID != f.r.ID || op.Candidate != f.r.Candidate {
+		t.Fatalf("refusal lost durable identity: %+v", op)
+	}
+	if _, err := os.Lstat(filepath.Dir(deploymentCredentialPath(f.queue, f.r.ID))); !os.IsNotExist(err) {
+		t.Fatalf("credential slot retained after pre-effect refusal: %v", err)
+	}
+	after, err := os.ReadFile(filepath.Join(policy.AppDir, ".env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) || len(f.calls) != 0 {
+		t.Fatalf("early refusal changed app or invoked Docker/login: %v", f.calls)
+	}
+}

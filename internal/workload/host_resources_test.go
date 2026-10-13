@@ -1,6 +1,7 @@
 package workload
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -68,6 +69,18 @@ func TestResourcePreflightCreatesNoControllersAndRecoveryClearsParentReserve(t *
 	}
 	if body, err := os.ReadFile(filepath.Join(root, "komizo-production", "memory.low")); err != nil || string(body) != "0" {
 		t.Fatal("prior layout retained candidate parent reserve", string(body), err)
+	}
+	if body, err := os.ReadFile(filepath.Join(root, "komizo-proxy", "memory.low")); err != nil || string(body) != fmt.Sprint(p.Proxy.MemoryBytes) {
+		t.Fatal("shared serving proxy lost reclaim protection", string(body), err)
+	}
+	p.Proxy.MemoryBytes = 32 << 20
+	if err := p.Apply(root, 512<<20, 1000); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"memory.low", "memory.max"} {
+		if body, err := os.ReadFile(filepath.Join(root, "komizo-proxy", name)); err != nil || string(body) != fmt.Sprint(p.Proxy.MemoryBytes) {
+			t.Fatal("proxy protection did not follow the recovered finite allocation", name, string(body), err)
+		}
 	}
 }
 

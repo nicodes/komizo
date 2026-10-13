@@ -226,6 +226,12 @@ func (p HostResources) Apply(root string, measuredMemory, measuredCPU int64) err
 			return err
 		}
 		settings := map[string]string{"memory.max": fmt.Sprint(group.MemoryBytes), "memory.swap.max": fmt.Sprint(group.SwapBytes), "cpu.max": fmt.Sprintf("%d 100000", group.MilliCPUs*100), "pids.max": fmt.Sprint(group.PIDs), "cgroup.subtree_control": "+cpu +memory +pids"}
+		if name == "komizo-proxy" {
+			// Every app's core route depends on this shared serving group.
+			// Protect its existing finite allocation from ancestor reclaim;
+			// this changes neither the hard ceiling nor the physical envelope.
+			settings["memory.low"] = fmt.Sprint(group.MemoryBytes)
+		}
 		for file, value := range settings {
 			if err := os.WriteFile(filepath.Join(dir, file), []byte(value), 0600); err != nil {
 				return fmt.Errorf("apply %s/%s: %w", name, file, err)
