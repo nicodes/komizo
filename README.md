@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 39704da5960c5ea7aa9adc9b642d3dbe45a47ac2e4a3a88788ea173a87f3eaef -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: e11cc2bce6323ae908423932d35e08104fff4e0f3efc95dc239ede1a70efc471 -->
 
 # komizo
 
@@ -9,7 +9,7 @@ CLI for preparing and operating your own Compose hosts over SSH. No hosted accou
 Use a verified release archive or the Go toolchain matching `go.mod` and `.mise.toml`.
 
 ```sh
-go run github.com/nicodes/komizo@v0.0.102 init --host root@your-server
+go run github.com/nicodes/komizo@v0.0.106 init --host root@your-server
 ```
 
 `init` prepares the host and requires privileged access. Review its changes before using it on an existing host. `komizo list`, `komizo report` and `komizo logs` inspect applications; see command help for current flags. The local UI is available through the CLI’s `ui` command.
@@ -18,10 +18,10 @@ The supported deployment operation is app-scoped Compose deployment. Historical 
 
 ## Release archive without Go
 
-Example for Linux x86_64, using the reviewed release v0.0.102:
+Example for Linux x86_64, using the reviewed release v0.0.106:
 
 ```sh
-gh release download v0.0.102 --repo nicodes/komizo \
+gh release download v0.0.106 --repo nicodes/komizo \
   -p 'komizo_Linux_x86_64.tar.gz' -p checksums.txt
 sha256sum -c checksums.txt --ignore-missing
 gh attestation verify komizo_Linux_x86_64.tar.gz --repo nicodes/komizo
@@ -51,12 +51,12 @@ The application host remains one box. App-scoped deployment, workload budgets, i
 Use the verified CLI, an exact release source commit and protected absolute local directories:
 
 ```sh
-./komizo platform plan --host your-server --release v0.0.102 \
-  --source 563e61dd6d3211aeca6b49ed79fb66e11d84f33b \
-  --release-dir /root/komizo/releases/v0.0.102 --stage /root/komizo/plans/upgrade
-./komizo platform apply --host your-server --release v0.0.102 \
-  --source 563e61dd6d3211aeca6b49ed79fb66e11d84f33b \
-  --release-dir /root/komizo/releases/v0.0.102 --stage /root/komizo/plans/upgrade \
+./komizo platform plan --host your-server --release v0.0.106 \
+  --source 6443881535214dd4f9fadee92ae3eceb57ee02f3 \
+  --release-dir /root/komizo/releases/v0.0.106 --stage /root/komizo/plans/upgrade
+./komizo platform apply --host your-server --release v0.0.106 \
+  --source 6443881535214dd4f9fadee92ae3eceb57ee02f3 \
+  --release-dir /root/komizo/releases/v0.0.106 --stage /root/komizo/plans/upgrade \
   --resume --expected-manifest <reviewed-manifest-sha256>
 ```
 
@@ -183,6 +183,30 @@ Review the returned manifest identity before applying. Applying blocks applicati
 komizo platform maintenance finish --host root@HOST --stage /var/lib/komizo/maintenance/update-001 --binary-sha256 BOX_SHA256 --manifest-sha256 PLAN_SHA256 --output maintenance-accepted.json
 ```
 
-`finish` checks exact installed versions, a fresh boot ID and the expected running kernel, unchanged serving configuration and stop intent, required services, complete host observation and firewall access before clearing the deployment block. After a connection failure, inspect the durable host operation. A partially completed package transaction remains blocked; repeating `apply` is refused. `finish` can reconcile a transaction only when its exact installed and serving postconditions hold. Preserve the stage and its original failure evidence.
+`finish` checks exact installed versions and, when a kernel update was planned, a fresh boot ID and the expected running kernel, unchanged serving configuration and stop intent, required services, complete host observation and firewall access before clearing the deployment block. After a connection failure, inspect the durable host operation. A partially completed package transaction remains blocked; repeating `apply` is refused. `finish` can reconcile a transaction only when its exact installed and serving postconditions hold. Preserve the stage and its original failure evidence.
 
 An optional `controls` field in the Root host resource policy gives the fixed OpenRC Docker, controller and API groups finite memory/swap/PID limits and CPU weights. Their protected working sets fit inside the OS reservation, with an additional 64 MiB base OS allowance. Each controller's ceiling must leave the other declared serving floors. These are per-group limits and declared burst admission, not a promise that every group can reach its ceiling concurrently. Reductions refuse before writes when current usage exceeds the reviewed limits.
+
+For a userspace-only transaction, add `--hold-kernel` to `maintenance plan`. The solver and offline transaction keep the exact installed kernel; acceptance also verifies that the running kernel did not change. The temporary transaction pin is removed after installation, preserving the reviewed original world constraints and explicit firewall intent. A held-kernel plan reports `kernel_held: true` and `reboot_required: false`. It still needs normal package and serving acceptance. Updated files do not establish that an already running daemon uses the new version; verify running services separately.
+
+If finite controller limits refuse because usage is above a proposed cap, inspect the charge and inactive file cache first. An authenticated host executor supports this explicit Root admission step, bound to the protected candidate policy hash:
+
+```sh
+sudo komizo-box workload host-resources --reclaim-controls --policy /root/review/resources.json --policy-sha256 POLICY_SHA256
+sudo komizo-box workload host-resources --check --policy /root/review/resources.json --check-usage
+```
+
+It preflights all three fixed control groups, requests at most 64 MiB per daemon with anonymous-memory swapping disabled, and records before/requested/after counters. Insufficient inactive cache, unsupported kernels and larger excesses refuse. Kernel reclaim can be incomplete; inspect the retained result and current usage. This step applies no limits, deletes no files/images and touches no application group. Only a subsequent reviewed authority plan/apply installs the policy. Never repeat a refused limit change blindly or use a cache drain to hide an underestimated working set.
+
+Version-two acceptance profiles require `version: 2` and an integer `probe_interval_seconds` between 1 and 10. Choose a round cadence that fits each endpoint's existing request budget; every round still probes the declared routes and measures the chosen fresh operator read. Cadence does not raise the two/five-second latency limits or reduce the forty-second memory/CPU/fsync workload. Version-one profiles retain their historical pacing. The signed operator client can test a compatible older host executor: bind that host's actual authenticated binary hash in the profile.
+
+Acceptance snapshots include available fixed OpenRC controller groups, actual throttle/hard limits and separate anonymous/file/kernel/inactive-cache charges. Failure evidence remains part of the aggregate. A rate-limit response is a failed read contract; it is not skipped or silently retried.
+
+Persist a declared finite control policy through OpenRC service restarts with the public operator. Install the same authenticated host release first, then use protected local staging paths:
+
+```sh
+./komizo platform controls plan --host your-server --release v0.0.106 --source 6443881535214dd4f9fadee92ae3eceb57ee02f3 --release-dir /root/komizo/releases/v0.0.106 --stage /root/komizo/plans/controls
+./komizo platform controls apply --host your-server --release v0.0.106 --source 6443881535214dd4f9fadee92ae3eceb57ee02f3 --release-dir /root/komizo/releases/v0.0.106 --stage /root/komizo/plans/controls --expected-manifest REVIEWED_SHA256
+```
+
+The plan binds the installed resource policy and derives native settings for the fixed Docker, controller and API services. It preserves caller options, journals prior modes and absence, and writes the reviewed configuration at 0600. Foreign control assignments and edits outside the managed block refuse. Applying this plan activates no application or service. Verify actual limits after an ordinary service restart. Self-upgrade and recovery also reapply installed resource authority before accepting restarted services. The workload fixture rejects declared control drift before applying pressure and retains transport timeout route/phase/elapsed diagnostics without retries.
