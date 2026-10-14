@@ -1,10 +1,13 @@
 package box
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -233,13 +236,15 @@ func TestMissingHistoryIsNotAnError(t *testing.T) {
 func TestHistoryTrimsToTheMostRecent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "history.jsonl")
 	base := time.Date(2026, 8, 2, 12, 0, 0, 0, time.UTC)
-	// A max of 1 byte forces a trim on every write; keep 3 means the last three
-	// readings survive.
+	// Record retention is independent of the byte bound.
 	for i := range 10 {
 		s := Sample{At: base.Add(time.Duration(i) * time.Minute), System: System{Cores: i}}
-		if err := AppendSample(path, s, 1, 3); err != nil {
+		if err := AppendSample(path, s, HistoryMax, HistoryKeep); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := trimLines(path, 3, HistoryMax); err != nil {
+		t.Fatal(err)
 	}
 	got, err := ReadSamples(path, 0, 1<<40)
 	if err != nil {
@@ -282,5 +287,127 @@ func TestAtomicWriteLeavesNoPartialFile(t *testing.T) {
 	r, err := ReadReport(path)
 	if err != nil || r.Server.State != "bare" {
 		t.Errorf("second write should have replaced the first: %+v %v", r, err)
+	}
+}
+
+func TestHistoryRecoversOversizedLegacyFileWithBoundedMemory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.jsonl")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := bufio.NewWriter(f)
+	line := []byte(`{"at":"2026-08-02T12:00:00Z","system":{"cores":7},"padding":"` + strings.Repeat("x", 2500) + "\"}\n")
+	for range HistoryKeep {
+		if _, err := w.Write(line); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.Stat(path)
+	if before.Size() < 48<<20 {
+		t.Fatal("fixture does not reproduce oversized history")
+	}
+	runtime.GC()
+	var initial, final runtime.MemStats
+	runtime.ReadMemStats(&initial)
+	latest := Sample{At: time.Date(2026, 8, 2, 12, 1, 0, 0, time.UTC), System: System{Cores: 999}}
+	if err := AppendSample(path, latest, HistoryMax, HistoryKeep); err != nil {
+		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&final)
+	if allocated := final.TotalAlloc - initial.TotalAlloc; allocated > 8<<20 {
+		t.Fatalf("trim allocated %d bytes for oversized history", allocated)
+	}
+	fi, _ := os.Stat(path)
+	if fi.Size() > HistoryMax/2 {
+		t.Fatalf("history retained %d bytes", fi.Size())
+	}
+	if fi.Mode().Perm() != 0o640 {
+		t.Fatalf("mode = %v", fi.Mode())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := bytes.Split(bytes.TrimSuffix(data, []byte{'\n'}), []byte{'\n'})
+	if len(lines) >= HistoryKeep {
+		t.Fatal("byte cap did not reduce record retention")
+	}
+	for _, line := range lines {
+		if !json.Valid(line) {
+			t.Fatal("partial retained record")
+		}
+	}
+	var last Sample
+	if err := json.Unmarshal(lines[len(lines)-1], &last); err != nil {
+		t.Fatal(err)
+	}
+	if last.System.Cores != 999 {
+		t.Fatal("newest record lost")
+	}
+	// The trim leaves enough headroom for ordinary appends.
+	if err := AppendSample(path, latest, HistoryMax, HistoryKeep); err != nil {
+		t.Fatal(err)
+	}
+	second, _ := os.Stat(path)
+	if second.Size() <= fi.Size() || second.Size() > HistoryMax {
+		t.Fatal("subsequent append rewrote or exceeded retained history")
+	}
+}
+
+func TestHistoryByteBoundaryKeepsWholeNewestRecords(t *testing.T) {
+	for _, limit := range []int64{6, 7, 8, 10} {
+		t.Run(fmt.Sprint(limit), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "history.jsonl")
+			if err := os.WriteFile(path, []byte("old\nmid\nnew\n"), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			if err := trimLines(path, 20, limit); err != nil {
+				t.Fatal(err)
+			}
+			got, _ := os.ReadFile(path)
+			want := "new\n"
+			if limit >= 8 {
+				want = "mid\nnew\n"
+			}
+			if string(got) != want {
+				t.Fatalf("got %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestHistoryRefusesOversizedSampleBeforeChangingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.jsonl")
+	original := []byte("existing\n")
+	if err := os.WriteFile(path, original, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendSample(path, Sample{At: time.Now()}, 1, 3); err == nil {
+		t.Fatal("oversized sample accepted")
+	}
+	got, _ := os.ReadFile(path)
+	if !bytes.Equal(got, original) {
+		t.Fatal("refused append changed file")
+	}
+}
+
+func TestHistoryTrimPreservesCRLFOffsets(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.jsonl")
+	if err := os.WriteFile(path, []byte("old\r\nmid\r\nnew\r\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := trimLines(path, 2, HistoryMax); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != "mid\r\nnew\r\n" {
+		t.Fatalf("corrupted offsets: %q", got)
 	}
 }
