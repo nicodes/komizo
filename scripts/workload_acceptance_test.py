@@ -13,6 +13,18 @@ def profile():
     return {'version':1,'binary_sha256':h,'resources_sha256':h,'app_revisions':{'example':'a'*40},'probes':[{'url':'https://example.invalid/health','app':'example','revision':'a'*40}],'cases':[{'app':'example','operator':'full_inventory','repetitions':1},{'app':'example','operator':'operation_inspection','repetitions':1}]}
 
 class WorkloadFixtureContract(unittest.TestCase):
+    def test_already_charged_group_still_allocates_and_touches_live_pages(self):
+        import json,subprocess,sys
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);(root/'memory.current').write_text(str(64<<20))
+            code=fixture.hot_memory_worker(root,32<<20,8<<20,seconds=.05)
+            process=subprocess.run([sys.executable,'-I','-c',code],capture_output=True,text=True,timeout=3,check=True)
+            self.assertEqual(json.loads(process.stdout),{'ready':True,'hot_bytes':4<<20})
+            # No readiness report is allowed when a real allocation cannot fit.
+            code=fixture.hot_memory_worker(root,32<<20,0,seconds=.05)
+            process=subprocess.run([sys.executable,'-I','-c',code],capture_output=True,text=True,timeout=3)
+            self.assertNotEqual(process.returncode,0);self.assertEqual(process.stdout,'')
+
     def test_local_inventory_preserves_running_identity_without_cli(self):
         import json,socket,threading
         cid='a'*64;item={'Id':cid,'State':{'Running':True},'Config':{'Env':['PRIVATE=value']}}
