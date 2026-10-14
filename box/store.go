@@ -2,6 +2,7 @@ package box
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -87,9 +88,15 @@ func Decode[T Document](b []byte) (T, error) {
 // containers the box runs -- twenty containers would keep a fifth as long as
 // four, for the same disk -- and the thing actually worth bounding is the disk.
 func AppendSample(path string, s Sample, max int64, keep int) error {
+	if max <= 0 || keep <= 0 || keep > HistoryKeep {
+		return fmt.Errorf("invalid history retention bounds")
+	}
 	b, err := json.Marshal(s)
 	if err != nil {
 		return err
+	}
+	if int64(len(b)+1) > max {
+		return fmt.Errorf("sample exceeds history byte limit")
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
@@ -126,7 +133,12 @@ func AppendSample(path string, s Sample, max int64, keep int) error {
 		return err
 	}
 	if fi, err := os.Stat(path); err == nil && fi.Size() > max {
-		return trimLines(path, keep)
+		// Leave headroom so the next append does not rewrite the history again.
+		limit := max / 2
+		if record := int64(len(b) + 1); record > limit {
+			limit = record
+		}
+		return trimLines(path, keep, limit)
 	}
 	return nil
 }
@@ -191,41 +203,77 @@ const (
 	historyTail = 8 << 20
 )
 
-// trimLines rewrites a file keeping only its last n lines.
-func trimLines(path string, n int) error {
+// trimLines retains the newest complete records within both retention bounds.
+// Only scan the bounded suffix. Store offsets, then stream the selected range
+// to an atomic replacement instead of retaining and duplicating all records.
+func trimLines(path string, n int, maxBytes int64) error {
+	if n <= 0 || n > HistoryKeep || maxBytes <= 0 {
+		return fmt.Errorf("invalid history retention bounds")
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
-	// A ring buffer rather than reading the whole file into a slice: this runs
-	// on the box, against the largest file komizo writes, and the point of
-	// trimming is that the file got big.
-	ring := make([][]byte, n)
-	count := 0
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64<<10), 4<<20)
-	for sc.Scan() {
-		b := make([]byte, len(sc.Bytes()))
-		copy(b, sc.Bytes())
-		ring[count%n] = b
-		count++
-	}
-	err = sc.Err()
-	f.Close()
+	defer f.Close()
+	fi, err := f.Stat()
 	if err != nil {
 		return err
 	}
-
-	start, total := 0, count
+	start := int64(0)
+	if fi.Size() > maxBytes {
+		start = fi.Size() - maxBytes
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return err
+	}
+	r := bufio.NewReaderSize(f, 64<<10)
+	if start > 0 {
+		var previous [1]byte
+		if _, err := f.ReadAt(previous[:], start-1); err != nil {
+			return err
+		}
+		if previous[0] != '\n' {
+			// Discard a partial oldest record without allocating it.
+			for {
+				part, err := r.ReadSlice('\n')
+				start += int64(len(part))
+				if err == nil {
+					break
+				}
+				if err != bufio.ErrBufferFull {
+					return err
+				}
+			}
+		}
+	}
+	ring := make([]int64, n)
+	count, offset, recordStart := 0, start, start
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64<<10), 4<<20)
+	sc.Split(func(data []byte, atEOF bool) (int, []byte, error) {
+		advance, token, err := bufio.ScanLines(data, atEOF)
+		if advance > 0 {
+			recordStart = offset
+			offset += int64(advance)
+		}
+		return advance, token, err
+	})
+	for sc.Scan() {
+		ring[count%n] = recordStart
+		count++
+	}
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	if count == 0 {
+		return fmt.Errorf("history has no complete record within byte limit")
+	}
 	if count > n {
-		start, total = count%n, n
+		start = ring[count%n]
+	} else {
+		start = ring[0]
 	}
-	var buf []byte
-	for i := 0; i < total; i++ {
-		buf = append(buf, ring[(start+i)%n]...)
-		buf = append(buf, '\n')
-	}
-	return writeFileAtomic(path, buf, 0o640)
+	return writeReaderAtomic(path, io.NewSectionReader(f, start, fi.Size()-start), 0o640)
 }
 
 // writeFileAtomic writes via a temp file in the same directory and renames.
@@ -255,6 +303,10 @@ func trimLines(path string, n int) error {
 // caller is root reading its own file" is a fact about today, not a property of
 // this function.
 func writeFileAtomic(path string, b []byte, mode os.FileMode) error {
+	return writeReaderAtomic(path, bytes.NewReader(b), mode)
+}
+
+func writeReaderAtomic(path string, reader io.Reader, mode os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
@@ -265,7 +317,7 @@ func writeFileAtomic(path string, b []byte, mode os.FileMode) error {
 	}
 	tmp := f.Name()
 	defer os.Remove(tmp)
-	if _, err := f.Write(b); err != nil {
+	if _, err := io.CopyBuffer(f, reader, make([]byte, 64<<10)); err != nil {
 		f.Close()
 		return err
 	}
