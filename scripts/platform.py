@@ -201,7 +201,8 @@ class Platform:
         self.protected(executable)
         body = bytearray()
         process = subprocess.Popen([str(executable), *args[1:]], cwd='/',
-                env={'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'HOME': '/root', 'LC_ALL': 'C'},
+                env={'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'HOME': '/root', 'LC_ALL': 'C',
+                     'GOMEMLIMIT': '67108864', 'GODEBUG': 'disablethp=1'},
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 start_new_session=True)
         end = time.monotonic()+timeout
@@ -419,23 +420,52 @@ class Platform:
         old_identity = self.run(['docker', 'inspect', '--format', '{{.Image}}', 'komizo-proxy'])[1].strip()
         if old_identity != value['image']['previous_id']:
             raise ValueError('running proxy changed after review')
+        # Configuration validation is a temporary administrative workload. Use
+        # the existing preview allowance, never the serving proxy's envelope.
+        definition = json.loads(self.compose(candidate, 'config', '--format', 'json')[1])
+        service = definition['services']['komizo-proxy']
+        policy_path = self.path('/etc/komizo/resources.json')
+        if policy_path.exists():
+            policy = json.loads(self.read(policy_path, private=True))
+            budget = policy.get('previews', {})
+            fields = ('memory_bytes', 'swap_bytes', 'milli_cpus', 'pids')
+            if any(type(budget.get(k)) is not int or budget[k] < 0 for k in fields) or min(budget['memory_bytes'], budget['milli_cpus'], budget['pids']) <= 0:
+                raise ValueError('finite validation allowance required')
+            group = self.path('/sys/fs/cgroup/komizo-previews')
+            self.protected(group, directory=True)
+            expected = {'memory.max': str(budget['memory_bytes']),
+                        'memory.swap.max': str(budget['swap_bytes']),
+                        'cpu.max': str(budget['milli_cpus']*100)+' 100000',
+                        'pids.max': str(budget['pids'])}
+            for name, wanted in expected.items():
+                if self.read(group/name).decode().strip() != wanted:
+                    raise ValueError('validation allowance differs from authority')
+            parent = '/komizo-previews'
+        else:
+            budget = {'memory_bytes': 96<<20, 'swap_bytes': 32<<20, 'milli_cpus': 100, 'pids': 128}
+            parent = ''
+        service.update(mem_limit=str(budget['memory_bytes']),
+                       memswap_limit=str(budget['memory_bytes']+budget['swap_bytes']),
+                       cpus=budget['milli_cpus']/1000, pids_limit=budget['pids'], cgroup_parent=parent)
+        # The one-off process uses managed defaults without changing the
+        # reviewed serving configuration or caller overrides in that file.
+        service['environment'] = {**(service.get('environment') or {}),
+                                  'GOMEMLIMIT': str(max(8<<20, budget['memory_bytes']*2//5)),
+                                  'GODEBUG': 'disablethp=1'}
         config_row = next((row for row in value['files'] if row['path'] == '/srv/_proxy/Caddyfile'), None)
         if config_row:
-            # Override exactly the existing Caddyfile mount for preflight. The
-            # installed Compose remains unchanged except for its reviewed image.
-            definition = json.loads(self.compose(candidate, 'config', '--format', 'json')[1])
-            volumes = definition['services']['komizo-proxy'].get('volumes', [])
+            volumes = service.get('volumes', [])
             matches = [volume for volume in volumes if volume.get('target') == '/etc/caddy/Caddyfile']
             if len(matches) != 1 or matches[0].get('type') != 'bind' or matches[0].get('source') != '/srv/_proxy/Caddyfile' or matches[0].get('read_only') is not True:
                 raise ValueError('proxy configuration mount differs from its protected contract')
             matches[0]['source'] = str(stage/config_row['staged'])
-            preflight = stage/'proxy-preflight.json'
-            if preflight.exists():
-                raise ValueError('proxy preflight already exists; use a fresh stage')
-            with open(preflight, 'x') as stream:
-                json.dump(definition, stream)
-                os.fchmod(stream.fileno(), 0o600)
-            candidate = preflight
+        preflight = stage/'proxy-preflight.json'
+        if preflight.exists():
+            raise ValueError('proxy preflight already exists; use a fresh stage')
+        with open(preflight, 'x') as stream:
+            json.dump(definition, stream)
+            os.fchmod(stream.fileno(), 0o600)
+        candidate = preflight
         self.compose(candidate, 'run', '--rm', '--no-deps', '--pull', 'never', '--entrypoint', '/usr/bin/caddy', 'komizo-proxy', 'validate', '--config', '/etc/caddy/Caddyfile', '--adapter', 'caddyfile')
 
     def verify_proxy(self, value, deadline_seconds=30):
