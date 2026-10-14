@@ -34,7 +34,7 @@ class ControlPreparation(unittest.TestCase):
         m=module('control_runtime','platform.py')
         group={'memory_low_bytes':96<<20,'memory_high_bytes':232<<20,'memory_bytes':248<<20,'swap_bytes':512<<20,'pids':1024,'cpu_weight':100,'milli_cpus':0}
         policy={'controls':{'openrc.'+n:group for n in m.CONTROL_SERVICES}}
-        for before,expected in [(b'',str(64<<20)),(b'GOMEMLIMIT=33554432\n','33554432')]:
+        for before,expected,debug in [(b'',str(64<<20),'disablethp=1'),(b'GOMEMLIMIT=33554432\n','33554432','disablethp=1'),(b'GODEBUG=gctrace=0,disablethp=0\n',str(64<<20),'gctrace=0,disablethp=0')]:
             config=m.control_configuration(before,policy,'docker')
             with tempfile.TemporaryDirectory() as root:
                 p=Path(root)/'docker.conf';p.write_bytes(config)
@@ -42,6 +42,7 @@ class ControlPreparation(unittest.TestCase):
                 child_env=subprocess.check_output(['sh','-c','. "$1"; sh -c env','sh',str(p)],env=env,text=True)
                 actual=next(row.partition('=')[2] for row in child_env.splitlines() if row.startswith('GOMEMLIMIT='))
                 self.assertEqual(actual,expected)
+                self.assertEqual(next(row.partition("=")[2] for row in child_env.splitlines() if row.startswith("GODEBUG=")),debug)
                 self.assertEqual(m.control_configuration(config,policy,'docker'),config)
         for service in ('komizo-api','komizo-rootd'):
             self.assertNotIn(b'GOMEMLIMIT',m.control_configuration(b'',policy,service))
@@ -50,16 +51,18 @@ class ControlPreparation(unittest.TestCase):
         import subprocess
         source=Path(__file__).with_name('alpine-init.sh').read_text()
         block=source.split('# BEGIN Docker runtime memory default\n')[1].split('# END Docker runtime memory default')[0]
-        for before,expected in [(b'DOCKER_OPTS="private option"\n',str(64<<20)),(b'GOMEMLIMIT=33554432\n','33554432')]:
+        for before,expected,debug in [(b'DOCKER_OPTS="private option"\n',str(64<<20),'disablethp=1'),(b'GOMEMLIMIT=33554432\n','33554432','disablethp=1'),(b'GODEBUG=disablethp=0\n',str(64<<20),'disablethp=0')]:
             with tempfile.TemporaryDirectory() as root:
                 p=Path(root)/'docker';p.write_bytes(before)
                 script=block.replace('/etc/conf.d/docker',str(p))
                 for _ in range(2):subprocess.run(['sh','-c',script],check=True)
                 self.assertEqual(p.read_text().count('export GOMEMLIMIT'),1)
+                self.assertEqual(p.read_text().count('export GODEBUG'),1)
                 env={'PATH':os.environ['PATH']}
                 child_env=subprocess.check_output(['sh','-c','. "$1"; sh -c env','sh',str(p)],env=env,text=True)
                 actual=next(row.partition('=')[2] for row in child_env.splitlines() if row.startswith('GOMEMLIMIT='))
                 self.assertEqual(actual,expected)
+                self.assertEqual(next(row.partition("=")[2] for row in child_env.splitlines() if row.startswith("GODEBUG=")),debug)
                 self.assertTrue(p.read_bytes().startswith(before))
 
 if __name__=='__main__':unittest.main()
