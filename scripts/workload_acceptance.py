@@ -81,19 +81,28 @@ def local_docker_inventory(socket_path='/var/run/docker.sock'):
     class LocalConnection(http.client.HTTPConnection):
         def connect(self):
             self.sock=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
-            self.sock.settimeout(8);self.sock.connect(socket_path)
+            self.sock.settimeout(self.timeout);self.sock.connect(socket_path)
     connection=LocalConnection('localhost',timeout=8)
     deadline=time.monotonic()+20;remaining_bytes=32<<20
     def read(path,maximum):
         nonlocal remaining_bytes
         remaining=deadline-time.monotonic()
         if remaining<=0:raise TimeoutError('local inventory deadline exceeded')
-        if connection.sock is not None:connection.sock.settimeout(min(8,remaining))
+        connection.timeout=min(8,remaining)
+        if connection.sock is not None:connection.sock.settimeout(connection.timeout)
         maximum=min(maximum,remaining_bytes)
         connection.request('GET',path)
         response=connection.getresponse()
         if response.status!=200:raise ValueError('local inventory unavailable')
-        body=response.read(maximum+1)
+        pieces=[];size=0
+        while size<=maximum:
+            remaining=deadline-time.monotonic()
+            if remaining<=0:raise TimeoutError('local inventory deadline exceeded')
+            connection.sock.settimeout(min(8,remaining))
+            piece=response.read1(min(65536,maximum+1-size))
+            if not piece:break
+            pieces.append(piece);size+=len(piece)
+        body=b''.join(pieces)
         if len(body)>maximum:raise ValueError('local inventory exceeds its bound')
         remaining_bytes-=len(body)
         return json.loads(body)
