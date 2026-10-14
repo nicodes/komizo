@@ -33,7 +33,7 @@ func RunPlatform(args []string) error {
 	defer cancel()
 	program := scripts.PlatformPrepare
 	if proxy {
-		program = "import types\n_shared = types.ModuleType('komizo_platform_prepare')\nexec(" + strconv.Quote(scripts.PlatformPrepare) + ", _shared.__dict__)\nrun, digest, protected_directory, HOST = _shared.run, _shared.digest, _shared.protected_directory, _shared.HOST\n" + scripts.ProxyPrepare
+		program = "import types\n_shared = types.ModuleType('komizo_platform_prepare')\nexec(" + strconv.Quote(scripts.PlatformPrepare) + ", _shared.__dict__)\nrun, digest, protected_directory, HOST = _shared.run, _shared.digest, _shared.protected_directory, _shared.HOST\n" + "\n_runtime = types.ModuleType('komizo_proxy_runtime')\nexec(" + strconv.Quote(scripts.Platform) + ", _runtime.__dict__)\nproxy_runtime_environment = _runtime.proxy_runtime_environment\n" + scripts.ProxyPrepare
 	}
 	if controls {
 		program = "import types\n_shared = types.ModuleType('komizo_platform_prepare')\nexec(" + strconv.Quote(scripts.PlatformPrepare) + ", _shared.__dict__)\nprepare, run, protected_directory, HOST = _shared.prepare, _shared.run, _shared.protected_directory, _shared.HOST\n_platform = types.ModuleType('komizo_platform')\nexec(" + strconv.Quote(scripts.Platform) + ", _platform.__dict__)\ncontrol_configuration, CONTROL_SERVICES = _platform.control_configuration, _platform.CONTROL_SERVICES\n" + scripts.ControlsPrepare

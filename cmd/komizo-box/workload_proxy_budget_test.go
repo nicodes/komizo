@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	yaml "go.yaml.in/yaml/v3"
 	"os"
 	"path/filepath"
 	"testing"
@@ -88,5 +89,22 @@ func TestProxyBudgetRefusesUnsafePolicyAndAncestry(t *testing.T) {
 	}
 	if _, err := proxyBudget(root, owner); err == nil {
 		t.Fatal("writable ancestry accepted")
+	}
+}
+
+func TestProxyComposeRuntimeFitsFiniteMemoryAndParsesAsEnvironment(t *testing.T) {
+	b := proxyResourceBudget{MemoryBytes: 60 << 20, TotalSwapBytes: 124 << 20, MilliCPUs: 100, PIDs: 128, CgroupParent: "/komizo-proxy"}
+	var doc struct {
+		Services map[string]struct {
+			Environment map[string]string `yaml:"environment"`
+			Memory      int64             `yaml:"mem_limit"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal([]byte("services:\n  komizo-proxy:\n"+proxyComposeBudget(b)), &doc); err != nil {
+		t.Fatal(err)
+	}
+	s := doc.Services["komizo-proxy"]
+	if s.Environment["GOMEMLIMIT"] != "25165824" || s.Environment["GODEBUG"] != "disablethp=1" || s.Memory != b.MemoryBytes {
+		t.Fatalf("rendered budget:%+v", s)
 	}
 }

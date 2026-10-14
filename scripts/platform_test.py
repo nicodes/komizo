@@ -651,12 +651,18 @@ class ProxyPlatformTests(unittest.TestCase):
                  'volumes':[{'type':'volume','source':'komizo-proxy_caddy_data','target':'/data'}]}}}
             fields={'mem_limit':96<<20,'memswap_limit':96<<20,'cpus':0.1,'pids_limit':128,'cgroup_parent':'/komizo-proxy'}
             new=json.loads(json.dumps(old));new['services']['komizo-proxy'].update(image=reference,**fields)
+            new['services']['komizo-proxy']['environment']=module.proxy_runtime_environment(None,budget['memory_bytes'])
             f.p.compose=lambda file,*args:(0,json.dumps(old if file==f.p.path('/srv/_proxy/compose.yml') else new))
             def run(args,required=True):
                 f.calls.append(args)
                 return 0,value['image']['id'] if args[:3]==['docker','image','inspect'] else value['image']['previous_id']
             f.p.run=run
             f.p.proxy_preflight(f.stage,value)
+            # Runtime additions are exact; unrelated caller variables are not grants.
+            runtime=new['services']['komizo-proxy']['environment']
+            new['services']['komizo-proxy']['environment']={**runtime,'GOMEMLIMIT':'unreviewed'}
+            with self.assertRaisesRegex(ValueError,'runtime differs'):f.p.proxy_preflight(f.stage,value)
+            new['services']['komizo-proxy']['environment']=runtime
             # Compose v5 serializes normalized memory byte sizes as strings.
             for field in ('mem_limit','memswap_limit'):
                 new['services']['komizo-proxy'][field]=str(fields[field])
