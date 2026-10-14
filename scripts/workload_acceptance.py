@@ -149,6 +149,10 @@ def verify_control_limits(policy,root=Path('/sys/fs/cgroup')):
             actual=(root/name/key).read_text().strip()
             if actual!=value:raise AssertionError(json.dumps({'contract':'control_policy','group':name,'field':key,'expected':value,'actual':actual},sort_keys=True))
 
+def hot_memory_worker(root,target,offered,seconds=40):
+    # Even an already charged group must exercise live synthetic pages.
+    return "import time,json;from pathlib import Path;chunks=[];charged=Path("+repr(str(root/'memory.current'))+")\nwhile not chunks or int(charged.read_text())<"+str(target)+":\n if sum(map(len,chunks))+(4<<20)>"+str(offered)+":raise RuntimeError('hot memory offer exhausted')\n data=bytearray(4<<20)\n for offset in range(0,len(data),4096):data[offset]=1\n chunks.append(data);time.sleep(.02)\nprint(json.dumps({'ready':True,'hot_bytes':sum(map(len,chunks))}),flush=True);end=time.monotonic()+"+str(seconds)+"\nwhile time.monotonic()<end:\n for data in chunks:\n  for offset in range(0,len(data),4096):data[offset]=(data[offset]+1)%256"
+
 def run_case(p,case,repetition):
     host_policy=json.loads(Path('/etc/komizo/resources.json').read_bytes())
     verify_control_limits(host_policy)
@@ -170,9 +174,10 @@ def run_case(p,case,repetition):
     try:
         leaf.mkdir();scratch.mkdir(mode=0o700);os.chown(scratch,65534,65534)
         for name,value in [('memory.max',str(offered+(16<<20))),('memory.swap.max','0'),('pids.max','16'),('cpu.max','20000 100000')]: (leaf/name).write_text(value)
-        memory=child("import time,json;from pathlib import Path;chunks=[];charged=Path("+repr(str(root/'memory.current'))+")\nwhile int(charged.read_text())<"+str(target)+":\n if sum(map(len,chunks))+(4<<20)>"+str(offered)+":raise RuntimeError('hot memory offer exhausted')\n data=bytearray(4<<20)\n for offset in range(0,len(data),4096):data[offset]=1\n chunks.append(data);time.sleep(.02)\nprint(json.dumps({'ready':True,'hot_bytes':sum(map(len,chunks))}),flush=True);end=time.monotonic()+40\nwhile time.monotonic()<end:\n for data in chunks:\n  for offset in range(0,len(data),4096):data[offset]=(data[offset]+1)%256")
+        memory=child(hot_memory_worker(root,target,offered))
         if not select.select([memory.stdout],[],[],30)[0]:raise AssertionError('hot pages not ready')
         ready=json.loads(memory.stdout.readline());result['actual_hot_memory_bytes']=ready['hot_bytes'];result['maximum_offered_hot_memory_bytes']=offered
+        if ready.get('ready') is not True or type(ready.get('hot_bytes')) is not int or not 4<<20 <= ready['hot_bytes'] <= offered:raise AssertionError('positive touched hot memory required')
         result['pressure']=snapshot(groups)
         if int((root/'memory.current').read_text())<=high-allowance+(8<<20):raise AssertionError('pressure target absent')
         refusal=subprocess.run([BOX,'app','restart','--app',app],capture_output=True,timeout=20)
