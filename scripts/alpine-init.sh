@@ -130,6 +130,12 @@ docker_runtime_memory=': "${GOMEMLIMIT:=67108864}"; export GOMEMLIMIT'
 if ! grep -Fx "$docker_runtime_memory" /etc/conf.d/docker >/dev/null 2>&1; then
  printf '\n%s\n' "$docker_runtime_memory" >> /etc/conf.d/docker
 fi
+# Large heap pages waste the finite allowance on small control processes.
+# shellcheck disable=SC2016 # OpenRC expands the caller-preserving default.
+docker_runtime_pages=': "${GODEBUG:=disablethp=1}"; export GODEBUG'
+if ! grep -Fx "$docker_runtime_pages" /etc/conf.d/docker >/dev/null 2>&1; then
+ printf '\n%s\n' "$docker_runtime_pages" >> /etc/conf.d/docker
+fi
 # END Docker runtime memory default
 rc-update add komizo-resources default
 if [ -e /etc/komizo/resources.json ]; then

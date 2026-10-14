@@ -59,7 +59,8 @@ def control_configuration(before, policy, service):
         # Dockerd and its managed containerd each inherit this soft Go limit.
         # Leave room inside their shared cgroup for both runtimes and file cache.
         limit=64<<20
-        runtime=(': "${GOMEMLIMIT:='+str(limit)+'}"\nexport GOMEMLIMIT\n').encode()
+        runtime=(': "${GOMEMLIMIT:='+str(limit)+'}"\nexport GOMEMLIMIT\n'
+                 ': "${GODEBUG:=disablethp=1}"\nexport GODEBUG\n').encode()
     block=CONTROL_BEGIN+runtime+('rc_cgroup_settings=\''+settings+'\'\n').encode()+CONTROL_END
     if CONTROL_BEGIN in before:return before[:start]+block+before[end:]
     return before+(b'\n' if before and not before.endswith(b'\n') else b'')+block
