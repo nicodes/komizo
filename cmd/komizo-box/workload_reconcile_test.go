@@ -164,3 +164,132 @@ func TestReconciliationFailureKeepsFenceAndNewOwnerStop(t *testing.T) {
 		}
 	}
 }
+
+func TestReconciliationOfEarlyRefusalWithoutSnapshotProvesExistingServing(t *testing.T) {
+	for _, phase := range []string{"staging", "staging_failed"} {
+		t.Run(phase, func(t *testing.T) {
+			f, r, before := reconciliationFixture(t)
+			for path, body := range before {
+				if err := os.WriteFile(path, body, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Remove(filepath.Join(f.h.releases, "example", "staging-"+r.ID+".json")); err != nil {
+				t.Fatal(err)
+			}
+			r.Phase = phase
+			var op workload.Operation
+			if err := f.h.readJSON(filepath.Join(f.h.releases, "example", "operation.json"), &op); err != nil {
+				t.Fatal(err)
+			}
+			op.Phase = phase
+			if err := workload.WritePrivateJSON(filepath.Join(f.h.releases, "example", "operation.json"), op); err != nil {
+				t.Fatal(err)
+			}
+			writes := 0
+			f.h.deploymentWrite = func(string, []byte, os.FileMode) error {
+				writes++
+				return errors.New("early refusal must preserve serving files")
+			}
+			f.calls = nil
+			result, err := f.h.reconcile(t.Context(), r, f.queue)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if writes != 0 || result["configuration_restored"] != false || result["application_restart"] != false || result["database_restore"] != false {
+				t.Fatal(result, writes)
+			}
+			for path, body := range before {
+				after, err := os.ReadFile(path)
+				if err != nil || string(after) != string(body) {
+					t.Fatal("serving file changed", path, err)
+				}
+			}
+			for _, call := range f.calls {
+				if strings.Contains(call, "pull") || strings.Contains(call, "create") || strings.Contains(call, " up ") || strings.Contains(call, "restart") {
+					t.Fatal("refusal recovery performed deployment work", call)
+				}
+			}
+			if err := f.h.readJSON(filepath.Join(f.h.releases, "example", "operation.json"), &op); err != nil || op.Phase != "reconciled" {
+				t.Fatal(op, err)
+			}
+		})
+	}
+}
+
+func TestReconciliationWithoutSnapshotRejectsLaterOrChangedServing(t *testing.T) {
+	for _, condition := range []string{"configured", "activating", "activation_failed", "readiness_failed", "revision", "retention", "compose", "readiness", "unreadable", "static"} {
+		t.Run(condition, func(t *testing.T) {
+			f, r, before := reconciliationFixture(t)
+			for path, body := range before {
+				if err := os.WriteFile(path, body, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Remove(filepath.Join(f.h.releases, "example", "staging-"+r.ID+".json")); err != nil {
+				t.Fatal(err)
+			}
+			r.Phase = "staging_failed"
+			switch condition {
+			case "configured", "activating", "activation_failed", "readiness_failed":
+				r.Phase = condition
+			case "revision":
+				if err := os.WriteFile(filepath.Join(f.h.policy.AppDir, ".env"), []byte("APP_VERSION="+r.Candidate+"\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "retention":
+				if err := os.WriteFile(filepath.Join(f.h.policy.AppDir, ".komizo-image-retention"), []byte("CURRENT="+r.Candidate+"\nPREVIOUS=\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "compose":
+				path := filepath.Join(f.h.policy.AppDir, "compose.yml")
+				if err := os.WriteFile(path, []byte(strings.ReplaceAll(string(before[path]), r.Serving, r.Candidate)), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "readiness":
+				f.h.reconciliationReady = func(context.Context, string, []byte) error { return errors.New("serving proof unavailable") }
+			case "static":
+				policyPath := filepath.Join(f.h.policies, "example.json")
+				var policy workload.Policy
+				if err := f.h.readJSON(policyPath, &policy); err != nil {
+					t.Fatal(err)
+				}
+				policy.Static = &workload.StaticPolicy{Profile: "spa-v1", GateConfigSHA: strings.Repeat("a", 64), Proxy: "komizo-proxy", Hostnames: []string{"example.test"}}
+				policy.Readiness = &workload.ReadinessPolicy{Probes: []workload.ReadinessProbe{{URL: "https://example.test/"}}}
+				if err := policy.Check(); err != nil {
+					t.Fatal(err)
+				}
+				if err := workload.WritePrivateJSON(policyPath, policy); err != nil {
+					t.Fatal(err)
+				}
+				body, err := os.ReadFile(policyPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				r.PolicySHA256 = deploymentHash(body)
+			case "unreadable":
+				f.h.reconciliationSnapshot = func(string, any) error { return os.ErrPermission }
+			}
+			var op workload.Operation
+			path := filepath.Join(f.h.releases, "example", "operation.json")
+			if err := f.h.readJSON(path, &op); err != nil {
+				t.Fatal(err)
+			}
+			op.Phase = r.Phase
+			if err := workload.WritePrivateJSON(path, op); err != nil {
+				t.Fatal(err)
+			}
+			writes := 0
+			f.h.deploymentWrite = func(string, []byte, os.FileMode) error { writes++; return nil }
+			if _, err := f.h.reconcile(t.Context(), r, f.queue); err == nil {
+				t.Fatal("unproven snapshot-free recovery accepted")
+			}
+			if writes != 0 {
+				t.Fatal("refused recovery wrote serving files")
+			}
+			if err := f.h.readJSON(path, &op); err != nil || op.Phase != r.Phase {
+				t.Fatal("refusal lost its fence", op, err)
+			}
+		})
+	}
+}
