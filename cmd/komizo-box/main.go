@@ -174,9 +174,7 @@ func runRootd(args []string) error { return runRootdAt("", args) }
 func runRootdAt(root string, args []string) error {
 	// Bound retained Go runtime memory without using a hard kill boundary for
 	// the executor. An explicitly configured runtime limit remains authoritative.
-	if os.Getenv("GOMEMLIMIT") == "" {
-		debug.SetMemoryLimit(64 << 20)
-	}
+	setReadMemoryDefault()
 	fs := flag.NewFlagSet("rootd", flag.ContinueOnError)
 	interval := fs.Duration("interval", time.Minute, "how often to probe")
 	confPath := fs.String("config", box.AgentConfPath, "the credential whose keys commands are verified against")
@@ -563,6 +561,7 @@ func commandLoop(ctx context.Context, confPath, inboxDir, resultsDir string) {
 // is not installed -- which is every box, until init puts it there, and is what
 // makes this useful before any of the rest of it exists.
 func runReport(args []string) error {
+	setReadMemoryDefault()
 	fs := flag.NewFlagSet("report", flag.ContinueOnError)
 	volumes := fs.Bool("volumes", false, "measure volume sizes too (slow: walks every volume)")
 	cached := fs.Bool("cached", false, "print the last report rootd wrote instead of measuring")
@@ -576,6 +575,9 @@ func runReport(args []string) error {
 			return err
 		}
 		return emit(r)
+	}
+	if err := enterReadBudget(); err != nil {
+		return err
 	}
 	ctx := context.Background()
 	r := probe().Report(ctx)
@@ -591,10 +593,14 @@ func runReport(args []string) error {
 // One command rather than two because every read costs an SSH connection, and
 // that -- not the probing -- is what makes polling expensive.
 func runPoll(args []string) error {
+	setReadMemoryDefault()
 	fs := flag.NewFlagSet("poll", flag.ContinueOnError)
 	from := fs.Int64("from", 0, "start of the sparkline window, unix seconds")
 	to := fs.Int64("to", 0, "end of the sparkline window, unix seconds")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := enterReadBudget(); err != nil {
 		return err
 	}
 	p := probe()
@@ -608,6 +614,7 @@ func runPoll(args []string) error {
 // runMonitor is the charts: a range of request counts and past readings, and
 // one app's volume sizes when asked for.
 func runMonitor(args []string) error {
+	setReadMemoryDefault()
 	fs := flag.NewFlagSet("monitor", flag.ContinueOnError)
 	from := fs.Int64("from", 0, "start of the range, unix seconds")
 	to := fs.Int64("to", 0, "end of the range, unix seconds")
@@ -618,6 +625,9 @@ func runMonitor(args []string) error {
 	}
 	if *from == 0 || *to == 0 {
 		return fmt.Errorf("both --from and --to are required")
+	}
+	if err := enterReadBudget(); err != nil {
+		return err
 	}
 	p := probe()
 	out := box.Monitor{V: box.Version, Metrics: p.Metrics(*from, *to), History: []box.Sample{}}
@@ -642,4 +652,10 @@ func emit(v any) error {
 	}
 	_, err = os.Stdout.Write(append(b, '\n'))
 	return err
+}
+
+func setReadMemoryDefault() {
+	if os.Getenv("GOMEMLIMIT") == "" {
+		debug.SetMemoryLimit(64 << 20)
+	}
 }
