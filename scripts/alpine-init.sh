@@ -122,6 +122,15 @@ resource_dependency='rc_need="${rc_need} komizo-resources"'
 if ! grep -Fx "$resource_dependency" /etc/conf.d/docker >/dev/null 2>&1; then
  printf '\n%s\n' "$resource_dependency" >> /etc/conf.d/docker
 fi
+# BEGIN Docker runtime memory default
+# Both dockerd and managed containerd inherit this soft runtime limit. Kernel
+# cgroup limits remain authoritative; caller configuration remains explicit.
+# shellcheck disable=SC2016 # OpenRC expands this default when loading its config.
+docker_runtime_memory=': "${GOMEMLIMIT:=67108864}"; export GOMEMLIMIT'
+if ! grep -Fx "$docker_runtime_memory" /etc/conf.d/docker >/dev/null 2>&1; then
+ printf '\n%s\n' "$docker_runtime_memory" >> /etc/conf.d/docker
+fi
+# END Docker runtime memory default
 rc-update add komizo-resources default
 if [ -e /etc/komizo/resources.json ]; then
  /usr/local/bin/komizo-box workload host-resources --apply
