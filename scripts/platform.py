@@ -54,7 +54,13 @@ def control_configuration(before, policy, service):
     else:outside=before
     if re.search(rb'\brc_cgroup_settings\b',outside):raise ValueError('foreign control settings require explicit migration')
     settings='\n'.join(key+' '+str(group[field]) for key,field in fields.items())+'\ncpu.max max 100000\n'
-    block=CONTROL_BEGIN+('rc_cgroup_settings=\''+settings+'\'\n').encode()+CONTROL_END
+    runtime=b''
+    if service=='docker':
+        # Dockerd and its managed containerd each inherit this soft Go limit.
+        # Leave room inside their shared cgroup for both runtimes and file cache.
+        limit=64<<20
+        runtime=(': "${GOMEMLIMIT:='+str(limit)+'}"\nexport GOMEMLIMIT\n').encode()
+    block=CONTROL_BEGIN+runtime+('rc_cgroup_settings=\''+settings+'\'\n').encode()+CONTROL_END
     if CONTROL_BEGIN in before:return before[:start]+block+before[end:]
     return before+(b'\n' if before and not before.endswith(b'\n') else b'')+block
 
