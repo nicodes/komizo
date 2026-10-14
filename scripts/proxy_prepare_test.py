@@ -43,6 +43,17 @@ class ProxyPreparation(unittest.TestCase):
         for field,value in (('memory_bytes',0),('milli_cpus',True),('cgroup_parent','/foreign'),('policy_sha256',None)):
             with self.subTest(field=field),self.assertRaises(ValueError):m.resource_budget({**budget,field:value})
 
+    def test_runtime_defaults_preserve_explicit_overrides_and_other_environment(self):
+        budget={'version':1,'memory_bytes':60<<20,'total_memory_swap_bytes':124<<20,
+                'milli_cpus':100,'pids':128,'cgroup_parent':'/komizo-proxy','policy_sha256':'a'*64}
+        for existing,wanted in [(None,{'GOMEMLIMIT':str(24<<20),'GODEBUG':'disablethp=1'}),
+                ({'GOMEMLIMIT':'16777216','GODEBUG':'disablethp=0','CUSTOM':'unchanged'},
+                 {'GOMEMLIMIT':'16777216','GODEBUG':'disablethp=0','CUSTOM':'unchanged'})]:
+            doc={'name':'komizo-proxy','services':{'komizo-proxy':{'image':'old','environment':existing}}}
+            result=m.compose_candidate(json.dumps(doc).encode(),'new',budget)
+            self.assertEqual(json.loads(result)['services']['komizo-proxy']['environment'],wanted)
+            self.assertEqual(m.compose_candidate(result,'new',budget),result)
+
     def test_cold_yaml_normalizes_with_existing_project_without_resolving_private_environment(self):
         previous=b'services:\n  komizo-proxy:\n    image: previous\n'
         labels={'com.docker.compose.project':'komizo-proxy','com.docker.compose.service':'komizo-proxy'}
