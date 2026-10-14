@@ -11,6 +11,7 @@ import re
 import select
 import shutil
 import signal
+import socket
 import subprocess
 import time
 import urllib.parse
@@ -76,9 +77,51 @@ def probe_route(probe):
 def command(args,timeout=20):
     return subprocess.check_output(args,timeout=timeout)
 
+def local_docker_inventory(socket_path='/var/run/docker.sock'):
+    class LocalConnection(http.client.HTTPConnection):
+        def connect(self):
+            self.sock=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+            self.sock.settimeout(self.timeout);self.sock.connect(socket_path)
+    connection=LocalConnection('localhost',timeout=8)
+    deadline=time.monotonic()+20;remaining_bytes=32<<20
+    def read(path,maximum):
+        nonlocal remaining_bytes
+        remaining=deadline-time.monotonic()
+        if remaining<=0:raise TimeoutError('local inventory deadline exceeded')
+        connection.timeout=min(8,remaining)
+        if connection.sock is not None:connection.sock.settimeout(connection.timeout)
+        maximum=min(maximum,remaining_bytes)
+        connection.request('GET',path)
+        active_socket=connection.sock
+        response=connection.getresponse()
+        if response.status!=200:raise ValueError('local inventory unavailable')
+        pieces=[];size=0
+        while size<=maximum:
+            remaining=deadline-time.monotonic()
+            if remaining<=0:raise TimeoutError('local inventory deadline exceeded')
+            active_socket.settimeout(min(8,remaining))
+            piece=response.read1(min(65536,maximum+1-size))
+            if not piece:break
+            pieces.append(piece);size+=len(piece)
+        body=b''.join(pieces)
+        if len(body)>maximum:raise ValueError('local inventory exceeds its bound')
+        remaining_bytes-=len(body)
+        return json.loads(body)
+    try:
+        rows=read('/v1.47/containers/json',8<<20)
+        if not isinstance(rows,list) or len(rows)>1024:raise ValueError('finite local inventory required')
+        out=[]
+        for row in rows:
+            cid=row.get('Id')
+            if not isinstance(cid,str) or not HASH.fullmatch(cid):raise ValueError('local container identity invalid')
+            item=read('/v1.47/containers/'+cid+'/json',4<<20)
+            if item.get('Id')!=cid or item.get('State',{}).get('Running') is not True:raise ValueError('running local identity differs')
+            out.append(item)
+        return out
+    finally:connection.close()
+
 def identity(p):
-    ids=command(['docker','ps','-q']).decode().split()
-    rows=json.loads(command(['docker','inspect',*ids])) if ids else []
+    rows=local_docker_inventory()
     containers={r['Id']:{'pid':r['State']['Pid'],'started':r['State']['StartedAt'],'image':r['Image'],'env_sha256':hashlib.sha256(json.dumps(r['Config']['Env'],sort_keys=True).encode()).hexdigest()} for r in rows if r['Config']['Labels'].get('com.docker.compose.project') in p['app_revisions']}
     paths=[Path('/etc/komizo/resources.json'),Path('/etc/komizo/agent.json')]
     for a in p['app_revisions']:paths.extend([Path('/srv')/a/'.env',Path('/etc/komizo/workloads')/(a+'.json'),Path('/var/lib/komizo/releases')/a/'operation.json'])
