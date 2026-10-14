@@ -13,6 +13,29 @@ def profile():
     return {'version':1,'binary_sha256':h,'resources_sha256':h,'app_revisions':{'example':'a'*40},'probes':[{'url':'https://example.invalid/health','app':'example','revision':'a'*40}],'cases':[{'app':'example','operator':'full_inventory','repetitions':1},{'app':'example','operator':'operation_inspection','repetitions':1}]}
 
 class WorkloadFixtureContract(unittest.TestCase):
+    def test_local_inventory_preserves_running_identity_without_cli(self):
+        import json,socket,threading
+        cid='a'*64;item={'Id':cid,'State':{'Running':True},'Config':{'Env':['PRIVATE=value']}}
+        with tempfile.TemporaryDirectory() as directory:
+            path=str(Path(directory)/'engine.sock');server=socket.socket(socket.AF_UNIX);server.bind(path);server.listen();seen=[]
+            def serve():
+                client,_=server.accept();reader=client.makefile('rb')
+                for value in [[{'Id':cid}],item]:
+                    line=reader.readline().decode();seen.append(line.split()[1])
+                    while reader.readline()!=b'\r\n':pass
+                    body=json.dumps(value).encode();client.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: '+str(len(body)).encode()+b'\r\n\r\n'+body)
+                reader.close();client.close()
+            worker=threading.Thread(target=serve,daemon=True);worker.start()
+            with patch.object(fixture,'command',side_effect=AssertionError('CLI inventory forbidden')):
+                self.assertEqual(fixture.local_docker_inventory(path),[item])
+            worker.join(timeout=5);server.close();self.assertFalse(worker.is_alive())
+            self.assertEqual(seen,['/v1.47/containers/json','/v1.47/containers/'+cid+'/json'])
+
+    def test_local_inventory_failure_has_no_cli_fallback(self):
+        with tempfile.TemporaryDirectory() as directory,patch.object(fixture,'command') as command:
+            with self.assertRaises(OSError):fixture.local_docker_inventory(str(Path(directory)/'missing'))
+        command.assert_not_called()
+
     def test_declared_control_drift_is_refused_without_pressure_or_writes(self):
         group={'memory_low_bytes':24,'memory_high_bytes':160,'memory_bytes':176,'swap_bytes':128,'pids':256,'cpu_weight':50}
         with tempfile.TemporaryDirectory() as directory:
