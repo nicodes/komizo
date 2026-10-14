@@ -21,6 +21,12 @@ if 'run' not in globals():
     spec.loader.exec_module(shared)
     run, digest, protected_directory, HOST = shared.run, shared.digest, shared.protected_directory, shared.HOST
 
+if 'proxy_runtime_environment' not in globals():
+    import importlib.util
+    runtime_spec=importlib.util.spec_from_file_location('komizo_proxy_runtime',Path(__file__).with_name('platform.py'))
+    runtime_shared=importlib.util.module_from_spec(runtime_spec);runtime_spec.loader.exec_module(runtime_shared)
+    proxy_runtime_environment=runtime_shared.proxy_runtime_environment
+
 TIMEOUTS = '    servers {\n        timeouts {\n            read_header 5s\n            read_body 3m\n            idle 2m\n        }\n    }\n'
 PROVISIONED_TIMEOUTS = TIMEOUTS.replace('    ', '\t')
 
@@ -146,6 +152,7 @@ def compose_candidate(previous, reference, budget=None, bind_static=False):
     if budget is not None:
         budget=resource_budget(budget)
         service=doc['services']['komizo-proxy']
+        service['environment']=proxy_runtime_environment(service.get('environment'),budget['memory_bytes'])
         service.update(mem_limit=budget['memory_bytes'],memswap_limit=budget['total_memory_swap_bytes'],
                        cpus=f"{budget['milli_cpus']/1000:.3f}",pids_limit=budget['pids'])
         if budget['cgroup_parent']:service['cgroup_parent']=budget['cgroup_parent']

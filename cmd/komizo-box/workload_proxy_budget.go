@@ -89,9 +89,20 @@ func runProxyBudget(args []string) error {
 	if len(args) == 0 {
 		return json.NewEncoder(os.Stdout).Encode(budget)
 	}
-	fmt.Printf("    mem_limit: %d\n    memswap_limit: %d\n    cpus: \"%d.%03d\"\n    pids_limit: %d\n", budget.MemoryBytes, budget.TotalSwapBytes, budget.MilliCPUs/1000, budget.MilliCPUs%1000, budget.PIDs)
-	if budget.CgroupParent != "" {
-		fmt.Printf("    cgroup_parent: %s\n", budget.CgroupParent)
+	_, err = io.WriteString(os.Stdout, proxyComposeBudget(budget))
+	return err
+}
+
+func proxyComposeBudget(budget proxyResourceBudget) string {
+	var output strings.Builder
+	fmt.Fprintf(&output, "    mem_limit: %d\n    memswap_limit: %d\n    cpus: \"%d.%03d\"\n    pids_limit: %d\n", budget.MemoryBytes, budget.TotalSwapBytes, budget.MilliCPUs/1000, budget.MilliCPUs%1000, budget.PIDs)
+	soft := budget.MemoryBytes * 2 / 5
+	if soft < 8<<20 {
+		soft = 8 << 20
 	}
-	return nil
+	fmt.Fprintf(&output, "    environment:\n      GOMEMLIMIT: \"%d\"\n      GODEBUG: disablethp=1\n", soft)
+	if budget.CgroupParent != "" {
+		fmt.Fprintf(&output, "    cgroup_parent: %s\n", budget.CgroupParent)
+	}
+	return output.String()
 }

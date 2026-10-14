@@ -66,6 +66,15 @@ def control_configuration(before, policy, service):
     return before+(b'\n' if before and not before.endswith(b'\n') else b'')+block
 
 
+def proxy_runtime_environment(existing,memory_bytes):
+    if existing is None:existing={}
+    if not isinstance(existing,dict):raise ValueError('normalized proxy environment required')
+    environment=dict(existing)
+    environment.setdefault('GOMEMLIMIT',str(max(8<<20,memory_bytes*2//5)))
+    environment.setdefault('GODEBUG','disablethp=1')
+    return environment
+
+
 class Platform:
     def __init__(self, root=Path('/'), run=None, owner=0, checkpoint=None):
         self.root, self.owner = Path(root), owner
@@ -389,6 +398,10 @@ class Platform:
                     volumes.remove(matches[0])
         if 'resource_budget' in value:
             budget=value['resource_budget']
+            old_env=old_doc['services']['komizo-proxy'].pop('environment',None)
+            actual_env=new_doc['services']['komizo-proxy'].pop('environment',None)
+            if actual_env!=proxy_runtime_environment(old_env,budget['memory_bytes']):
+                raise ValueError('candidate proxy runtime differs from its finite budget')
             fields={'mem_limit':budget['memory_bytes'],'memswap_limit':budget['total_memory_swap_bytes'],
                     'cpus':budget['milli_cpus']/1000,'pids_limit':budget['pids'],
                     'cgroup_parent':budget['cgroup_parent']}

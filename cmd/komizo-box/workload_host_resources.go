@@ -88,6 +88,9 @@ func runHostResources(args []string) error {
 	if err := policy.Apply("/sys/fs/cgroup", total, int64(runtime.NumCPU())*1000); err != nil {
 		return err
 	}
+	if err := applySmallHostKernelMemory("/", total); err != nil {
+		return err
+	}
 	if !*apply {
 		return workload.WritePrivateJSON(path, policy)
 	}
