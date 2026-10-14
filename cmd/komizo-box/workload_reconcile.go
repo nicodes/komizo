@@ -133,6 +133,7 @@ func (h *hostActivation) reconcile(parent context.Context, r reconciliationReque
 		return nil, err
 	}
 	var snapshot deploymentSnapshot
+	restoreConfiguration := false
 	if r.Outcome == "restore-serving" {
 		if p.RequireStatefulContract && op.Phase != "staging" && op.Phase != "staging_failed" && op.Phase != "configured" {
 			return nil, errors.New("stateful activation may have written data; configuration restoration cannot establish compatibility")
@@ -140,11 +141,29 @@ func (h *hostActivation) reconcile(parent context.Context, r reconciliationReque
 		if r.Serving != op.Previous {
 			return nil, errors.New("restore-serving requires the existing previous revision")
 		}
-		if err := h.readSnapshot(filepath.Join(h.releases, p.App, "staging-"+op.ID+".json"), &snapshot); err != nil {
-			return nil, err
+		snapshotErr := h.readSnapshot(filepath.Join(h.releases, p.App, "staging-"+op.ID+".json"), &snapshot)
+		if snapshotErr != nil {
+			// Staging persists this snapshot before its first configuration write.
+			// An early refusal can therefore retain the original serving files
+			// without having a snapshot to restore. Prove the current revision,
+			// retained images and serving identity instead; later phases and
+			// unreadable/corrupt snapshots still require the ordinary snapshot.
+			if !os.IsNotExist(snapshotErr) || p.Static != nil || (op.Phase != "staging" && op.Phase != "staging_failed") {
+				return nil, snapshotErr
+			}
+			env, err := h.readBytes(filepath.Join(p.AppDir, ".env"))
+			if err != nil {
+				return nil, err
+			}
+			if version, err := deploymentVersion(env); err != nil || version != r.Serving {
+				return nil, errors.New("early staging refusal requires the unchanged serving revision")
+			}
+			snapshot = deploymentSnapshot{}
+		} else {
+			restoreConfiguration = true
 		}
 		allowed := []string{composePath, p.Deployment.RoutePath, filepath.Join(p.AppDir, "hostnames"), filepath.Join(p.AppDir, ".env")}
-		if snapshot.Version != 1 || snapshot.ID != op.ID || len(snapshot.Files) != len(allowed) {
+		if restoreConfiguration && (snapshot.Version != 1 || snapshot.ID != op.ID || len(snapshot.Files) != len(allowed)) {
 			return nil, errors.New("snapshot identity differs")
 		}
 		for i, file := range snapshot.Files {
@@ -152,10 +171,12 @@ func (h *hostActivation) reconcile(parent context.Context, r reconciliationReque
 				return nil, errors.New("snapshot is outside the four protected configuration files")
 			}
 		}
-		if version, err := deploymentVersion(snapshot.Files[3].Body); err != nil || version != r.Serving {
-			return nil, errors.New("snapshot revision differs")
+		if restoreConfiguration {
+			if version, err := deploymentVersion(snapshot.Files[3].Body); err != nil || version != r.Serving {
+				return nil, errors.New("snapshot revision differs")
+			}
+			compose = snapshot.Files[0].Body
 		}
-		compose = snapshot.Files[0].Body
 	} else if r.Serving != op.Candidate {
 		return nil, errors.New("accept-candidate requires the exact candidate")
 	}
@@ -196,7 +217,7 @@ func (h *hostActivation) reconcile(parent context.Context, r reconciliationReque
 	if err := verify(); err != nil {
 		return nil, fmt.Errorf("existing serving identity unavailable: %w", err)
 	}
-	if r.Outcome == "restore-serving" {
+	if restoreConfiguration {
 		if err := restoreDeploymentSnapshot(snapshot, h.writeDeployment); err != nil {
 			return nil, err
 		}
@@ -222,7 +243,7 @@ func (h *hostActivation) reconcile(parent context.Context, r reconciliationReque
 			return nil, err
 		}
 	}
-	result := map[string]any{"version": 1, "operation_id": op.ID, "app": p.App, "candidate": op.Candidate, "serving": r.Serving, "outcome": r.Outcome, "application_restart": false, "database_restore": false, "provider_retry": false, "at": time.Now().UTC()}
+	result := map[string]any{"version": 1, "operation_id": op.ID, "app": p.App, "candidate": op.Candidate, "serving": r.Serving, "outcome": r.Outcome, "configuration_restored": restoreConfiguration, "application_restart": false, "database_restore": false, "provider_retry": false, "at": time.Now().UTC()}
 	if err := workload.WritePrivateJSON(filepath.Join(h.releases, p.App, "reconciliation-"+op.ID+".json"), result); err != nil {
 		return nil, err
 	}
