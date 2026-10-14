@@ -92,13 +92,14 @@ def local_docker_inventory(socket_path='/var/run/docker.sock'):
         if connection.sock is not None:connection.sock.settimeout(connection.timeout)
         maximum=min(maximum,remaining_bytes)
         connection.request('GET',path)
+        active_socket=connection.sock
         response=connection.getresponse()
         if response.status!=200:raise ValueError('local inventory unavailable')
         pieces=[];size=0
         while size<=maximum:
             remaining=deadline-time.monotonic()
             if remaining<=0:raise TimeoutError('local inventory deadline exceeded')
-            connection.sock.settimeout(min(8,remaining))
+            active_socket.settimeout(min(8,remaining))
             piece=response.read1(min(65536,maximum+1-size))
             if not piece:break
             pieces.append(piece);size+=len(piece)
