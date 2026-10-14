@@ -83,12 +83,19 @@ def local_docker_inventory(socket_path='/var/run/docker.sock'):
             self.sock=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
             self.sock.settimeout(8);self.sock.connect(socket_path)
     connection=LocalConnection('localhost',timeout=8)
+    deadline=time.monotonic()+20;remaining_bytes=32<<20
     def read(path,maximum):
+        nonlocal remaining_bytes
+        remaining=deadline-time.monotonic()
+        if remaining<=0:raise TimeoutError('local inventory deadline exceeded')
+        if connection.sock is not None:connection.sock.settimeout(min(8,remaining))
+        maximum=min(maximum,remaining_bytes)
         connection.request('GET',path)
         response=connection.getresponse()
         if response.status!=200:raise ValueError('local inventory unavailable')
         body=response.read(maximum+1)
         if len(body)>maximum:raise ValueError('local inventory exceeds its bound')
+        remaining_bytes-=len(body)
         return json.loads(body)
     try:
         rows=read('/v1.47/containers/json',8<<20)
