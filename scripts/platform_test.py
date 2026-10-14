@@ -663,6 +663,7 @@ class ProxyPlatformTests(unittest.TestCase):
             new['services']['komizo-proxy']['environment']={**runtime,'GOMEMLIMIT':'unreviewed'}
             with self.assertRaisesRegex(ValueError,'runtime differs'):f.p.proxy_preflight(f.stage,value)
             new['services']['komizo-proxy']['environment']=runtime
+            (f.stage/'proxy-preflight.json').unlink()
             # Compose v5 serializes normalized memory byte sizes as strings.
             for field in ('mem_limit','memswap_limit'):
                 new['services']['komizo-proxy'][field]=str(fields[field])
@@ -720,6 +721,31 @@ class ProxyPlatformTests(unittest.TestCase):
             self.assertTrue(volume['read_only'])
             self.assertEqual((proxy/'Caddyfile').read_text(),'existing synthetic routes')
             self.assertIn(str(f.stage/'proxy-preflight.json'),f.calls[-1])
+            service=definition['services']['komizo-proxy']
+            self.assertEqual(service['cgroup_parent'], '')
+            self.assertEqual(service['mem_limit'], str(96<<20))
+            self.assertEqual(service['environment']['GODEBUG'], 'disablethp=1')
+            # Configured installations reuse the declared non-serving allowance.
+            (f.stage/'proxy-preflight.json').unlink()
+            policy={'previews':{'memory_bytes':32<<20,'swap_bytes':0,'milli_cpus':100,'pids':128}}
+            authority=f.root/'etc/komizo/resources.json'
+            authority.write_text(json.dumps(policy));authority.chmod(0o600)
+            group=f.root/'sys/fs/cgroup/komizo-previews';group.mkdir(parents=True)
+            for name,body in {'memory.max':str(32<<20),'memory.swap.max':'0','cpu.max':'10000 100000','pids.max':'128'}.items():
+                (group/name).write_text(body+'\n')
+            f.p.proxy_preflight(f.stage,accepted)
+            service=json.loads((f.stage/'proxy-preflight.json').read_text())['services']['komizo-proxy']
+            self.assertEqual(service['cgroup_parent'], '/komizo-previews')
+            self.assertEqual(service['mem_limit'],str(32<<20))
+            self.assertEqual(service['memswap_limit'],str(32<<20))
+            self.assertEqual(service['environment']['GOMEMLIMIT'], str((32<<20)*2//5))
+            (f.stage/'proxy-preflight.json').unlink()
+            (group/'memory.max').write_text('max')
+            f.calls.clear()
+            with self.assertRaisesRegex(ValueError,'differs from authority'):
+                f.p.proxy_preflight(f.stage,accepted)
+            self.assertFalse((f.stage/'proxy-preflight.json').exists())
+            self.assertFalse(any('run' in call for call in f.calls))
 
 if __name__ == '__main__':
     unittest.main()
