@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: e406f1c788026a7baa99b061cfec33587fc108b5ea0a7df4383e2b9938e69a0f -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 72462a2a311eff9321bf5a24ca97acb7065667515e9428e8cfc25928ef08785b -->
 
 # Komizo
 
@@ -6,11 +6,11 @@ Agent-first, application-agnostic CLI for operating your own Compose hosts over 
 
 ## Install
 
-Download a matching Darwin/Linux, arm64/x86_64 archive from [releases](https://github.com/nicodes/komizo/releases). The agent interface below is available in v0.0.122 and later; these examples pin v0.0.122. Verify its checksum and GitHub attestation before executing it. The workstation needs SSH; platform maintenance also uses Python 3. The application server uses Alpine Linux with OpenRC, amd64 or arm64, and root SSH access.
+Download a matching Darwin/Linux, arm64/x86_64 archive from [releases](https://github.com/nicodes/komizo/releases). These examples pin v0.0.123, including structured management results and exact-stage platform recovery. Verify its checksum and GitHub attestation before executing it. The workstation needs SSH; platform maintenance also uses Python 3. The application server uses Alpine Linux with OpenRC, amd64 or arm64, and root SSH access.
 
 ```sh
 # Linux x86_64; choose the matching archive for your workstation.
-gh release download v0.0.122 --repo nicodes/komizo \
+gh release download v0.0.123 --repo nicodes/komizo \
   -p komizo_Linux_x86_64.tar.gz -p checksums.txt
 sha256sum -c checksums.txt --ignore-missing
 gh attestation verify komizo_Linux_x86_64.tar.gz --repo nicodes/komizo
@@ -18,7 +18,7 @@ tar xzf komizo_Linux_x86_64.tar.gz
 ./komizo capabilities
 ```
 
-Release archives embed both host architectures and need no Go compiler. With the matching Go toolchain, the source alternative is `go run github.com/nicodes/komizo@v0.0.122 --json setup --host root@your-server`; it builds the matching host executable when needed. Use only hosts you own or administer.
+Release archives embed both host architectures and need no Go compiler. Published releases include attested acceptance and performance receipts for the declared disposable Alpine test profile. With the matching Go toolchain, the source alternative is `go run github.com/nicodes/komizo@v0.0.123 --json setup --host root@your-server`; it builds the matching host executable when needed. Use only hosts you own or administer.
 
 ## Agent journey
 
@@ -75,10 +75,21 @@ Use `--proof FILE` when supplying an existing authenticated release proof. Priva
 
 On refusal, timeout or lost acknowledgement, inspect the operation before resubmitting. Inspection returns its decision, policy/operation identities and reviewable recovery argv for interrupted states. Select the intended serving revision and outcome explicitly. `operation recover` requires those exact reviewed identities, and the host independently rechecks them and its serving postconditions. It does not restore database data, replay provider work, restart the application or discard the fence.
 
+Platform configuration recovery uses the root operator and its exact protected server stage and reviewed digest:
+
+```sh
+komizo --json platform inspect --host root@your-server \
+  --stage /var/lib/komizo/upgrades/STAGE --expected-manifest REVIEWED_SHA256
+komizo --json platform recover --host root@your-server \
+  --stage /var/lib/komizo/upgrades/STAGE --expected-manifest REVIEWED_SHA256
+```
+
+Inspect the journal before choosing recovery. Recovery restores the recorded prior platform configuration; database recovery is a separate operation. Host identity, foreign-writer and fence checks remain mandatory.
+
 ## Machine contract
 
-Prefix any supported finite command with `--json`. Stdout is one version-1 envelope containing `version`, `command`, `ok`, `exit_code`, `data` and `error`, plus a safe `next_action` argv when applicable. Progress goes to stderr. `capabilities` publishes the envelope schema, command effects and result formats. Core journey commands return typed data; legacy text and untrusted application logs are explicitly wrapped in `data.text`.
+Prefix any supported finite command with `--json`. Stdout is one version-1 envelope containing `version`, `command`, `ok`, `exit_code`, `data` and `error`, plus a safe `next_action` argv when applicable. Progress goes to stderr. `capabilities` publishes the envelope schema, command effects and result formats. Management commands return structured objects or arrays. A receipt acknowledges successful command completion; readiness remains a separate observation. `capabilities` publishes a common management receipt schema. Application logs, complete command help and printable installer source are explicitly wrapped in `data.text`.
 
-Errors include a stable code, diagnostic message, `retryable: false` and `reconciliation_required`. A failed mutating command is conservatively uncertain; inspect before retrying. Failed doctor checks and acknowledged operation IDs remain in `data` when available. `komizo --json --timeout 5m COMMAND ...` selects a deadline from one second to one hour; the default is 30 minutes. Captured stdout is bounded at 4 MiB. Timeouts do not cancel durable host work. Interactive UI and retired hosted-account commands are outside the machine interface. Help succeeds; invalid flags still fail.
+Errors include a stable code, diagnostic message, `retryable: false` and `reconciliation_required`. Local validation uses `invalid_input` without uncertain remote effects; inventory differences use `state_mismatch` with typed findings. Missing or malformed structured results fail as `invalid_response`. Flag values spelled `--help` cannot clear mutation uncertainty. A failed mutating command is conservatively uncertain; inspect before retrying. Failed doctor checks and acknowledged operation IDs remain in `data` when available. `komizo --json --timeout 5m COMMAND ...` selects a deadline from one second to one hour; the default is 30 minutes. Captured stdout is bounded at 4 MiB. Timeouts do not cancel durable host work. Interactive UI and retired hosted-account commands are outside the machine interface. Help succeeds; invalid flags still fail.
 
 For lifecycle and advanced operations use `start`, `stop`, `restart`, `logs`, `set-secret`, `preview`, `platform`, `operator`, `workspace`, `artifact` and their command help. The protected operator/broker is optional; it is not another application-host requirement. Authority changes, upgrades and package maintenance retain their explicit reviewed plan/apply interfaces.
