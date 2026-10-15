@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -444,12 +445,13 @@ func RunList(args []string) error {
 	fs.Usage = func() { usageList(fs) }
 	var host string
 	var port int
-	var acceptHostKey bool
+	var acceptHostKey, asJSON bool
 	fs.StringVar(&host, "host", "", "server to inspect, [user@]HOST")
 	fs.IntVar(&port, "port", 22, "SSH port")
 	fs.BoolVar(&acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
+	fs.BoolVar(&asJSON, "json", false, "print the registered application records")
 	if err := fs.Parse(args); err != nil {
-		return ErrSilent
+		return silentFlagError(err)
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))
@@ -465,6 +467,9 @@ func RunList(args []string) error {
 	rep, err := fetchBox[box.Report](tgt, "report")
 	if err != nil {
 		return err
+	}
+	if asJSON {
+		return json.NewEncoder(os.Stdout).Encode(rep.Apps)
 	}
 
 	inv := inventoryFromReport(rep)

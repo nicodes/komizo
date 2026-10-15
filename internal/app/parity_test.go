@@ -26,7 +26,7 @@ func TestUpdateIsReachableFromTheCommandLine(t *testing.T) {
 	// Parsed, not run: this asserts the command exists and takes the flags the
 	// interface's own update needs, without touching a server.
 	err := RunUpdate([]string{"--help"})
-	if err != nil && err != ErrSilent {
+	if err != nil && err != ErrSilent && !errors.Is(err, flag.ErrHelp) {
 		t.Fatalf("komizo update --help = %v", err)
 	}
 }
@@ -80,7 +80,7 @@ func TestTheAppLifecycleIsReachableFromTheCommandLine(t *testing.T) {
 		"restart": RunRestart,
 		"logs":    RunLogs,
 	} {
-		if err := run([]string{"--help"}); err != nil && err != ErrSilent {
+		if err := run([]string{"--help"}); err != nil && err != ErrSilent && !errors.Is(err, flag.ErrHelp) {
 			t.Errorf("komizo %s --help = %v", name, err)
 		}
 		// The MESSAGE, not merely that something failed: with the check deleted

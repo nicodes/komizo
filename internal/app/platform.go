@@ -13,6 +13,10 @@ import (
 // Preparation authenticates released bytes and emits a reviewable finite plan.
 // Execution requires the operator's exact prepared manifest, not an implicit yes.
 func RunPlatform(args []string) error {
+	if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
+		usageJourney("platform", "komizo platform plan|apply --host HOST --release VERSION --source COMMIT --release-dir DIR --stage DIR", "Use plan --help for upgrade options, maintenance --help for packages, or proxy/controls plan --help. Application recovery is available through komizo operation inspect|recover.")
+		return nil
+	}
 	if len(args) > 0 && args[0] == "maintenance" {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 		defer cancel()

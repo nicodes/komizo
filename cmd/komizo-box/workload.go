@@ -15,6 +15,13 @@ import (
 func runWorkload(args []string) error {
 	if len(args) > 0 {
 		switch args[0] {
+		case "capabilities":
+			if len(args) != 1 {
+				return errors.New("workload capabilities accepts no arguments")
+			}
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{"version": 1, "policy_bootstrap": true, "typed_deployment": true, "operation_contract_version": 1})
+		case "policy-bootstrap":
+			return runWorkloadPolicyBootstrap(args[1:])
 		case "scoped-definition-check":
 			return runScopedDefinitionCheck(args[1:])
 		case "policy-check":

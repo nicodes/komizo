@@ -133,9 +133,10 @@ def main():
                    'preview_database':{'memory_bytes':128<<20,'swap_bytes':0,'milli_cpus':100,'pids':128}}
         fixture.write('/etc/komizo/resources.json',json.dumps(resources).encode())
         fixture.write('/etc/komizo/preview',b'DB_MEM_LIMIT=128m\n')
-        init=run([str(cli),'init','--host',address,'--proxy-image',PROXY],env=env,timeout=360)
+        init=run([str(cli),'--json','setup','--host',address],env=env,timeout=360)
+        assert json.loads(init)['ok'] and json.loads(init)['data']['prepared']
         (args.output/'init.log').write_bytes(init)
-        fixture.record('public_init',{'release':args.release,'source':args.source,'host_mounted_socket':False,'finite_groups':True})
+        fixture.record('public_setup',{'release':args.release,'source':args.source,'host_mounted_socket':False,'finite_groups':True})
         # IP clients omit TLS SNI. Give this disposable IP-only installation
         # an explicit certificate selection default; certificate verification
         # still checks the IP SAN and the fixture's trusted public CA.
@@ -183,20 +184,29 @@ def main():
         for component,dockerfile in [('gate','Gatefile'),('config','Configfile')]:
             fixture.command(['docker','build','-f','/root/fixture/'+dockerfile,'-t',prefix+component+':'+REVISION,'/root/fixture'],timeout=180)
             fixture.command(['docker','push',prefix+component+':'+REVISION],timeout=180)
-        add=run([str(cli),'add','--host',address,'--app','fixturelocal','--config',config,'--key',str(keys/'app-key')],env=env,timeout=180)
-        (args.output/'add.log').write_bytes(add)
         policy='/etc/komizo/workloads/fixturelocal.json'
-        fixture.python("import json\np=Path("+repr(policy)+");v=json.loads(p.read_bytes());v['source_repository']='example/fixture';v['repository_id']='1';v['resources']={'cgroup_parent':'/komizo-production','default':{'memory_bytes':32<<20,'memory_swap_bytes':32<<20,'milli_cpus':100},'max_memory_bytes':40<<20,'max_memory_swap_bytes':40<<20,'max_milli_cpus':100,'startup_allowance_bytes':8<<20};v['readiness']={'probes':[{'url':'https://"+address+"/readyz','revision_field':'revision'}]};p.write_text(json.dumps(v)+'\\n');p.chmod(0o600)\n")
-        fixture.command(['komizo-box','workload','policy-check','--policy',policy])
-        fixture.command(['komizo-box','workload','deployment-enable','--policy',policy])
+        definition={'version':1,'app':'fixturelocal','config':config,'policy':{
+            'version':1,'app':'fixturelocal','app_dir':'/srv/fixturelocal','image_prefix':prefix,'shared_network':'edge',
+            'source_repository':'example/fixture','repository_id':'1',
+            'resources':{'cgroup_parent':'/komizo-production','default':{'memory_bytes':32<<20,'memory_swap_bytes':32<<20,'milli_cpus':100},'max_memory_bytes':40<<20,'max_memory_swap_bytes':40<<20,'max_milli_cpus':100,'startup_allowance_bytes':8<<20},
+            'readiness':{'probes':[{'url':'https://'+address+'/readyz','revision_field':'revision'}]}}}
+        definition_file=args.output/'application.json';definition_file.write_text(json.dumps(definition)+'\n');definition_file.chmod(0o600)
+        setup_args=[str(cli),'--json','setup','--host',address,'--definition',str(definition_file),'--key',str(keys/'app-key')]
+        registered=json.loads(run(setup_args,env=env,timeout=180));assert registered['ok'] and registered['data']['app_registered'] and not registered['data']['key_unchanged']
+        key_hash=hashlib.sha256((keys/'app-key').read_bytes()).hexdigest()
+        repeated=json.loads(run(setup_args,env=env,timeout=180));assert repeated['ok'] and repeated['data']['key_unchanged'] and hashlib.sha256((keys/'app-key').read_bytes()).hexdigest()==key_hash
+        assert 'PRIVATE KEY' not in json.dumps(registered) and 'PRIVATE KEY' not in json.dumps(repeated)
+        fixture.record('public_app_setup_idempotence',{'application_definition':True,'key_preserved':True,'private_key_not_printed':True})
         fixture.command(['komizo-box','workload','validate','--policy',policy,'--app','fixturelocal','--app-dir','/srv/fixturelocal','--version',REVISION,'--compose','/root/fixture/compose.yml','--output','/root/fixture/validated.json'])
         fixture.command(['komizo-box','workload','release-bootstrap','--policy',policy,'--version',REVISION,'--config-image',config+':'+REVISION,'--compose','/root/fixture/compose.yml'])
         fixture.write('/srv/fixturelocal/.env',('APP_VERSION='+REVISION+'\n').encode())
         fixture.write('/srv/fixturelocal/.komizo-image-retention',('CURRENT='+REVISION+'\nPREVIOUS=\n').encode())
-        submission=fixture.command(['komizo-box','workload','deployment-submit','--policy',policy,'--version',REVISION],body=b'')
-        operation=submission.decode().strip().splitlines()[-1];assert re.fullmatch('[a-f0-9]{32}',operation)
-        fixture.command(['komizo-box','workload','activation-wait','--id',operation],timeout=180)
-        fixture.record('first_bootstrapped_activation',{'revision':REVISION,'operation_id':operation,'authority':'operator-bootstrap','new_github_source_authentication_tested':False})
+        deployment=json.loads(run([str(cli),'--json','deploy','--host',address,'--app','fixturelocal','--version',REVISION],env=env,timeout=180))
+        assert deployment['ok'] and deployment['data']['completed']
+        operation=deployment['data']['operation_id'];assert re.fullmatch('[a-f0-9]{32}',operation)
+        inspection=json.loads(run([str(cli),'--json','operation','inspect','--host',address,'--app','fixturelocal'],env=env))
+        assert inspection['ok'] and inspection['data']['inspection']['operation']['id']==operation and not inspection['data']['reconciliation_required']
+        fixture.record('public_bootstrapped_activation',{'revision':REVISION,'operation_id':operation,'authority':'operator-bootstrap','new_github_source_authentication_tested':False,'machine_interface':1})
         def identity():
             return json.loads(fixture.python("import hashlib,json\npaths=[Path('/srv/fixturelocal/.env'),Path("+repr(policy)+"),Path('/srv/fixturelocal/.komizo-image-retention')]\nmounts=json.loads(__import__('subprocess').check_output(['docker','inspect','--format','{{json .Mounts}}','komizo-proxy']))\nprint(json.dumps({'files':{str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in paths},'certificates':sorted(m['Name'] for m in mounts if m['Type']=='volume' and m['Destination'] in ('/data','/config')),'platform_pending':Path('/var/lib/komizo/upgrades/pending.json').exists(),'activation_pending':Path('/var/lib/komizo/activations/pending.json').exists()}))"))
         def probe():
@@ -311,7 +321,7 @@ else:raise ValueError('private-file interruption window not observed')
         assert identity()==before
         fixture.record('stop_intent_and_service_restart',{'deliberate_stop_preserved':True,'probe':probe(),'os_boot_tested':False})
         result={'version':1,'release':args.release,'source':args.source,'steps':fixture.steps,'runner_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-                'scope':'public init, Root local bootstrap, activation, same-release self/proxy upgrade, actual authority executor interruption/foreign-writer refusal/recovery/replay, cached reconfiguration and stop intent across service restart; no new CI-source admission or OS boot claim',
+                'scope':'public machine CLI setup, application definition and key idempotence, direct deployment and operation inspection, Root local bootstrap, activation, same-release self/proxy upgrade, actual authority executor interruption/foreign-writer refusal/recovery/replay, cached reconfiguration and stop intent across service restart; no new CI-source admission or OS boot claim',
                 'private_cgroup_namespace':True,'host_mounts':False,'host_docker_socket':False,'provider_calls':False,'real_data_accessed':False}
         (args.output/'accepted.json').write_text(json.dumps(result,indent=2)+'\n')
     except Exception:

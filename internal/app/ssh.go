@@ -299,7 +299,7 @@ func (t target) quiet(cmd string) (string, error) {
 // runScript pipes a script to the far end and runs it there, with its output
 // streamed straight through so a long bootstrap shows progress as it happens.
 func (t target) runScript(script string, env map[string]string) error {
-	return t.runScriptTo(script, env, os.Stdout)
+	return t.runScriptTo(script, env, progressOutput())
 }
 
 // runScriptHeard is runScript that also reports whether the far end said

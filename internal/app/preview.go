@@ -39,7 +39,7 @@ func RunPreview(args []string) error {
 	fs.IntVar(&port, "port", 22, "SSH port")
 	fs.BoolVar(&acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use)")
 	if err := fs.Parse(args); err != nil {
-		return ErrSilent
+		return silentFlagError(err)
 	}
 	switch sub {
 	case "up", "down", "resolve", "ls", "gc", "database", "configure":

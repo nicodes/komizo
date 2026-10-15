@@ -82,7 +82,7 @@ func RunUI(args []string) error {
 	bind := fs.String("bind", "127.0.0.1", "address to listen on (default loopback; set the tailnet interface address to reach it from your tailnet)")
 	port := fs.Int("port", 8480, "port to listen on")
 	if err := fs.Parse(args); err != nil {
-		return ErrSilent
+		return silentFlagError(err)
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))

@@ -371,7 +371,7 @@ func RunReconcile(args []string) error {
 	fs.StringVar(&invPath, "inventory", "", "expected-app inventory file (JSON; names, config images, hostnames only)")
 	fs.BoolVar(&acceptHostKey, "accept-host-key", false, "trust an unseen server's host key (trust-on-first-use; appends to the LOCAL ~/.ssh/known_hosts)")
 	if err := fs.Parse(args); err != nil {
-		return ErrSilent
+		return silentFlagError(err)
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))
