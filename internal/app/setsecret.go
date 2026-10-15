@@ -13,7 +13,9 @@ import (
 // RunSetSecret sends a bounded value over the operator's root connection to
 // the typed host writer. CI uses the separately scoped release-secret command.
 // Both routes share the same atomic writer; secret bytes never enter argv.
-func RunSetSecret(args []string) error {
+func RunSetSecret(args []string) (err error) {
+	validation := localInput(&err)
+	defer validation.finish()
 	fs := flag.NewFlagSet("set-secret", flag.ContinueOnError)
 	fs.Usage = func() { usageSetSecret(fs) }
 	var host, app, name, from, uid string
@@ -57,13 +59,14 @@ func RunSetSecret(args []string) error {
 	if err != nil {
 		return err
 	}
+	validation.complete = true
 	if err := ensureReachable(tgt, acceptHostKey); err != nil {
 		return err
 	}
-	if err := tgt.runPiped(remote, bytes.NewReader(value), os.Stdout); err != nil {
+	if err := tgt.runPiped(remote, bytes.NewReader(value), progressOutput()); err != nil {
 		return fmt.Errorf("set-secret failed -- see the output above")
 	}
-	return nil
+	return managementReceipt("set-secret", tgt, app, map[string]any{"name": name, "file": asFile})
 }
 
 // setSecretCommand builds the remote command, validating every part of it

@@ -22,9 +22,9 @@ func main() {
 	if err := app.Main(os.Args[1:]); err != nil {
 		// A silent error has already said its piece -- flag parsing prints its
 		// own message, and repeating it would be noise.
-		if !errors.Is(err, app.ErrSilent) {
+		if !errors.Is(err, app.ErrSilent) && app.ExitCode(err) != app.MachineHelpExit {
 			fmt.Fprintf(os.Stderr, "\nerror: %v\n", err)
 		}
-		os.Exit(1)
+		os.Exit(app.ExitCode(err))
 	}
 }

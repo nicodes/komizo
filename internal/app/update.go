@@ -46,7 +46,9 @@ type updateOpts struct {
 	noProxy       bool
 }
 
-func RunUpdate(args []string) error {
+func RunUpdate(args []string) (err error) {
+	validation := localInput(&err)
+	defer validation.finish()
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	fs.Usage = func() { usageUpdate(fs) }
 	var o updateOpts
@@ -79,6 +81,7 @@ func RunUpdate(args []string) error {
 	}
 
 	step("Checking %s:%d", tgt.addr(), tgt.port)
+	validation.complete = true
 	if err := ensureReachable(tgt, o.acceptHostKey); err != nil {
 		return err
 	}
@@ -130,7 +133,7 @@ func RunUpdate(args []string) error {
 	appErr := refreshBoxApps(tgt.appRecords, cliProgress{}, tgt.runScript)
 
 	if o.noProxy || !hasProxy {
-		return appErr
+		return updatedReceipt(tgt, false, appErr)
 	}
 	step("Updating the shared reverse proxy")
 	if err := tgt.runScript(scripts.AlpineProxyScript, proxyEnv(proxyOpts{
@@ -140,7 +143,7 @@ func RunUpdate(args []string) error {
 		return errors.Join(appErr, fmt.Errorf("the server updated, but the proxy failed -- see the output above.\n"+
 			"    Re-run 'komizo proxy' once you have fixed it; the server itself is ready."))
 	}
-	return appErr
+	return updatedReceipt(tgt, true, appErr)
 }
 
 func usageUpdate(fs *flag.FlagSet) {
@@ -162,4 +165,11 @@ a deliberate stop. No deploy key is rotated and nothing is restarted.
 Flags:
 `)
 	fs.PrintDefaults()
+}
+
+func updatedReceipt(tgt target, proxy bool, refreshErr error) error {
+	if refreshErr != nil {
+		return refreshErr
+	}
+	return managementReceipt("update", tgt, "", map[string]any{"proxy_updated": proxy})
 }

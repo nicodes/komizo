@@ -17,7 +17,9 @@ import (
 // preview is and may never touch.
 
 // RunPreview handles `komizo preview up|down|resolve|ls|gc`.
-func RunPreview(args []string) error {
+func RunPreview(args []string) (err error) {
+	validation := localInput(&err)
+	defer validation.finish()
 	// The subcommand is the first NON-FLAG argument. Anything starting with a
 	// dash goes to the flag parser instead, so a bogus flag fails there --
 	// with the same ErrSilent every other command answers a bad flag with,
@@ -92,6 +94,7 @@ func RunPreview(args []string) error {
 	if err != nil {
 		return err
 	}
+	validation.complete = true
 	if err := ensureReachable(tgt, acceptHostKey); err != nil {
 		return err
 	}
@@ -115,6 +118,12 @@ func RunPreview(args []string) error {
 	}
 	if sub == "up" {
 		step("Bringing %s PR #%d up on %s", app, pr, tgt.host)
+	}
+	if machineMode() && sub == "down" {
+		if _, _, err := tgt.runScriptHeardTo(sb.String(), nil, progressOutput()); err != nil {
+			return err
+		}
+		return managementReceipt("preview down", tgt, app, map[string]any{"pr": pr})
 	}
 	_, _, err = tgt.runScriptHeardTo(sb.String(), nil, os.Stdout)
 	return err

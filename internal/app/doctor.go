@@ -46,7 +46,9 @@ type DoctorResult struct {
 	Facts     map[string]string `json:"facts"`
 }
 
-func RunDoctor(args []string) error {
+func RunDoctor(args []string) (err error) {
+	validation := localInput(&err)
+	defer validation.finish()
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.Usage = func() {
 		usageJourney("doctor", "komizo doctor --host root@HOST", "Read-only checks for supported OS, architecture, privileges and installation space. SSH host trust stays explicit.")
@@ -65,6 +67,7 @@ func RunDoctor(args []string) error {
 	if err != nil {
 		return err
 	}
+	validation.complete = true
 	if err := ensureReachable(tgt, *accept); err != nil {
 		return err
 	}

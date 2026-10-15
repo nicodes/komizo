@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 export KOMIZO_REQUIRE_SHELLCHECK=1
+python3 -m unittest discover -s tools/engineering -p 'test_*.py' -v
 python3 scripts/platform_test.py
 python3 scripts/platform_prepare_test.py
 python3 -m unittest discover -s scripts -p maintenance_test.py -v

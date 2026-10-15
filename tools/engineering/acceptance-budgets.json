@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "guest_memory_bytes": 1073741824,
+  "guest_milli_cpus": 1000,
+  "setup_seconds": 360,
+  "deployment_seconds": 120,
+  "idle_control_pss_bytes": 134217728,
+  "route_seconds": 2,
+  "operator_seconds": 5,
+  "samples": 5,
+  "load_seconds": 15,
+  "load_memory_bytes": 67108864,
+  "load_milli_cpus": 200
+}

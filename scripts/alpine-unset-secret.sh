@@ -115,17 +115,28 @@ cd "$APP_DIR"
 # find the ones nothing delivers any more, and it gives away nothing the
 # repository's own workflow does not already say out loud.
 if [ "$LIST" = 1 ]; then
-	echo "$APP_NAME: $SECRETS"
-	grep -oE '^[A-Za-z0-9_]+=' "$SECRETS" | tr -d '=' | sed 's/^/  /' || true
+	[ "${MACHINE_NAMES:-}" = 1 ] || echo "$APP_NAME: $SECRETS"
+	if [ "${MACHINE_NAMES:-}" = 1 ]; then
+		grep -oE '^[A-Za-z0-9_]+=' "$SECRETS" | tr -d '=' || true
+	else
+		grep -oE '^[A-Za-z0-9_]+=' "$SECRETS" | tr -d '=' | sed 's/^/  /' || true
+	fi
 	# The file secrets, under the name that removes them. Listed even when
 	# there are none: "this app has no file secrets" and "this command does
 	# not know about file secrets" look identical otherwise, and the second
 	# is what left ten of them undiscoverable on these boxes for months.
-	echo "$APP_NAME: $APP_DIR/secrets/"
+	[ "${MACHINE_NAMES:-}" = 1 ] || echo "$APP_NAME: $APP_DIR/secrets/"
 	if [ -d secrets ]; then
 		for f in secrets/*; do
 			[ -f "$f" ] || continue
-			echo "  file:${f#secrets/}"
+			if [ "${MACHINE_NAMES:-}" = 1 ]; then
+				case "${f#secrets/}" in
+					*[!A-Za-z0-9._-]*) echo "error: invalid file secret name" >&2; exit 1 ;;
+				esac
+				printf 'file:%s\n' "${f#secrets/}"
+			else
+				echo "  file:${f#secrets/}"
+			fi
 		done
 	fi
 	exit 0

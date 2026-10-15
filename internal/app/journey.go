@@ -67,7 +67,9 @@ func readDefinition(path string) (appDefinition, error) {
 	return d, nil
 }
 
-func RunSetup(args []string) error {
+func RunSetup(args []string) (err error) {
+	validation := localInput(&err)
+	defer validation.finish()
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	fs.Usage = func() {
 		usageJourney("setup", "komizo setup --host root@HOST [--definition app.json] [--key PRIVATE_FILE]", "Check prerequisites, prepare the host and optionally register an app. Existing app authority and keys are preserved; changed policy requires a separate reviewed migration.")
@@ -85,7 +87,6 @@ func RunSetup(args []string) error {
 		return errors.New("setup accepts flags; --key requires --definition")
 	}
 	var d appDefinition
-	var err error
 	if *definition != "" {
 		d, err = readDefinition(*definition)
 		if err != nil {
@@ -96,6 +97,7 @@ func RunSetup(args []string) error {
 	if err != nil {
 		return err
 	}
+	validation.complete = true
 	if err := ensureReachable(tgt, *accept); err != nil {
 		return err
 	}
@@ -111,7 +113,7 @@ func RunSetup(args []string) error {
 	// Upgrades are explicit; registering an app never incidentally refreshes
 	// the proxy, daemon or another app's privileged programs.
 	if !preflight.Installed {
-		if err := RunInit(connection); err != nil {
+		if err := runInit(connection, false); err != nil {
 			return err
 		}
 	}
@@ -172,7 +174,7 @@ func RunSetup(args []string) error {
 			}
 		}
 		if !existing {
-			if err := RunAdd(add); err != nil {
+			if err := runAdd(add, false); err != nil {
 				return err
 			}
 		}
@@ -259,7 +261,9 @@ func journeyRemote(tgt target, args []string, body []byte) ([]byte, error) {
 	return output.Bytes(), nil
 }
 
-func RunDeploy(args []string) error {
+func RunDeploy(args []string) (err error) {
+	validation := localInput(&err)
+	defer validation.finish()
 	fs := flag.NewFlagSet("deploy", flag.ContinueOnError)
 	fs.Usage = func() {
 		usageJourney("deploy", "komizo deploy --host root@HOST --app APP --version COMMIT [--proof FILE]", "Submit through installed root-reviewed deployment authority. Registry tokens stay in private files/stdin. On uncertainty inspect the operation; never resubmit blindly.")
@@ -318,6 +322,7 @@ func RunDeploy(args []string) error {
 	if err != nil {
 		return err
 	}
+	validation.complete = true
 	if err := ensureReachable(tgt, false); err != nil {
 		return err
 	}
@@ -386,7 +391,9 @@ func inspectOperation(tgt target, app string) (operationInspection, error) {
 	return result, nil
 }
 
-func RunOperation(args []string) error {
+func RunOperation(args []string) (err error) {
+	validation := localInput(&err)
+	defer validation.finish()
 	if len(args) == 1 && hasHelp(args) {
 		usageJourney("operation", "komizo operation inspect|recover --host root@HOST --app APP", "Start with inspect. Recovery requires exact reviewed operation, policy, phase and serving identities.")
 		return nil
@@ -436,6 +443,7 @@ func RunOperation(args []string) error {
 	if err != nil {
 		return err
 	}
+	validation.complete = true
 	if err := ensureReachable(tgt, false); err != nil {
 		return err
 	}
