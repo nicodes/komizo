@@ -6,11 +6,53 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 const healthyPrerequisites = "os=alpine\nkernel=Linux\narch=x86_64\nuid=0\nmemory_kib=1048576\ndisk_kib=4194304\ninodes=800000\napk=yes\nopenrc=yes\ncgroup_v2=yes\ninstalled=yes\n"
+
+func TestDoctorInstallationIsManagedStateRatherThanBinaryPresence(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("executes the Linux prerequisite script")
+	}
+	root := t.TempDir()
+	binary := filepath.Join(root, "komizo-box")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	script := strings.ReplaceAll(doctorScript, "/usr/local/bin/komizo-box", binary)
+	script = strings.ReplaceAll(script, "/var/lib/komizo", root)
+	probe := func(want bool) {
+		t.Helper()
+		out, err := exec.Command("sh", "-c", script).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := decodePrerequisites("root@fixture", string(out))
+		if err != nil || result.Installed != want {
+			t.Fatalf("installed=%v want=%v err=%v", result.Installed, want, err)
+		}
+	}
+	probe(false) // An authenticated staged executable is not an installation.
+	marker := filepath.Join(root, "version")
+	if err := os.WriteFile(marker, []byte("0.0.121\nstamp\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	probe(true)
+	if err := os.Remove(binary); err != nil {
+		t.Fatal(err)
+	}
+	probe(true) // Missing code on an established host needs explicit repair.
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "apps"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	probe(true) // Legacy registration authority must never look like a new host.
+}
 
 func TestDoctorRefusesUnsupportedOrIncompleteBeforeSetup(t *testing.T) {
 	for _, tc := range []struct {
@@ -180,6 +222,20 @@ func TestSetupKeyResumeIsBoundToPrivateKeyAndApp(t *testing.T) {
 		}
 		if _, err := readExistingKey(path, comment); err == nil {
 			t.Fatal("truncated private key accepted")
+		}
+	}
+}
+
+func TestDeploymentAcknowledgementMatchesTheHostWireProtocol(t *testing.T) {
+	id, previous := strings.Repeat("a", 32), strings.Repeat("b", 40)
+	wire := "deploy: previous-version=" + previous + "\ndeploy: submitted=" + id + "\n" + id + "\n"
+	got, prior, err := decodeDeploymentAcknowledgement([]byte(wire))
+	if err != nil || got != id || prior != previous {
+		t.Fatal(got, prior, err)
+	}
+	for _, bad := range []string{id, wire + "extra\n", strings.Replace(wire, "submitted="+id, "submitted="+strings.Repeat("c", 32), 1), strings.Replace(wire, previous, "unknown", 1)} {
+		if _, _, err := decodeDeploymentAcknowledgement([]byte(bad)); err == nil {
+			t.Fatal("ambiguous acknowledgement accepted", bad)
 		}
 	}
 }
