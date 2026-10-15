@@ -21,6 +21,9 @@ import (
 // is. See box/preview.go for the contract this enforces.
 
 func runPreview(args []string) error {
+	if len(args) == 1 && args[0] == "database" {
+		return runPreviewDatabase()
+	}
 	if len(args) == 0 {
 		return fmt.Errorf("preview what -- up, down, resolve, ls or gc")
 	}

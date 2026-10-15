@@ -38,9 +38,12 @@ func RunPreview(args []string) error {
 		return ErrSilent
 	}
 	switch sub {
-	case "up", "down", "resolve", "ls", "gc":
+	case "up", "down", "resolve", "ls", "gc", "database":
 	default:
-		return fmt.Errorf("preview what -- up, down, resolve, ls or gc, not %q", sub)
+		return fmt.Errorf("preview what -- up, down, resolve, ls, gc or database, not %q", sub)
+	}
+	if sub == "database" && (app != "" || pr != 0 || fs.NArg() != 0) {
+		return fmt.Errorf("preview database accepts only host connection flags")
 	}
 
 	// Checked HERE as well as on the box, so a typo fails before anything
@@ -97,10 +100,11 @@ func usagePreview(fs *flag.FlagSet, sub string) {
   komizo preview resolve --host root@box --app myapp --pr 12 ghcr.io/you/web:pr-12 [more images...]
   komizo preview ls   --host root@box
   komizo preview gc   --host root@box
+  komizo preview database --host root@box
 
 A preview is an isolated compose project per pull request -- its own
-containers, its own database inside the app's postgres (created on up,
-dropped on down, never shared, never prod data), its own route at
+containers, its own database inside Komizo's private preview server (created on up,
+dropped on down, separate from production data), its own route at
 the host-configured preview domain, capped memory and cpu, and a ceiling on how many
 may exist with least-recently-used eviction. 'up' refuses below the
 capacity floors in /etc/komizo/deploy-floors, exactly like a deploy.
