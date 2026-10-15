@@ -41,6 +41,8 @@ func runWorkload(args []string) error {
 			return runWorkloadActivation(args)
 		case "host-resources":
 			return runHostResources(args[1:])
+		case "startup-check":
+			return runWorkloadStartupCheck(args[1:])
 		case "proxy-budget":
 			return runProxyBudget(args[1:])
 		case "image-refs":
