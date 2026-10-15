@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 083982461421c63f9aaa93356088c064a0e1f5a3ec2d40988375cd6fc3e93508 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 232a23ee78f3d6604799d1a08cf6d9d6ab15d7b053f0046d0f4e733c0bf2acd8 -->
 
 # komizo
 
@@ -9,7 +9,7 @@ Reusable, application-agnostic CLI for preparing and operating your own Compose 
 Use a verified release archive or the Go toolchain matching `go.mod` and `.mise.toml`.
 
 ```sh
-go run github.com/nicodes/komizo@v0.0.106 init --host root@your-server
+go run github.com/nicodes/komizo@v0.0.120 init --host root@your-server
 ```
 
 `init` prepares the host and requires privileged access. Review its changes before using it on an existing host. `komizo list`, `komizo report` and `komizo logs` inspect applications; see command help for current flags. The local UI is available through the CLI’s `ui` command.
@@ -18,10 +18,10 @@ The supported deployment operation is app-scoped Compose deployment. Historical 
 
 ## Release archive without Go
 
-Example for Linux x86_64, using the reviewed release v0.0.106:
+Example for Linux x86_64, using the reviewed release v0.0.120:
 
 ```sh
-gh release download v0.0.106 --repo nicodes/komizo \
+gh release download v0.0.120 --repo nicodes/komizo \
   -p 'komizo_Linux_x86_64.tar.gz' -p checksums.txt
 sha256sum -c checksums.txt --ignore-missing
 gh attestation verify komizo_Linux_x86_64.tar.gz --repo nicodes/komizo
@@ -51,12 +51,12 @@ The application host remains one box. App-scoped deployment, workload budgets, i
 Use the verified CLI, an exact release source commit and protected absolute local directories:
 
 ```sh
-./komizo platform plan --host your-server --release v0.0.106 \
+./komizo platform plan --host your-server --release v0.0.120 \
   --source 6443881535214dd4f9fadee92ae3eceb57ee02f3 \
-  --release-dir /root/komizo/releases/v0.0.106 --stage /root/komizo/plans/upgrade
-./komizo platform apply --host your-server --release v0.0.106 \
+  --release-dir /root/komizo/releases/v0.0.120 --stage /root/komizo/plans/upgrade
+./komizo platform apply --host your-server --release v0.0.120 \
   --source 6443881535214dd4f9fadee92ae3eceb57ee02f3 \
-  --release-dir /root/komizo/releases/v0.0.106 --stage /root/komizo/plans/upgrade \
+  --release-dir /root/komizo/releases/v0.0.120 --stage /root/komizo/plans/upgrade \
   --resume --expected-manifest <reviewed-manifest-sha256>
 ```
 
@@ -205,8 +205,8 @@ Acceptance snapshots include available fixed OpenRC controller groups, actual th
 Persist a declared finite control policy through OpenRC service restarts with the public operator. Install the same authenticated host release first, then use protected local staging paths:
 
 ```sh
-./komizo platform controls plan --host your-server --release v0.0.106 --source 6443881535214dd4f9fadee92ae3eceb57ee02f3 --release-dir /root/komizo/releases/v0.0.106 --stage /root/komizo/plans/controls
-./komizo platform controls apply --host your-server --release v0.0.106 --source 6443881535214dd4f9fadee92ae3eceb57ee02f3 --release-dir /root/komizo/releases/v0.0.106 --stage /root/komizo/plans/controls --expected-manifest REVIEWED_SHA256
+./komizo platform controls plan --host your-server --release v0.0.120 --source 6443881535214dd4f9fadee92ae3eceb57ee02f3 --release-dir /root/komizo/releases/v0.0.120 --stage /root/komizo/plans/controls
+./komizo platform controls apply --host your-server --release v0.0.120 --source 6443881535214dd4f9fadee92ae3eceb57ee02f3 --release-dir /root/komizo/releases/v0.0.120 --stage /root/komizo/plans/controls --expected-manifest REVIEWED_SHA256
 ```
 
 The plan binds the installed resource policy and derives native settings for the fixed Docker, controller and API services. It preserves caller options, journals prior modes and absence, and writes the reviewed configuration at 0600. Foreign control assignments and edits outside the managed block refuse. Applying this plan activates no application or service. Verify actual limits after an ordinary service restart. Self-upgrade and recovery also reapply installed resource authority before accepting restarted services. The workload fixture rejects declared control drift before applying pressure and retains transport timeout route/phase/elapsed diagnostics without retries.
