@@ -1,8 +1,10 @@
 package app
 
 import (
+	"encoding/base64"
 	"flag"
 	"fmt"
+	"github.com/nicodes/komizo/box"
 	"os"
 	"strconv"
 	"strings"
@@ -26,10 +28,12 @@ func RunPreview(args []string) error {
 	}
 	fs := flag.NewFlagSet("preview "+sub, flag.ContinueOnError)
 	fs.Usage = func() { usagePreview(fs, sub) }
-	var host, app string
+	var host, app, profileFile string
+	var profileBody []byte
 	var pr, port int
 	var acceptHostKey bool
 	fs.StringVar(&host, "host", "", "server, [user@]HOST (user defaults to root)")
+	fs.StringVar(&profileFile, "profile-file", "", "operator-reviewed preview profile JSON (configure only)")
 	fs.StringVar(&app, "app", "", "the app this is a preview of")
 	fs.IntVar(&pr, "pr", 0, "the pull request number")
 	fs.IntVar(&port, "port", 22, "SSH port")
@@ -38,7 +42,7 @@ func RunPreview(args []string) error {
 		return ErrSilent
 	}
 	switch sub {
-	case "up", "down", "resolve", "ls", "gc", "database":
+	case "up", "down", "resolve", "ls", "gc", "database", "configure":
 	default:
 		return fmt.Errorf("preview what -- up, down, resolve, ls, gc or database, not %q", sub)
 	}
@@ -46,6 +50,24 @@ func RunPreview(args []string) error {
 		return fmt.Errorf("preview database accepts only host connection flags")
 	}
 
+	if sub == "configure" {
+		if err := validateApp(app); err != nil {
+			return err
+		}
+		if profileFile == "" || pr != 0 || fs.NArg() != 0 {
+			return fmt.Errorf("preview configure requires --app and --profile-file only")
+		}
+		var err error
+		profileBody, err = os.ReadFile(profileFile)
+		if err != nil {
+			return err
+		}
+		if _, err := box.ParsePreviewProfile(profileBody); err != nil {
+			return err
+		}
+	} else if profileFile != "" {
+		return fmt.Errorf("--profile-file is only for preview configure")
+	}
 	// Checked HERE as well as on the box, so a typo fails before anything
 	// connects -- the box's check is the one that matters, this one is the
 	// one that saves the round trip.
@@ -78,9 +100,15 @@ func RunPreview(args []string) error {
 	if sub == "up" || sub == "down" || sub == "resolve" {
 		remote = append(remote, "--app", app, "--pr", strconv.Itoa(pr))
 	}
+	if sub == "configure" {
+		remote = append(remote, "--app", app)
+	}
 	remote = append(remote, fs.Args()...)
 
 	var sb strings.Builder
+	if sub == "configure" {
+		sb.WriteString("printf %s " + shQuote(base64.StdEncoding.EncodeToString(profileBody)) + " | base64 -d | ")
+	}
 	sb.WriteString(BoxBin)
 	for _, a := range remote {
 		sb.WriteString(" " + shQuote(a))
@@ -101,6 +129,7 @@ func usagePreview(fs *flag.FlagSet, sub string) {
   komizo preview ls   --host root@box
   komizo preview gc   --host root@box
   komizo preview database --host root@box
+  komizo preview configure --host root@box --app myapp --profile-file preview-profile.json
 
 A preview is an isolated compose project per pull request -- its own
 containers, its own database inside Komizo's private preview server (created on up,

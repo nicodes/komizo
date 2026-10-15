@@ -79,7 +79,7 @@ const (
 
 // Preview defaults.
 const (
-	PreviewDomainDefault    = "preview.gdam.dev"
+	PreviewDomainDefault    = ""
 	PreviewTTLDefault       = 72 * time.Hour
 	PreviewMaxDefault       = 5
 	PreviewMemLimitDefault  = "512m"
@@ -90,7 +90,8 @@ const (
 
 // PreviewKnob is the parsed knob file.
 type PreviewKnob struct {
-	cgroupParent string // assigned only from protected host resources, never knob text
+	cgroupParent string                     // assigned only from protected host resources, never knob text
+	profiles     map[string]*PreviewProfile // read only from protected operator configuration
 	// SharedDomain opts this host into flat, app-qualified preview names.
 	SharedDomain      string
 	Domain            string
@@ -187,8 +188,7 @@ func ParsePreviewKnob(body string) (PreviewKnob, string) {
 
 var previewMemoryPattern = regexp.MustCompile(`(?i)^([1-9][0-9]*)([kmgt]?)(?:b)?$`)
 
-// App limits override the host default; Revik may also size its six services
-// separately. Admission and Compose use this same lookup so the recorded
+// App and declared service limits override the host default. Admission and Compose use this same lookup so the recorded
 // reservation is the sum of enforceable limits, including migration startup.
 func previewServiceMemory(k PreviewKnob, app, service string) string {
 	if service != "" {
@@ -202,12 +202,10 @@ func previewServiceMemory(k PreviewKnob, app, service string) string {
 	return k.MemLimit
 }
 
-var revikPreviewServices = []string{"gate", "api", "godot-api", "postgres", "redis", "migrate"}
-
 func previewMemoryReservation(k PreviewKnob, app string, images int) (int64, error) {
 	services := []string{""}
-	if app == "fieldsofrevik" {
-		services = revikPreviewServices
+	if p := k.profiles[app]; p != nil {
+		services = p.Services
 	}
 	var reserved int64
 	for _, service := range services {
@@ -217,7 +215,7 @@ func previewMemoryReservation(k PreviewKnob, app string, images int) (int64, err
 		}
 		reserved += memory
 	}
-	if app != "fieldsofrevik" {
+	if k.profiles[app] == nil {
 		reserved *= int64(images)
 	}
 	return reserved, nil
@@ -273,13 +271,7 @@ func previewKnobGet(body, key string) string {
 	return ""
 }
 
-// DomainFor is the per-app resolution chain, exactly:
-// SHARED_DOMAIN.<app> / SHARED_DOMAIN take priority when enabled; otherwise
-// get("DOMAIN."+app) → get("DOMAIN") → PreviewDomainDefault.
-// An empty DOMAIN.<app>= falls through to the bare DOMAIN; an empty
-// DOMAIN= falls through to the compiled default. An unknown app is
-// NEVER refused -- a product without its own key previews on the
-// default, exactly as before per-app keys existed.
+// DomainFor resolves only explicitly configured host or application domains.
 func (k PreviewKnob) DomainFor(app string) string {
 	if domain := k.PathDomainFor(app); domain != "" {
 		return domain
@@ -297,7 +289,7 @@ func (k PreviewKnob) legacyDomainFor(app string) string {
 	if v := previewKnobGet(k.body, "DOMAIN"); v != "" {
 		return v
 	}
-	return PreviewDomainDefault
+	return k.Domain
 }
 
 // Domains preserves legacy TLS authorization during migration: the default
@@ -308,8 +300,12 @@ func (k PreviewKnob) Domains() []string {
 	if def == "" {
 		def = PreviewDomainDefault
 	}
-	out := []string{def}
-	seen := map[string]bool{def: true}
+	var out []string
+	seen := map[string]bool{}
+	if def != "" {
+		out = append(out, def)
+		seen[def] = true
+	}
 	var rest []string
 	for _, ln := range strings.Split(k.body, "\n") {
 		tail, ok := strings.CutPrefix(ln, "DOMAIN.")
@@ -398,6 +394,8 @@ type PreviewRecord struct {
 	CreatedAt           time.Time `json:"created_at"`
 	LastUsed            time.Time `json:"last_used"`
 	RouteFile           string    `json:"route_file"`
+	PrivateProfile      bool      `json:"private_profile,omitempty"`
+	ProfileSHA256       string    `json:"profile_sha256,omitempty"`
 	MemoryReservedBytes int64     `json:"memory_reserved_bytes,omitempty"`
 }
 
@@ -415,7 +413,7 @@ func writePreviewRecord(root string, r PreviewRecord) error {
 		strings.Join(r.Images, ","),
 		r.CreatedAt.UTC().Format(time.RFC3339), r.LastUsed.UTC().Format(time.RFC3339), r.RouteFile)
 	fmt.Fprintf(&b, "HOST=%s\nAPI_HOST=%s\nBASE_PATH=%s\n", r.Host, r.APIHost, r.BasePath)
-	fmt.Fprintf(&b, "MEMORY_RESERVED_BYTES=%d\n", r.MemoryReservedBytes)
+	fmt.Fprintf(&b, "MEMORY_RESERVED_BYTES=%d\nPRIVATE_PROFILE=%t\nPROFILE_SHA256=%s\n", r.MemoryReservedBytes, r.PrivateProfile, r.ProfileSHA256)
 	return os.WriteFile(filepath.Join(dir, "preview.env"), []byte(b.String()), 0o600)
 }
 
@@ -437,6 +435,8 @@ func readPreviewRecord(dir string) (PreviewRecord, error) {
 	r.V, _ = strconv.Atoi(kv["V"])
 	r.App, r.Project, r.DBName, r.RouteFile = kv["APP"], kv["PROJECT"], kv["DB_NAME"], kv["ROUTE_FILE"]
 	r.DBPassword = kv["DB_PASSWORD"]
+	r.PrivateProfile = kv["PRIVATE_PROFILE"] == "true"
+	r.ProfileSHA256 = kv["PROFILE_SHA256"]
 	r.Host, r.APIHost, r.BasePath = kv["HOST"], kv["API_HOST"], kv["BASE_PATH"]
 	r.PR, _ = strconv.Atoi(kv["PR"])
 	r.GatePort, _ = strconv.Atoi(kv["GATE_PORT"])
@@ -665,7 +665,7 @@ func previewImagesMemoryReservation(k PreviewKnob, app string, images []string) 
 		return 0, fmt.Errorf("no preview images")
 	}
 	reserved, err := previewMemoryReservation(k, app, len(images))
-	if err != nil || app == "fieldsofrevik" {
+	if err != nil || k.profiles[app] != nil {
 		return reserved, err
 	}
 	base, err := previewMemoryBytes(previewServiceMemory(k, app, ""))
@@ -687,8 +687,9 @@ func previewImagesMemoryReservation(k PreviewKnob, app string, images []string) 
 }
 
 func previewCompose(r PreviewRecord, k PreviewKnob, network string, stackEnv bool, dbEndpoint string) string {
-	if r.App == "fieldsofrevik" {
-		return revikPreviewCompose(r, k, network)
+	if p := k.profiles[r.App]; p != nil {
+		body, _ := p.compose(r, k, network)
+		return body
 	}
 	var b strings.Builder
 	b.WriteString("# Written by komizo preview. Re-run `komizo preview up` to change it.\n")
@@ -1015,7 +1016,7 @@ type PreviewUpConfig struct {
 // state, compose, route. Each step before the compose up leaves nothing
 // behind on failure; the route is the last thing to change, and it carries
 // its own restore.
-var revikPreviewSeedPattern = regexp.MustCompile(`^[a-f0-9]{24}$`)
+var previewSeedPattern = regexp.MustCompile(`^[a-f0-9]{24}$`)
 
 func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app string, pr int, images []string, now time.Time) (result PreviewRecord, resultErr error) {
 	var zero PreviewRecord
@@ -1055,14 +1056,23 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 			return zero, fmt.Errorf("image %q contains characters that are not valid in an image reference", image)
 		}
 	}
-	if app == "fieldsofrevik" {
-		if err := validateRevikPreviewImages(images); err != nil {
+	if cfg.Knob.profiles == nil {
+		p, err := ReadPreviewProfile(cfg.Root, app)
+		if err != nil {
 			return zero, err
 		}
-		if err := validateRevikPreviewAuth(filepath.Join(previewDir(cfg.Root, PreviewProject(app, pr)), "stack.env")); err != nil {
+		cfg.Knob.profiles = map[string]*PreviewProfile{app: p}
+	}
+	profile := cfg.Knob.profiles[app]
+	if profile != nil {
+		if err := profile.validateImages(images); err != nil {
+			return zero, err
+		}
+		if err := profile.validateEnvironment(filepath.Join(previewDir(cfg.Root, PreviewProject(app, pr)), "stack.env")); err != nil {
 			return zero, err
 		}
 	}
+
 	floors, present, err := ParsePreviewFloors(cfg.FloorsBody)
 	if err != nil {
 		return zero, err
@@ -1076,9 +1086,13 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	project := PreviewProject(app, pr)
 	rec := PreviewRecord{
 		V: 1, App: app, PR: pr, Project: project,
-		Images:    images,
-		CreatedAt: now, LastUsed: now,
+		Images:         images,
+		PrivateProfile: profile != nil,
+		CreatedAt:      now, LastUsed: now,
 		RouteFile: "_preview-" + project + ".caddy",
+	}
+	if profile != nil {
+		rec.ProfileSHA256 = profile.digest
 	}
 	rec.MemoryReservedBytes, err = previewImagesMemoryReservation(cfg.Knob, app, images)
 	if err != nil {
@@ -1093,14 +1107,14 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	// for a preview that will never connect is the invasiveness this whole
 	// change exists to remove. An empty DBName is also what tells teardown
 	// there is nothing to drop.
-	if len(images) > 1 && app != "fieldsofrevik" {
+	if len(images) > 1 && profile == nil {
 		rec.DBName = PreviewDBName(app, pr)
 		// The password is generated NOW, before the state file is written,
 		// so the record on disk carries it from the start -- a preview.env
 		// without it is a preview that cannot be taken down cleanly.
 		rec.DBPassword = previewNewPassword()
 	}
-	if app == "fieldsofrevik" {
+	if profile != nil {
 		// A private seed, never exposed to containers or JSON. The profile
 		// derives distinct role passwords; its database lives in its own
 		// Compose volume, so DBName stays empty and shared DB cleanup is skipped.
@@ -1162,21 +1176,19 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 		}
 		if e.Project == project {
 			have = true
-			if app == "fieldsofrevik" {
+			if e.PrivateProfile != rec.PrivateProfile || e.ProfileSHA256 != rec.ProfileSHA256 {
+				return zero, fmt.Errorf("drain the existing preview before changing its profile")
+			}
+			if profile != nil {
 				// Its private PostgreSQL volume survives a re-up. Credentials
 				// initialized inside that volume must therefore survive too.
 				// Shared-database previews recreate their role and keep their
 				// existing fresh-password behavior.
-				if e.App != app || e.PR != pr || !revikPreviewSeedPattern.MatchString(e.DBPassword) {
+				if e.App != app || e.PR != pr || !previewSeedPattern.MatchString(e.DBPassword) {
 					return zero, fmt.Errorf("the existing private preview has no valid credential seed")
 				}
 				rec.DBPassword = e.DBPassword
 			}
-		}
-	}
-	if !have && len(existing) >= cfg.Knob.Max {
-		if err := PreviewDown(ctx, run, cfg, existing[0]); err != nil {
-			return zero, fmt.Errorf("evicting %s to stay within %d previews: %w", existing[0].Project, cfg.Knob.Max, err)
 		}
 	}
 
@@ -1211,6 +1223,20 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 		}
 	}
 
+	if profile != nil {
+		rendered, err := profile.compose(rec, cfg.Knob, project+"-ingress")
+		if err != nil {
+			return zero, err
+		}
+		if err := profile.validateCompose(rendered, rec, cfg.Knob, project+"-ingress"); err != nil {
+			return zero, err
+		}
+	}
+	if !have && len(existing) >= cfg.Knob.Max {
+		if err := PreviewDown(ctx, run, cfg, existing[0]); err != nil {
+			return zero, fmt.Errorf("evicting %s to stay within %d previews: %w", existing[0].Project, cfg.Knob.Max, err)
+		}
+	}
 	// STATE FIRST. The record exists before anything is created, and
 	// everything after this point rolls back BOTH -- a failure must never
 	// leave resources without state (an orphan nothing can reap) or state
@@ -1246,7 +1272,7 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	// kind of thing this change exists to stop doing.
 	needsDB := rec.DBName != ""
 	dbEndpoint := ""
-	if app != "fieldsofrevik" && len(images) > 1 {
+	if profile == nil && len(images) > 1 {
 		if err := ensurePreviewBackend(ctx, run, project, needsDB); err != nil {
 			return zero, err
 		}
@@ -1304,6 +1330,15 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 		return zero, err
 	}
 	body := previewCompose(rec, cfg.Knob, ingress, stackEnvErr == nil, dbEndpoint)
+	if profile != nil {
+		body, err = profile.compose(rec, cfg.Knob, ingress)
+		if err != nil {
+			return zero, err
+		}
+		if err := profile.validateCompose(body, rec, cfg.Knob, ingress); err != nil {
+			return zero, err
+		}
+	}
 	if err := os.WriteFile(composePath, []byte(body), 0o600); err != nil {
 		return zero, err
 	}
@@ -1355,7 +1390,7 @@ func PreviewDown(ctx context.Context, run previewRun, cfg PreviewUpConfig, rec P
 	if err := removePreviewIngress(ctx, run, rec.Project, cfg.Proxy); err != nil {
 		return err
 	}
-	if rec.App != "fieldsofrevik" && len(rec.Images) > 1 {
+	if !rec.PrivateProfile && len(rec.Images) > 1 {
 		if err := removePreviewBackend(ctx, run, rec.Project, rec.DBName != ""); err != nil {
 			return err
 		}

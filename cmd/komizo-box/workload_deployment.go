@@ -782,7 +782,11 @@ func (h *hostActivation) verifyDeploymentSecrets(ctx context.Context, p workload
 		return errors.New("app state differs from protected policy")
 	}
 	profile := deploymentStateValue(state, "SCOPED_ENV")
-	if profile != "fields-postgres-v2" {
+	definition, err := box.ParseScopedDefinition(profile, deploymentStateValue(state, "SCOPED_SCHEMA"), deploymentStateValue(state, "SCOPED_FILES"))
+	if err != nil {
+		return err
+	}
+	if definition == nil {
 		if generation != "" {
 			return errors.New("generation is not applicable to this app")
 		}
@@ -814,7 +818,7 @@ func (h *hostActivation) verifyDeploymentSecrets(ctx context.Context, p workload
 	if err != nil || !info.IsDir() || !owner(info) || info.Mode().Perm()&0022 != 0 {
 		return errors.New("unsafe scoped generation")
 	}
-	for _, name := range []string{"postgres.env", "migrate.env", "api.env", "godot-api.env", "provenance"} {
+	for _, name := range append(append([]string{}, definition.Files...), "provenance") {
 		info, err := os.Lstat(filepath.Join(dir, name))
 		mode := os.FileMode(0600)
 		if name == "provenance" {
@@ -825,7 +829,7 @@ func (h *hostActivation) verifyDeploymentSecrets(ctx context.Context, p workload
 		}
 	}
 	marker, err := h.readBytes(filepath.Join(dir, "provenance"))
-	if err != nil || string(marker) != "profile=fields-postgres-v2\nschema=11\ngeneration="+generation+"\n" {
+	if err != nil || string(marker) != string(definition.Marker(generation)) {
 		return errors.New("scoped provenance differs")
 	}
 	// This existing root-owned primitive only checks secret mounts; it does not

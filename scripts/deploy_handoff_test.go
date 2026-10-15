@@ -27,7 +27,7 @@ esac
 			if err := os.WriteFile(filepath.Join(root, "komizo-box"), []byte(shim), 0700); err != nil {
 				t.Fatal(err)
 			}
-			cmd := exec.Command("sh", "-c", deployBody(t), "deploy", strings.Repeat("b", 40))
+			cmd := exec.Command("sh", "-c", strings.ReplaceAll(deployBody(t), "__SCOPED_ENV__", ""), "deploy", strings.Repeat("b", 40))
 			cmd.Env = append(os.Environ(), "PATH="+root+":/usr/bin:/bin", "CALLS="+log, "FAILURE="+failure)
 			out, err := cmd.CombinedOutput()
 			if err == nil {

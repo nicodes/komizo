@@ -11,6 +11,34 @@ import (
 	"testing"
 )
 
+func revikFixtureProfile() *PreviewProfile {
+	body, err := os.ReadFile("testdata/external-preview-profile.json")
+	if err != nil {
+		panic(err)
+	}
+	p, err := ParsePreviewProfile(body)
+	if err != nil {
+		panic(err)
+	}
+	return p
+}
+
+var revikPreviewServices = revikFixtureProfile().Services
+
+func withRevikFixture(k PreviewKnob) PreviewKnob {
+	k.profiles = map[string]*PreviewProfile{"fieldsofrevik": revikFixtureProfile()}
+	return k
+}
+func validateRevikPreviewImages(images []string) error {
+	return revikFixtureProfile().validateImages(images)
+}
+func validateRevikPreviewAuth(path string) error {
+	return revikFixtureProfile().validateEnvironment(path)
+}
+func revikPreviewCredential(seed, role string) string {
+	return previewProfileCredential(seed, revikFixtureProfile().CredentialNamespace, role)
+}
+
 func revikImages() []string {
 	var images []string
 	for _, component := range []string{"gate", "api", "godot-api", "postgres"} {
@@ -105,7 +133,7 @@ func TestRevikPreviewComposeParsesWithPrivateNetworksAndScopedVolumes(t *testing
 	os.WriteFile(filepath.Join(dir, "stack.env"), []byte("CLERK_SECRET_KEY=sk_test_fixtureonly\n"), 0600)
 	r := PreviewRecord{App: "fieldsofrevik", PR: 321, Project: "fieldsofrevik-pr-321", GatePort: 20001, DBPassword: "fixture-seed", Images: revikImages()}
 	path := filepath.Join(dir, "compose.yml")
-	os.WriteFile(path, []byte(previewCompose(r, PreviewKnob{Domain: "preview.revik.gg", MemLimit: "256m", CPULimit: "0.5"}, "edge", true, "")), 0600)
+	os.WriteFile(path, []byte(previewCompose(r, withRevikFixture(PreviewKnob{Domain: "preview.revik.gg", MemLimit: "256m", CPULimit: "0.5"}), "edge", true, "")), 0600)
 	body, err := exec.Command("docker", "compose", "-p", r.Project, "-f", path, "config", "--format", "json").Output()
 	if err != nil {
 		t.Fatal("preview compose could not be parsed", err)
@@ -216,7 +244,7 @@ func TestRevikPreviewRebuildPreservesPrivateDatabaseCredentials(t *testing.T) {
 func TestRevikPreviewRefusesCorruptExistingSeedBeforeMutation(t *testing.T) {
 	for _, seed := range []string{"", "invalid", strings.Repeat("a", 23), strings.Repeat("a", 25)} {
 		cfg := previewTestConfig(t)
-		rec := PreviewRecord{V: 1, App: "fieldsofrevik", PR: 321, Project: "fieldsofrevik-pr-321", GatePort: 20001, DBPassword: seed, Images: revikImages(), CreatedAt: previewNow, LastUsed: previewNow}
+		rec := PreviewRecord{V: 1, PrivateProfile: true, ProfileSHA256: revikFixtureProfile().digest, App: "fieldsofrevik", PR: 321, Project: "fieldsofrevik-pr-321", GatePort: 20001, DBPassword: seed, Images: revikImages(), CreatedAt: previewNow, LastUsed: previewNow}
 		if err := writePreviewRecord(cfg.Root, rec); err != nil {
 			t.Fatal(err)
 		}
