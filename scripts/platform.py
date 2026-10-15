@@ -28,6 +28,7 @@ REV = re.compile(r'[a-f0-9]{40}\Z')
 APP = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}\Z')
 SERVICES = ('komizo-rootd', 'komizo-api', 'komizo-agent')
 TERMINAL = ('ready', 'prepared_stopped', 'reconciled')
+FAILED_TERMINAL = ('staging_failed', 'activation_failed', 'readiness_failed', 'failed')
 STATIC_MOUNT = {'type': 'bind', 'source': '/srv/_public', 'target': '/srv/public',
                 'read_only': True, 'bind': {'create_host_path': False}}
 CONTROL_SERVICES = ('docker', 'komizo-rootd', 'komizo-api')
@@ -233,7 +234,7 @@ class Platform:
         return process.returncode, body.decode()
 
     @contextlib.contextmanager
-    def locks(self):
+    def locks(self, allow_failed=False):
         apps = sorted(p.stem for p in self.path('/var/lib/komizo/apps').glob('*.env'))
         if len(apps) > 64 or any(not APP.fullmatch(a) for a in apps):
             raise ValueError('invalid protected platform roster')
@@ -260,7 +261,8 @@ class Platform:
                 raise ValueError('activation is pending')
             for path in self.path('/var/lib/komizo/releases').glob('*/operation.json'):
                 op = json.loads(self.read(path, private=True))
-                if op.get('version') != 1 or op.get('phase') not in TERMINAL:
+                allowed=TERMINAL+(FAILED_TERMINAL if allow_failed else ())
+                if op.get('version') != 1 or op.get('phase') not in allowed:
                     raise ValueError('deployment fence requires reconciliation')
             yield
         finally:
@@ -549,7 +551,9 @@ class Platform:
         if stage.parent != self.path('/var/lib/komizo/upgrades') or not re.fullmatch(r'[a-zA-Z0-9_-]{1,100}', stage.name):
             raise ValueError('platform stage must be in the protected upgrade directory')
         value = self.manifest(stage, expected)
-        with self.locks():
+        # A failed tenant deployment must retain its fence without preventing
+        # patching the host executor. Other operations still require readiness.
+        with self.locks(allow_failed=value['kind']=='self-upgrade'):
             self.check_resource_budget(value)
             journal = stage/'operation.json'
             pending = self.path('/var/lib/komizo/upgrades/pending.json')

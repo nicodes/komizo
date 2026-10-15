@@ -62,6 +62,26 @@ class Fixture:
 
 
 class PlatformTests(unittest.TestCase):
+    def test_executor_upgrade_preserves_failed_tenant_fences_while_active_or_other_operations_refuse(self):
+        for phase in ('activation_failed','staging_failed','readiness_failed','failed'):
+            with self.subTest(phase=phase),tempfile.TemporaryDirectory() as temporary:
+                f=Fixture(temporary)
+                record=f.root/'var/lib/komizo/releases/example/operation.json'
+                record.parent.mkdir(parents=True);record.write_text(json.dumps({'version':1,'phase':phase,'candidate':'a'*40}));record.chmod(0o600)
+                (f.root/'var/lib/komizo/apps/example.env').write_text('root roster')
+                before=record.read_bytes();p=f.p
+                with self.assertRaisesRegex(ValueError,'reconciliation'):
+                    with p.locks():self.fail('ordinary operation bypassed tenant fence')
+                result=p.apply(f.stage,f.expected)
+                self.assertEqual(result['phase'],'complete');self.assertEqual(record.read_bytes(),before)
+                self.assertFalse((f.root/'var/lib/komizo/upgrades/pending.json').exists())
+        for phase in ('staging','activating','configured','unknown'):
+            with self.subTest(phase=phase),tempfile.TemporaryDirectory() as temporary:
+                f=Fixture(temporary);record=f.root/'var/lib/komizo/releases/example/operation.json'
+                record.parent.mkdir(parents=True);record.write_text(json.dumps({'version':1,'phase':phase}));record.chmod(0o600)
+                with self.assertRaisesRegex(ValueError,'reconciliation'):f.p.apply(f.stage,f.expected)
+                self.assertFalse((f.stage/'operation.json').exists());self.assertEqual(f.calls,[])
+
     def test_shared_coordinator_locks_accept_readable_but_not_writable_or_linked_files(self):
         with tempfile.TemporaryDirectory() as temporary:
             fixture = Fixture(temporary)
