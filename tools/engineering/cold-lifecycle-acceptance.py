@@ -117,7 +117,7 @@ def main():
                 or row['Config']['Labels'].get('org.komizo.fixture')!=name):
             raise ValueError('guest isolation differs')
         address=next(iter(row['NetworkSettings']['Networks'].values()))['IPAddress']
-        run(['docker','exec',cid,'apk','add','--no-cache','python3','openssh','openrc','ca-certificates'],timeout=180)
+        run(['docker','exec',cid,'apk','add','--no-cache','python3','openssh','openrc','ca-certificates','strace'],timeout=180)
         fixture.python("root=Path('/sys/fs/cgroup');assert (root/'memory.max').read_text().strip()==str(1<<30)\nassert Path('/proc/1/cgroup').read_text().strip()=='0::/'\nhost=root/'komizo-os';host.mkdir()\nfor pid in (root/'cgroup.procs').read_text().split():\n try:(host/'cgroup.procs').write_text(pid)\n except ProcessLookupError:pass\n(root/'cgroup.subtree_control').write_text('+cpu +memory +pids +io')\nPath('/run/openrc').mkdir(exist_ok=True);Path('/run/openrc/softlevel').write_text('sysinit')\n")
         keys=args.output/'ssh';keys.mkdir(mode=0o700)
         run(['ssh-keygen','-q','-t','ed25519','-N','','-f',str(keys/'key')])
@@ -274,6 +274,19 @@ def main():
         manifest=json.loads((authority_stage/'manifest.json').read_bytes())
         assert manifest['files'][0]['before'] is None and manifest['files'][0]['path']==candidates[0][0]
         remote='/var/lib/komizo/upgrades/'+authority_stage.name
+        # The authenticated executor can finish the replacement/journal window
+        # before an external observer is scheduled on a fast CI runner. Hold
+        # only this synthetic file's actual rename exit in the guest kernel;
+        # do not alter return values, executor bytes, or installed product code.
+        interrupted_command=remote+'/box platform apply '+remote+' '+expected
+        traced=['/usr/bin/strace','-f','-o','/root/fixture-interruption.trace',
+                '-e','trace=rename,renameat,renameat2','-P',candidates[0][0],
+                '--inject=rename,renameat,renameat2:delay_exit=20s',
+                remote+'/box','platform','apply',remote,expected]
+        forced=('#!/bin/sh\nset -eu\nif [ "${SSH_ORIGINAL_COMMAND-}" = '+shlex.quote(interrupted_command)+' ]; then\n exec '+shlex.join(traced)+'\nfi\nexec /bin/sh -c "${SSH_ORIGINAL_COMMAND-}"\n').encode()
+        fixture.write('/root/fixture-command',forced,0o700)
+        authorized=(keys/'key.pub').read_bytes()
+        fixture.write('/root/.ssh/authorized_keys',b'command="/root/fixture-command" '+authorized)
         watcher="""import hashlib,json,os,signal,time
 from pathlib import Path
 Path('/sys/fs/cgroup/komizo-os/cgroup.procs').write_text(str(os.getpid()))
@@ -300,6 +313,9 @@ while time.monotonic()<end:
   try:
    for pid in (children[0],leader):os.kill(pid,signal.SIGSTOP);stopped.append(pid)
    assert hashlib.sha256(Path('/proc/'+str(leader)+'/exe').read_bytes()).hexdigest()==BINARY_SHA
+   status=Path('/proc/'+str(children[0])+'/status').read_text()
+   assert int(next(line.split()[1] for line in status.splitlines() if line.startswith('TracerPid:')))>0
+   assert hashlib.sha256(Path('/var/lib/komizo/tasks/fixturelocal.sh').read_bytes()).hexdigest()==TASK_SHA
    record=json.loads((remote/'operation.json').read_bytes());assert record['phase']=='installing'
    assert Path('/var/lib/komizo/tasks/fixturelocal.sh').exists()
    for pid in (children[0],leader):os.kill(pid,signal.SIGKILL)
@@ -309,10 +325,10 @@ while time.monotonic()<end:
     for pid in stopped:
      try:os.kill(pid,signal.SIGCONT)
      except ProcessLookupError:pass
-  print(json.dumps({'actual_authenticated_executor_interrupted':True,'phase':record['phase'],'manifest_sha256':expected,'previous_absence_observed':True,'fence_retained':Path('/var/lib/komizo/upgrades/pending.json').exists()}),flush=True);break
+  print(json.dumps({'actual_authenticated_executor_interrupted':True,'phase':record['phase'],'manifest_sha256':expected,'previous_absence_observed':True,'path_filtered_rename_exit_delay_seconds':20,'unmodified_executor':True,'fence_retained':Path('/var/lib/komizo/upgrades/pending.json').exists()}),flush=True);break
  time.sleep(.0005)
 else:raise ValueError('private-file interruption window not observed')
-""".replace('REMOTE',repr(remote)).replace('DIGEST',repr(expected)).replace('BINARY_SHA',repr(hashlib.sha256(verified_box.read_bytes()).hexdigest()))
+""".replace('REMOTE',repr(remote)).replace('DIGEST',repr(expected)).replace('BINARY_SHA',repr(hashlib.sha256(verified_box.read_bytes()).hexdigest())).replace('TASK_SHA',repr(hashlib.sha256(task_body).hexdigest()))
         monitor=subprocess.Popen(['docker','exec','-i',cid,'python3','-I','-'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         monitor.stdin.write(watcher.encode());monitor.stdin.close()
         authority_args[2]='apply';authority_args+=['--resume','--expected-manifest',expected]
@@ -324,6 +340,7 @@ else:raise ValueError('private-file interruption window not observed')
             interruption=json.loads(monitor.stdout.read());assert interruption['fence_retained']
         finally:
             if monitor.poll() is None:monitor.terminate();monitor.wait(timeout=10)
+            fixture.write('/root/.ssh/authorized_keys',authorized)
             (args.output/'authority-watcher.log').write_bytes(monitor.stdout.read()+monitor.stderr.read())
         inspect_record=json.loads(run([str(cli),'--json','platform','inspect','--host',address,'--stage',remote,'--expected-manifest',expected],env=env))['data']
         assert inspect_record['phase']=='installing'
