@@ -33,7 +33,11 @@ type initOpts struct {
 	forgetDevices bool
 }
 
-func RunInit(args []string) error {
+func RunInit(args []string) error { return runInit(args, true) }
+
+func runInit(args []string, receipt bool) (err error) {
+	validation := localInput(&err)
+	defer validation.finish()
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.Usage = func() { usageInit(fs) }
 	var o initOpts
@@ -65,6 +69,7 @@ func RunInit(args []string) error {
 	}
 
 	step("Checking %s:%d", tgt.addr(), tgt.port)
+	validation.complete = true
 	if err := ensureReachable(tgt, o.acceptHostKey); err != nil {
 		return err
 	}
@@ -108,7 +113,10 @@ func RunInit(args []string) error {
 		return fmt.Errorf("Docker is installed, but the proxy failed -- see the output above.\n" +
 			"    Re-run 'komizo proxy' once you have fixed it; the server itself is ready.")
 	}
-	return nil
+	if !receipt {
+		return nil
+	}
+	return managementReceipt("init", tgt, "", map[string]any{"network": o.network})
 }
 
 func usageInit(fs *flag.FlagSet) {

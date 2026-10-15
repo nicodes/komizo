@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"os"
@@ -34,7 +35,17 @@ func RunOperator(args []string) error {
 		if *expected != "" {
 			return errors.New("export accepts no expected plan")
 		}
-		return operator.Export(*directory)
+		if err := operator.Export(*directory); err != nil {
+			return err
+		}
+		if machineMode() {
+			files, err := operator.Plan()
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(os.Stdout).Encode(map[string]any{"version": 1, "directory": *directory, "files": files, "exported": true})
+		}
+		return nil
 	default:
 		return errors.New("operator requires plan, apply, status, recover or export")
 	}

@@ -139,7 +139,11 @@ func runCommand(name string, args []string) error {
 func Main(args []string) (err error) {
 	defer func() {
 		if errors.Is(err, flag.ErrHelp) {
-			err = nil
+			if machineMode() {
+				err = &commandFailure{code: MachineHelpExit, err: err}
+			} else {
+				err = nil
+			}
 		}
 	}()
 	if printGroupHelp(args) {
@@ -162,13 +166,16 @@ func Main(args []string) (err error) {
 	// tool misbehaves is which build of it they are running, and that answer
 	// must not depend on a server being reachable or a flag parsing.
 	case "--version", "-v", "version":
+		if len(args) > 1 && !(len(args) == 2 && (args[1] == "--help" || args[1] == "-h")) {
+			return &commandFailure{code: 64, err: errors.New("version accepts no arguments")}
+		}
 		if machineMode() {
 			return printMachineVersion()
 		}
 		fmt.Println("komizo " + versionText())
 		return nil
 	case "capabilities":
-		if hasHelp(args) {
+		if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
 			return RunCapabilities(nil)
 		}
 		return RunCapabilities(args[1:])
