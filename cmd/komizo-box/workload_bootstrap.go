@@ -61,7 +61,18 @@ func runWorkloadPolicyBootstrap(args []string) error {
 	if err != nil {
 		return err
 	}
-	hasServingState := fileExists(filepath.Join(releaseDirectory, *app, "operation.json")) || fileExists(filepath.Join(base.AppDir, "compose.yml")) || fileExists(filepath.Join(base.AppDir, ".komizo-image-retention"))
+	compose, err := protectedActivationBytes(filepath.Join(base.AppDir, "compose.yml"))
+	if err != nil {
+		return err
+	}
+	environment, err := protectedActivationBytes(filepath.Join(base.AppDir, ".env"))
+	if err != nil {
+		return err
+	}
+	hasServingState, err := bootstrapServingState(compose, environment, fileExists(filepath.Join(releaseDirectory, *app, "operation.json")) || fileExists(filepath.Join(base.AppDir, ".komizo-image-retention")))
+	if err != nil {
+		return err
+	}
 	if err := checkBootstrapPolicy(base, existing, next, hasServingState); err != nil {
 		return err
 	}
@@ -72,6 +83,14 @@ func runWorkloadPolicyBootstrap(args []string) error {
 		return err
 	}
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{"version": 1, "app": *app, "installed": true, "deployment_enabled": true})
+}
+
+func bootstrapServingState(compose, environment []byte, retained bool) (bool, error) {
+	version, err := deploymentVersion(environment)
+	if err != nil {
+		return true, err
+	}
+	return retained || version != "" || !bytes.Equal(bytes.TrimSpace(compose), []byte("services: {}")), nil
 }
 
 func checkBootstrapPolicy(base, existing, next workload.Policy, hasOperation bool) error {
