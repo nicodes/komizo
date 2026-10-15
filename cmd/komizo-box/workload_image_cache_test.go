@@ -179,3 +179,46 @@ func TestImageConfigurationCacheWithRealDockerExport(t *testing.T) {
 	}
 	t.Logf("real local immutable image export verified once: %s, configuration %s", image, first)
 }
+
+func TestOriginalConfigurationLookupIsBoundedReadOnlyAndRejectsUnsafeCache(t *testing.T) {
+	for _, fault := range []string{"none", "mode", "link", "canonical", "key", "owner", "missing-image"} {
+		t.Run(fault, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "cache")
+			if err := os.Mkdir(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			image := "sha256:" + strings.Repeat("a", 64)
+			expected := "sha256:" + strings.Repeat("b", 64)
+			path := filepath.Join(dir, strings.Repeat("a", 64)+".json")
+			record := imageConfigRecord{Version: 1, Image: image, Config: expected}
+			if fault == "key" {
+				record.Image = "sha256:" + strings.Repeat("c", 64)
+			}
+			if err := workload.WritePrivateJSON(path, record); err != nil {
+				t.Fatal(err)
+			}
+			switch fault {
+			case "mode":
+				os.Chmod(path, 0644)
+			case "link":
+				os.Rename(path, path+"-foreign")
+				os.Symlink(path+"-foreign", path)
+			case "canonical":
+				body, _ := os.ReadFile(path)
+				os.WriteFile(path, append(body, ' '), 0600)
+			}
+			called := 0
+			result, err := cachedConfigurationImage(context.Background(), dir, expected, func(os.FileInfo) bool { return fault != "owner" }, func(candidate string) bool { called++; return candidate == image && fault != "missing-image" })
+			if fault == "none" {
+				if err != nil || result != image || called != 1 {
+					t.Fatal(result, err, called)
+				}
+			} else if err == nil {
+				t.Fatal("unsafe cache used", fault)
+			}
+			if fault != "none" && fault != "missing-image" && called != 0 {
+				t.Fatal("unsafe metadata reached Docker")
+			}
+		})
+	}
+}

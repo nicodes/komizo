@@ -37,7 +37,20 @@ func bindRelease(ctx context.Context, run ImageRun, p Policy, accepted ReleaseAc
 	}
 	m := accepted.Manifest
 	if err := checkReleaseImage(ctx, run, m, configImage, configImage, false); err != nil {
-		return nil, err
+		// A registry retry may move a source tag while its originally accepted
+		// immutable artifact remains local. Resolve only through protected, verified
+		// local configuration metadata, and recheck the authenticated hash below.
+		expected, ok := m.Images[configImage]
+		if pull || !ok {
+			return nil, err
+		}
+		original, resolveErr := run(ctx, "local-config-image", expected)
+		if resolveErr != nil || !digest.MatchString(strings.TrimSpace(original)) {
+			return nil, err
+		}
+		if err := checkReleaseImage(ctx, run, m, strings.TrimSpace(original), configImage, false); err != nil {
+			return nil, err
+		}
 	}
 	var doc map[string]any
 	if err := strictJSONMap(compose, &doc); err != nil {
@@ -83,42 +96,52 @@ func strictJSONMap(body []byte, out *map[string]any) error {
 	return json.Unmarshal(body, out)
 }
 
-func inspectReleaseImage(ctx context.Context, run ImageRun, m ReleaseManifest, image, expectedRef string, pull bool) (string, error) {
+type verifiedReleaseImage struct {
+	ID          string `json:"Id"`
+	RepoDigests []string
+	Descriptor  struct{ Digest string }
+}
+
+func verifyReleaseImage(ctx context.Context, run ImageRun, m ReleaseManifest, image, expectedRef string, pull bool) (verifiedReleaseImage, error) {
 	expected, ok := m.Images[expectedRef]
 	if !ok {
-		return "", errors.New("service image missing from authenticated release")
+		return verifiedReleaseImage{}, errors.New("service image missing from authenticated release")
 	}
 	if pull {
 		if _, err := run(ctx, "pull", "-q", image); err != nil {
-			return "", errors.New("release image pull failed")
+			return verifiedReleaseImage{}, errors.New("release image pull failed")
 		}
 	}
 	body, err := run(ctx, "image", "inspect", image)
 	if err != nil {
-		return "", errors.New("release image inspection failed")
+		return verifiedReleaseImage{}, errors.New("release image inspection failed")
 	}
-	var images []struct {
-		ID          string `json:"Id"`
-		RepoDigests []string
-		Descriptor  struct{ Digest string }
-	}
+	var images []verifiedReleaseImage
 	if json.Unmarshal([]byte(body), &images) != nil || len(images) != 1 {
-		return "", errors.New("pulled image differs from authenticated Build evidence")
+		return verifiedReleaseImage{}, errors.New("pulled image differs from authenticated Build evidence")
 	}
 	if images[0].ID != expected {
 		// The containerd image store reports the manifest digest as Id. Read
 		// the configuration from that immutable LOCAL image; checking a tag
 		// or trusting a registry's claimed config digest would allow substitution.
 		if !digest.MatchString(images[0].ID) || images[0].Descriptor.Digest != images[0].ID {
-			return "", errors.New("pulled image differs from authenticated Build evidence")
+			return verifiedReleaseImage{}, errors.New("pulled image differs from authenticated Build evidence")
 		}
 		actual, err := run(ctx, "config-digest", images[0].ID)
 		if err != nil || strings.TrimSpace(actual) != expected {
-			return "", errors.New("pulled image differs from authenticated Build evidence")
+			return verifiedReleaseImage{}, errors.New("pulled image differs from authenticated Build evidence")
 		}
 	}
+	return images[0], nil
+}
+
+func inspectReleaseImage(ctx context.Context, run ImageRun, m ReleaseManifest, image, expectedRef string, pull bool) (string, error) {
+	info, err := verifyReleaseImage(ctx, run, m, image, expectedRef, pull)
+	if err != nil {
+		return "", err
+	}
 	repository := strings.TrimSuffix(expectedRef, ":"+m.Revision)
-	for _, ref := range images[0].RepoDigests {
+	for _, ref := range info.RepoDigests {
 		if strings.HasPrefix(ref, repository+"@") && digest.MatchString(strings.TrimPrefix(ref, repository+"@")) {
 			if strings.Contains(image, "@") && image != ref {
 				return "", errors.New("declared digest differs from authenticated image")
@@ -129,7 +152,7 @@ func inspectReleaseImage(ctx context.Context, run ImageRun, m ReleaseManifest, i
 	return "", fmt.Errorf("authenticated image has no registry digest: %s", expectedRef)
 }
 func checkReleaseImage(ctx context.Context, run ImageRun, m ReleaseManifest, image, expectedRef string, pull bool) error {
-	_, err := inspectReleaseImage(ctx, run, m, image, expectedRef, pull)
+	_, err := verifyReleaseImage(ctx, run, m, image, expectedRef, pull)
 	return err
 }
 

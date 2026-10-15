@@ -62,11 +62,21 @@ class WorkloadFixtureContract(unittest.TestCase):
             code=fixture.hot_memory_worker(root,32<<20,8<<20,seconds=.5)
             process=subprocess.Popen([sys.executable,'-I','-c',code],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
             self.assertEqual(json.loads(process.stdout.readline()),{'ready':True,'hot_bytes':4<<20})
-            charge.write_text('0')
+            # Kernel cgroup reads are atomic; a truncating regular-file write
+            # creates an impossible transient empty value in this fixture.
+            next_charge=root/'next-charge';next_charge.write_text('0');next_charge.replace(charge)
             out,error=process.communicate(timeout=3)
             self.assertNotEqual(process.returncode,0)
             self.assertIn('hot memory offer exhausted',error)
             self.assertNotIn('peak_hot_bytes',out)
+
+    def test_reconciled_serving_observation_is_stable_but_failed_staging_is_not(self):
+        for phase in ('ready','reconciled'):
+            self.assertTrue(fixture.operation_observation_ready({'operation':{'app':'worker','phase':phase},'private_bodies_omitted':True},'worker'))
+        for phase in ('staging_failed','configured','prepared_stopped','unknown'):
+            self.assertFalse(fixture.operation_observation_ready({'operation':{'app':'worker','phase':phase},'private_bodies_omitted':True},'worker'))
+        self.assertFalse(fixture.operation_observation_ready({'operation':{'app':'neighbor','phase':'ready'},'private_bodies_omitted':True},'worker'))
+        self.assertFalse(fixture.operation_observation_ready({'operation':{'app':'worker','phase':'ready'}},'worker'))
 
     def test_local_inventory_preserves_running_identity_without_cli(self):
         import json,socket,threading
