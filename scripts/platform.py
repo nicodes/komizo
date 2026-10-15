@@ -243,7 +243,10 @@ class Platform:
                 path = self.path('/run/komizo')/name
                 fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
                 descriptors.append(fd)
-                self.protected(path, True)
+                # Go's shared coordinator may create these empty lock files
+                # with 0644 after reboot. Ownership and write protection are
+                # the authority boundary; lock files contain no secrets.
+                self.protected(path)
                 end = time.monotonic()+30
                 while True:
                     try:

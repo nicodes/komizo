@@ -62,6 +62,29 @@ class Fixture:
 
 
 class PlatformTests(unittest.TestCase):
+    def test_shared_coordinator_locks_accept_readable_but_not_writable_or_linked_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = Fixture(temporary)
+            roster = fixture.root/'var/lib/komizo/apps/example.env'
+            roster.write_text('root-owned roster')
+            lock = fixture.root/'run/komizo/deploy-example.lock'
+            lock.write_bytes(b'')
+            lock.chmod(0o644)
+            platform = module.Platform(fixture.root, owner=os.getuid())
+            with platform.locks():
+                self.assertEqual(lock.stat().st_mode & 0o777, 0o644)
+            lock.chmod(0o666)
+            with self.assertRaisesRegex(ValueError, 'not protected'):
+                with platform.locks():
+                    self.fail('writable lock accepted')
+            lock.unlink()
+            target = fixture.root/'run/komizo/other.lock'
+            target.write_bytes(b'')
+            lock.symlink_to(target)
+            with self.assertRaises(OSError):
+                with platform.locks():
+                    self.fail('linked lock accepted')
+
     def test_restart_and_recovery_restore_declared_control_limits_before_acceptance(self):
         for recover in (False,True):
             with tempfile.TemporaryDirectory() as root:
