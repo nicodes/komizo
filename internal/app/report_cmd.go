@@ -58,7 +58,7 @@ func RunReport(args []string) error {
 	// value CI pins, and is not scoped to the app's own names.
 	fs.BoolVar(&knownHosts, "known-hosts", false, "print the KOMIZO_KNOWN_HOSTS value each app's CI pins")
 	if err := fs.Parse(args); err != nil {
-		return ErrSilent
+		return silentFlagError(err)
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))

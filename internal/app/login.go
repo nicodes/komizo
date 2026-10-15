@@ -40,7 +40,7 @@ func RunLogin(args []string) error {
 	_ = fs.String("api", "", "unused -- the komizo service is decommissioned")
 	_ = fs.Bool("with-token", false, "unused -- the komizo service is decommissioned")
 	if err := fs.Parse(args); err != nil {
-		return ErrSilent
+		return silentFlagError(err)
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))
@@ -110,7 +110,7 @@ func RunLogout(args []string) error {
 	fs := flag.NewFlagSet("logout", flag.ContinueOnError)
 	fs.Usage = func() { usageLogout(fs) }
 	if err := fs.Parse(args); err != nil {
-		return ErrSilent
+		return silentFlagError(err)
 	}
 	s, err := readSession()
 	if err != nil {
