@@ -33,7 +33,7 @@ func controlCounter(path string) (int64, error) {
 // kernel may reclaim less or more than requested; a subsequent ordinary usage
 // preflight still gates the actual limit change. No application group is touched.
 func (p HostResources) ReclaimControlCache(root string) ([]ControlReclaim, error) {
-	if len(p.Controls) != 3 {
+	if len(p.Controls) < 3 || len(p.Controls) > 4 {
 		return nil, errors.New("declared control resources required")
 	}
 	if err := p.checkControls(); err != nil {
@@ -41,6 +41,10 @@ func (p HostResources) ReclaimControlCache(root string) ([]ControlReclaim, error
 	}
 	names := make([]string, 0, len(p.Controls))
 	for name := range p.Controls {
+		// Recovery access must retain its cache during control admission.
+		if name == "openrc.sshd" {
+			continue
+		}
 		names = append(names, name)
 	}
 	sort.Strings(names)

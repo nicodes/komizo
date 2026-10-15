@@ -65,4 +65,17 @@ class ControlPreparation(unittest.TestCase):
                 self.assertEqual(next(row.partition("=")[2] for row in child_env.splitlines() if row.startswith("GODEBUG=")),debug)
                 self.assertTrue(p.read_bytes().startswith(before))
 
+class SSHControlCompatibility(unittest.TestCase):
+    def test_optional_ssh_does_not_change_the_three_managed_service_configs(self):
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('control_platform',Path(__file__).with_name('platform.py'))
+        p=importlib.util.module_from_spec(spec);spec.loader.exec_module(p)
+        group={'memory_low_bytes':16,'memory_high_bytes':48,'memory_bytes':64,'swap_bytes':0,'pids':128,'cpu_weight':100,'milli_cpus':0}
+        policy={'controls':{'openrc.'+n:group for n in p.CONTROL_SERVICES}}
+        expected=p.control_configuration(b'',policy,'docker')
+        policy['controls']['openrc.sshd']=group
+        self.assertEqual(p.control_configuration(b'',policy,'docker'),expected)
+        policy['controls']['openrc.foreign']=policy['controls'].pop('openrc.sshd')
+        with self.assertRaises(ValueError):p.control_configuration(b'',policy,'docker')
+
 if __name__=='__main__':unittest.main()

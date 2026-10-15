@@ -42,6 +42,22 @@ func TestControlReclaimPreflightsAllBeforeEffects(t *testing.T) {
 	}
 }
 
+func TestControlReclaimNeverDrainsTheSSHRecoveryGroup(t *testing.T) {
+	p, root := controlCacheFixture(t)
+	p.Controls["openrc.sshd"] = p.Controls["openrc.komizo-api"]
+	// Deliberately no SSH counters: even an unavailable SSH reading must never
+	// turn this reviewed cache operation into an SSH reclaim attempt.
+	rows, err := p.ReclaimControlCache(root)
+	if err != nil || len(rows) != 3 {
+		t.Fatal("SSH recovery cache was included in admission", rows, err)
+	}
+	for _, row := range rows {
+		if row.Name == "openrc.sshd" {
+			t.Fatal("SSH cache was admitted for reclaim")
+		}
+	}
+}
+
 func TestControlReclaimIsFiniteAndSkipsHealthyGroups(t *testing.T) {
 	p, root := controlCacheFixture(t)
 	file := filepath.Join(root, "openrc.docker", "memory.current")

@@ -13,6 +13,35 @@ def profile():
     return {'version':1,'binary_sha256':h,'resources_sha256':h,'app_revisions':{'example':'a'*40},'probes':[{'url':'https://example.invalid/health','app':'example','revision':'a'*40}],'cases':[{'app':'example','operator':'full_inventory','repetitions':1},{'app':'example','operator':'operation_inspection','repetitions':1}]}
 
 class WorkloadFixtureContract(unittest.TestCase):
+    def test_guard_deadline_kills_only_its_opened_fixture_interface(self):
+        import os
+        with tempfile.TemporaryDirectory() as directory:
+            leaf=Path(directory)/'owned';leaf.mkdir();kill=leaf/'cgroup.kill';kill.write_text('0')
+            sibling=Path(directory)/'sibling';sibling.write_text('untouched')
+            guard,lease=fixture.fixture_guard(leaf,seconds=.05)
+            self.assertEqual(guard.communicate(timeout=3)[0],b'deadline\n')
+            os.close(lease)
+            self.assertEqual(kill.read_text(),'1');self.assertEqual(sibling.read_text(),'untouched')
+
+    def test_guard_normal_completion_preserves_workers_and_lost_parent_kills(self):
+        import os
+        with tempfile.TemporaryDirectory() as directory:
+            leaf=Path(directory);kill=leaf/'cgroup.kill';kill.write_text('0')
+            guard,lease=fixture.fixture_guard(leaf,seconds=3)
+            fixture.finish_fixture_guard(guard,lease);self.assertEqual(kill.read_text(),'0')
+            guard,lease=fixture.fixture_guard(leaf,seconds=3);os.close(lease)
+            self.assertEqual(guard.communicate(timeout=3)[0],b'parent_lost\n');self.assertEqual(kill.read_text(),'1')
+
+    def test_guard_refuses_symlink_and_never_reports_timeout_as_success(self):
+        import os
+        with tempfile.TemporaryDirectory() as directory:
+            leaf=Path(directory)/'owned';leaf.mkdir();target=Path(directory)/'foreign';target.write_text('0')
+            (leaf/'cgroup.kill').symlink_to(target)
+            with self.assertRaises(OSError):fixture.fixture_guard(leaf)
+            self.assertEqual(target.read_text(),'0');(leaf/'cgroup.kill').unlink();(leaf/'cgroup.kill').write_text('0')
+            guard,lease=fixture.fixture_guard(leaf,seconds=.05);guard.wait(timeout=3)
+            with self.assertRaisesRegex(RuntimeError,'not accepted'):fixture.finish_fixture_guard(guard,lease)
+
     def test_already_charged_group_still_allocates_and_touches_live_pages(self):
         import json,subprocess,sys
         with tempfile.TemporaryDirectory() as directory:
