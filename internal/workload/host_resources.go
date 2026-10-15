@@ -58,6 +58,8 @@ type DeviceIOBudget struct {
 	Device              string `json:"device"`
 	ReadBytesPerSecond  int64  `json:"read_bytes_per_second"`
 	WriteBytesPerSecond int64  `json:"write_bytes_per_second"`
+	ReadIOPS            int64  `json:"read_iops,omitempty"`
+	WriteIOPS           int64  `json:"write_iops,omitempty"`
 }
 
 var blockDeviceID = regexp.MustCompile(`^(0|[1-9][0-9]{0,6}):(0|[1-9][0-9]{0,6})$`)
@@ -107,12 +109,17 @@ func (p HostResources) checkControls() error {
 	if len(p.Controls) == 0 {
 		return nil
 	}
-	if len(p.Controls) != 3 {
+	if len(p.Controls) < 3 || len(p.Controls) > 4 {
 		return errors.New("control resources require rootd, API and Docker together")
+	}
+	for _, name := range []string{"openrc.komizo-rootd", "openrc.komizo-api", "openrc.docker"} {
+		if _, ok := p.Controls[name]; !ok {
+			return errors.New("control resources require rootd, API and Docker together")
+		}
 	}
 	var protected int64
 	for name, g := range p.Controls {
-		if (name != "openrc.komizo-rootd" && name != "openrc.komizo-api" && name != "openrc.docker") || g.MemoryLowBytes < 4<<20 || g.MemoryHighBytes < g.MemoryLowBytes || g.MemoryBytes < g.MemoryHighBytes || g.MemoryBytes > p.PhysicalMemoryBytes || g.SwapBytes < 0 || g.SwapBytes > p.PhysicalMemoryBytes || g.MilliCPUs != 0 || g.PIDs < 16 || g.PIDs > 8192 || g.CPUWeight < 1 || g.CPUWeight > 10000 {
+		if (name != "openrc.komizo-rootd" && name != "openrc.komizo-api" && name != "openrc.docker" && name != "openrc.sshd") || g.MemoryLowBytes < 4<<20 || g.MemoryHighBytes < g.MemoryLowBytes || g.MemoryBytes < g.MemoryHighBytes || g.MemoryBytes > p.PhysicalMemoryBytes || g.SwapBytes < 0 || g.SwapBytes > p.PhysicalMemoryBytes || g.MilliCPUs != 0 || g.PIDs < 16 || g.PIDs > 8192 || g.CPUWeight < 1 || g.CPUWeight > 10000 {
 			return errors.New("control resources require finite measured memory, swap, PID and CPU weight limits")
 		}
 		protected += g.MemoryLowBytes
@@ -147,7 +154,7 @@ func (p HostResources) checkApps() error {
 		}
 		seen := map[string]bool{}
 		for _, limit := range group.IOMax {
-			if !blockDeviceID.MatchString(limit.Device) || seen[limit.Device] || limit.ReadBytesPerSecond < 4096 || limit.ReadBytesPerSecond > 1<<30 || limit.WriteBytesPerSecond < 4096 || limit.WriteBytesPerSecond > 1<<30 {
+			if !blockDeviceID.MatchString(limit.Device) || seen[limit.Device] || limit.ReadBytesPerSecond < 4096 || limit.ReadBytesPerSecond > 1<<30 || limit.WriteBytesPerSecond < 4096 || limit.WriteBytesPerSecond > 1<<30 || limit.ReadIOPS < 0 || limit.ReadIOPS > 1000000 || limit.WriteIOPS < 0 || limit.WriteIOPS > 1000000 {
 				return errors.New("disk limits require unique block devices and finite read/write rates")
 			}
 			seen[limit.Device] = true
@@ -207,6 +214,20 @@ func (p HostResources) Preflight(root string, measuredMemory, measuredCPU int64)
 			current, err := strconv.ParseInt(strings.TrimSpace(string(body)), 10, 64)
 			if err != nil || current < 0 || current > limit {
 				return errors.New("control reduction requires measurement and drain")
+			}
+		}
+	}
+	// Omission restores the optional SSH group to OpenRC defaults, so recovery
+	// does not leave a stale ceiling outside the restored authority document.
+	if len(p.Controls) > 0 {
+		if _, ok := p.Controls["openrc.sshd"]; !ok {
+			dir := filepath.Join(root, "openrc.sshd")
+			if info, err := os.Lstat(dir); err == nil {
+				if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+					return errors.New("SSH control group is not a real directory")
+				}
+			} else if !os.IsNotExist(err) {
+				return errors.New("SSH control group unavailable")
 			}
 		}
 	}
@@ -288,9 +309,19 @@ func (p HostResources) Apply(root string, measuredMemory, measuredCPU int64) err
 		if err := os.MkdirAll(filepath.Join(root, name), 0755); err != nil {
 			return err
 		}
-		for file, value := range map[string]string{"memory.low": fmt.Sprint(g.MemoryLowBytes), "memory.high": fmt.Sprint(g.MemoryHighBytes), "memory.max": fmt.Sprint(g.MemoryBytes), "memory.swap.max": fmt.Sprint(g.SwapBytes), "pids.max": fmt.Sprint(g.PIDs), "cpu.weight": fmt.Sprint(g.CPUWeight)} {
+		for file, value := range map[string]string{"memory.low": fmt.Sprint(g.MemoryLowBytes), "memory.high": fmt.Sprint(g.MemoryHighBytes), "memory.max": fmt.Sprint(g.MemoryBytes), "memory.swap.max": fmt.Sprint(g.SwapBytes), "pids.max": fmt.Sprint(g.PIDs), "cpu.weight": fmt.Sprint(g.CPUWeight), "cpu.max": "max 100000"} {
 			if err := os.WriteFile(filepath.Join(root, name, file), []byte(value), 0600); err != nil {
 				return fmt.Errorf("apply control %s/%s: %w", name, file, err)
+			}
+		}
+	}
+	if _, ok := p.Controls["openrc.sshd"]; !ok && len(p.Controls) > 0 {
+		dir := filepath.Join(root, "openrc.sshd")
+		if _, err := os.Stat(dir); err == nil {
+			for file, value := range map[string]string{"memory.low": "0", "memory.high": "max", "memory.max": "max", "memory.swap.max": "max", "pids.max": "max", "cpu.weight": "100", "cpu.max": "max 100000"} {
+				if err := os.WriteFile(filepath.Join(dir, file), []byte(value), 0600); err != nil {
+					return fmt.Errorf("restore SSH control %s: %w", file, err)
+				}
 			}
 		}
 	}
@@ -352,6 +383,12 @@ func (p HostResources) Apply(root string, measuredMemory, measuredCPU int64) err
 			}
 			for _, limit := range group.IOMax {
 				value := fmt.Sprintf("%s rbps=%d wbps=%d", limit.Device, limit.ReadBytesPerSecond, limit.WriteBytesPerSecond)
+				if limit.ReadIOPS > 0 {
+					value += fmt.Sprintf(" riops=%d", limit.ReadIOPS)
+				}
+				if limit.WriteIOPS > 0 {
+					value += fmt.Sprintf(" wiops=%d", limit.WriteIOPS)
+				}
 				if err := os.WriteFile(filepath.Join(dir, "io.max"), []byte(value), 0600); err != nil {
 					return fmt.Errorf("apply application disk limit %s: %w", name, err)
 				}
