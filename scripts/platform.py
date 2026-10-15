@@ -37,7 +37,9 @@ CONTROL_END = b'# END KOMIZO OPENRC CONTROL\n'
 
 def control_configuration(before, policy, service):
     """Preserve caller configuration and replace only the managed limit block."""
-    if service not in CONTROL_SERVICES or set(policy.get('controls', {})) != {'openrc.'+name for name in CONTROL_SERVICES}:
+    required={'openrc.'+name for name in CONTROL_SERVICES}
+    declared=set(policy.get('controls', {}))
+    if service not in CONTROL_SERVICES or not required<=declared or declared-required-{'openrc.sshd'}:
         raise ValueError('declared fixed control policy required')
     group=policy['controls']['openrc.'+service]
     fields={'memory.low':'memory_low_bytes','memory.high':'memory_high_bytes','memory.max':'memory_bytes',
