@@ -266,6 +266,17 @@ func admitWorkloadReleaseContext(ctx context.Context, p workload.Policy, version
 func bytesTrim(body []byte) []byte { return []byte(strings.TrimSpace(string(body))) }
 
 func dockerReleaseRun(ctx context.Context, args ...string) (string, error) {
+	if len(args) == 2 && args[0] == "local-config-image" {
+		return cachedConfigurationImage(ctx, imageConfigCacheDirectory, args[1], workloadRootOwner, func(image string) bool {
+			bounded, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			body, err := dockerReleaseRun(bounded, "image", "inspect", image)
+			var rows []struct {
+				ID string `json:"Id"`
+			}
+			return err == nil && json.Unmarshal([]byte(body), &rows) == nil && len(rows) == 1 && rows[0].ID == image
+		})
+	}
 	if len(args) == 2 && args[0] == "config-digest" {
 		return imageConfigDigest(ctx, "", imageConfigCacheDirectory, args[1], workloadRootOwner, imageConfigSpace, exportDockerConfigDigest)
 	}
