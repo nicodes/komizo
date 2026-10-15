@@ -159,6 +159,9 @@ var AlpineInitScript string
 //go:embed preview_database.py
 var PreviewDatabase string
 
+//go:embed compressed_swap.py
+var CompressedSwap string
+
 //go:embed alpine-proxy.sh
 var AlpineProxyScript string
 
