@@ -30,8 +30,10 @@
 #   TASKS_SET      1 when TASKS is an explicit edit; otherwise keep recorded
 #   TASK_SCRIPT_B64  the app's task script, base64, from --task-script
 #                  (optional; absent reinstalls whatever the box stored)
-#   SCOPED_ENV     fixed scoped-env profile; fields-postgres-v2 only, and
-#                  only for app fieldsofrevik                         (optional)
+#   SCOPED_ENV     opaque operator-defined credential profile (optional)
+#   SCOPED_SCHEMA / SCOPED_FILES  explicit generation protocol declaration
+#   SCOPED_SPEC_SET / SCOPED_PROVISION_B64 / SCOPED_STATUS_B64
+#                  reviewed adapters supplied by the operator, never CI
 #   SCOPED_ENV_SET 1 when SCOPED_ENV is an explicit edit; otherwise keep
 #                  the recorded profile
 #   KNOWN_AS       names CI dials this app by, comma-separated    (kept if unset)
@@ -270,19 +272,28 @@ esac
 if [ "$SCOPED_ENV_SET" = "0" ] && [ -f "$STATE_FILE" ]; then
 	SCOPED_ENV="$(sed -n 's/^SCOPED_ENV=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)"
 fi
-# A catalog, like TASKS. The only profile writes per-service env files for
-# fieldsofrevik. Any other app, or any other name, is a mistake rather than a
-# path the caller gets to choose.
-case "$SCOPED_ENV" in
-	'') ;;
-	fields-postgres-v2)
-		[ "$APP_NAME" = "fieldsofrevik" ] || {
-			echo "error: scoped env profile fields-postgres-v2 is only defined for app fieldsofrevik" >&2
-			exit 1
-		}
-		;;
-	*) echo "error: SCOPED_ENV names an unknown profile" >&2; exit 1 ;;
-esac
+# Credential behavior comes from the application's reviewed operator spec.
+SCOPED_SPEC_SET="${SCOPED_SPEC_SET:-0}"
+SCOPED_SCHEMA="${SCOPED_SCHEMA:-}"
+SCOPED_FILES="${SCOPED_FILES:-}"
+case "$SCOPED_SPEC_SET" in 0|1) ;; *) echo "error: invalid scoped definition edit" >&2; exit 1 ;; esac
+if [ -n "$SCOPED_ENV" ]; then
+ if [ "$SCOPED_SPEC_SET" = 0 ] && [ -f "$STATE_FILE" ]; then
+  previous_profile=$(sed -n 's/^SCOPED_ENV=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)
+  [ "$previous_profile" = "$SCOPED_ENV" ] || { echo "error: changing a scoped profile requires --scoped-env-spec" >&2; exit 1; }
+  SCOPED_SCHEMA=$(sed -n 's/^SCOPED_SCHEMA=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)
+  SCOPED_FILES=$(sed -n 's/^SCOPED_FILES=//p' "$STATE_FILE" | tr -d '\r' | head -n 1)
+ fi
+ komizo-box workload scoped-definition-check --profile "$SCOPED_ENV" --schema "$SCOPED_SCHEMA" --files "$SCOPED_FILES" || exit 1
+ if [ "$SCOPED_SPEC_SET" = 1 ]; then
+  [ -n "${SCOPED_PROVISION_B64:-}" ] && [ -n "${SCOPED_STATUS_B64:-}" ] || { echo "error: both reviewed scoped adapters are required" >&2; exit 1; }
+ elif [ ! -f "$PROVISION_BIN" ] || [ ! -f "$STATUS_BIN" ]; then
+  echo "error: install reviewed scoped adapters with --scoped-env-spec" >&2; exit 1
+ fi
+else
+ SCOPED_SCHEMA=""
+ SCOPED_FILES=""
+fi
 
 # The names CI connects to this app by. Recorded per APP rather than per box:
 # known_hosts is matched on the exact string the client dialled, and each repo
@@ -627,6 +638,8 @@ CONFIG_IMAGE=$CONFIG_IMAGE
 KNOWN_AS=$KNOWN_AS
 TASKS=${TASKS:-}
 SCOPED_ENV=${SCOPED_ENV:-}
+SCOPED_SCHEMA=${SCOPED_SCHEMA:-}
+SCOPED_FILES=${SCOPED_FILES:-}
 PREVIEW=${PREVIEW:-0}
 EOF
 if [ -n "$STOPPED_KEEP" ]; then
@@ -730,7 +743,7 @@ if ! komizo-box workload deployment-enabled --policy "$WORKLOAD_POLICY"; then
 	echo "deploy: root must configure workload authority and run deployment-enable" >&2
 	exit 1
 fi
-if [ "$SCOPED_ENV" = "fields-postgres-v2" ]; then
+if [ -n "$SCOPED_ENV" ]; then
 	[ "$#" -eq 4 ] || { echo "deploy: scoped generation missing" >&2; exit 1; }
 elif [ "$#" -ne 1 ] && [ "$#" -ne 3 ]; then
 	echo "deploy: unexpected arguments" >&2
@@ -1108,8 +1121,8 @@ fi
 
 # This profile's values are host-local. A stale doas grant must not write them.
 profile="$(sed -n 's/^SCOPED_ENV=//p' "__STATE_FILE__" | tr -d '\r' | head -n 1)"
-if [ "$profile" = "fields-postgres-v2" ]; then
-	echo "set-secret: refusing: fields-postgres-v2 does not accept deploy-user secrets" >&2
+if [ -n "$profile" ]; then
+	echo "set-secret: refusing: scoped credentials do not accept deploy-user secrets" >&2
 	exit 1
 fi
 
@@ -1198,37 +1211,35 @@ chown root:root "$RELEASE_SECRETS_BIN.tmp"
 chmod 755 "$RELEASE_SECRETS_BIN.tmp"
 mv -f "$RELEASE_SECRETS_BIN.tmp" "$RELEASE_SECRETS_BIN"
 
-# --- 3b2. Scoped env path --------------------------------------------------
-# Opt-in, and only the fixed fieldsofrevik profile. Provision is root-only
-# and mode 0700. Status is the only doas grant. The old setter and its lease
-# helpers are removed; they are not data.
+# --- 3b2. Operator-reviewed credential adapters -----------------------------
+# Provision remains root-only; CI can ask only for nonsecret status. Omitted
+# adapters preserve the reviewed installed implementation. No config image can
+# install or replace these privileged programs.
 rm -f "$SCOPED_BIN" "$SCOPED_BIN.tmp" \
-	"/etc/periodic/15min/komizo-scoped-env-$APP_NAME" \
-	"/etc/local.d/komizo-scoped-env-$APP_NAME.start"
-if [ "$SCOPED_ENV" = "fields-postgres-v2" ]; then
-	log "Installing $PROVISION_BIN and $STATUS_BIN"
-	cat > "$PROVISION_BIN.tmp" <<'KOMIZO_SCOPED_EOF'
-# __FIELDS_SCOPED_ENV_BODY__
-KOMIZO_SCOPED_EOF
-	cat > "$STATUS_BIN.tmp" <<'KOMIZO_STATUS_EOF'
-# __FIELDS_SCOPED_STATUS_BODY__
-KOMIZO_STATUS_EOF
-	sed -i \
-		-e "s|__APP_NAME__|$APP_NAME|g" \
-		-e "s|__STATE_FILE__|$STATE_FILE|g" \
-		-e "s|__LOCK_FILE__|/run/komizo/deploy-$APP_NAME.lock|g" \
-		"$PROVISION_BIN.tmp" "$STATUS_BIN.tmp"
-	if grep -q '__[A-Z_][A-Z_]*__' "$PROVISION_BIN.tmp" "$STATUS_BIN.tmp"; then
-		rm -f "$PROVISION_BIN.tmp" "$STATUS_BIN.tmp"
-		die "the generated scoped-env script still has placeholders in it -- this is a komizo bug"
-	fi
-	mv "$PROVISION_BIN.tmp" "$PROVISION_BIN"
-	mv "$STATUS_BIN.tmp" "$STATUS_BIN"
-	chown root:root "$PROVISION_BIN" "$STATUS_BIN"
-	chmod 700 "$PROVISION_BIN"
-	chmod 755 "$STATUS_BIN"
+ "/etc/periodic/15min/komizo-scoped-env-$APP_NAME" \
+ "/etc/local.d/komizo-scoped-env-$APP_NAME.start"
+if [ -n "$SCOPED_ENV" ]; then
+ if [ "$SCOPED_SPEC_SET" = 1 ]; then
+  (umask 077; printf '%s' "$SCOPED_PROVISION_B64" | base64 -d > "$PROVISION_BIN.tmp"; printf '%s' "$SCOPED_STATUS_B64" | base64 -d > "$STATUS_BIN.tmp")
+  for adapter in "$PROVISION_BIN.tmp" "$STATUS_BIN.tmp"; do
+   head -n 1 "$adapter" | grep -q '^#!' || die "scoped adapter must start with a shebang"
+   sed -i -e "s|__APP_NAME__|$APP_NAME|g" -e "s|__STATE_FILE__|$STATE_FILE|g" -e "s|__LOCK_FILE__|/run/komizo/deploy-$APP_NAME.lock|g" "$adapter"
+   sh -n "$adapter" || die "scoped adapter has invalid shell syntax"
+   if grep -q '__[A-Z_][A-Z_]*__' "$adapter"; then die "scoped adapter has unresolved app bindings"; fi
+  done
+  chown root:root "$PROVISION_BIN.tmp" "$STATUS_BIN.tmp"
+  chmod 700 "$PROVISION_BIN.tmp"
+  chmod 755 "$STATUS_BIN.tmp"
+  mv -f "$PROVISION_BIN.tmp" "$PROVISION_BIN"
+  mv -f "$STATUS_BIN.tmp" "$STATUS_BIN"
+ else
+  for pair in "$PROVISION_BIN:700" "$STATUS_BIN:755"; do
+   adapter=${pair%:*}; expected_mode=${pair##*:}
+   [ ! -L "$adapter" ] && [ "$(stat -c %u "$adapter")" = 0 ] && [ "$(stat -c %a "$adapter")" = "$expected_mode" ] || die "stored scoped adapter is not protected"
+  done
+ fi
 else
-	rm -f "$PROVISION_BIN" "$PROVISION_BIN.tmp" "$STATUS_BIN" "$STATUS_BIN.tmp"
+ rm -f "$PROVISION_BIN" "$PROVISION_BIN.tmp" "$STATUS_BIN" "$STATUS_BIN.tmp"
 fi
 
 # --- 3c. Named task path ---------------------------------------------------
@@ -1426,11 +1437,11 @@ cat >> /etc/doas.conf <<-EOF
 	permit nopass $CI_USER as root cmd $DEPLOY_BIN
 	permit nopass $CI_USER as root cmd $PRUNE_BIN
 EOF
-if [ "$SCOPED_ENV" = "fields-postgres-v2" ]; then
+if [ -n "$SCOPED_ENV" ]; then
 	# Status only. Provision is mode 0700 and is not in doas. set-secret is
 	# not granted for this profile; the script also refuses if a stale rule
 	# remains.
-	printf 'permit nopass %s as root cmd %s\n' "$CI_USER" "$STATUS_BIN" >> /etc/doas.conf
+	printf 'permit nopass %s as root cmd %s args\n' "$CI_USER" "$STATUS_BIN" >> /etc/doas.conf
 else
 	printf 'permit nopass %s as root cmd %s\n' "$CI_USER" "$SECRET_BIN" >> /etc/doas.conf
 	printf 'permit nopass %s as root cmd %s args\n' "$CI_USER" "$RELEASE_SECRETS_BIN" >> /etc/doas.conf
@@ -1721,15 +1732,14 @@ fi
 log "Done"
 SCOPED_HINT=""
 SCOPED_NOTE=""
-if [ "$SCOPED_ENV" = "fields-postgres-v2" ]; then
+if [ -n "$SCOPED_ENV" ]; then
 	SCOPED_HINT="doas $STATUS_BIN"
 	SCOPED_NOTE="
-When the fields-postgres-v2 profile is installed, '$CI_USER' can run
+When this scoped credential profile is installed, '$CI_USER' can run
 $STATUS_BIN and nothing else for secrets. It prints one nonsecret status line.
 Provisioning is root-only: $PROVISION_BIN, once, before the first postgres
 start. It is not in doas. set-secret is not granted for this profile."
-	# CLERK_SECRET_KEY stays on the box. It is not a deploy argument and not
-	# a value this note or the status line can carry.
+	# Credential values stay on the box and cannot appear in this note.
 fi
 cat <<EOF
 

@@ -27,11 +27,13 @@ type addOpts struct {
 	taskScript string
 	taskBody   []byte
 	taskSet    bool
-	// scopedEnv is the fixed fields-postgres-v2 profile, or empty to revoke.
+	// scopedEnv is an opaque operator-defined profile, or empty to revoke.
 	// scopedEnvSet distinguishes an explicit edit from omission, which keeps
 	// the recorded profile across komizo update.
-	scopedEnv    string
-	scopedEnvSet bool
+	scopedEnv      string
+	scopedEnvSet   bool
+	scopedSpecFile string
+	scopedSpec     *scopedSpec
 	// preview turns this app's PR previews on or off. previewSet
 	// distinguishes an explicit edit from omission, which is what lets
 	// `komizo update` keep the recorded answer instead of resetting it.
@@ -62,7 +64,8 @@ func (o *addOpts) bind(fs *flag.FlagSet) {
 	fs.StringVar(&o.keyPath, "key", "", "also write the keypair here (default: not written, printed instead)")
 	fs.StringVar(&o.knownAs, "known-as", "", "other hostname(s) CI connects by, comma-separated (host keys are pinned per name)")
 	fs.StringVar(&o.taskScript, "task-script", "", "install this script as the app's root-owned task program (empty revokes)")
-	fs.StringVar(&o.scopedEnv, "scoped-env", "", "fixed scoped-env profile; fields-postgres-v2 for fieldsofrevik (empty revokes)")
+	fs.StringVar(&o.scopedEnv, "scoped-env", "", "operator-defined scoped environment profile (empty revokes)")
+	fs.StringVar(&o.scopedSpecFile, "scoped-env-spec", "", "operator-reviewed scoped environment definition and sibling adapter scripts")
 	fs.BoolVar(&o.preview, "preview", false, "install this app's PR-preview helpers and grant them (--preview=false revokes)")
 	fs.IntVar(&o.port, "port", 22, "SSH port")
 	fs.BoolVar(&o.hardenSSHD, "harden-sshd", false, "also disable password auth and root password login for EVERY user")
@@ -210,13 +213,23 @@ func RunAdd(args []string) error {
 		}
 		o.taskBody = body
 	}
-	if o.scopedEnvSet {
-		if o.scopedEnv != "" && o.scopedEnv != "fields-postgres-v2" {
-			return fmt.Errorf("--scoped-env must be fields-postgres-v2, or empty to revoke")
+	if o.scopedSpecFile != "" {
+		spec, err := readScopedSpec(o.scopedSpecFile)
+		if err != nil {
+			return err
 		}
-		if o.scopedEnv != "" && o.app != "fieldsofrevik" {
-			return fmt.Errorf("--scoped-env %s is defined only for app fieldsofrevik", o.scopedEnv)
+		if o.scopedEnvSet && o.scopedEnv != spec.Profile {
+			return fmt.Errorf("scoped profile differs from explicit specification")
 		}
+		o.scopedEnv = spec.Profile
+		o.scopedSpec = spec
+		o.scopedEnvSet = true
+	}
+	if o.scopedEnvSet && o.scopedEnv != "" && o.scopedSpec == nil {
+		return fmt.Errorf("setting a scoped profile requires --scoped-env-spec")
+	}
+	if o.scopedEnvSet && o.scopedEnv != "" && !validScopedProfileName(o.scopedEnv) {
+		return fmt.Errorf("invalid operator-defined scoped environment profile")
 	}
 
 	var knownAs []string
@@ -260,6 +273,7 @@ func RunAdd(args []string) error {
 		taskSet:      o.taskSet,
 		scopedEnv:    o.scopedEnv,
 		scopedEnvSet: o.scopedEnvSet,
+		scopedSpec:   o.scopedSpec,
 		preview:      o.preview,
 		previewSet:   o.previewSet,
 		// Only an answer when the flag was given AND resolved to nothing.
@@ -302,6 +316,7 @@ type addPlan struct {
 	taskSet      bool
 	scopedEnv    string
 	scopedEnvSet bool
+	scopedSpec   *scopedSpec
 	preview      bool
 	previewSet   bool
 	// clearKnownAs says the empty knownAs above is an answer rather than a
@@ -389,11 +404,16 @@ func performAdd(p addPlan, out progress, runner func(script string, env map[stri
 		// the trip through a shell environment assignment untouched. Not a
 		// secret -- it lives in the app's repository -- so argv is fine; what
 		// it must not be is reinterpreted on the way.
-		"TASK_SCRIPT_B64": base64.StdEncoding.EncodeToString(p.taskBody),
-		"SCOPED_ENV":      p.scopedEnv,
-		"SCOPED_ENV_SET":  boolEnv(p.scopedEnvSet),
-		"PREVIEW":         boolEnv(p.preview),
-		"PREVIEW_SET":     boolEnv(p.previewSet),
+		"TASK_SCRIPT_B64":      base64.StdEncoding.EncodeToString(p.taskBody),
+		"SCOPED_ENV":           p.scopedEnv,
+		"SCOPED_ENV_SET":       boolEnv(p.scopedEnvSet),
+		"SCOPED_SPEC_SET":      boolEnv(p.scopedSpec != nil),
+		"SCOPED_SCHEMA":        scopedSpecValue(p.scopedSpec, "schema"),
+		"SCOPED_FILES":         scopedSpecValue(p.scopedSpec, "files"),
+		"SCOPED_PROVISION_B64": scopedSpecValue(p.scopedSpec, "provision"),
+		"SCOPED_STATUS_B64":    scopedSpecValue(p.scopedSpec, "status"),
+		"PREVIEW":              boolEnv(p.preview),
+		"PREVIEW_SET":          boolEnv(p.previewSet),
 		// Only ever 1 when the caller means "none", never as a matter of course:
 		// the server reads an empty KNOWN_AS as "not mentioned" for every other
 		// operation, and that is the reading a config-image change needs.

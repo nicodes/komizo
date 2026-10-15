@@ -106,7 +106,7 @@ func TestTypedScopedLifecycleKeepsOneLockAndChecksProvenance(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			record := "APP_DIR=" + sub.dir + "\nSCOPED_ENV=fields-postgres-v2\nSCOPED_GENERATION=" + id + "\n"
+			record := "APP_DIR=" + sub.dir + "\nSCOPED_ENV=fields-postgres-v2\nSCOPED_SCHEMA=11\nSCOPED_FILES=postgres.env,migrate.env,api.env,godot-api.env\nSCOPED_GENERATION=" + id + "\n"
 			if err := os.WriteFile(filepath.Join(sub.root, box.AppsDir, sub.app+".env"), []byte(record), 0600); err != nil {
 				t.Fatal(err)
 			}

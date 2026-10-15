@@ -136,7 +136,7 @@ func previewTestConfig(t *testing.T) PreviewUpConfig {
 	t.Helper()
 	root := t.TempDir()
 	cfg := PreviewUpConfig{
-		Knob:      PreviewKnob{Domain: "preview.gdam.dev", TTL: PreviewTTLDefault, Max: 5, MemLimit: "512m", CPULimit: "0.75", AskPort: 8487, PortRange: "20000-20010"},
+		Knob:      withRevikFixture(PreviewKnob{Domain: "preview.gdam.dev", TTL: PreviewTTLDefault, Max: 5, MemLimit: "512m", CPULimit: "0.75", AskPort: 8487, PortRange: "20000-20010"}),
 		Root:      root,
 		RoutesDir: filepath.Join(root, "routes"),
 		Proxy:     "komizo-proxy",

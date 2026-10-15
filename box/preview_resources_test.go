@@ -18,7 +18,7 @@ func TestProtectedPreviewEnvelopeCannotBeWidenedByKnobsOrAnotherPreview(t *testi
 	cfg := previewTestConfig(t)
 	cfg.HostResources = previewEnvelopeFixture()
 	cfg.ReportJSON = []byte(`{"system":{"mem":{"total":1073741824}}}`)
-	cfg.Knob, _ = ParsePreviewKnob("MEM_LIMIT=64m\nCPU_LIMIT=0.1\nMEM_BUDGET=1g")
+	cfg.Knob, _ = ParsePreviewKnob("DOMAIN=preview.example.com\nMEM_LIMIT=64m\nCPU_LIMIT=0.1\nMEM_BUDGET=1g")
 	// Reproduce the physical host's policy presence, which activated the old
 	// post-render string rewrite and duplicated the typed parent's YAML key.
 	policy := filepath.Join(cfg.Root, "etc", "komizo", "resources.json")
@@ -63,12 +63,12 @@ func TestProtectedPreviewEnvelopeRefusesOversizedProfilesAndCPUWithoutDocker(t *
 
 func TestRevikEveryPreviewServiceInheritsTheProtectedParent(t *testing.T) {
 	cfg := PreviewUpConfig{HostResources: previewEnvelopeFixture()}
-	cfg.Knob, _ = ParsePreviewKnob("MEM_LIMIT=64m\nCPU_LIMIT=0.1")
+	cfg.Knob, _ = ParsePreviewKnob("DOMAIN=preview.example.com\nMEM_LIMIT=64m\nCPU_LIMIT=0.1")
 	if err := protectPreviewEnvelope(&cfg); err != nil {
 		t.Fatal(err)
 	}
 	r := PreviewRecord{App: "fieldsofrevik", PR: 1, Project: PreviewProject("fieldsofrevik", 1), Images: revikImages()}
-	body := previewCompose(r, cfg.Knob, "edge", false, "")
+	body := previewCompose(r, withRevikFixture(cfg.Knob), "edge", false, "")
 	if !strings.Contains(body, "x-runtime: &runtime\n  cgroup_parent: /komizo-previews") {
 		t.Fatal("Revik runtime escaped protected parent")
 	}
