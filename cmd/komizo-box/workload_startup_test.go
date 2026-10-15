@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/nicodes/komizo/internal/workload"
@@ -138,7 +139,17 @@ func TestReadOnlyStartupInspectionNeverRunsLifecycleEvenWhenAdmitted(t *testing.
 				t.Fatal(err)
 			}
 		}
-		err := runWorkload([]string{"startup-check", "--policy", path})
+		var err error
+		if os.Geteuid() == 0 {
+			err = runWorkload([]string{"startup-check", "--policy", path})
+		} else {
+			// Hosted CI is unprivileged: prove the public boundary refuses, then
+			// exercise shared admission with the fixture's explicit owner seam.
+			if denied := runWorkload([]string{"startup-check", "--policy", path}); denied == nil || !strings.Contains(denied.Error(), "root operator") {
+				t.Fatalf("unprivileged startup inspection accepted: %v", denied)
+			}
+			err = f.h.startupCapacity(p)
+		}
 		if (err != nil) != (usage == "100663296") {
 			t.Fatalf("usage%s: %v", usage, err)
 		}
