@@ -1510,6 +1510,12 @@ func lockPreviews(ctx context.Context, root string) (func(), error) {
 	return lockHostFile(ctx, root, "previews.lock")
 }
 
+// LockPreviewInfrastructure serializes shared database provisioning with every
+// preview admission and cleanup, including the daemon's idle database stop.
+func LockPreviewInfrastructure(ctx context.Context, root string) (func(), error) {
+	return lockPreviews(ctx, root)
+}
+
 // LockImageMetadata serializes the bounded root-owned immutable digest cache.
 func LockImageMetadata(ctx context.Context, root string) (func(), error) {
 	return lockHostFile(ctx, root, "image-metadata.lock")

@@ -216,6 +216,12 @@ preview_cgroup=""
 if [ -f /etc/komizo/resources.json ]; then
  komizo-box workload host-resources --apply
  preview_cgroup=/komizo-preview-database
+ # The installed host authority owns the effective ceiling, including when
+ # a legacy preview knob asks for more. Never create a child above that cap.
+ PREVIEW_DB_MEMORY=$(cat /sys/fs/cgroup/komizo-preview-database/memory.max)
+ case "$PREVIEW_DB_MEMORY" in ''|*[!0-9]*) die "preview database requires a finite protected memory cap" ;; esac
+ [ "$PREVIEW_DB_MEMORY" -ge 67108864 ] || die "preview database requires at least 64 MiB of protected capacity"
+ PREVIEW_DB_MEMORY_CONFIGURED=true
 fi
 # --- komizo's own preview database server -------------------------------------
 #
@@ -261,7 +267,17 @@ log "Provisioning komizo's preview database server"
 if [ "$(docker inspect -f '{{.State.Running}}' "$PREVIEW_DB_NAME" 2>/dev/null || echo false)" = "true" ]; then
 	printf '    %s is already running\n' "$PREVIEW_DB_NAME"
 else
-	docker rm -f "$PREVIEW_DB_NAME" >/dev/null 2>&1 || true
+	# A failed inventory is unavailable, not evidence that a container is absent.
+	preview_previous=$(docker container ls --all --no-trunc --filter "name=^/$PREVIEW_DB_NAME\$" --format '{{.ID}}') || die "preview database inventory unavailable"
+	if [ -n "$preview_previous" ]; then
+		[ "${#preview_previous}" -eq 64 ] || die "preview database identity ambiguous"
+		case "$preview_previous" in *[!a-f0-9]*) die "invalid preview database identity" ;; esac
+		preview_expected=$(docker image inspect --format '{{.Id}}' "$PREVIEW_DB_IMAGE") || die "preview database image unavailable"
+		[ "$(docker inspect --format '{{.Image}}' "$preview_previous")" = "$preview_expected" ] || die "preview database image differs"
+		[ "$(docker inspect --format '{{range .Mounts}}{{.Type}} {{.Name}} {{.Destination}}{{end}}' "$preview_previous")" = "volume komizo-previews-data /var/lib/postgresql" ] || die "preview database volume differs"
+		# No force or volume-removal flag: only the verified stopped identity.
+		docker rm "$preview_previous" >/dev/null || die "could not replace stopped preview database"
+	fi
 	# The superuser password is generated and then DELIBERATELY DISCARDED.
 	# komizo reaches postgres only by `docker exec`, over the unix socket,
 	# which the stock image's pg_hba trusts -- so no superuser credential
@@ -291,7 +307,7 @@ else
 		--restart unless-stopped \
 		--network "$PREVIEW_DB_NETWORK" \
 		-e POSTGRES_PASSWORD="$(head -c 18 /dev/urandom | od -An -tx1 | tr -d ' \n')" \
-		-e POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 \
+		-e 'POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256 --set=shared_buffers=8MB --set=max_connections=20 --set=work_mem=1MB --set=maintenance_work_mem=16MB --set=autovacuum_max_workers=1 --set=autovacuum_work_mem=8MB' \
 		-e POSTGRES_USER=postgres \
 		-e POSTGRES_DB=postgres \
 		-v komizo-previews-data:/var/lib/postgresql \
@@ -299,7 +315,9 @@ else
 		--memory-swap "$PREVIEW_DB_MEMORY" \
 		--cpu-shares 128 \
 		--cpus 0.25 \
-		"$PREVIEW_DB_IMAGE" >/dev/null ||
+		"$PREVIEW_DB_IMAGE" postgres \
+		-c shared_buffers=8MB -c max_connections=20 -c work_mem=1MB \
+		-c maintenance_work_mem=16MB -c autovacuum_max_workers=1 -c autovacuum_work_mem=8MB >/dev/null ||
 		die "could not start $PREVIEW_DB_NAME"
 	printf '    started %s on %s\n' "$PREVIEW_DB_NAME" "$PREVIEW_DB_NETWORK"
 fi
