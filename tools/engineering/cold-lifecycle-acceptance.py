@@ -225,7 +225,7 @@ def main():
         assert deployment['ok'] and deployment['data']['completed']
         operation=deployment['data']['operation_id'];assert re.fullmatch('[a-f0-9]{32}',operation)
         inspection=json.loads(run([str(cli),'--json','operation','inspect','--host',address,'--app','fixturelocal'],env=env))
-        assert inspection['ok'] and inspection['data']['inspection']['operation']['id']==operation and not inspection['data']['reconciliation_required']
+        assert inspection['ok'] and inspection['data']['inspection']['operation']['operation_id']==operation and not inspection['data']['reconciliation_required']
         fixture.record('public_bootstrapped_activation',{'revision':REVISION,'operation_id':operation,'authority':'operator-bootstrap','new_github_source_authentication_tested':False,'machine_interface':1})
         def identity():
             return json.loads(fixture.python("import hashlib,json\npaths=[Path('/srv/fixturelocal/.env'),Path("+repr(policy)+"),Path('/srv/fixturelocal/.komizo-image-retention')]\nmounts=json.loads(__import__('subprocess').check_output(['docker','inspect','--format','{{json .Mounts}}','komizo-proxy']))\nprint(json.dumps({'files':{str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in paths},'certificates':sorted(m['Name'] for m in mounts if m['Type']=='volume' and m['Destination'] in ('/data','/config')),'platform_pending':Path('/var/lib/komizo/upgrades/pending.json').exists(),'activation_pending':Path('/var/lib/komizo/activations/pending.json').exists()}))"))
