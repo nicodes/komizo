@@ -83,7 +83,7 @@ def main():
     if not args.output.is_absolute() or args.output.exists():raise ValueError('fresh absolute output required')
     args.output.mkdir(mode=0o700)
     prepare.verify(args.release_dir,args.source,args.release)
-    cli=args.release_dir/'komizo';box=args.release_dir/'komizo-box-linux-amd64'
+    cli=args.release_dir/'komizo';verified_box=args.release_dir/'komizo-box-linux-amd64';box=verified_box
     candidate_receipt=None
     if args.candidate_cli:
         candidate=args.candidate_cli
@@ -300,7 +300,7 @@ while time.monotonic()<end:
   print(json.dumps({'actual_authenticated_executor_interrupted':True,'phase':record['phase'],'manifest_sha256':expected,'previous_absence_observed':True,'fence_retained':Path('/var/lib/komizo/upgrades/pending.json').exists()}),flush=True);break
  time.sleep(.0005)
 else:raise ValueError('private-file interruption window not observed')
-""".replace('REMOTE',repr(remote)).replace('DIGEST',repr(expected)).replace('BINARY_SHA',repr(hashlib.sha256(box.read_bytes()).hexdigest()))
+""".replace('REMOTE',repr(remote)).replace('DIGEST',repr(expected)).replace('BINARY_SHA',repr(hashlib.sha256(verified_box.read_bytes()).hexdigest()))
         monitor=subprocess.Popen(['docker','exec','-i',cid,'python3','-I','-'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         monitor.stdin.write(watcher.encode());monitor.stdin.close()
         authority_args[2]='apply';authority_args+=['--resume','--expected-manifest',expected]
@@ -312,6 +312,7 @@ else:raise ValueError('private-file interruption window not observed')
             interruption=json.loads(monitor.stdout.read());assert interruption['fence_retained']
         finally:
             if monitor.poll() is None:monitor.terminate();monitor.wait(timeout=10)
+            (args.output/'authority-watcher.log').write_bytes(monitor.stdout.read()+monitor.stderr.read())
         inspect_record=json.loads(fixture.command(['komizo-box','platform','inspect',remote,expected]))
         assert inspect_record['phase']=='installing'
         fixture.write(candidates[0][0],b'#!/bin/sh\n# Changed synthetic fixture; must refuse recovery.\nexit 0\n',0o700)
