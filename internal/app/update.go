@@ -58,7 +58,7 @@ func RunUpdate(args []string) error {
 	fs.BoolVar(&o.noProxy, "no-proxy", false, "leave the shared proxy alone")
 	fs.IntVar(&o.port, "port", 22, "SSH port")
 	if err := fs.Parse(args); err != nil {
-		return ErrSilent
+		return silentFlagError(err)
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))

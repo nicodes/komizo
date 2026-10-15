@@ -32,7 +32,7 @@ func RunEnrol(args []string) error {
 	var forgetDevices bool
 	fs.BoolVar(&forgetDevices, "forget-devices", false, "drop the devices this box already takes orders from")
 	if err := fs.Parse(args); err != nil {
-		return ErrSilent
+		return silentFlagError(err)
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))

@@ -70,7 +70,7 @@ func lifecycle(verb string, args []string) error {
 		fs.IntVar(&tail, "tail", 40, "how many lines")
 	}
 	if err := fs.Parse(args); err != nil {
-		return ErrSilent
+		return silentFlagError(err)
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))

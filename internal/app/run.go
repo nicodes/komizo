@@ -136,7 +136,15 @@ func runCommand(name string, args []string) error {
 // which is the capability gate appify.md §7 says must not exist and which
 // app-only.md §7 left standing.
 
-func Main(args []string) error {
+func Main(args []string) (err error) {
+	defer func() {
+		if errors.Is(err, flag.ErrHelp) {
+			err = nil
+		}
+	}()
+	if printGroupHelp(args) {
+		return nil
+	}
 	// `komizo` on its own prints what it can do, and SUCCEEDS.
 	//
 	// It used to open the interface, and before that it printed the usage and
@@ -149,14 +157,29 @@ func Main(args []string) error {
 		return nil
 	}
 
-	var err error
 	switch args[0] {
 	// Asked before anything else can fail. The first thing anyone wants when a
 	// tool misbehaves is which build of it they are running, and that answer
 	// must not depend on a server being reachable or a flag parsing.
 	case "--version", "-v", "version":
+		if machineMode() {
+			return printMachineVersion()
+		}
 		fmt.Println("komizo " + versionText())
 		return nil
+	case "capabilities":
+		if hasHelp(args) {
+			return RunCapabilities(nil)
+		}
+		return RunCapabilities(args[1:])
+	case "doctor":
+		return RunDoctor(args[1:])
+	case "setup":
+		return RunSetup(args[1:])
+	case "deploy":
+		return RunDeploy(args[1:])
+	case "operation":
+		return RunOperation(args[1:])
 	// Grouped for what they are rather than for what they need: nothing in this
 	// switch needs an account, and the two operations that do ask where they
 	// happen. Sign-in is here because it is how you get one.
@@ -227,98 +250,62 @@ func Main(args []string) error {
 		// RETURNED, not exited on. Every other outcome of this switch comes back
 		// as an error and `Main` is what tests drive -- an os.Exit here takes
 		// the test binary with it, which is how this first went in.
-		err = fmt.Errorf(`%q is not a command.
-
-The full-screen interface is gone; the app is where a server is watched and
-operated now. Everything it did is a command here, and each one takes the
-address as a flag:
-
-    komizo report --host %s
-    komizo list   --host %s
-    komizo init   --host %s
-
-Run "komizo" on its own for the whole list.`, args[0], args[0], args[0], args[0])
+		err = fmt.Errorf("%q is not a command; use komizo help or komizo capabilities", args[0])
+		if strings.ContainsAny(args[0], "@.:") {
+			err = fmt.Errorf("server addresses belong in --host; try komizo report --host %s", args[0])
+		}
 	}
 
 	return err
 }
 
 func Usage() {
-	fmt.Print(`komizo - deploy to your own servers from GitHub Actions
+	fmt.Print(`komizo - operate your own application hosts over SSH
 
-Every operation is a command, and each takes the server as a flag. komizo runs
-on your machine and connects to the box itself; you never run anything on it by
-hand.
+Start here:
+  komizo capabilities
+  komizo doctor --host root@HOST
+  komizo setup --host root@HOST [--definition app.json]
+  komizo deploy --host root@HOST --app APP --version COMMIT
+  komizo operation inspect --host root@HOST --app APP
+  komizo report --host root@HOST
 
-  komizo login                   (decommissioned with the service)
-  komizo logout                  (forgets this machine's old session file)
-  komizo init    --host root@HOST
-  komizo update  --host root@HOST
-  komizo add     --host root@HOST --app NAME --config REF
+Agent interface:
+  komizo --json COMMAND [FLAGS]
+  komizo --json --timeout 5m COMMAND [FLAGS]
+
+One versioned JSON result goes to stdout; progress goes to stderr. Discover
+command effects and result formats with capabilities. Failed mutations may
+have completed remotely: inspect their operation before retrying.
+
+Applications:
   komizo list    --host root@HOST
-  komizo report  --host root@HOST
-  komizo enrol   --host root@HOST --remove (retire a legacy registration)
-  komizo remove  --host root@HOST --app NAME --yes
-  komizo set-secret   --host root@HOST --app NAME --name SECRET [--file]
-  komizo unset-secret --host root@HOST --app NAME [--list | --name NAME --yes]
-  komizo start   --host root@HOST --app NAME
-  komizo stop    --host root@HOST --app NAME
-  komizo restart --host root@HOST --app NAME
-  komizo logs    --host root@HOST --app NAME [--tail N] [--service S]
-  komizo proxy   --host root@HOST
-  komizo ui      (runs ON the box: the local web app, loopback or tailnet)
+  komizo add     --host root@HOST --app APP --config REF --key PRIVATE_FILE
+  komizo start|stop|restart|logs --host root@HOST --app APP
+  komizo remove --host root@HOST --app APP --yes
+  komizo set-secret|unset-secret --host root@HOST --app APP
+  komizo preview --help
+
+Host and advanced operations:
+  komizo init|update|proxy --host root@HOST
   komizo reconcile --host root@HOST --inventory expected-apps.json
-  komizo script [init|add|remove|unset-secret|proxy]
-  komizo platform plan|apply --host HOST --release vVERSION --source COMMIT --release-dir DIR --stage DIR
-  komizo publication prepare --image ghcr.io/OWNER/IMAGE:SOURCE --output NEW_DIRECTORY
+  komizo platform --help
+  komizo operator plan|apply|status|recover|export
   komizo artifact --arch amd64|arm64 --output NEW_FILE
-  komizo operator plan|export [--directory NEW_ABSOLUTE_DIRECTORY]
-  komizo workspace check --path OUTPUT --reserve-bytes BYTES
-  komizo workspace plan --root WORKTREE --path GENERATED_OUTPUT
-  komizo workspace clean --manifest PLAN_JSON --expected-plan SHA256
-  komizo workload acceptance --profile PROFILE_JSON --host root@HOST --output NEW_FILE
+  komizo publication prepare --help
+  komizo workspace check|plan|clean --help
+  komizo workload acceptance --help
+  komizo script [init|add|remove|unset-secret|proxy]
+  komizo ui --help
 
-THE SERVICE IS DECOMMISSIONED. komizo-be is gone (board decision) and this CLI
-is the whole product: you manage your servers from it directly, over SSH, with
-nothing to sign in to. Login and new hosted enrolment now refuse before
-credentials or network access. "komizo enrol --remove" retains cleanup of an
-existing registration. Direct setup and local device authority stay supported.
+Supported application hosts use Alpine Linux and amd64 or arm64. No hosted
+Komizo account is required. Each app supplies its own Compose artifacts and
+explicit configuration. Run COMMAND --help for options. Legacy login/enrolment
+commands only retain decommissioning and removal behavior.
 
-Nothing else ever needed the service. Adding an app, starting or stopping one,
-reading a report, setting up or repairing a box -- that is you and your server,
-and needs nothing from komizo at all.
-
-"komizo init" prepares a fresh server: Docker, the shared network, and the one
-Caddy that terminates TLS for every app on the box. It is a separate step from
-adding an app, so a server is either set up or it is not.
-
-"komizo update" re-runs all of that on a server that already has it, which is
-how a box is brought up to a newer komizo and how one with a missing or broken
-agent is repaired. "komizo report" says when a box is due one.
-
-"komizo start", "stop", "restart" and "logs" act on one app. They run through
-the agent on the box rather than composing a docker command here, so they take
-exactly the path a signed command from the app will take and the two cannot
-drift apart. "stop" is durable: a stopped app stays stopped across a deploy,
-and pages nobody.
-
-"komizo reconcile" is the rebuild check: does this box hold exactly the apps a
-local inventory says it must, with the pinned config image and the expected
-public hostnames? It runs the reachability preflight every komizo command runs,
-fetches the box's report once, and writes nothing on the box -- any missing,
-unexpected or mismatched entry is printed and the exit status is nonzero.
-Locally, connecting can create or tighten ~/.ssh to 0700 (for the SSH control
-socket), and --accept-host-key against a box never seen before appends its host
-key to ~/.ssh/known_hosts; those are the only local files it can touch.
-
-"komizo script" prints the shell this ships to the server, so you can read what
-will run as root before it does.
-
-"komizo artifact" exports the embedded Linux box executable from this release
-to a new file, and prints its version, checksum and build stamp. It downloads
-nothing and refuses to overwrite an existing file.
-
-Run a command with --help for its flags.
+Reconcile performs a reachability preflight and reads the report once. SSH may
+create or tighten ~/.ssh for its control socket; explicit --accept-host-key
+can append to local known_hosts. Reconcile writes nothing on the server.
 `)
 }
 
