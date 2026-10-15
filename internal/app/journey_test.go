@@ -225,3 +225,17 @@ func TestSetupKeyResumeIsBoundToPrivateKeyAndApp(t *testing.T) {
 		}
 	}
 }
+
+func TestDeploymentAcknowledgementMatchesTheHostWireProtocol(t *testing.T) {
+	id, previous := strings.Repeat("a", 32), strings.Repeat("b", 40)
+	wire := "deploy: previous-version=" + previous + "\ndeploy: submitted=" + id + "\n" + id + "\n"
+	got, prior, err := decodeDeploymentAcknowledgement([]byte(wire))
+	if err != nil || got != id || prior != previous {
+		t.Fatal(got, prior, err)
+	}
+	for _, bad := range []string{id, wire + "extra\n", strings.Replace(wire, "submitted="+id, "submitted="+strings.Repeat("c", 32), 1), strings.Replace(wire, previous, "unknown", 1)} {
+		if _, _, err := decodeDeploymentAcknowledgement([]byte(bad)); err == nil {
+			t.Fatal("ambiguous acknowledgement accepted", bad)
+		}
+	}
+}

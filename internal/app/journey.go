@@ -325,11 +325,11 @@ func RunDeploy(args []string) error {
 	if err != nil {
 		return errors.New("deployment submission did not acknowledge; inspect the app operation before retrying")
 	}
-	id := strings.TrimSpace(string(body))
-	if !exactHex(id, 32) {
+	id, previous, err := decodeDeploymentAcknowledgement(body)
+	if err != nil {
 		return errors.New("invalid deployment acknowledgement; inspect the app operation before retrying")
 	}
-	result := map[string]any{"version": 1, "app": *app, "operation_id": id, "submitted": true, "completed": false, "next_action": []string{"komizo", "--json", "operation", "inspect", "--host", tgt.addr(), "--port", strconv.Itoa(tgt.port), "--app", *app}}
+	result := map[string]any{"version": 1, "app": *app, "operation_id": id, "previous_revision": previous, "submitted": true, "completed": false, "next_action": []string{"komizo", "--json", "operation", "inspect", "--host", tgt.addr(), "--port", strconv.Itoa(tgt.port), "--app", *app}}
 	if *wait {
 		_, err = journeyRemote(tgt, []string{"workload", "activation-wait", "--id", id}, nil)
 		if err != nil {
@@ -349,6 +349,18 @@ func RunDeploy(args []string) error {
 		result["completed"], result["operation"] = true, inspection
 	}
 	return json.NewEncoder(os.Stdout).Encode(result)
+}
+
+func decodeDeploymentAcknowledgement(body []byte) (string, string, error) {
+	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+	if len(lines) == 3 && strings.HasPrefix(lines[0], "deploy: previous-version=") && strings.HasPrefix(lines[1], "deploy: submitted=") {
+		previous := strings.TrimPrefix(lines[0], "deploy: previous-version=")
+		id := lines[2]
+		if exactHex(id, 32) && lines[1] == "deploy: submitted="+id && (previous == "" || exactHex(previous, 40)) {
+			return id, previous, nil
+		}
+	}
+	return "", "", errors.New("unknown or conflicting deployment acknowledgement")
 }
 
 func exactHex(value string, size int) bool {
