@@ -107,6 +107,13 @@ def main():
     finally:
         # No private SSH keys, fixture configuration, token environment,
         # arbitrary logs, prompts or untrusted transcript is exported.
+        cleanup_status={'verified':False}
+        try:
+            owned=read(args.observations/'cleanup.json')
+            if type(owned.get('owned_container_removed')) is bool and type(owned.get('shared_images_removed')) is bool and re.fullmatch('[a-f0-9]{64}',owned.get('cid','')):
+                cleanup_status={'verified':True,**{k:owned[k] for k in ('owned_container_removed','shared_images_removed','cid')}}
+        except (ValueError,OSError):pass
+        (args.output/'cleanup-status.json').write_text(json.dumps(cleanup_status)+'\n')
         (args.output/'status.json').write_text(json.dumps({'accepted':accepted,'release':args.release,'source':args.source})+'\n')
         for p in args.output.iterdir():p.chmod(0o644)
 
