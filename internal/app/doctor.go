@@ -28,7 +28,7 @@ printf 'inodes=%s\n' "$(df -Pi /var/lib 2>/dev/null | awk 'END {print $4}')"
 if command -v apk >/dev/null 2>&1; then echo apk=yes; else echo apk=no; fi
 if command -v rc-service >/dev/null 2>&1; then echo openrc=yes; else echo openrc=no; fi
 if [ -r /sys/fs/cgroup/cgroup.controllers ]; then echo cgroup_v2=yes; else echo cgroup_v2=no; fi
-if [ -x /usr/local/bin/komizo-box ]; then echo installed=yes; else echo installed=no; fi
+if [ -e /var/lib/komizo/version ] || [ -d /var/lib/komizo/apps ]; then echo installed=yes; else echo installed=no; fi
 `
 
 type DoctorCheck struct {

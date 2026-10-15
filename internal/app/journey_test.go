@@ -6,11 +6,53 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 const healthyPrerequisites = "os=alpine\nkernel=Linux\narch=x86_64\nuid=0\nmemory_kib=1048576\ndisk_kib=4194304\ninodes=800000\napk=yes\nopenrc=yes\ncgroup_v2=yes\ninstalled=yes\n"
+
+func TestDoctorInstallationIsManagedStateRatherThanBinaryPresence(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("executes the Linux prerequisite script")
+	}
+	root := t.TempDir()
+	binary := filepath.Join(root, "komizo-box")
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	script := strings.ReplaceAll(doctorScript, "/usr/local/bin/komizo-box", binary)
+	script = strings.ReplaceAll(script, "/var/lib/komizo", root)
+	probe := func(want bool) {
+		t.Helper()
+		out, err := exec.Command("sh", "-c", script).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := decodePrerequisites("root@fixture", string(out))
+		if err != nil || result.Installed != want {
+			t.Fatalf("installed=%v want=%v err=%v", result.Installed, want, err)
+		}
+	}
+	probe(false) // An authenticated staged executable is not an installation.
+	marker := filepath.Join(root, "version")
+	if err := os.WriteFile(marker, []byte("0.0.121\nstamp\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	probe(true)
+	if err := os.Remove(binary); err != nil {
+		t.Fatal(err)
+	}
+	probe(true) // Missing code on an established host needs explicit repair.
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "apps"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	probe(true) // Legacy registration authority must never look like a new host.
+}
 
 func TestDoctorRefusesUnsupportedOrIncompleteBeforeSetup(t *testing.T) {
 	for _, tc := range []struct {
