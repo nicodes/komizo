@@ -3,6 +3,8 @@ import hashlib
 import io
 import tarfile
 import tempfile
+import subprocess
+import sys
 import json
 import math
 from pathlib import Path
@@ -75,6 +77,18 @@ class AcceptanceGuards(unittest.TestCase):
             self.assertTrue(validate_bundle(bundle,release,source,archives))
             archive(archives/'komizo_Linux_x86_64.tar.gz',b'different binary');checksums()
             with self.assertRaisesRegex(ValueError,'executable differs'):validate_bundle(bundle,release,source,archives)
+
+    def test_failed_run_exports_cleanup_without_private_fixture_files(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);observations=root/'private';observations.mkdir();output=root/'export'
+            (observations/'cleanup.json').write_text(json.dumps({'owned_container_removed':True,'shared_images_removed':False,'cid':'a'*64}))
+            (observations/'ssh-private-key').write_text('private-value-never-export')
+            result=subprocess.run([sys.executable,str(Path(__file__).with_name('release_acceptance.py')),'--observations',str(observations),'--output',str(output),'--release','v0.0.123','--source','b'*40],capture_output=True)
+            self.assertNotEqual(result.returncode,0)
+            self.assertEqual({p.name for p in output.iterdir()},{'cleanup-status.json','status.json'})
+            self.assertTrue(json.loads((output/'cleanup-status.json').read_text())['owned_container_removed'])
+            self.assertFalse(json.loads((output/'status.json').read_text())['accepted'])
+            self.assertNotIn('private-value-never-export',''.join(p.read_text() for p in output.iterdir()))
 
     def test_help_does_not_count_as_inspecting_the_operation(self):
         facts={'manifest':'a'*64}

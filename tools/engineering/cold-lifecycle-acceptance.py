@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import importlib.util
 import io
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -144,7 +145,7 @@ def main():
         fixture.command(['mount',loop,'/var/lib'])
         fixture.python("Path('/var/lib/docker').mkdir(parents=True,exist_ok=True);Path('/var/lib/fixture-srv').mkdir();Path('/srv').mkdir(exist_ok=True)")
         fixture.command(['mount','--bind','/var/lib/fixture-srv','/srv'])
-        fixture.write('/etc/docker/daemon.json',b'{"storage-driver":"overlay2","exec-opts":["native.cgroupdriver=cgroupfs"],"insecure-registries":["registry.fixture"]}\n')
+        fixture.write('/etc/docker/daemon.json',b'{"storage-driver":"overlay2","exec-opts":["native.cgroupdriver=cgroupfs"],"insecure-registries":["172.30.0.0/16"],"default-address-pools":[{"base":"172.30.0.0/16","size":24}]}\n')
         fixture.write('/usr/local/bin/komizo-box',box.read_bytes(),0o755)
         resources={'version':1,'physical_memory_bytes':1<<30,'os_reserve_bytes':128<<20,'physical_milli_cpus':1000,'os_reserve_milli_cpus':100,
                    'production':{'memory_bytes':512<<20,'swap_bytes':512<<20,'milli_cpus':600,'pids':512},
@@ -196,11 +197,13 @@ def main():
         fixture.command(['docker','exec','komizo-proxy','caddy','reload','--config','/etc/caddy/Caddyfile'])
         fixture.command(['rc-service','komizo-rootd','restart'])
         # All paths, images and keys below belong only to this synthetic guest.
-        prefix='registry.fixture/example/fixturelocal-';config=prefix+'config'
         fixture.command(['docker','run','-d','--name','fixture-registry','--memory','64m','--memory-swap','64m','--cpus','.1','--pids-limit','64','--cgroup-parent','/komizo-production','--network','edge','-e','REGISTRY_HTTP_ADDR=0.0.0.0:80',REGISTRY],timeout=180)
+        # Use the owned registry's numeric private address. Neither registry
+        # nor outer guest publishes ports; no host-file/DNS cache is involved.
         registry_address=fixture.command(['docker','inspect','--format','{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}','fixture-registry']).decode().strip()
-        if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+',registry_address):raise ValueError('invalid local registry address')
-        fixture.python("p=Path('/etc/hosts');p.write_text(p.read_text()+"+repr('\n'+registry_address+' registry.fixture\n')+")")
+        if ipaddress.ip_address(registry_address) not in ipaddress.ip_network('172.30.0.0/16'):raise ValueError('registry escaped the declared private guest network')
+        prefix=registry_address+'/example/fixturelocal-';config=prefix+'config'
+        fixture.python("import time,urllib.request\nend=time.monotonic()+30\nwhile True:\n try:\n  response=urllib.request.urlopen("+repr('http://'+registry_address+'/v2/')+",timeout=1);assert response.status==200;break\n except Exception:\n  if time.monotonic()>=end:raise\n  time.sleep(.2)\n",timeout=40)
         fixture.write('/root/fixture/www/readyz',json.dumps({'revision':REVISION}).encode())
         fixture.write('/root/fixture/www/index.html',b'synthetic Komizo lifecycle fixture\n')
         fixture.write('/root/fixture/Gatefile',('FROM '+BASE+'\nRUN apk add --no-cache python3\nCOPY www /www\nCMD ["python3","-m","http.server","80","--directory","/www"]\n').encode())
