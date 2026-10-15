@@ -1,8 +1,8 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: e11cc2bce6323ae908423932d35e08104fff4e0f3efc95dc239ede1a70efc471 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 083982461421c63f9aaa93356088c064a0e1f5a3ec2d40988375cd6fc3e93508 -->
 
 # komizo
 
-CLI for preparing and operating your own Compose hosts over SSH. No hosted account is required. Run it only against hosts you own or administer.
+Reusable, application-agnostic CLI for preparing and operating your own Compose hosts over SSH. Application names, accounts, domains, service layouts and credential mapping come from explicit configuration. No hosted account is required. Run it only against hosts you own or administer.
 
 ## Install and use
 
@@ -210,3 +210,19 @@ Persist a declared finite control policy through OpenRC service restarts with th
 ```
 
 The plan binds the installed resource policy and derives native settings for the fixed Docker, controller and API services. It preserves caller options, journals prior modes and absence, and writes the reviewed configuration at 0600. Foreign control assignments and edits outside the managed block refuse. Applying this plan activates no application or service. Verify actual limits after an ordinary service restart. Self-upgrade and recovery also reapply installed resource authority before accepting restarted services. The workload fixture rejects declared control drift before applying pressure and retains transport timeout route/phase/elapsed diagnostics without retries.
+
+## Application-owned operations
+
+Komizo's runtime is reusable across unrelated applications and GitHub accounts. Applications own Compose files, service topology, migrations and environment mapping. Operators explicitly install host authority; application CI can request only its registered operations. Fleet inventory and deployment measurements belong outside the tool.
+
+Releases supporting `--scoped-env-spec` accept an operator-reviewed local JSON definition:
+
+```json
+{"version":1,"profile":"mail-credentials-v1","schema":27,"files":["mailer.env","tls.pem"],"provision_script":"provision.sh","status_script":"status.sh"}
+```
+
+Pass this file to `komizo add --host root@your-server --app mailroom --config ghcr.io/your-account/mailroom-config --scoped-env-spec ./scoped-env.json`. The two bounded shell scripts must be regular sibling files. The operator reviews their root authority; Komizo substitutes only the app, state-file and deployment-lock bindings. Provisioning remains root-only. The deploy account can request argument-free status. Omitted configuration preserves the installed definition; an explicit empty scoped profile revokes adapters and grants while preserving credential data. Existing scoped installations need an explicit definition migration that preserves their generation, provenance and file permissions before using the generic runtime.
+
+Releases supporting `preview configure` accept a version-1 operator profile containing `services`, matching immutable `image_prefixes`, `credential_namespace`, `credentials`, optional `environment_rules` and `compose_template`. Install it with `komizo preview configure --host root@your-server --app mailroom --profile-file ./preview-profile.json`. This root-only operation requires a registered app with drained previews. App CI cannot install or replace it. Templates receive only the preview record, assigned ingress, explicit resource limits and derived private credentials. Generic checks enforce finite admission limits, project-owned volumes/networks, the preview's private `stack.env` and assigned loopback port. Preview records bind the exact profile hash and retain private seeds across rebuilds; changing topology requires draining that app's previews.
+
+Configure preview domains explicitly through the host knob. Komizo supplies no fleet domain or default certificate authorization.

@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "services": [
+    "gate",
+    "api",
+    "godot-api",
+    "postgres",
+    "redis",
+    "migrate"
+  ],
+  "image_prefixes": [
+    "ghcr.io/aviorstudio/fieldsofrevik-preview-gate:",
+    "ghcr.io/aviorstudio/fieldsofrevik-preview-api:",
+    "ghcr.io/aviorstudio/fieldsofrevik-preview-godot-api:",
+    "ghcr.io/aviorstudio/fieldsofrevik-preview-postgres:"
+  ],
+  "credential_namespace": "komizo-revik-preview:",
+  "credentials": [
+    "admin",
+    "migrator",
+    "runtime",
+    "backup",
+    "bridge"
+  ],
+  "environment_rules": [
+    {
+      "name": "CLERK_SECRET_KEY",
+      "pattern": "^sk_test_[A-Za-z0-9_-]{8,193}$"
+    },
+    {
+      "name": "CLERK_ISSUER",
+      "pattern": "^https://[a-z0-9-]+\\.clerk\\.accounts\\.dev$"
+    },
+    {
+      "name": "CLERK_JWKS_URL",
+      "equals_field": "CLERK_ISSUER",
+      "suffix": "/.well-known/jwks.json"
+    }
+  ],
+  "compose_template": "\n# Written by komizo preview. Every volume and private network belongs to this PR.\nx-runtime: &runtime\n{{if .CgroupParent}}  cgroup_parent: {{.CgroupParent}}\n{{end}}  restart: unless-stopped\n  read_only: true\n  cap_drop: [ALL]\n  security_opt: [no-new-privileges:true]\n  pids_limit: 128\n  cpu_shares: 128\n  cpus: {{.CPULimit}}\n  tmpfs: [\"/tmp:rw,noexec,nosuid,size=64m,mode=1777\"]\nservices:\n  postgres:\n    <<: *runtime\n    mem_limit: {{index .Limits \"postgres\"}}\n    memswap_limit: {{index .Limits \"postgres\"}}\n    image: {{index .Images 3}}\n    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]\n    tmpfs: [\"/tmp:rw,nosuid,size=32m,mode=1777\", \"/var/run/postgresql:rw,nosuid,size=16m,mode=1777\"]\n    environment:\n      POSTGRES_USER: postgres\n      POSTGRES_DB: postgres\n      PGDATA: /var/lib/postgresql/data\n      POSTGRES_PASSWORD: {{index .Credentials \"admin\"}}\n      REVIK_MIGRATOR_PASSWORD: {{index .Credentials \"migrator\"}}\n      REVIK_APP_PASSWORD: {{index .Credentials \"runtime\"}}\n      REVIK_BACKUP_PASSWORD: {{index .Credentials \"backup\"}}\n    volumes: [pg_data:/var/lib/postgresql/data]\n    networks: [db]\n    healthcheck:\n      test: [CMD-SHELL, 'test \"$$(cat /proc/1/comm)\" = postgres && pg_isready -d revik -U postgres']\n      interval: 5s\n      timeout: 3s\n      retries: 24\n      start_period: 20s\n  migrate:\n    <<: *runtime\n    mem_limit: {{index .Limits \"migrate\"}}\n    memswap_limit: {{index .Limits \"migrate\"}}\n    image: {{index .Images 1}}\n    restart: \"no\"\n    entrypoint: [/app/server, migrate]\n    environment:\n      DATABASE_MIGRATION_URL: postgres://revik_migrator:{{index .Credentials \"migrator\"}}@postgres:5432/revik?sslmode=disable\n    networks: [db]\n    depends_on:\n      postgres: {condition: service_healthy}\n  api:\n    <<: *runtime\n    mem_limit: {{index .Limits \"api\"}}\n    memswap_limit: {{index .Limits \"api\"}}\n    image: {{index .Images 1}}\n    env_file: [stack.env]\n    environment:\n      DATABASE_URL: postgres://revik_app:{{index .Credentials \"runtime\"}}@postgres:5432/revik?sslmode=disable\n      REVIK_ENV: preview\n      HTTP_PORT: \"3111\"\n      WS_PORT: \"3112\"\n      WS_SECRET: {{index .Credentials \"bridge\"}}\n      ALLOWED_ORIGINS: https://{{.Host}}\n      CLERK_AUTHORIZED_PARTIES: https://{{.Host}}\n    networks: [db, app]\n    depends_on:\n      migrate: {condition: service_completed_successfully}\n    healthcheck:\n      test: [CMD, wget, -q, --spider, 'http://127.0.0.1:3111/health']\n      interval: 5s\n      timeout: 3s\n      retries: 24\n  godot-api:\n    <<: *runtime\n    mem_limit: {{index .Limits \"godot-api\"}}\n    memswap_limit: {{index .Limits \"godot-api\"}}\n    image: {{index .Images 2}}\n    environment:\n      PORT: \"3110\"\n      GOLANG_WS_URL: ws://api:3112\n      WS_SECRET: {{index .Credentials \"bridge\"}}\n      REDIS_HOST: redis\n      REDIS_PORT: \"3113\"\n      TEST_MODE: \"false\"\n      XDG_DATA_HOME: /tmp/godot\n      XDG_CONFIG_HOME: /tmp/godot-config\n    networks: [app]\n    depends_on:\n      api: {condition: service_healthy}\n      redis: {condition: service_healthy}\n  redis:\n    <<: *runtime\n    mem_limit: {{index .Limits \"redis\"}}\n    memswap_limit: {{index .Limits \"redis\"}}\n    image: redis:7-alpine@sha256:520775a41a63e77e06c73e35d2fd9cc15921a609516818796b4ecbb813078bc7\n    user: \"999:999\"\n    volumes: [redis_data:/data]\n    command: [redis-server, --port, \"3113\", --save, \"\", --appendonly, \"yes\", --appendfsync, everysec, --maxmemory, 32mb, --maxmemory-policy, noeviction]\n    networks: [app]\n    healthcheck:\n      test: [CMD, redis-cli, -p, \"3113\", ping]\n      interval: 5s\n      timeout: 3s\n      retries: 12\n  {{.Project}}-gate:\n    <<: *runtime\n    mem_limit: {{index .Limits \"gate\"}}\n    memswap_limit: {{index .Limits \"gate\"}}\n    image: {{index .Images 0}}\n    container_name: {{.Project}}-gate\n    environment:\n      PREVIEW: \"1\"\n      PR: \"{{.PR}}\"\n      BASE_URL: https://{{.Host}}{{.BasePath}}\n      PREVIEW_BASE_PATH: \"{{.BasePath}}\"\n      PREVIEW_HOST: {{.Host}}\n      PREVIEW_API_HOST: {{.APIHost}}\n    ports: [\"127.0.0.1:{{.GatePort}}:80\"]\n    networks: [app, shared]\n    depends_on:\n      api: {condition: service_healthy}\n      godot-api: {condition: service_started}\nnetworks:\n  db: {internal: true}\n  app: {}\n  shared: {external: true, name: {{.Network}}}\nvolumes:\n  pg_data: {}\n  redis_data: {}\n"
+}

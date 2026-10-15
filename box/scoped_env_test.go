@@ -23,38 +23,38 @@ func TestRefuseScopedStartLeavesOtherAppsAlone(t *testing.T) {
 
 func TestRefuseScopedStartWithoutGeneration(t *testing.T) {
 	root := t.TempDir()
-	appDir := filepath.Join(root, "srv", "fieldsofrevik")
+	appDir := filepath.Join(root, "srv", "sample-worker")
 	if err := os.MkdirAll(filepath.Join(root, "var/lib/komizo/apps"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	rec := "APP_NAME=fieldsofrevik\nAPP_DIR=" + appDir + "\nSCOPED_ENV=fields-postgres-v2\n"
-	if err := os.WriteFile(filepath.Join(root, "var/lib/komizo/apps/fieldsofrevik.env"), []byte(rec), 0o640); err != nil {
+	rec := "APP_NAME=sample-worker\nAPP_DIR=" + appDir + "\nSCOPED_ENV=custom-credentials-v2\nSCOPED_SCHEMA=27\nSCOPED_FILES=storage.env,migrate.env,gateway.env,worker.env\n"
+	if err := os.WriteFile(filepath.Join(root, "var/lib/komizo/apps/sample-worker.env"), []byte(rec), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	if err := RefuseScopedStart(root, "fieldsofrevik"); err == nil {
+	if err := RefuseScopedStart(root, "sample-worker"); err == nil {
 		t.Fatal("start without a generation succeeded")
 	}
 }
 
 func TestRefuseScopedStartRejectsWithdrawnV1(t *testing.T) {
 	root := t.TempDir()
-	appDir := filepath.Join(root, "srv", "fieldsofrevik")
+	appDir := filepath.Join(root, "srv", "sample-worker")
 	if err := os.MkdirAll(filepath.Join(root, "var/lib/komizo/apps"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	rec := "APP_NAME=fieldsofrevik\nAPP_DIR=" + appDir + "\nSCOPED_ENV=fields-postgres-v1\nSCOPED_GENERATION=0123456789abcdef0123456789abcdef\n"
-	if err := os.WriteFile(filepath.Join(root, "var/lib/komizo/apps/fieldsofrevik.env"), []byte(rec), 0o640); err != nil {
+	rec := "APP_NAME=sample-worker\nAPP_DIR=" + appDir + "\nSCOPED_ENV=undeclared-credentials-v1\nSCOPED_GENERATION=0123456789abcdef0123456789abcdef\n"
+	if err := os.WriteFile(filepath.Join(root, "var/lib/komizo/apps/sample-worker.env"), []byte(rec), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	err := RefuseScopedStart(root, "fieldsofrevik")
-	if err == nil || !strings.Contains(err.Error(), "withdrawn") || strings.Contains(err.Error(), "ready") {
+	err := RefuseScopedStart(root, "sample-worker")
+	if err == nil || !strings.Contains(err.Error(), "explicit") || strings.Contains(err.Error(), "ready") {
 		t.Fatalf("v1 start = %v", err)
 	}
 }
 
 func TestRefuseScopedStartUsesProvenanceNotEnvBytes(t *testing.T) {
 	root := t.TempDir()
-	appDir := filepath.Join(root, "srv", "fieldsofrevik")
+	appDir := filepath.Join(root, "srv", "sample-worker")
 	id := "0123456789abcdef0123456789abcdef"
 	gen := filepath.Join(appDir, "secrets", "generations", id)
 	if err := os.MkdirAll(filepath.Join(root, "var/lib/komizo/apps"), 0o750); err != nil {
@@ -67,25 +67,25 @@ func TestRefuseScopedStartUsesProvenanceNotEnvBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	sentinel := "START_SENTINEL_MUST_NOT_ECHO"
-	for _, name := range []string{"postgres.env", "migrate.env", "api.env", "godot-api.env"} {
+	for _, name := range []string{"storage.env", "migrate.env", "gateway.env", "worker.env"} {
 		if err := os.WriteFile(filepath.Join(gen, name), []byte("CLERK_SECRET_KEY="+sentinel+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	rec := "APP_NAME=fieldsofrevik\nAPP_DIR=" + appDir + "\nSCOPED_ENV=fields-postgres-v2\nSCOPED_GENERATION=" + id + "\n"
-	if err := os.WriteFile(filepath.Join(root, "var/lib/komizo/apps/fieldsofrevik.env"), []byte(rec), 0o640); err != nil {
+	rec := "APP_NAME=sample-worker\nAPP_DIR=" + appDir + "\nSCOPED_ENV=custom-credentials-v2\nSCOPED_SCHEMA=27\nSCOPED_FILES=storage.env,migrate.env,gateway.env,worker.env\nSCOPED_GENERATION=" + id + "\n"
+	if err := os.WriteFile(filepath.Join(root, "var/lib/komizo/apps/sample-worker.env"), []byte(rec), 0o640); err != nil {
 		t.Fatal(err)
 	}
-	err := RefuseScopedStart(root, "fieldsofrevik")
+	err := RefuseScopedStart(root, "sample-worker")
 	if err == nil || strings.Contains(err.Error(), sentinel) {
 		t.Fatalf("missing provenance start = %v", err)
 	}
 	marker := filepath.Join(gen, "provenance")
-	body := []byte("profile=fields-postgres-v2\nschema=11\ngeneration=" + id + "\n")
+	body := []byte("profile=custom-credentials-v2\nschema=27\ngeneration=" + id + "\n")
 	if err := os.WriteFile(marker, body, 0o400); err != nil {
 		t.Fatal(err)
 	}
-	err = RefuseScopedStart(root, "fieldsofrevik")
+	err = RefuseScopedStart(root, "sample-worker")
 	if os.Getuid() == 0 {
 		if err != nil {
 			t.Fatal(err)
