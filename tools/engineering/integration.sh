@@ -6,6 +6,7 @@ python3 scripts/platform_prepare_test.py
 python3 -m unittest discover -s scripts -p maintenance_test.py -v
 python3 -m unittest discover -s scripts -p workspace_storage_test.py -v
 python3 -m unittest discover -s scripts -p workload_acceptance_test.py -v
+python3 -m unittest discover -s scripts -p preview_database_test.py -v
 python3 -m unittest discover -s scripts -p publication_prepare_test.py -v
 python3 -m unittest discover -s scripts -p proxy_prepare_test.py -v
 python3 -m unittest discover -s internal/operator -p "test_*.py" -v

@@ -156,6 +156,9 @@ var AlpineReloadSSHDScript string
 //go:embed alpine-init.sh
 var AlpineInitScript string
 
+//go:embed preview_database.py
+var PreviewDatabase string
+
 //go:embed alpine-proxy.sh
 var AlpineProxyScript string
 
