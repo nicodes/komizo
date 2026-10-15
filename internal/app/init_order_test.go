@@ -44,7 +44,7 @@ func TestInitInstallsTheProxyAndDoesNotRegister(t *testing.T) {
 
 	var body []ast.Stmt
 	for _, d := range f.Decls {
-		if fn, ok := d.(*ast.FuncDecl); ok && fn.Name.Name == "RunInit" && fn.Body != nil {
+		if fn, ok := d.(*ast.FuncDecl); ok && fn.Name.Name == "runInit" && fn.Body != nil {
 			body = fn.Body.List
 		}
 	}

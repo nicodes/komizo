@@ -54,7 +54,9 @@ func RunRestart(args []string) error { return lifecycle("restart", args) }
 // should not be a worse version of a thing that already works.
 func RunLogs(args []string) error { return lifecycle("logs", args) }
 
-func lifecycle(verb string, args []string) error {
+func lifecycle(verb string, args []string) (err error) {
+	validation := localInput(&err)
+	defer validation.finish()
 	fs := flag.NewFlagSet(verb, flag.ContinueOnError)
 	fs.Usage = func() { usageLifecycle(verb, fs) }
 	var host, app, service string
@@ -100,6 +102,7 @@ func lifecycle(verb string, args []string) error {
 	if err != nil {
 		return err
 	}
+	validation.complete = true
 	if err := ensureReachable(tgt, acceptHostKey); err != nil {
 		return err
 	}
@@ -119,6 +122,12 @@ func lifecycle(verb string, args []string) error {
 
 	if verb != "logs" {
 		step("Running %s on %s", verb, subject)
+	}
+	if machineMode() && verb != "logs" {
+		if _, _, err := tgt.runScriptHeardTo(boxCmd(verb, remote...), nil, progressOutput()); err != nil {
+			return lifecycleErr(err, verb, subject, tgt)
+		}
+		return managementReceipt(verb, tgt, app, map[string]any{"proxy": proxy, "service": service})
 	}
 	run := tgt.runScriptHeard
 	if scrubs(verb) {

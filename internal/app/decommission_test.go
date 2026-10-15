@@ -83,7 +83,7 @@ func TestTheServiceFreeEnrolFormsStillRun(t *testing.T) {
 // init_order_test.go makes, and the same reason: no fixture could catch a
 // registration that should not happen.
 func TestInitSetsTheBoxUpAndDoesNotRegister(t *testing.T) {
-	fn, ok := setupPaths(t)["RunInit"]
+	fn, ok := setupPaths(t)["runInit"]
 	if !ok {
 		t.Fatal("RunInit no longer provisions a box, so nothing here is guarding setup")
 	}

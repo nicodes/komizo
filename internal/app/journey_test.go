@@ -129,6 +129,18 @@ func TestAgentCLIRealBinaryDiscoveryAndHelp(t *testing.T) {
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatal(err, string(out))
 	}
+	checkManagementBinary(t, cli)
+	for _, args := range [][]string{{"platform", "inspect"}, {"platform", "recover"}, {"setup"}} {
+		out, err := exec.Command(cli, append(append([]string{"--json"}, args...), "--help")...).Output()
+		var result MachineResult
+		if err != nil || json.Unmarshal(out, &result) != nil || !result.OK || !bytes.Contains(result.Data, []byte("--host")) {
+			t.Fatalf("incomplete machine help: %v %s", err, out)
+		}
+		if args[0] == "platform" && (!bytes.Contains(result.Data, []byte("--stage")) || !bytes.Contains(result.Data, []byte("--expected-manifest"))) {
+			t.Fatalf("recovery flags absent from machine help: %s", out)
+		}
+	}
+
 	for _, capability := range agentCommands {
 		out, err := exec.Command(cli, "--json", capability.Name, "--help").Output()
 		var result MachineResult

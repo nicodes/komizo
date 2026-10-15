@@ -21,6 +21,9 @@ import time
 import traceback
 import uuid
 
+from onboarding_acceptance import Driver
+from performance_acceptance import measure
+
 BASE = 'alpine@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6'
 REGISTRY = 'registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373'
 PROXY = 'ghcr.io/nicodes/platform-proxy@sha256:25d6dabfad5ff85e7d2b449f1662a981e785d6d7d51772585e88e19e207c13a3'
@@ -65,6 +68,7 @@ def main():
     parser.add_argument('--output', required=True, type=Path, help='fresh protected absolute directory')
     parser.add_argument('--candidate-cli', type=Path, help='explicit local client test; host matches baseline unless --candidate-host; acceptance is labeled provisional')
     parser.add_argument('--candidate-host', action='store_true', help='explicitly allow a local candidate host too; never counts as signed-release acceptance')
+    parser.add_argument('--onboarding-adapter', type=Path, help='optional public-input-only argv planner; no provider secret enters the fixture')
     args = parser.parse_args()
     if args.candidate_host and not args.candidate_cli:
         raise ValueError('candidate host requires an explicit local candidate client')
@@ -153,7 +157,10 @@ def main():
         # Hide this optional interface rather than tuning the controller kernel.
         fixture.python("import subprocess\np=Path('/sys/kernel/mm/transparent_hugepage')\nif p.is_dir():subprocess.check_call(['mount','-t','tmpfs','-o','size=64k,mode=0755,nosuid,nodev,noexec','komizo-fixture-kernel-mask',str(p)])\nassert not (p/'enabled').exists()\n")
         fixture.record('host_global_kernel_controls_masked',{'thp_control_exposed':False,'private_mount_namespace':True})
-        init=run([str(cli),'--json','setup','--host',address],env=env,timeout=360)
+        driver=Driver(args.onboarding_adapter,args.output,(Path(__file__).resolve().parents[2]/'README.md').read_text(),cli,env,address)
+        started=time.monotonic()
+        init=driver.command('Prepare this fresh application host using the public CLI.',{},[str(cli),'--json','setup','--host',address],'setup',lambda data:data.get('prepared') is True)
+        setup_seconds=driver.last_seconds
         assert json.loads(init)['ok'] and json.loads(init)['data']['prepared']
         (args.output/'init.log').write_bytes(init)
         fixture.record('public_setup',{'release':args.release,'source':args.source,'host_mounted_socket':False,'finite_groups':True})
@@ -212,7 +219,7 @@ def main():
             'readiness':{'probes':[{'url':'https://'+address+'/readyz','revision_field':'revision'}]}}}
         definition_file=args.output/'application.json';definition_file.write_text(json.dumps(definition)+'\n');definition_file.chmod(0o600)
         setup_args=[str(cli),'--json','setup','--host',address,'--definition',str(definition_file),'--key',str(keys/'app-key')]
-        registered=json.loads(run(setup_args,env=env,timeout=180));assert registered['ok'] and registered['data']['app_registered'] and not registered['data']['key_unchanged']
+        registered=json.loads(driver.command('Register the provided app definition and preserve its private key in the supplied file.',{'definition':str(definition_file),'key':str(keys/'app-key')},setup_args,'setup',lambda data:data.get('app_registered') is True));assert registered['ok'] and registered['data']['app_registered'] and not registered['data']['key_unchanged']
         key_hash=hashlib.sha256((keys/'app-key').read_bytes()).hexdigest()
         repeated=json.loads(run(setup_args,env=env,timeout=180));assert repeated['ok'] and repeated['data']['key_unchanged'] and hashlib.sha256((keys/'app-key').read_bytes()).hexdigest()==key_hash
         assert 'PRIVATE KEY' not in json.dumps(registered) and 'PRIVATE KEY' not in json.dumps(repeated)
@@ -221,7 +228,9 @@ def main():
         fixture.command(['komizo-box','workload','release-bootstrap','--policy',policy,'--version',REVISION,'--config-image',config+':'+REVISION,'--compose','/root/fixture/compose.yml'])
         fixture.write('/srv/fixturelocal/.env',('APP_VERSION='+REVISION+'\n').encode())
         fixture.write('/srv/fixturelocal/.komizo-image-retention',('CURRENT='+REVISION+'\nPREVIOUS=\n').encode())
-        deployment=json.loads(run([str(cli),'--json','deploy','--host',address,'--app','fixturelocal','--version',REVISION],env=env,timeout=180))
+        started=time.monotonic()
+        deployment=json.loads(driver.command('Deploy the supplied exact source revision of fixturelocal and wait for completion.',{'revision':REVISION},[str(cli),'--json','deploy','--host',address,'--app','fixturelocal','--version',REVISION],'deploy',lambda data:data.get('completed') is True,timeout=180))
+        deployment_seconds=driver.last_seconds
         assert deployment['ok'] and deployment['data']['completed']
         operation=deployment['data']['operation_id'];assert re.fullmatch('[a-f0-9]{32}',operation)
         inspection=json.loads(run([str(cli),'--json','operation','inspect','--host',address,'--app','fixturelocal'],env=env))
@@ -313,7 +322,7 @@ else:raise ValueError('private-file interruption window not observed')
         finally:
             if monitor.poll() is None:monitor.terminate();monitor.wait(timeout=10)
             (args.output/'authority-watcher.log').write_bytes(monitor.stdout.read()+monitor.stderr.read())
-        inspect_record=json.loads(fixture.command(['komizo-box','platform','inspect',remote,expected]))
+        inspect_record=json.loads(run([str(cli),'--json','platform','inspect','--host',address,'--stage',remote,'--expected-manifest',expected],env=env))['data']
         assert inspect_record['phase']=='installing'
         fixture.write(candidates[0][0],b'#!/bin/sh\n# Changed synthetic fixture; must refuse recovery.\nexit 0\n',0o700)
         try:
@@ -322,7 +331,7 @@ else:raise ValueError('private-file interruption window not observed')
             assert 'changed installed' in str(error)
         else:raise AssertionError('foreign-writer recovery was accepted')
         fixture.write(candidates[0][0],task_body,0o700)
-        recovered=json.loads(fixture.command(['komizo-box','platform','recover',remote,expected]));assert recovered['phase']=='recovered'
+        recovered=json.loads(driver.command('Inspect the interrupted platform operation, then restore its recorded prior configuration. The operator authorizes this exact stage and manifest only.',{'stage':remote,'manifest':expected},[str(cli),'--json','platform','recover','--host',address,'--stage',remote,'--expected-manifest',expected],'platform recover',lambda data:data.get('phase')=='recovered'))['data'];assert recovered['phase']=='recovered'
         assert fixture.python("print(Path('/var/lib/komizo/tasks/fixturelocal.sh').exists())").strip()==b'False'
         assert identity()==before
         replay=fixture.python("import subprocess,json\nr=subprocess.run(['komizo-box','platform','apply',"+repr(remote)+","+repr(expected)+"],capture_output=True);print(json.dumps({'returncode':r.returncode,'error':r.stderr.decode()}))")
@@ -341,9 +350,15 @@ else:raise ValueError('private-file interruption window not observed')
         fixture.command(['komizo-box','app','start','--app','fixturelocal'])
         assert identity()==before
         fixture.record('stop_intent_and_service_restart',{'deliberate_stop_preserved':True,'probe':probe(),'os_boot_tested':False})
-        result={'version':1,'release':args.release,'source':args.source,'candidate_cli':candidate_receipt,'steps':fixture.steps,'runner_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        driver.save(True)
+        performance=measure(fixture,cli,env,address,probe,setup_seconds,deployment_seconds)
+        assert identity()==before
+        fixture.record('fixed_budget_performance',{'accepted':performance['accepted'],'budget_sha256':performance['budget_sha256']})
+        driver.save(True)
+        fixture.record('public_onboarding',{'mode':'unfamiliar_agent' if args.onboarding_adapter else 'deterministic_public_cli','human_interventions':0})
+        result={'version':1,'release':args.release,'source':args.source,'candidate_cli':candidate_receipt,'cli_sha256':hashlib.sha256(cli.read_bytes()).hexdigest(),'host_sha256':hashlib.sha256(box.read_bytes()).hexdigest(),'steps':fixture.steps,'runner_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                 'scope':'public machine CLI setup, application definition and key idempotence, direct deployment and operation inspection, Root local bootstrap, activation, same-release self/proxy upgrade, actual authority executor interruption/foreign-writer refusal/recovery/replay, cached reconfiguration and stop intent across service restart; no new CI-source admission or OS boot claim',
-                'private_cgroup_namespace':True,'host_global_kernel_controls_masked':True,'host_mounts':False,'host_docker_socket':False,'provider_calls':False,'real_data_accessed':False}
+                'private_cgroup_namespace':True,'host_global_kernel_controls_masked':True,'host_mounts':False,'host_docker_socket':False,'provider_calls':False,'real_data_accessed':False,'performance_accepted':performance['accepted'],'onboarding_mode':'unfamiliar_agent' if args.onboarding_adapter else 'deterministic_public_cli'}
         (args.output/'accepted.json').write_text(json.dumps(result,indent=2)+'\n')
     except Exception:
         failure_outputs['original-failure.txt']=traceback.format_exc().encode()[-16384:]
