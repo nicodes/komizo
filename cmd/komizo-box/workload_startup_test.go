@@ -97,3 +97,62 @@ func TestStartupUsageIgnoresLoginDirectory(t *testing.T) {
 		}
 	}
 }
+
+func TestReadOnlyStartupInspectionNeverRunsLifecycleEvenWhenAdmitted(t *testing.T) {
+	f := newDeploymentFixture(t)
+	original := lookupRoot
+	lookupRoot = f.h.root
+	t.Cleanup(func() { lookupRoot = original })
+	path := filepath.Join(f.h.root, workloadPolicyDirectory, "example.json")
+	var p workload.Policy
+	if err := f.h.readJSON(filepath.Join(f.h.policies, "example.json"), &p); err != nil {
+		t.Fatal(err)
+	}
+	p.Resources.CgroupParent = "/komizo-production/example"
+	p.Resources.MaxMemoryReserveBytes = 32 << 20
+	p.Resources.Default.MemoryReserveBytes = 32 << 20
+	p.Resources.StartupAllowanceBytes = 8 << 20
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := workload.WritePrivateJSON(path, p); err != nil {
+		t.Fatal(err)
+	}
+	g := workload.HostGroup{MemoryBytes: 256 << 20, MilliCPUs: 1000, PIDs: 128}
+	app := workload.ApplicationGroup{HostGroup: workload.HostGroup{MemoryBytes: 128 << 20, MilliCPUs: 1000, PIDs: 128}, BaselineMemoryBytes: 16 << 20, MemoryLowBytes: 32 << 20, MemoryHighBytes: 96 << 20, CPUWeight: 100, IOWeight: 100}
+	host := workload.HostResources{Version: 1, PhysicalMemoryBytes: 1280 << 20, OSReserveBytes: 256 << 20, PhysicalMilliCPUs: 5000, OSReserveMilliCPUs: 1000, Production: g, Proxy: g, Previews: g, PreviewDatabase: g, Apps: map[string]workload.ApplicationGroup{"example": app}}
+	if err := workload.WritePrivateJSON(filepath.Join(f.h.root, "etc/komizo/resources.json"), host); err != nil {
+		t.Fatal(err)
+	}
+	originalPolicy, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, usage := range []string{"16777216", "100663296", "0"} {
+		for _, name := range []string{"", "example"} {
+			dir := filepath.Join(f.h.root, "sys/fs/cgroup/komizo-production", name)
+			if err := os.MkdirAll(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "memory.current"), []byte(usage), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		err := runWorkload([]string{"startup-check", "--policy", path})
+		if (err != nil) != (usage == "100663296") {
+			t.Fatalf("usage%s: %v", usage, err)
+		}
+		now, err := os.ReadFile(path)
+		if err != nil || string(now) != string(originalPolicy) {
+			t.Fatal("inspection changed policy", err)
+		}
+		if len(f.calls) != 0 {
+			t.Fatal("inspection called Docker", f.calls)
+		}
+	}
+	for _, args := range [][]string{{"--policy", path, "--restart"}, {"--policy", path, "extra"}, {"--policy", filepath.Join(f.h.root, "foreign.json")}} {
+		if err := runWorkloadStartupCheck(args); err == nil {
+			t.Fatalf("invalid inspection accepted %v", args)
+		}
+	}
+}

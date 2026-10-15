@@ -91,6 +91,9 @@ func runHostResources(args []string) error {
 	if err := applySmallHostKernelMemory("/", total); err != nil {
 		return err
 	}
+	if err := applySmallHostCompressedSwap(total); err != nil {
+		return err
+	}
 	if !*apply {
 		return workload.WritePrivateJSON(path, policy)
 	}
