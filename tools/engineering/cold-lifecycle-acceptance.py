@@ -63,6 +63,7 @@ def main():
     parser.add_argument('--source', required=True)
     parser.add_argument('--release-dir', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path, help='fresh protected absolute directory')
+    parser.add_argument('--candidate-cli', type=Path, help='explicit local client test; embedded host must equal the authenticated baseline, and acceptance is labeled unauthenticated-client')
     args = parser.parse_args()
     if os.geteuid()!=0 or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+',args.release) or not re.fullmatch('[a-f0-9]{40}',args.source):
         raise ValueError('root and exact reviewed release/source are required')
@@ -80,6 +81,17 @@ def main():
     args.output.mkdir(mode=0o700)
     prepare.verify(args.release_dir,args.source,args.release)
     cli=args.release_dir/'komizo';box=args.release_dir/'komizo-box-linux-amd64'
+    candidate_receipt=None
+    if args.candidate_cli:
+        candidate=args.candidate_cli
+        if not candidate.is_absolute() or candidate.is_symlink() or not candidate.is_file():
+            raise ValueError('candidate CLI must be an absolute regular local executable')
+        exported=args.output/'candidate-host'
+        candidate_metadata=json.loads(run([str(candidate),'artifact','--arch','amd64','--output',str(exported)]))
+        if exported.read_bytes()!=box.read_bytes() or candidate_metadata['version'].removeprefix('v')!=args.release.removeprefix('v'):
+            raise ValueError('candidate client must carry the exact authenticated baseline host')
+        candidate_receipt={'sha256':hashlib.sha256(candidate.read_bytes()).hexdigest(),'authenticated':False,'scope':'local client only; host binary and maintenance artifacts remain the authenticated baseline'}
+        cli=candidate
     name='komizo-lifecycle-'+uuid.uuid4().hex[:12]
     cid=run(['docker','run','-d','--name',name,'--label','org.komizo.fixture='+name,
              '--privileged','--cgroupns=private','--init','--cpus=1','--memory=1g',
@@ -133,6 +145,10 @@ def main():
                    'preview_database':{'memory_bytes':128<<20,'swap_bytes':0,'milli_cpus':100,'pids':128}}
         fixture.write('/etc/komizo/resources.json',json.dumps(resources).encode())
         fixture.write('/etc/komizo/preview',b'DB_MEM_LIMIT=128m\n')
+        # THP controls are host-global even in a privileged private-cgroup guest.
+        # Hide this optional interface rather than tuning the controller kernel.
+        fixture.python("import subprocess\np=Path('/sys/kernel/mm/transparent_hugepage')\nif p.is_dir():subprocess.check_call(['mount','-t','tmpfs','-o','size=64k,mode=0755,nosuid,nodev,noexec','komizo-fixture-kernel-mask',str(p)])\nassert not (p/'enabled').exists()\n")
+        fixture.record('host_global_kernel_controls_masked',{'thp_control_exposed':False,'private_mount_namespace':True})
         init=run([str(cli),'--json','setup','--host',address],env=env,timeout=360)
         assert json.loads(init)['ok'] and json.loads(init)['data']['prepared']
         (args.output/'init.log').write_bytes(init)
@@ -320,9 +336,9 @@ else:raise ValueError('private-file interruption window not observed')
         fixture.command(['komizo-box','app','start','--app','fixturelocal'])
         assert identity()==before
         fixture.record('stop_intent_and_service_restart',{'deliberate_stop_preserved':True,'probe':probe(),'os_boot_tested':False})
-        result={'version':1,'release':args.release,'source':args.source,'steps':fixture.steps,'runner_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        result={'version':1,'release':args.release,'source':args.source,'candidate_cli':candidate_receipt,'steps':fixture.steps,'runner_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                 'scope':'public machine CLI setup, application definition and key idempotence, direct deployment and operation inspection, Root local bootstrap, activation, same-release self/proxy upgrade, actual authority executor interruption/foreign-writer refusal/recovery/replay, cached reconfiguration and stop intent across service restart; no new CI-source admission or OS boot claim',
-                'private_cgroup_namespace':True,'host_mounts':False,'host_docker_socket':False,'provider_calls':False,'real_data_accessed':False}
+                'private_cgroup_namespace':True,'host_global_kernel_controls_masked':True,'host_mounts':False,'host_docker_socket':False,'provider_calls':False,'real_data_accessed':False}
         (args.output/'accepted.json').write_text(json.dumps(result,indent=2)+'\n')
     except Exception:
         failure_outputs['original-failure.txt']=traceback.format_exc().encode()[-16384:]
