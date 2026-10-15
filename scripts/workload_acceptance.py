@@ -152,8 +152,9 @@ def verify_control_limits(policy,root=Path('/sys/fs/cgroup')):
             if actual!=value:raise AssertionError(json.dumps({'contract':'control_policy','group':name,'field':key,'expected':value,'actual':actual},sort_keys=True))
 
 def hot_memory_worker(root,target,offered,seconds=40):
-    # Even an already charged group must exercise live synthetic pages.
-    return "import time,json;from pathlib import Path;chunks=[];charged=Path("+repr(str(root/'memory.current'))+")\nwhile not chunks or int(charged.read_text())<"+str(target)+":\n if sum(map(len,chunks))+(4<<20)>"+str(offered)+":raise RuntimeError('hot memory offer exhausted')\n data=bytearray(4<<20)\n for offset in range(0,len(data),4096):data[offset]=1\n chunks.append(data);time.sleep(.02)\nprint(json.dumps({'ready':True,'hot_bytes':sum(map(len,chunks))}),flush=True);end=time.monotonic()+"+str(seconds)+"\nwhile time.monotonic()<end:\n for data in chunks:\n  for offset in range(0,len(data),4096):data[offset]=(data[offset]+1)%256"
+    # Reclaim and compressed swap can change a sibling's charge after readiness.
+    # Keep refilling within the same finite offer while touching every hot page.
+    return "import time,json;from pathlib import Path;chunks=[];charged=Path("+repr(str(root/'memory.current'))+")\ndef fill():\n while not chunks or int(charged.read_text())<"+str(target)+":\n  if sum(map(len,chunks))+(4<<20)>"+str(offered)+":raise RuntimeError('hot memory offer exhausted')\n  data=bytearray(4<<20)\n  for offset in range(0,len(data),4096):data[offset]=1\n  chunks.append(data);time.sleep(.02)\nfill()\nprint(json.dumps({'ready':True,'hot_bytes':sum(map(len,chunks))}),flush=True);end=time.monotonic()+"+str(seconds)+"\nwhile time.monotonic()<end:\n fill()\n for data in chunks:\n  for offset in range(0,len(data),4096):data[offset]=(data[offset]+1)%256\nprint(json.dumps({'peak_hot_bytes':sum(map(len,chunks))}),flush=True)"
 
 def fixture_guard(leaf,seconds=120):
     # Hold the exact kernel interface, not a PID/name/path resolved after timeout.
@@ -218,7 +219,7 @@ def run_case(p,case,repetition):
         result['pressure']=snapshot(groups)
         progress('pressure_ready',app,hot_bytes=ready['hot_bytes'],groups=result['pressure'])
         if int((root/'memory.current').read_text())<=high-allowance+(8<<20):raise AssertionError('pressure target absent')
-        refusal=subprocess.run([BOX,'app','restart','--app',app],capture_output=True,timeout=20)
+        refusal=subprocess.run([BOX,'workload','startup-check','--policy','/etc/komizo/workloads/'+app+'.json'],capture_output=True,timeout=20)
         if refusal.returncode==0 or b'application serving pressure refuses startup' not in refusal.stderr or identity(p)!=unchanged:raise AssertionError('startup did not refuse before effects')
         result['startup_refused_before_effects']=True
         writer=child('import os,time,json;from pathlib import Path;p=Path('+repr(str(scratch/'io.bin'))+');start=time.monotonic()\nwith p.open("xb",buffering=0) as f:\n for index in range(8):f.write(b"x"*(1<<20));os.fsync(f.fileno())\nprint(json.dumps({"bytes":8<<20,"seconds":time.monotonic()-start}),flush=True)')
@@ -242,6 +243,9 @@ def run_case(p,case,repetition):
             if p['version']==2:wait_for_probe_round(round_started,p['probe_interval_seconds'])
             else:time.sleep(.5) # Retain the historical v1 workload definition.
         if memory.returncode!=0 or writer.wait(timeout=15)!=0:raise AssertionError('synthetic worker failed')
+        final_hot=json.loads(memory.stdout.read());peak=final_hot.get('peak_hot_bytes')
+        if type(peak) is not int or not ready['hot_bytes']<=peak<=offered:raise AssertionError('bounded held hot memory unavailable')
+        result['peak_hot_memory_bytes']=peak
         io=json.loads(writer.stdout.read());result['io_transfer']=io
         if io['bytes']!=8<<20 or io['seconds']<.75:raise AssertionError('fsync workload differs')
         after=snapshot(groups);result['after']=after;result['samples']=samples
