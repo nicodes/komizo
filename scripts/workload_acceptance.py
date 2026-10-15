@@ -13,6 +13,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import time
 import urllib.parse
 
@@ -133,6 +134,7 @@ def snapshot(groups):
         row={k:(g/k).read_text() for k in ('memory.current','memory.swap.current','memory.events','memory.high','memory.max','cpu.stat','io.stat')}
         charges=dict((k,int(v)) for k,v in (line.split() for line in (g/'memory.stat').read_text().splitlines()))
         row['memory_charges']={k:charges.get(k) for k in ('anon','file','kernel','inactive_file')}
+        row['memory_activity']={k:charges.get(k) for k in ('workingset_refault_file','pgscan','pgsteal')}
         result[str(g)]=row
     return result
 
@@ -143,7 +145,7 @@ def wait_for_probe_round(round_started,interval):
 def verify_control_limits(policy,root=Path('/sys/fs/cgroup')):
     fields={'memory.low':'memory_low_bytes','memory.high':'memory_high_bytes','memory.max':'memory_bytes','memory.swap.max':'swap_bytes','pids.max':'pids','cpu.weight':'cpu_weight'}
     for name,group in policy.get('controls',{}).items():
-        if name not in ('openrc.docker','openrc.komizo-rootd','openrc.komizo-api'):raise ValueError('unknown control group')
+        if name not in ('openrc.docker','openrc.komizo-rootd','openrc.komizo-api','openrc.sshd'):raise ValueError('unknown control group')
         expected={key:str(group[value]) for key,value in fields.items()};expected['cpu.max']='max 100000'
         for key,value in expected.items():
             actual=(root/name/key).read_text().strip()
@@ -152,6 +154,39 @@ def verify_control_limits(policy,root=Path('/sys/fs/cgroup')):
 def hot_memory_worker(root,target,offered,seconds=40):
     # Even an already charged group must exercise live synthetic pages.
     return "import time,json;from pathlib import Path;chunks=[];charged=Path("+repr(str(root/'memory.current'))+")\nwhile not chunks or int(charged.read_text())<"+str(target)+":\n if sum(map(len,chunks))+(4<<20)>"+str(offered)+":raise RuntimeError('hot memory offer exhausted')\n data=bytearray(4<<20)\n for offset in range(0,len(data),4096):data[offset]=1\n chunks.append(data);time.sleep(.02)\nprint(json.dumps({'ready':True,'hot_bytes':sum(map(len,chunks))}),flush=True);end=time.monotonic()+"+str(seconds)+"\nwhile time.monotonic()<end:\n for data in chunks:\n  for offset in range(0,len(data),4096):data[offset]=(data[offset]+1)%256"
+
+def fixture_guard(leaf,seconds=120):
+    # Hold the exact kernel interface, not a PID/name/path resolved after timeout.
+    # The guard stays outside the synthetic leaf and survives client loss.
+    kill=os.open(leaf/'cgroup.kill',os.O_WRONLY|os.O_NOFOLLOW)
+    read,write=os.pipe()
+    source='''import os,select,sys,time
+kill,read=int(sys.argv[1]),int(sys.argv[2]);deadline=time.monotonic()+float(sys.argv[3])
+reason='deadline'
+while time.monotonic()<deadline:
+ if select.select([read],[],[],max(0,deadline-time.monotonic()))[0]:
+  if os.read(read,1)==b'd':print('completed',flush=True);raise SystemExit(0)
+  reason='parent_lost';break
+os.write(kill,b'1');print(reason,flush=True)
+'''
+    try:
+        guard=subprocess.Popen([sys.executable,'-I','-c',source,str(kill),str(read),str(seconds)],pass_fds=(kill,read),stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,start_new_session=True)
+    except BaseException:
+        os.close(write);raise
+    finally:
+        os.close(kill);os.close(read)
+    return guard,write
+
+def finish_fixture_guard(guard,write):
+    try:
+        os.write(write,b'd')
+    except BrokenPipeError:pass
+    finally:os.close(write)
+    result=guard.communicate(timeout=5)[0]
+    if guard.returncode or result!=b'completed\n':raise RuntimeError('fixture guard fired or failed; pressure is not accepted')
+
+def progress(stage,app,**values):
+    print(json.dumps({'stage':stage,'app':app,**values},sort_keys=True),file=sys.stderr,flush=True)
 
 def run_case(p,case,repetition):
     host_policy=json.loads(Path('/etc/komizo/resources.json').read_bytes())
@@ -164,9 +199,9 @@ def run_case(p,case,repetition):
     baseline={q['url']:probe_route(q) for q in p['probes']};unchanged=identity(p)
     if not unchanged['fences_clear']:raise ValueError('host recovery fence must be clear')
     groups=[parent,*[parent/a for a in p['app_revisions'] if (parent/a).is_dir()]]
-    groups.extend(g for g in (parent.parent/n for n in ('openrc.docker','openrc.komizo-rootd','openrc.komizo-api')) if g.is_dir())
+    groups.extend(g for g in (parent.parent/n for n in ('openrc.docker','openrc.komizo-rootd','openrc.komizo-api','openrc.sshd')) if g.is_dir())
     before=snapshot(groups);leaf=root/('acceptance-'+os.urandom(5).hex());scratch=Path('/srv')/('komizo-synthetic-'+os.urandom(5).hex())
-    children=[]
+    children=[];guard=None
     result={'app':app,'operator':case['operator'],'repetition':repetition,'baseline_seconds':baseline,'before':before,'accepted':False,'cleanup':False,'latencies_seconds':{q['url']:[] for q in p['probes']},'operator_seconds':[]}
     def child(code):
         worker=subprocess.Popen(['python3','-I','-c','import sys,os;assert sys.stdin.buffer.read(1)==b"g";os.setgroups([]);os.setgid(65534);os.setuid(65534);'+code],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
@@ -174,11 +209,14 @@ def run_case(p,case,repetition):
     try:
         leaf.mkdir();scratch.mkdir(mode=0o700);os.chown(scratch,65534,65534)
         for name,value in [('memory.max',str(offered+(16<<20))),('memory.swap.max','0'),('pids.max','16'),('cpu.max','20000 100000')]: (leaf/name).write_text(value)
+        guard,lease=fixture_guard(leaf)
+        progress('allocated',app,leaf=str(leaf),scratch=str(scratch))
         memory=child(hot_memory_worker(root,target,offered))
         if not select.select([memory.stdout],[],[],30)[0]:raise AssertionError('hot pages not ready')
         ready=json.loads(memory.stdout.readline());result['actual_hot_memory_bytes']=ready['hot_bytes'];result['maximum_offered_hot_memory_bytes']=offered
         if ready.get('ready') is not True or type(ready.get('hot_bytes')) is not int or not 4<<20 <= ready['hot_bytes'] <= offered:raise AssertionError('positive touched hot memory required')
         result['pressure']=snapshot(groups)
+        progress('pressure_ready',app,hot_bytes=ready['hot_bytes'],groups=result['pressure'])
         if int((root/'memory.current').read_text())<=high-allowance+(8<<20):raise AssertionError('pressure target absent')
         refusal=subprocess.run([BOX,'app','restart','--app',app],capture_output=True,timeout=20)
         if refusal.returncode==0 or b'application serving pressure refuses startup' not in refusal.stderr or identity(p)!=unchanged:raise AssertionError('startup did not refuse before effects')
@@ -222,11 +260,15 @@ def run_case(p,case,repetition):
                 if worker.poll() is None:os.killpg(worker.pid,signal.SIGKILL)
                 worker.wait(timeout=30)
                 for stream in [worker.stdout,worker.stderr]:stream.close()
+            if guard is not None:
+                try:finish_fixture_guard(guard,lease)
+                except RuntimeError:result.update(accepted=False,guard_fired=True)
             if scratch.exists():shutil.rmtree(scratch)
             if leaf.exists():leaf.rmdir()
             result['cleanup']=True
         except Exception:
             result.update(accepted=False,cleanup_error='owned fixture cleanup requires inspection')
+        progress('finished',app,accepted=result['accepted'],cleanup=result['cleanup'])
     return result
 
 def run(p):
@@ -252,7 +294,10 @@ def main(argv=None):
         if not re.fullmatch(r'root@[a-z0-9]+(?:[.-][a-z0-9]+)+',args.host):raise ValueError('literal trusted operator host required')
         source=globals().get('_SOURCE') or Path(__file__).read_text()
         source=source[:source.rindex("if __name__")]+"\nfor _signal in [signal.SIGHUP,signal.SIGTERM,signal.SIGINT]:signal.signal(_signal,lambda *_: (_ for _ in ()).throw(InterruptedError()))\nprint(json.dumps(run("+repr(profile)+")),flush=True)\n"
-        proc=subprocess.run(['ssh','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ForwardAgent=no','-o','ConnectTimeout=10',args.host,'python3 -I -'],input=source.encode(),capture_output=True,timeout=1800)
+        # Charge the observer/guard to the existing Rootd control envelope before
+        # Python starts; the recovery SSH daemon retains its independent reserve.
+        remote='test -f /sys/fs/cgroup/openrc.komizo-rootd/cgroup.procs && echo $$ > /sys/fs/cgroup/openrc.komizo-rootd/cgroup.procs && exec python3 -I -'
+        proc=subprocess.run(['ssh','-o','BatchMode=yes','-o','StrictHostKeyChecking=yes','-o','ForwardAgent=no','-o','ConnectTimeout=10',args.host,remote],input=source.encode(),stdout=subprocess.PIPE,timeout=1800)
         if proc.returncode:raise ValueError('remote fixture failed; no acceptance inferred')
         if len(proc.stdout)>8<<20:raise ValueError('fixture evidence exceeds its bound')
         result=json.loads(proc.stdout)
