@@ -32,6 +32,7 @@ func TestPreviewLimitsCannotDisableCgroupsOrInjectCompose(t *testing.T) {
 
 func TestPreviewServiceLimitsMatchAdmissionAndDoNotAllowSwapGrowth(t *testing.T) {
 	knob, _ := ParsePreviewKnob("MEM_LIMIT=64m\nMEM_LIMIT.fieldsofrevik.api=32m\nMEM_LIMIT.fieldsofrevik.migrate=32m\nMEM_LIMIT.fieldsofrevik.godot-api=160m\nMEM_LIMIT.prizm=96m")
+	knob = withRevikFixture(knob)
 	reserved, err := previewMemoryReservation(knob, "fieldsofrevik", 4)
 	if err != nil || reserved != 416<<20 {
 		t.Fatalf("Revik reservation: %d %v", reserved, err)
@@ -71,7 +72,7 @@ func TestPreviewInvalidAppLimitRefusesBeforeMutation(t *testing.T) {
 			t.Fatalf("invalid app limit performed work: %s %v", value, err)
 		}
 		knob, _ := ParsePreviewKnob("MEM_LIMIT.fieldsofrevik.godot-api=" + value)
-		if _, err := previewMemoryReservation(knob, "fieldsofrevik", 4); err == nil {
+		if _, err := previewMemoryReservation(withRevikFixture(knob), "fieldsofrevik", 4); err == nil {
 			t.Fatalf("invalid Revik override accepted: %s", value)
 		}
 	}
@@ -157,7 +158,7 @@ func TestPreviewGateServicesHaveNoSharedGenericAlias(t *testing.T) {
 			if app == "fieldsofrevik" {
 				rec.Images = revikImages()
 			}
-			compose := previewCompose(rec, PreviewKnob{MemLimit: "256m", CPULimit: "0.5"}, "edge", false, "")
+			compose := previewCompose(rec, withRevikFixture(PreviewKnob{MemLimit: "256m", CPULimit: "0.5"}), "edge", false, "")
 			if strings.Contains(compose, "\n  gate:\n") || !strings.Contains(compose, "\n  "+rec.Project+"-gate:\n") {
 				t.Fatal("generic gate alias remains on the shared edge")
 			}

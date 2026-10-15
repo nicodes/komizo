@@ -76,7 +76,7 @@ func TestPathPreviewAPIAndAuthorization(t *testing.T) {
 		}
 	}
 	legacy, err := ResolvePreview(k, "castledrop", 72, false)
-	if err != nil || legacy.BasePath != "" || legacy.Host != "pr-72.preview.gdam.dev" {
+	if err == nil || legacy.Host != "" {
 		t.Fatalf("legacy changed: %+v %v", legacy, err)
 	}
 }

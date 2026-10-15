@@ -384,7 +384,7 @@ func TestTypedDeploymentScopedGenerationAndNeighborClaims(t *testing.T) {
 			marker := filepath.Join(dir, "provenance")
 			os.WriteFile(marker, []byte("profile=fields-postgres-v2\nschema=11\ngeneration="+generation+"\n"), 0400)
 			os.Symlink("generations/"+generation, filepath.Join(root, "current"))
-			os.WriteFile(filepath.Join(f.h.root, box.AppsDir, "example.env"), []byte("APP_DIR="+appDir+"\nSCOPED_ENV=fields-postgres-v2\nSCOPED_GENERATION="+generation+"\n"), 0600)
+			os.WriteFile(filepath.Join(f.h.root, box.AppsDir, "example.env"), []byte("APP_DIR="+appDir+"\nSCOPED_ENV=fields-postgres-v2\nSCOPED_SCHEMA=11\nSCOPED_FILES=postgres.env,migrate.env,api.env,godot-api.env\nSCOPED_GENERATION="+generation+"\n"), 0600)
 			f.h.deploymentOwner = func(os.FileInfo) bool { return true }
 			checks := 0
 			f.h.deploymentSecretCheck = func(context.Context, string, string) error { checks++; return nil }

@@ -15,6 +15,8 @@ import (
 func runWorkload(args []string) error {
 	if len(args) > 0 {
 		switch args[0] {
+		case "scoped-definition-check":
+			return runScopedDefinitionCheck(args[1:])
 		case "policy-check":
 			return runWorkloadPolicyCheck(args[1:])
 		case "routine-backup", "backup-inspect":

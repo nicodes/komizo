@@ -51,8 +51,8 @@ var previewTLD = regexp.MustCompile(`^[a-z]{2,}$`)
 var sharedPreviewLabel = regexp.MustCompile(`^[a-z][a-z0-9-]*-pr[1-9][0-9]*(-api)?$`)
 
 func (k PreviewKnob) validateHosts(app string, pr int) error {
-	if k.SharedDomainFor(app) == "" && k.PathDomainFor(app) == "" {
-		return nil
+	if k.DomainFor(app) == "" {
+		return fmt.Errorf("preview requires an explicitly configured domain")
 	}
 	host := k.APIHostFor(app, pr)
 	if len(host) > 253 || !strings.Contains(k.DomainFor(app), ".") {
