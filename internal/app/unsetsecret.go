@@ -31,7 +31,9 @@ import (
 // undone by setting it again from GitHub; deleting one that was only ever on
 // the box cannot be undone at all, which is why the box keeps a dated 0600
 // copy beside the original.
-func RunUnsetSecret(args []string) error {
+func RunUnsetSecret(args []string) (err error) {
+	validation := localInput(&err)
+	defer validation.finish()
 	fs := flag.NewFlagSet("unset-secret", flag.ContinueOnError)
 	fs.Usage = func() { usageUnsetSecret(fs) }
 	var host, app, names, keep string
@@ -64,14 +66,36 @@ func RunUnsetSecret(args []string) error {
 	if err != nil {
 		return err
 	}
+	validation.complete = true
 	if err := ensureReachable(tgt, acceptHostKey); err != nil {
 		return err
 	}
 
+	if machineMode() && list {
+		env["MACHINE_NAMES"] = "1"
+		out := &boundedOutput{remaining: 64 << 10}
+		if err := tgt.runScriptTo(scripts.AlpineUnsetSecretScript, env, out); err != nil {
+			return err
+		}
+		if out.truncated {
+			return fmt.Errorf("secret-name listing exceeds 64 KiB")
+		}
+		names := []string{}
+		for _, name := range strings.Split(strings.TrimSuffix(out.String(), "\n"), "\n") {
+			if name == "" {
+				continue
+			}
+			if !validSecretName(app, name) {
+				return fmt.Errorf("invalid secret-name response")
+			}
+			names = append(names, name)
+		}
+		return managementReceipt("unset-secret list", tgt, app, map[string]any{"names": names, "values_omitted": true})
+	}
 	if err := tgt.runScript(scripts.AlpineUnsetSecretScript, env); err != nil {
 		return fmt.Errorf("unset-secret failed -- see the output above")
 	}
-	return nil
+	return managementReceipt("unset-secret", tgt, app, map[string]any{"names": strings.Fields(env["NAMES"]), "keep": keep != ""})
 }
 
 // unsetPlan turns the flags into the environment the box script reads, or into
@@ -120,6 +144,13 @@ func unsetPlan(app, host, names, keep string, list, yes bool) (map[string]string
 			"    Re-run with --yes if that is what you want.", what, "/srv/"+app+"/secrets.env", host)
 	}
 
+	if keep != "" {
+		for _, name := range parsed {
+			if strings.HasPrefix(name, "file:") {
+				return nil, fmt.Errorf("--keep accepts only environment secret names")
+			}
+		}
+	}
 	env := map[string]string{"APP_NAME": app, "NAMES": strings.Join(parsed, " ")}
 	if keep != "" {
 		env["KEEP"] = "1"
@@ -141,8 +172,8 @@ func secretNames(list string) ([]string, error) {
 		if name == "" {
 			continue
 		}
-		if !onlyChars(name, secretChars) {
-			return nil, fmt.Errorf("secret names are letters, digits and underscore; got %q", name)
+		if !validSecretName("listing", name) {
+			return nil, fmt.Errorf("secret names are letters, digits and underscore, or file:NAME; got %q", name)
 		}
 		if seen[name] {
 			continue
@@ -189,4 +220,12 @@ Flags:
 `)
 	fs.PrintDefaults()
 	fmt.Println()
+}
+
+func validSecretName(app, name string) bool {
+	if strings.HasPrefix(name, "file:") {
+		_, err := setSecretCommand(app, strings.TrimPrefix(name, "file:"), "", true)
+		return err == nil
+	}
+	return name != "" && onlyChars(name, secretChars)
 }

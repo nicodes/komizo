@@ -37,7 +37,9 @@ type proxyOpts struct {
 	acceptHostKey bool
 }
 
-func RunProxy(args []string) error {
+func RunProxy(args []string) (err error) {
+	validation := localInput(&err)
+	defer validation.finish()
 	fs := flag.NewFlagSet("proxy", flag.ContinueOnError)
 	fs.Usage = func() { usageProxy(fs) }
 	var o proxyOpts
@@ -74,6 +76,7 @@ func RunProxy(args []string) error {
 	}
 
 	step("Checking %s:%d", tgt.addr(), tgt.port)
+	validation.complete = true
 	if err := ensureReachable(tgt, o.acceptHostKey); err != nil {
 		return err
 	}
@@ -83,7 +86,7 @@ func RunProxy(args []string) error {
 	if err := tgt.runScript(scripts.AlpineProxyScript, proxyEnv(o)); err != nil {
 		return fmt.Errorf("the server-side script failed -- see the output above")
 	}
-	return nil
+	return managementReceipt("proxy", tgt, "", map[string]any{"network": o.network, "image": o.image})
 }
 
 func proxyEnv(o proxyOpts) map[string]string {

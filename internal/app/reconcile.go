@@ -360,7 +360,9 @@ func seenIn(inv expectedInventory, name string) bool {
 	return false
 }
 
-func RunReconcile(args []string) error {
+func RunReconcile(args []string) (err error) {
+	validation := localInput(&err)
+	defer validation.finish()
 	fs := flag.NewFlagSet("reconcile", flag.ContinueOnError)
 	fs.Usage = func() { usageReconcile(fs) }
 	var host, invPath string
@@ -406,6 +408,7 @@ func RunReconcile(args []string) error {
 	// the scanned host key to ~/.ssh/known_hosts (trust-on-first-use,
 	// reach.go). Those two local files are the whole of what connecting can
 	// change; the box is never written.
+	validation.complete = true
 	if err := ensureReachable(tgt, acceptHostKey); err != nil {
 		return err
 	}
@@ -419,6 +422,18 @@ func RunReconcile(args []string) error {
 	}
 
 	findings := reconcileInventory(inv, rep.Apps)
+	if machineMode() {
+		if findings == nil {
+			findings = []string{}
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(map[string]any{"version": 1, "host": tgt.addr(), "matched": len(findings) == 0, "expected_apps": len(inv.Apps), "registered_apps": len(rep.Apps), "findings": findings}); err != nil {
+			return err
+		}
+		if len(findings) > 0 {
+			return &commandFailure{code: 65, err: fmt.Errorf("%d reconciliation findings", len(findings))}
+		}
+		return nil
+	}
 	if len(findings) > 0 {
 		for _, f := range findings {
 			fmt.Fprintln(os.Stderr, f)

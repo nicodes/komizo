@@ -9,7 +9,9 @@ import (
 
 // runRemove is the non-interactive counterpart to the TUI's remove. It refuses
 // to run without --yes, because unlike everything else here it deletes data.
-func RunRemove(args []string) error {
+func RunRemove(args []string) (err error) {
+	validation := localInput(&err)
+	defer validation.finish()
 	fs := flag.NewFlagSet("remove", flag.ContinueOnError)
 	fs.Usage = func() { usageRemove(fs) }
 	var host, app string
@@ -43,6 +45,7 @@ func RunRemove(args []string) error {
 			"        komizo remove --host %s --app %s --yes", "/srv/"+app, host, app)
 	}
 
+	validation.complete = true
 	if err := ensureReachable(tgt, acceptHostKey); err != nil {
 		return err
 	}
@@ -54,7 +57,7 @@ func RunRemove(args []string) error {
 	if err := tgt.runScript(scripts.AlpineRemoveScript, env); err != nil {
 		return fmt.Errorf("removal failed -- see the output above")
 	}
-	return nil
+	return managementReceipt("remove", tgt, app, map[string]any{"keep_data": keepData})
 }
 
 // runScript prints one of the embedded server-side scripts.

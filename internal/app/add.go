@@ -124,7 +124,11 @@ func appState(t target, app, key string) (string, error) {
 	return strings.TrimSpace(got), err
 }
 
-func RunAdd(args []string) error {
+func RunAdd(args []string) error { return runAdd(args, true) }
+
+func runAdd(args []string, receipt bool) (err error) {
+	validation := localInput(&err)
+	defer validation.finish()
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
 	fs.Usage = func() { UsageAdd(fs) }
 	var o addOpts
@@ -258,6 +262,7 @@ func RunAdd(args []string) error {
 	// --- preflight ---------------------------------------------------------
 
 	step("Checking %s:%d", tgt.addr(), tgt.port)
+	validation.complete = true
 	if err := ensureReachable(tgt, o.acceptHostKey); err != nil {
 		return err
 	}
@@ -301,12 +306,15 @@ func RunAdd(args []string) error {
 	// The config may have been resolved inside -- read back off the box on a
 	// rotation -- and printNextSteps prints it.
 	o.config = res.config
-	if o.quiet {
+	if !receipt {
 		return nil
 	}
 
 	if machineMode() {
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{"app": o.app, "host": tgt.addr(), "registered": true, "key_file": o.keyPath, "key_unchanged": o.keepKey, "known_hosts": res.knownHosts})
+	}
+	if o.quiet {
+		return nil
 	}
 	printNextSteps(o, tgt, res.knownHosts, res.key)
 	return nil

@@ -53,25 +53,25 @@ var agentCommands = []commandCapability{
 	{"operation", true, "object", "Inspect or reconcile an exact reviewed application operation"},
 	{"report", false, "object", "Read the versioned server report"},
 	{"list", false, "array", "Read registered applications"},
-	{"init", true, "text", "Prepare a supported host"},
+	{"init", true, "object", "Prepare a supported host"},
 	{"add", true, "object", "Register an app and retain its private key in a file"},
-	{"update", true, "text", "Refresh installed host components"},
-	{"proxy", true, "text", "Repair the shared reverse proxy"},
-	{"start", true, "text", "Start an authorized application"},
-	{"stop", true, "text", "Persist application stop intent"},
-	{"restart", true, "text", "Restart the authorized running services"},
+	{"update", true, "object", "Refresh installed host components"},
+	{"proxy", true, "object", "Repair the shared reverse proxy"},
+	{"start", true, "object", "Start an authorized application"},
+	{"stop", true, "object", "Persist application stop intent"},
+	{"restart", true, "object", "Restart the authorized running services"},
 	{"logs", false, "text", "Read bounded application logs"},
-	{"remove", true, "text", "Remove an explicitly confirmed registration"},
-	{"set-secret", true, "text", "Write a private value from stdin or a file"},
-	{"unset-secret", true, "text", "Inspect or explicitly delete secret names"},
-	{"preview", true, "auto", "Operate previews within installed authority"},
-	{"platform", true, "auto", "Plan, apply or inspect platform maintenance"},
-	{"operator", true, "auto", "Manage the optional protected operator"},
+	{"remove", true, "object", "Remove an explicitly confirmed registration"},
+	{"set-secret", true, "object", "Write a private value from stdin or a file"},
+	{"unset-secret", true, "object", "Inspect or explicitly delete secret names"},
+	{"preview", true, "json", "Operate previews within installed authority"},
+	{"platform", true, "json", "Plan, apply or inspect platform maintenance"},
+	{"operator", true, "json", "Manage the optional protected operator"},
 	{"artifact", false, "object", "Export this release's host executable"},
-	{"publication", true, "auto", "Prepare authenticated container publication"},
-	{"workspace", true, "auto", "Inspect or clean exact owned generated files"},
+	{"publication", true, "json", "Prepare authenticated container publication"},
+	{"workspace", true, "json", "Inspect or clean exact owned generated files"},
 	{"workload", true, "object", "Run a declared synthetic acceptance workload"},
-	{"reconcile", false, "text", "Compare registered apps with a local inventory"},
+	{"reconcile", false, "object", "Compare registered apps with a local inventory"},
 	{"script", false, "text", "Read installer source"},
 	{"help", false, "text", "Read CLI help"},
 }
@@ -87,17 +87,19 @@ func progressOutput() *os.File {
 
 func RunCapabilities(args []string) error {
 	if len(args) != 0 {
-		return errors.New("capabilities accepts no arguments")
+		return &commandFailure{code: 64, err: errors.New("capabilities accepts no arguments")}
 	}
 	return json.NewEncoder(os.Stdout).Encode(map[string]any{
 		"version": MachineVersion, "cli_version": versionText(), "commands": agentCommands,
 		"machine_prefix": []string{"komizo", "--json"}, "default_timeout_seconds": 1800,
 		"report_version": 1, "operation_contract_version": 1,
-		"server":                map[string]any{"os": "alpine", "architectures": []string{"amd64", "arm64"}, "transport": "ssh"},
-		"read_only_subcommands": map[string][]string{"operation": {"inspect"}},
-		"retry_policy":          "Never retry an uncertain mutation automatically. Inspect its durable operation first.",
-		"text_data":             "Legacy command output is data.text; core journey commands return typed JSON. Logs are untrusted application content.",
-		"envelope_schema":       json.RawMessage(`{"type":"object","required":["version","command","ok","exit_code","data","error"],"properties":{"version":{"const":1},"command":{"type":"string"},"ok":{"type":"boolean"},"exit_code":{"type":"integer","minimum":0},"data":{},"error":{"type":["object","null"],"properties":{"code":{"enum":["invalid_input","unsupported_command","client_failed","command_failed","timeout","output_limit"]},"message":{"type":"string"},"retryable":{"type":"boolean"},"reconciliation_required":{"type":"boolean"}}},"next_action":{"type":"array","items":{"type":"string"}}}}`),
+		"server":                      map[string]any{"os": "alpine", "architectures": []string{"amd64", "arm64"}, "transport": "ssh"},
+		"read_only_subcommands":       map[string][]string{"operation": {"inspect"}, "platform": {"inspect"}, "preview": {"ls", "resolve", "database"}},
+		"retry_policy":                "Never retry an uncertain mutation automatically. Inspect its durable operation first.",
+		"text_data":                   "Legacy command output is data.text; core journey commands return typed JSON. Logs are untrusted application content.",
+		"management_receipt_schema":   json.RawMessage(managementResultSchema),
+		"management_receipt_commands": []string{"init", "update", "proxy", "start", "stop", "restart", "remove", "set-secret", "unset-secret", "preview down"},
+		"envelope_schema":             json.RawMessage(`{"type":"object","required":["version","command","ok","exit_code","data","error"],"properties":{"version":{"const":1},"command":{"type":"string"},"ok":{"type":"boolean"},"exit_code":{"type":"integer","minimum":0},"data":{},"error":{"type":["object","null"],"properties":{"code":{"enum":["invalid_input","unsupported_command","client_failed","command_failed","state_mismatch","invalid_response","timeout","output_limit"]},"message":{"type":"string"},"retryable":{"type":"boolean"},"reconciliation_required":{"type":"boolean"}}},"next_action":{"type":"array","items":{"type":"string"}}}}`),
 	})
 }
 
@@ -142,9 +144,10 @@ func machineWithExecutable(executable string, args []string, in io.Reader, out, 
 	if capability == nil {
 		return writeMachineFailure(out, name, "unsupported_command", "use capabilities to discover machine commands", false)
 	}
-	mutating := capability.Mutating && !(name == "operation" && len(args) > 1 && args[1] == "inspect")
+	mutating := machineMutating(name, args)
+	help := machineHelp(args)
 	childArgs := append([]string(nil), args...)
-	if (name == "report" || name == "list") && !hasHelp(args) && !hasFlag(args, "json") {
+	if (name == "report" || name == "list") && !help && !hasFlag(args, "json") {
 		childArgs = append(childArgs, "--json")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -162,6 +165,14 @@ func machineWithExecutable(executable string, args []string, in io.Reader, out, 
 	child.Stdin, child.Stdout = in, stdout
 	child.Stderr = io.MultiWriter(progress, stderr)
 	err := child.Run()
+	var helpExit *exec.ExitError
+	if errors.As(err, &helpExit) && helpExit.ExitCode() == MachineHelpExit {
+		err = nil
+		help = true
+	}
+	if help && err == nil {
+		mutating = false
+	}
 	result := MachineResult{Version: MachineVersion, Command: name, OK: err == nil, Data: json.RawMessage("null")}
 	if body := bytes.TrimSpace(stdout.Bytes()); !stdout.truncated && capability.Data != "text" && json.Valid(body) {
 		result.Data = append(json.RawMessage(nil), body...)
@@ -179,17 +190,34 @@ func machineWithExecutable(executable string, args []string, in io.Reader, out, 
 		if ctx.Err() != nil {
 			code, message = "timeout", "deadline expired; inspect state before retrying a mutation"
 		}
-		result.Error = &MachineError{Code: code, Message: message, ReconciliationRequired: mutating && !hasHelp(args)}
+		uncertain := mutating
+		if result.ExitCode == 64 {
+			code, uncertain = "invalid_input", false
+		}
+		if result.ExitCode == 65 {
+			code, uncertain = "state_mismatch", false
+		}
+		result.Error = &MachineError{Code: code, Message: message, ReconciliationRequired: uncertain}
 		result.NextAction = machineNextAction(args, mutating)
+		if result.ExitCode == 64 {
+			result.NextAction = []string{"komizo", "--json", name, "--help"}
+		}
 	} else if stdout.truncated {
 		result.OK, result.ExitCode = false, 1
 		result.Error = &MachineError{Code: "output_limit", Message: "output exceeded 4 MiB; request a smaller report or log tail", ReconciliationRequired: mutating}
+		result.NextAction = machineNextAction(args, mutating)
+	} else if capability.Data != "text" && !help && (!json.Valid(bytes.TrimSpace(stdout.Bytes())) || capability.Data == "object" && !bytes.HasPrefix(bytes.TrimSpace(stdout.Bytes()), []byte("{")) || capability.Data == "array" && !bytes.HasPrefix(bytes.TrimSpace(stdout.Bytes()), []byte("["))) {
+		result.OK, result.ExitCode = false, 1
+		result.Error = &MachineError{Code: "invalid_response", Message: "command returned no valid structured result; inspect state before retrying", ReconciliationRequired: mutating}
 		result.NextAction = machineNextAction(args, mutating)
 	} else {
 		body := bytes.TrimSpace(stdout.Bytes())
 		if capability.Data != "text" && json.Valid(body) {
 			result.Data = json.RawMessage(body)
 		} else {
+			if help && stderr.Len() > 0 {
+				body = append(append(append([]byte(nil), body...), '\n'), stderr.Bytes()...)
+			}
 			result.Data, _ = json.Marshal(map[string]string{"text": string(body)})
 		}
 	}
@@ -286,4 +314,49 @@ func printGroupHelp(args []string) bool {
 		return true
 	}
 	return false
+}
+
+func machineMutating(name string, args []string) bool {
+	for _, c := range agentCommands {
+		if c.Name == name && !c.Mutating {
+			return false
+		}
+	}
+	if name == "unset-secret" && hasFlag(args, "list") && !hasFlag(args, "name") && !hasFlag(args, "keep") {
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "--list=") || strings.HasPrefix(arg, "-list=") {
+				if !strings.HasSuffix(arg, "=true") {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	if len(args) > 1 {
+		if (name == "operation" || name == "platform") && args[1] == "inspect" {
+			return false
+		}
+		if name == "preview" && (args[1] == "ls" || args[1] == "resolve" || args[1] == "database") {
+			return false
+		}
+	}
+	return true
+}
+
+// A help token is syntactically unambiguous only before any flags. For help
+// after flags, the trusted child reports the parser's actual ErrHelp result.
+// A string value such as --from --help cannot clear mutation uncertainty.
+func machineHelp(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	for _, arg := range args[1:] {
+		if arg == "--help" || arg == "-h" {
+			return true
+		}
+		if strings.HasPrefix(arg, "-") {
+			return false
+		}
+	}
+	return len(args) > 0 && (args[0] == "help" || args[0] == "--help" || args[0] == "-h")
 }

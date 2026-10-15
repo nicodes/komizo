@@ -212,7 +212,7 @@ func TestTheSetupPathsAreTheOnesWeKnowAbout(t *testing.T) {
 		got = append(got, name)
 	}
 	sort.Strings(got)
-	want := "RunInit, RunUpdate"
+	want := "RunUpdate, runInit"
 	if strings.Join(got, ", ") != want {
 		t.Errorf("functions that provision a box = %q, want %q -- a new one has to be "+
 			"held to the rules below rather than added here", strings.Join(got, ", "), want)
@@ -235,9 +235,9 @@ func TestEverySetupPathInstallsTheAgent(t *testing.T) {
 // request to nothing on every box setup -- and a re-registration was always how
 // a second row with the same name appeared in somebody's app.
 func TestNoSetupPathRegistersABox(t *testing.T) {
-	fn, ok := setupPaths(t)["RunInit"]
+	fn, ok := setupPaths(t)["runInit"]
 	if !ok {
-		t.Fatal("RunInit no longer provisions a box, so nothing here is guarding setup")
+		t.Fatal("runInit no longer provisions a box, so nothing here is guarding setup")
 	}
 	if calls(fn, "registerAndEnrol") {
 		t.Error("RunInit still files the box under an account -- the service is " +

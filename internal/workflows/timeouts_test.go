@@ -51,28 +51,30 @@ func TestTheJobCeilingIsLargerThanEverythingItBacksUp(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		job, steps, n := timeouts(string(b))
-		if job == 0 {
-			// A workflow with no job ceiling at all is a separate question and
-			// not this one's. Said rather than skipped silently.
-			t.Logf("%s has no job timeout-minutes", filepath.Base(f))
-			continue
-		}
-		checked++
-		if n == 0 {
-			t.Errorf("%s bounds the job (%dm) and no step, so the ceiling still counts queue time -- #147",
-				filepath.Base(f), job)
-			continue
-		}
-		if job <= steps {
-			t.Errorf("%s: job ceiling %dm does not exceed its %d step bounds totalling %dm, "+
-				"so it can fire while every step is inside its own -- which is the job ceiling "+
-				"measuring something other than a hang", filepath.Base(f), job, n, steps)
-		}
-		if job-steps > maxSlackMinutes {
-			t.Errorf("%s: job ceiling %dm is %dm above its step bounds (%dm) -- a backstop that "+
-				"loose lets a stuck job hold a runner for most of an hour after every step has "+
-				"given up", filepath.Base(f), job, job-steps, steps)
+		for _, source := range jobSources(string(b)) {
+			job, steps, n := timeouts(source)
+			if job == 0 {
+				// A workflow with no job ceiling at all is a separate question and
+				// not this one's. Said rather than skipped silently.
+				t.Logf("%s has no job timeout-minutes", filepath.Base(f))
+				continue
+			}
+			checked++
+			if n == 0 {
+				t.Errorf("%s bounds the job (%dm) and no step, so the ceiling still counts queue time -- #147",
+					filepath.Base(f), job)
+				continue
+			}
+			if job <= steps {
+				t.Errorf("%s: job ceiling %dm does not exceed its %d step bounds totalling %dm, "+
+					"so it can fire while every step is inside its own -- which is the job ceiling "+
+					"measuring something other than a hang", filepath.Base(f), job, n, steps)
+			}
+			if job-steps > maxSlackMinutes {
+				t.Errorf("%s: job ceiling %dm is %dm above its step bounds (%dm) -- a backstop that "+
+					"loose lets a stuck job hold a runner for most of an hour after every step has "+
+					"given up", filepath.Base(f), job, job-steps, steps)
+			}
 		}
 	}
 	if checked == 0 {
@@ -106,4 +108,46 @@ func timeouts(src string) (job, steps, n int) {
 		}
 	}
 	return job, steps, n
+}
+
+// Separate jobs have separate runners and ceilings; adding a native acceptance
+// job must not add its bounds to the publisher's arithmetic.
+func jobSources(source string) []string {
+	var jobs []string
+	current := ""
+	inJobs := false
+	for _, line := range strings.Split(source, "\n") {
+		if line == "jobs:" {
+			inJobs = true
+			continue
+		}
+		if !inJobs {
+			continue
+		}
+		if len(line) > 2 && line[:2] == "  " && line[2] != ' ' && !strings.HasPrefix(strings.TrimSpace(line), "#") && strings.HasSuffix(line, ":") {
+			if current != "" {
+				jobs = append(jobs, current)
+			}
+			current = line + "\n"
+		} else if current != "" {
+			current += line + "\n"
+		}
+	}
+	if current != "" {
+		jobs = append(jobs, current)
+	}
+	return jobs
+}
+
+func TestJobCeilingsDoNotBorrowAnotherJobsStepBounds(t *testing.T) {
+	sources := jobSources("jobs:\n  build:\n    timeout-minutes: 20\n    steps:\n      - run: build\n        timeout-minutes: 10\n  accept:\n    timeout-minutes: 35\n    steps:\n      - run: test\n        timeout-minutes: 30\n")
+	if len(sources) != 2 {
+		t.Fatalf("jobs=%d", len(sources))
+	}
+	for i, want := range []int{10, 30} {
+		_, steps, n := timeouts(sources[i])
+		if steps != want || n != 1 {
+			t.Fatalf("bounds crossed jobs: %d %d", steps, n)
+		}
+	}
 }
