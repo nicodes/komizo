@@ -70,6 +70,14 @@ class WorkloadFixtureContract(unittest.TestCase):
             self.assertIn('hot memory offer exhausted',error)
             self.assertNotIn('peak_hot_bytes',out)
 
+    def test_reconciled_serving_observation_is_stable_but_failed_staging_is_not(self):
+        for phase in ('ready','reconciled'):
+            self.assertTrue(fixture.operation_observation_ready({'operation':{'app':'worker','phase':phase},'private_bodies_omitted':True},'worker'))
+        for phase in ('staging_failed','configured','prepared_stopped','unknown'):
+            self.assertFalse(fixture.operation_observation_ready({'operation':{'app':'worker','phase':phase},'private_bodies_omitted':True},'worker'))
+        self.assertFalse(fixture.operation_observation_ready({'operation':{'app':'neighbor','phase':'ready'},'private_bodies_omitted':True},'worker'))
+        self.assertFalse(fixture.operation_observation_ready({'operation':{'app':'worker','phase':'ready'}},'worker'))
+
     def test_local_inventory_preserves_running_identity_without_cli(self):
         import json,socket,threading
         cid='a'*64;item={'Id':cid,'State':{'Running':True},'Config':{'Env':['PRIVATE=value']}}

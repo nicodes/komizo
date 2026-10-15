@@ -189,6 +189,14 @@ def finish_fixture_guard(guard,write):
 def progress(stage,app,**values):
     print(json.dumps({'stage':stage,'app':app,**values},sort_keys=True),file=sys.stderr,flush=True)
 
+def operation_observation_ready(report, app):
+    # Root reconciliation is a stable serving state. The public lifecycle uses
+    # the same vocabulary; an interrupted or stopped operation is not ready.
+    operation=report.get('operation',{})
+    return (operation.get('app')==app
+            and operation.get('phase') in ('ready','reconciled')
+            and report.get('private_bodies_omitted') is True)
+
 def run_case(p,case,repetition):
     host_policy=json.loads(Path('/etc/komizo/resources.json').read_bytes())
     verify_control_limits(host_policy)
@@ -236,7 +244,7 @@ def run_case(p,case,repetition):
                 if any(revisions.get(a)!=r for a,r in p['app_revisions'].items()):raise AssertionError('serving source changed')
             else:
                 report=json.loads(command([BOX,'workload','inspect','--policy','/etc/komizo/workloads/'+app+'.json'],10))
-                if report['operation']['phase']!='ready' or not report['private_bodies_omitted']:raise AssertionError('operation observation unavailable')
+                if not operation_observation_ready(report,app):raise AssertionError('operation observation unavailable')
             elapsed=time.monotonic()-start;result['operator_seconds'].append(elapsed)
             if elapsed>=5:raise AssertionError('operator exceeded five seconds')
             samples.append(snapshot(groups))
