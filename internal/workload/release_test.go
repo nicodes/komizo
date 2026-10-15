@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -270,5 +271,63 @@ func TestReleaseRejectsUnsignedHMACAndUnavailableIssuerKeys(t *testing.T) {
 	}
 	if _, err := VerifyRelease(context.Background(), good, p, m.Revision, now, func(context.Context, string) (*rsa.PublicKey, error) { return nil, fmt.Errorf("offline") }); err == nil {
 		t.Fatal("missing issuer key failed open")
+	}
+}
+
+func TestLocalConfigRecoveryUsesOnlyOriginalAuthenticatedArtifact(t *testing.T) {
+	p, m, _, _ := releaseFixture(t)
+	configRef := p.ImagePrefix + "config:" + m.Revision
+	compose := []byte(`{"services":{"api":{"image":"` + p.ImagePrefix + `api:` + m.Revision + `"}}}`)
+	original := "sha256:" + strings.Repeat("7", 64)
+	for _, fault := range []string{"none", "missing", "substitution", "unsafe-reference"} {
+		t.Run(fault, func(t *testing.T) {
+			calls := []string{}
+			run := func(_ context.Context, args ...string) (string, error) {
+				calls = append(calls, strings.Join(args, " "))
+				switch args[0] {
+				case "local-config-image":
+					if args[1] != m.Images[configRef] {
+						t.Fatal("lookup was not bound to accepted config")
+					}
+					if fault == "missing" {
+						return "", errors.New("absent")
+					}
+					if fault == "unsafe-reference" {
+						return "another-app:latest", nil
+					}
+					return original, nil
+				case "config-digest":
+					if args[1] != original {
+						t.Fatal("mutable config digest query")
+					}
+					if fault == "substitution" {
+						return "sha256:" + strings.Repeat("f", 64), nil
+					}
+					return m.Images[configRef], nil
+				case "image":
+					image := args[2]
+					id := m.Images[image]
+					refs := []string{strings.TrimSuffix(image, ":"+m.Revision) + "@sha256:" + strings.Repeat("9", 64)}
+					descriptor := ""
+					if image == configRef {
+						id = "sha256:" + strings.Repeat("f", 64)
+					}
+					if image == original {
+						id = original
+						descriptor = original
+						refs = nil
+					}
+					body, _ := json.Marshal([]map[string]any{{"Id": id, "Descriptor": map[string]string{"digest": descriptor}, "RepoDigests": refs}})
+					return string(body), nil
+				default:
+					t.Fatal("local recovery performed a side effect", args)
+					return "", nil
+				}
+			}
+			_, err := BindLocalRelease(context.Background(), run, p, ReleaseAcceptance{Manifest: m, Authority: actionsIssuer}, m.Revision, configRef, compose)
+			if (err == nil) != (fault == "none") {
+				t.Fatal(fault, err, calls)
+			}
+		})
 	}
 }

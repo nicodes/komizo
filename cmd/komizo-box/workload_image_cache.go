@@ -158,3 +158,60 @@ func imageConfigDigest(ctx context.Context, root, directory, image string, owner
 	}
 	return config, nil
 }
+
+// Recover an accepted configuration artifact without consulting a mutable tag,
+// pulling, retagging, exporting, or changing the cache. The caller independently
+// verifies the returned immutable local image against authenticated Build bytes.
+func cachedConfigurationImage(ctx context.Context, directory, expected string, owner func(os.FileInfo) bool, present func(string) bool) (string, error) {
+	if !configDigestShape(expected) {
+		return "", errors.New("invalid accepted configuration identity")
+	}
+	info, err := os.Lstat(directory)
+	if err != nil || !info.IsDir() || !owner(info) || info.Mode().Perm() != 0700 {
+		return "", errors.New("configuration cache is not protected")
+	}
+	f, err := os.Open(directory)
+	if err != nil {
+		return "", err
+	}
+	entries, err := f.ReadDir(imageConfigCacheLimit + 1)
+	f.Close()
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	if len(entries) > imageConfigCacheLimit {
+		return "", errors.New("configuration cache exceeds lookup bound")
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		name := entry.Name()
+		image := "sha256:" + strings.TrimSuffix(name, ".json")
+		if !strings.HasSuffix(name, ".json") || !configDigestShape(image) {
+			return "", errors.New("unknown configuration cache entry")
+		}
+		path := filepath.Join(directory, name)
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() || !owner(info) || info.Mode().Perm() != 0600 || info.Size() > 512 {
+			return "", errors.New("unprotected configuration cache entry")
+		}
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		var record imageConfigRecord
+		if json.Unmarshal(body, &record) != nil || record.Version != 1 || record.Image != image || !configDigestShape(record.Config) {
+			return "", errors.New("configuration cache identity differs")
+		}
+		canonical, err := json.MarshalIndent(record, "", "  ")
+		if err != nil || !bytes.Equal(body, append(canonical, '\n')) {
+			return "", errors.New("noncanonical configuration cache entry")
+		}
+		if record.Config == expected && present(image) {
+			return image, nil
+		}
+	}
+	return "", errors.New("accepted configuration image is unavailable locally")
+}
