@@ -63,8 +63,11 @@ def main():
     parser.add_argument('--source', required=True)
     parser.add_argument('--release-dir', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path, help='fresh protected absolute directory')
-    parser.add_argument('--candidate-cli', type=Path, help='explicit local client test; embedded host must equal the authenticated baseline, and acceptance is labeled unauthenticated-client')
+    parser.add_argument('--candidate-cli', type=Path, help='explicit local client test; host matches baseline unless --candidate-host; acceptance is labeled provisional')
+    parser.add_argument('--candidate-host', action='store_true', help='explicitly allow a local candidate host too; never counts as signed-release acceptance')
     args = parser.parse_args()
+    if args.candidate_host and not args.candidate_cli:
+        raise ValueError('candidate host requires an explicit local candidate client')
     if os.geteuid()!=0 or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+',args.release) or not re.fullmatch('[a-f0-9]{40}',args.source):
         raise ValueError('root and exact reviewed release/source are required')
     if os.environ.get('DOCKER_HOST') or os.environ.get('DOCKER_CONTEXT'):
@@ -88,9 +91,10 @@ def main():
             raise ValueError('candidate CLI must be an absolute regular local executable')
         exported=args.output/'candidate-host'
         candidate_metadata=json.loads(run([str(candidate),'artifact','--arch','amd64','--output',str(exported)]))
-        if exported.read_bytes()!=box.read_bytes() or candidate_metadata['version'].removeprefix('v')!=args.release.removeprefix('v'):
-            raise ValueError('candidate client must carry the exact authenticated baseline host')
-        candidate_receipt={'sha256':hashlib.sha256(candidate.read_bytes()).hexdigest(),'authenticated':False,'scope':'local client only; host binary and maintenance artifacts remain the authenticated baseline'}
+        if (not args.candidate_host and exported.read_bytes()!=box.read_bytes()) or candidate_metadata['version'].removeprefix('v')!=args.release.removeprefix('v'):
+            raise ValueError('candidate version or authenticated baseline host binding differs')
+        candidate_receipt={'sha256':hashlib.sha256(candidate.read_bytes()).hexdigest(),'host_sha256':hashlib.sha256(exported.read_bytes()).hexdigest(),'candidate_host':args.candidate_host,'authenticated':False,'scope':'explicit local candidate; maintenance target artifacts remain the authenticated baseline; not signed-release acceptance'}
+        if args.candidate_host:box=exported
         cli=candidate
     name='komizo-lifecycle-'+uuid.uuid4().hex[:12]
     cid=run(['docker','run','-d','--name',name,'--label','org.komizo.fixture='+name,
@@ -343,6 +347,10 @@ else:raise ValueError('private-file interruption window not observed')
     except Exception:
         failure_outputs['original-failure.txt']=traceback.format_exc().encode()[-16384:]
         try:
+            failure_outputs['bootstrap-policy-diagnostics.json']=fixture.python("import json\np=Path('/etc/komizo/workloads/fixturelocal.json');d=Path('/srv/fixturelocal');print(json.dumps({'policy':json.loads(p.read_bytes()) if p.exists() else None,'compose_exists':(d/'compose.yml').exists(),'retention_exists':(d/'.komizo-image-retention').exists(),'operation_exists':Path('/var/lib/komizo/releases/fixturelocal/operation.json').exists()}))")
+        except Exception:
+            pass
+        try:
             diagnostics=fixture.python("import json,subprocess\nids=subprocess.check_output(['docker','ps','-aq'],timeout=10).decode().split();rows=json.loads(subprocess.check_output(['docker','inspect',*ids],timeout=10)) if ids else [];print(json.dumps({'containers':[{'name':r['Name'],'state':{k:r['State'].get(k) for k in ('Running','OOMKilled','ExitCode','Error')}} for r in rows],'memory_events':{str(p):p.read_text() for p in Path('/sys/fs/cgroup').rglob('memory.events') if len(p.parts)<=6}}))\nr=subprocess.run(['docker','logs','--tail','40','komizo-previews'],capture_output=True,timeout=10);print((r.stdout+r.stderr).decode(errors='replace')[-8192:])",timeout=30)
             failure_outputs['failure-diagnostics.log']=diagnostics
             for component in ('komizo-proxy','fixturelocal-fixturelocal-gate-1'):
@@ -350,7 +358,7 @@ else:raise ValueError('private-file interruption window not observed')
                 failure_outputs[component+'-diagnostics.log']=r
             config=fixture.command(['cat','/srv/_proxy/Caddyfile'])
             failure_outputs['proxy-configuration.log']=config
-            network=fixture.python("import json,subprocess,urllib.request,os\nprint(json.dumps({'proxy_environment_present':{k:bool(os.environ.get(k)) for k in ('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY')}}))\nfor p in Path('/srv/_proxy/routes').glob('*.caddy'):print(str(p)+'\\n'+p.read_text())\nfor url in ('https://"+address+"/readyz',):\n try:\n  response=urllib.request.urlopen(url,timeout=10);print(json.dumps({'url':url,'status':response.status,'revision':response.headers.get('X-Komizo-Revision'),'body':response.read(512).decode()}))\n except Exception as error:print(json.dumps({'url':url,'error':str(error)}))\nfor name in ('komizo-proxy','fixturelocal-fixturelocal-gate-1'):\n rows=json.loads(subprocess.check_output(['docker','inspect',name]));print(json.dumps({'name':name,'networks':rows[0]['NetworkSettings']['Networks']}))\nr=subprocess.run(['komizo-box','app','start','--app','fixturelocal'],capture_output=True,timeout=110);print(json.dumps({'public_start_status':r.returncode,'public_start_error':r.stderr.decode(),'public_start_output':r.stdout.decode()}))",timeout=150)
+            network=fixture.python("import json,subprocess,urllib.request,os\nprint(json.dumps({'proxy_environment_present':{k:bool(os.environ.get(k)) for k in ('HTTP_PROXY','HTTPS_PROXY','ALL_PROXY','NO_PROXY')}}))\nfor p in Path('/srv/_proxy/routes').glob('*.caddy'):print(str(p)+'\\n'+p.read_text())\nfor url in ('https://"+address+"/readyz',):\n try:\n  response=urllib.request.urlopen(url,timeout=10);print(json.dumps({'url':url,'status':response.status,'revision':response.headers.get('X-Komizo-Revision'),'body':response.read(512).decode()}))\n except Exception as error:print(json.dumps({'url':url,'error':str(error)}))\nfor name in ('komizo-proxy','fixturelocal-fixturelocal-gate-1'):\n rows=json.loads(subprocess.check_output(['docker','inspect',name]));print(json.dumps({'name':name,'networks':rows[0]['NetworkSettings']['Networks']}))",timeout=150)
             failure_outputs['readiness-network-diagnostics.log']=network
         except Exception as error:
             failure_outputs['diagnostic-refusal.txt']=(str(error)[-4096:]+'\n').encode()

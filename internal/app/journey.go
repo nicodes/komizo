@@ -243,7 +243,14 @@ func journeyRemote(tgt target, args []string, body []byte) ([]byte, error) {
 	cmd.Stdin = bytes.NewReader(body)
 	output := &boundedOutput{remaining: 4 << 20}
 	cmd.Stdout = output
+	metadataDiagnostic := &boundedOutput{remaining: 2048}
+	if len(args) > 1 && args[1] == "policy-bootstrap" {
+		cmd.Stderr = metadataDiagnostic
+	}
 	if err := cmd.Run(); err != nil {
+		if detail := strings.TrimSpace(metadataDiagnostic.String()); detail != "" {
+			return nil, fmt.Errorf("host policy bootstrap refused: %s", detail)
+		}
 		return nil, errors.New("host operation refused or transport interrupted; inspect current state")
 	}
 	if output.truncated {
