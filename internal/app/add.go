@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -40,7 +41,9 @@ type addOpts struct {
 	preview    bool
 	previewSet bool
 	// keepKey leaves the deploy key alone, for an edit that is about settings.
-	keepKey bool
+	keepKey  bool
+	quiet    bool
+	reuseKey bool
 	// clearKnownAs is whether --known-as was GIVEN, as opposed to what it was
 	// given. An empty value means two different things -- "I did not say" and
 	// "I say: none" -- and the box needs to be told which. fs.Visit is the only
@@ -125,12 +128,20 @@ func RunAdd(args []string) error {
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
 	fs.Usage = func() { UsageAdd(fs) }
 	var o addOpts
+	fs.BoolVar(&o.reuseKey, "reuse-key", false, "resume registration with an intact existing Komizo --key file for this app and host")
+	fs.BoolVar(&o.quiet, "no-instructions", false, "suppress setup instructions; requires a key file or --keep-key")
 	o.bind(fs)
 	if err := fs.Parse(args); err != nil {
-		return ErrSilent
+		return silentFlagError(err)
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))
+	}
+	if o.quiet && o.keyPath == "" && !o.keepKey {
+		return fmt.Errorf("--no-instructions requires --key or --keep-key")
+	}
+	if o.reuseKey && (o.keyPath == "" || o.keepKey || o.rotateKey) {
+		return fmt.Errorf("--reuse-key requires --key and cannot rotate or keep a remote key")
 	}
 
 	// Refuse to print the private key into something that is not a terminal -- a
@@ -268,6 +279,7 @@ func RunAdd(args []string) error {
 		config:       o.config,
 		appDir:       o.appDir,
 		keyPath:      o.keyPath,
+		reuseKey:     o.reuseKey,
 		knownAs:      knownAs,
 		taskBody:     o.taskBody,
 		taskSet:      o.taskSet,
@@ -289,7 +301,13 @@ func RunAdd(args []string) error {
 	// The config may have been resolved inside -- read back off the box on a
 	// rotation -- and printNextSteps prints it.
 	o.config = res.config
+	if o.quiet {
+		return nil
+	}
 
+	if machineMode() {
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"app": o.app, "host": tgt.addr(), "registered": true, "key_file": o.keyPath, "key_unchanged": o.keepKey, "known_hosts": res.knownHosts})
+	}
 	printNextSteps(o, tgt, res.knownHosts, res.key)
 	return nil
 }
@@ -297,12 +315,13 @@ func RunAdd(args []string) error {
 // addPlan is one app setup, fully resolved except for the values performAdd
 // works out itself.
 type addPlan struct {
-	tgt     target
-	app     string
-	user    string // deploy account; deriveUser(app) unless --user overrode it
-	config  string // may be empty on a rotation, then read back off the box
-	appDir  string // empty means the server script's own default
-	keyPath string // write the private key here too; empty means nowhere
+	reuseKey bool
+	tgt      target
+	app      string
+	user     string // deploy account; deriveUser(app) unless --user overrode it
+	config   string // may be empty on a rotation, then read back off the box
+	appDir   string // empty means the server script's own default
+	keyPath  string // write the private key here too; empty means nowhere
 
 	// knownAs is the extra names CI dials THIS app by, on top of the one we
 	// connected on. Per app rather than per box: known_hosts matches the exact
@@ -373,6 +392,13 @@ func performAdd(p addPlan, out progress, runner func(script string, env map[stri
 	var kp keypair
 	if p.keepKey {
 		out.note("keeping the key already on the server")
+	} else if p.reuseKey {
+		var err error
+		kp, err = readExistingKey(p.keyPath, keyComment(p.user, p.tgt.host))
+		if err != nil {
+			return nil, err
+		}
+		out.note("resuming with the existing private key file; contents are not printed")
 	} else {
 		var err error
 		if kp, err = newKeypair(keyComment(p.user, p.tgt.host)); err != nil {

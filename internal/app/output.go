@@ -18,11 +18,11 @@ import (
 // Bumping it late is the safe failure -- the workflow pins an older release
 // that works. Leaving it at a tag that no longer moves is the unsafe one, which
 // is what `@v0` became.
-const actionsVersion = "v0.0.1"
+const actionsVersion = "d57c15131232a84d8eda86c0a02eccd6e569d3dc"
 
-func step(format string, a ...any) { stepTo(os.Stdout, format, a...) }
+func step(format string, a ...any) { stepTo(progressOutput(), format, a...) }
 
-func note(format string, a ...any) { noteTo(os.Stdout, format, a...) }
+func note(format string, a ...any) { noteTo(progressOutput(), format, a...) }
 
 // stepTo and noteTo are step and note against a chosen stream.
 //

@@ -1,4 +1,4 @@
-// Command komizo sets up and inspects servers that deploy from GitHub Actions.
+// Command komizo operates application hosts over SSH through their protected executor.
 package main
 
 import (
@@ -16,6 +16,9 @@ var version = "dev"
 
 func main() {
 	app.Version = version
+	if len(os.Args) > 1 && os.Args[1] == "--json" {
+		os.Exit(app.Machine(os.Args[2:], os.Stdin, os.Stdout, os.Stderr))
+	}
 	if err := app.Main(os.Args[1:]); err != nil {
 		// A silent error has already said its piece -- flag parsing prints its
 		// own message, and repeating it would be noise.

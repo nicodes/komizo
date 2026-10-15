@@ -47,7 +47,7 @@ func RunInit(args []string) error {
 	fs.Var(&o.deviceKeys, "device-key", box.DeviceKeyUsage)
 	fs.BoolVar(&o.forgetDevices, "forget-devices", false, "drop the devices this box already takes orders from")
 	if err := fs.Parse(args); err != nil {
-		return ErrSilent
+		return silentFlagError(err)
 	}
 	if fs.NArg() > 0 {
 		return fmt.Errorf("unexpected argument %q -- every input is a flag", fs.Arg(0))
@@ -123,16 +123,16 @@ no accounts, nothing under /srv.
 Certificates need no configuration -- Caddy obtains and renews them on its own,
 for whatever hostnames your apps publish.
 
-The proxy is always installed. On a box that serves no HTTP, stop it afterwards
--- 't' on the server screen -- rather than deciding here, on a machine with
-nothing on it yet.
+The proxy is installed with finite limits. To stop it explicitly afterward, use
+komizo stop --host root@HOST --proxy.
 
 	The komizo service is decommissioned, so init no longer files the box under
 	an account: the box is yours and the CLI manages it directly. --name,
 	--api-host, --device-key and --forget-devices are accepted and ignored --
 	they only ever fed that registration.
 
-Safe to re-run. Then add apps with 'komizo add', or just 'komizo root@myhost'.
+For a checked setup flow use 'komizo setup --host root@HOST'. Then register
+apps with 'komizo setup --definition app.json' or 'komizo add'.
 
 Flags:
 `)
