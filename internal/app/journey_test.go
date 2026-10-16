@@ -120,6 +120,40 @@ func TestMachineEnvelopeSubprocessBoundary(t *testing.T) {
 	}
 }
 
+// Exercise the complete flag/help matrix through the dispatcher in-process.
+// The real-binary test below retains the outer JSON/exit/transport boundary.
+func TestAgentCLICommandHelpMatrix(t *testing.T) {
+	t.Setenv("KOMIZO_OUTPUT_MODE", "json")
+	cases := [][]string{{"platform", "inspect"}, {"platform", "recover"}}
+	for _, capability := range agentCommands {
+		cases = append(cases, []string{capability.Name})
+	}
+	for _, args := range cases {
+		t.Run(strings.Join(args, "/"), func(t *testing.T) {
+			var result error
+			out := capture(t, func() {
+				result = Main(append(append([]string{}, args...), "--help"))
+			})
+			if result != nil && ExitCode(result) != MachineHelpExit {
+				t.Fatalf("advertised command help failed: %v\n%s", result, out)
+			}
+			if strings.TrimSpace(out) == "" {
+				t.Fatal("advertised command produced no help")
+			}
+			if args[0] == "setup" || args[0] == "platform" && len(args) > 1 {
+				if !strings.Contains(out, "--host") {
+					t.Fatalf("host flag absent from help: %s", out)
+				}
+			}
+			if args[0] == "platform" && len(args) > 1 {
+				if !strings.Contains(out, "--stage") || !strings.Contains(out, "--expected-manifest") {
+					t.Fatalf("recovery flags absent from help: %s", out)
+				}
+			}
+		})
+	}
+}
+
 func TestAgentCLIRealBinaryDiscoveryAndHelp(t *testing.T) {
 	if testing.Short() {
 		t.Skip("real CLI compilation")
@@ -130,24 +164,6 @@ func TestAgentCLIRealBinaryDiscoveryAndHelp(t *testing.T) {
 		t.Fatal(err, string(out))
 	}
 	checkManagementBinary(t, cli)
-	for _, args := range [][]string{{"platform", "inspect"}, {"platform", "recover"}, {"setup"}} {
-		out, err := exec.Command(cli, append(append([]string{"--json"}, args...), "--help")...).Output()
-		var result MachineResult
-		if err != nil || json.Unmarshal(out, &result) != nil || !result.OK || !bytes.Contains(result.Data, []byte("--host")) {
-			t.Fatalf("incomplete machine help: %v %s", err, out)
-		}
-		if args[0] == "platform" && (!bytes.Contains(result.Data, []byte("--stage")) || !bytes.Contains(result.Data, []byte("--expected-manifest"))) {
-			t.Fatalf("recovery flags absent from machine help: %s", out)
-		}
-	}
-
-	for _, capability := range agentCommands {
-		out, err := exec.Command(cli, "--json", capability.Name, "--help").Output()
-		var result MachineResult
-		if err != nil || json.Unmarshal(out, &result) != nil || !result.OK {
-			t.Fatal("advertised command help failed", capability.Name, err, string(out))
-		}
-	}
 	for _, args := range [][]string{{"--json", "capabilities"}, {"--json", "version"}, {"--json", "init", "--help"}, {"--json", "add", "--help"}, {"--json", "report", "--help"}, {"--json", "deploy", "--help"}, {"--json", "setup", "--help"}, {"--json", "operation", "--help"}, {"--json", "platform", "--help"}} {
 		cmd := exec.Command(cli, args...)
 		var out, stderr bytes.Buffer

@@ -109,8 +109,9 @@ jobs:
           fi
           echo "go.mod wants $mod, .mise.toml pins $pin"
 
-      # What setup-go did for free. mise installs the toolchain and caches
-      # nothing else, so this is what stops every run recompiling from cold.
+      # Reuse compiled inputs for this toolchain/dependency set, then save
+      # refreshed compilation state under the exact source revision. The v2
+      # namespace starts without the old 1.5 GB unsupported-platform cache.
       - name: Cache Go build
         timeout-minutes: 10
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -118,9 +119,9 @@ jobs:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
-          key: go-${{ runner.os }}-${{ hashFiles('go.sum', '.mise.toml') }}
+          key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', 'go.sum', '.mise.toml') }}-${{ github.sha }}
           restore-keys: |
-            go-${{ runner.os }}-
+            go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', 'go.sum', '.mise.toml') }}-
 
       # The same steps CI runs, from the same definition. Running them again
       # against this exact commit is not redundant: CI passing on this SHA
