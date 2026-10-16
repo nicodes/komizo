@@ -29,7 +29,6 @@ type staticOperation struct {
 	previous       *staticRecord
 	previousRoute  []byte
 	previousRetain []byte
-	touched        bool
 }
 
 func dockerStaticStream(parent context.Context, args []string, consume func(io.Reader) error) error {
@@ -95,14 +94,7 @@ func (h *hostActivation) prepareStatic(ctx context.Context, r workload.Activatio
 	if r.Proxy != h.policy.Static.Proxy || filepath.Dir(r.RoutePath) != filepath.Join(h.root, box.ProxyDir, "routes") {
 		return errors.New("static serving requires the protected standard proxy route")
 	}
-	if err := h.staticMount(ctx); err != nil {
-		return err
-	}
 	compose, err := h.readBytes(filepath.Join(h.policy.AppDir, "compose.yml"))
-	if err != nil {
-		return err
-	}
-	gate, err := workload.StaticGate(compose, r.App)
 	if err != nil {
 		return err
 	}
@@ -123,17 +115,28 @@ func (h *hostActivation) prepareStatic(ctx context.Context, r workload.Activatio
 		!strings.Contains(string(route), "\treverse_proxy "+r.App+"-gate:80 {") {
 		route = previous.DisabledRoute
 	}
-	active, err := workload.StaticRouteForProfile(route, r.App, r.Candidate, h.policy.Static.Hostnames, h.policy.Static.Profile)
-	if err != nil {
-		return err
-	}
+	// Staging has already installed the candidate's upstream route. Retain the
+	// rollback inputs before any image/mount/extraction check can fail, even
+	// while the new static tree has not yet been written.
 	h.static = &staticOperation{record: staticRecord{StaticServing: box.StaticServing{
-		Version: 1, Revision: r.Candidate, GateImage: gate, Proxy: r.Proxy}, DisabledRoute: route}, previous: previous}
+		Version: 1, Revision: r.Candidate, Proxy: r.Proxy}, DisabledRoute: route}, previous: previous}
 	h.static.previousRoute, _ = h.readBytes(r.RoutePath + ".prev")
 	if h.static.previousRoute == nil {
 		h.static.previousRoute, _ = h.readBytes(r.RoutePath)
 	}
 	h.static.previousRetain, _ = h.readBytes(filepath.Join(h.policy.AppDir, ".komizo-image-retention"))
+	if err := h.staticMount(ctx); err != nil {
+		return err
+	}
+	gate, err := workload.StaticGate(compose, r.App)
+	if err != nil {
+		return err
+	}
+	h.static.record.GateImage = gate
+	active, err := workload.StaticRouteForProfile(route, r.App, r.Candidate, h.policy.Static.Hostnames, h.policy.Static.Profile)
+	if err != nil {
+		return err
+	}
 	public := filepath.Join(h.root, workload.StaticRoot)
 	for _, directory := range []string{public, filepath.Join(public, r.App)} {
 		if err := h.staticDirectory(directory, 0755); err != nil {
@@ -228,7 +231,6 @@ func (h *hostActivation) prepareStatic(ctx context.Context, r workload.Activatio
 	}
 	h.boundary("public_rename")
 	h.static.record.TreeSHA256 = treeSHA
-	h.static.touched = true
 	return h.staticRoute(active, true)
 }
 func (h *hostActivation) staticRoute(route []byte, active bool) error {
@@ -286,7 +288,7 @@ func (h *hostActivation) prepareStoppedStatic(r workload.ActivationRequest) erro
 	return nil
 }
 func (h *hostActivation) AbortStatic(ctx context.Context, r workload.ActivationRequest) error {
-	if h.static == nil || !h.static.touched || len(h.static.previousRoute) == 0 {
+	if h.static == nil || len(h.static.previousRoute) == 0 {
 		return nil
 	}
 	// Preserve a stop arriving during failed validation/readiness. Recovery
