@@ -252,6 +252,79 @@ func TestStaticFailuresPreserveOldGateAndOwnerStop(t *testing.T) {
 	}
 }
 
+func TestStaticPreparationFailureRestoresPreviouslyAcceptedStaticRoute(t *testing.T) {
+	for _, condition := range []string{"mount", "configuration", "create", "copy", "copy with owner stop"} {
+		t.Run(condition, func(t *testing.T) {
+			h, r, state := staticActivationFixture(t)
+			previous := strings.Repeat("c", 40)
+			current, _ := os.ReadFile(r.RoutePath)
+			disabled := bytes.ReplaceAll(current, []byte(r.Candidate), []byte(previous))
+			oldRoute, err := workload.StaticRouteForProfile(disabled, r.App, previous, h.policy.Static.Hostnames, h.policy.Static.Profile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(r.RoutePath+".prev", oldRoute, 0600); err != nil {
+				t.Fatal(err)
+			}
+			oldRecord := staticRecord{StaticServing: box.StaticServing{Version: 1, Revision: previous, Proxy: r.Proxy, Active: true, RouteSHA256: deploymentHash(oldRoute)}, DisabledRoute: disabled}
+			if err := os.MkdirAll(filepath.Dir(h.staticPath(r.App)), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := workload.WritePrivateJSON(h.staticPath(r.App), oldRecord); err != nil {
+				t.Fatal(err)
+			}
+			switch condition {
+			case "mount":
+				state.fail = ".Mounts"
+			case "configuration":
+				h.policy.Static.GateConfigSHA = strings.Repeat("0", 64)
+				policy, _ := json.Marshal(h.policy)
+				if err := os.WriteFile(filepath.Join(h.policies, r.App+".json"), policy, 0600); err != nil {
+					t.Fatal(err)
+				}
+				r.PolicySHA256 = deploymentHash(policy)
+			case "create":
+				state.fail = "create "
+			case "copy", "copy with owner stop":
+				stream := h.staticStream
+				h.staticStream = func(ctx context.Context, args []string, consume func(io.Reader) error) error {
+					if !strings.Contains(args[1], "Caddyfile") {
+						if condition == "copy with owner stop" {
+							if err := box.MarkStopped(h.root, r.App, "fixture-owner", time.Now()); err != nil {
+								t.Fatal(err)
+							}
+						}
+						return errors.New("synthetic public-copy failure")
+					}
+					return stream(ctx, args, consume)
+				}
+			}
+			result, err := workload.Activate(context.Background(), r, h)
+			if err == nil || result.OK {
+				t.Fatal("failed preparation was accepted", result)
+			}
+			route, _ := os.ReadFile(r.RoutePath)
+			var record staticRecord
+			if err := h.readJSON(h.staticPath(r.App), &record); err != nil {
+				t.Fatal(err)
+			}
+			if condition == "copy with owner stop" {
+				stopped, _ := box.IsStopped(h.root, r.App)
+				if !stopped || record.Active || strings.Contains(string(route), "file_server") {
+					t.Fatal("failed preparation overrode owner stop")
+				}
+			} else if !bytes.Equal(route, oldRoute) || record.Revision != oldRecord.Revision || record.RouteSHA256 != oldRecord.RouteSHA256 || !record.Active {
+				t.Fatal("failed preparation lost accepted static serving")
+			}
+			for _, call := range state.calls {
+				if strings.HasPrefix(call, "compose ") || strings.HasPrefix(call, "pull ") {
+					t.Fatal("failed preparation changed an application container", call)
+				}
+			}
+		})
+	}
+}
+
 func TestStaticRetentionKeepsAcceptedPairAndRefusesLinkedTree(t *testing.T) {
 	h, r, _ := staticActivationFixture(t)
 	if err := h.prepareStatic(context.Background(), r); err != nil {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -93,6 +95,75 @@ func TestReconciliationRestoresOnlyFourConfigurationFilesAndProvesServing(t *tes
 	body, _ := json.Marshal(result)
 	if strings.Contains(string(body), "synthetic-fixture-only") {
 		t.Fatal("private snapshot body escaped")
+	}
+}
+
+func TestStaticReconciliationUsesProxyAndExactServingRevisionWithoutRetiredGate(t *testing.T) {
+	for _, condition := range []string{"ready", "wrong revision", "bad response", "proxy stopped"} {
+		t.Run(condition, func(t *testing.T) {
+			f, r, before := reconciliationFixture(t)
+			f.h.reconciliationReady = nil
+			p := f.h.policy
+			p.Static = &workload.StaticPolicy{Profile: "spa-v1", GateConfigSHA: strings.Repeat("1", 64), Proxy: p.Deployment.Proxy, Hostnames: []string{"example.test"}}
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				revision := r.Serving
+				if condition == "wrong revision" {
+					revision = r.Candidate
+				}
+				w.Header().Set("X-Komizo-Revision", revision)
+				if condition == "bad response" {
+					w.WriteHeader(http.StatusBadGateway)
+				}
+				_, _ = w.Write([]byte("static fixture"))
+			}))
+			defer server.Close()
+			p.Readiness = &workload.ReadinessPolicy{Probes: []workload.ReadinessProbe{{URL: server.URL}}}
+			f.h.readinessClient = server.Client()
+			policyPath := filepath.Join(f.h.policies, p.App+".json")
+			if err := workload.WritePrivateJSON(policyPath, p); err != nil {
+				t.Fatal(err)
+			}
+			body, _ := os.ReadFile(policyPath)
+			r.PolicySHA256 = deploymentHash(body)
+			original := f.h.run
+			f.h.run = func(ctx context.Context, args ...string) (string, error) {
+				if args[0] == "inspect" && args[len(args)-1] == p.Static.Proxy {
+					if condition == "proxy stopped" {
+						return "exited", nil
+					}
+					return "running", nil
+				}
+				if args[0] == "compose" {
+					t.Fatal("static reconciliation queried or restarted a retired container")
+				}
+				return original(ctx, args...)
+			}
+			current, _ := os.ReadFile(filepath.Join(p.AppDir, "compose.yml"))
+			result, err := f.h.reconcile(context.Background(), r, f.queue)
+			if condition == "ready" {
+				if err != nil || result["application_restart"] != false || result["database_restore"] != false {
+					t.Fatal(result, err)
+				}
+				for path, expected := range before {
+					actual, _ := os.ReadFile(path)
+					if string(actual) != string(expected) {
+						t.Fatalf("retained configuration not restored: %s", path)
+					}
+				}
+			} else {
+				if err == nil {
+					t.Fatal("unverified static serving was accepted")
+				}
+				after, _ := os.ReadFile(filepath.Join(p.AppDir, "compose.yml"))
+				if string(current) != string(after) {
+					t.Fatal("refused static recovery changed configuration")
+				}
+				var op workload.Operation
+				if err := f.h.readJSON(filepath.Join(f.h.releases, p.App, "operation.json"), &op); err != nil || op.Phase != r.Phase {
+					t.Fatal("refused static recovery changed the fence", op, err)
+				}
+			}
+		})
 	}
 }
 
