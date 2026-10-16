@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,6 +16,10 @@ import (
 func TestImageRefsSubprocess(t *testing.T) {
 	if os.Getenv("KOMIZO_IMAGE_REFS_TEST_HELPER") != "1" {
 		return
+	}
+	separator := slices.Index(os.Args, "--")
+	if separator < 0 || !slices.Equal(os.Args[separator+1:], []string{"workload", "image-refs"}) {
+		os.Exit(2)
 	}
 	refs, err := workload.JSONImageReferences(os.Stdin)
 	if err != nil {
@@ -162,7 +167,7 @@ func TestAppImagePruneUsesOnlyTrustedTagsAndKeepsReferences(t *testing.T) {
 			log := filepath.Join(root, "docker.log")
 			write(t, filepath.Join(bin, "docker"), 0o755, pruneFakeDocker)
 			if !tc.noJSONReader {
-				write(t, filepath.Join(bin, "komizo-box"), 0o755, "#!/bin/sh\n[ \"$*\" = 'workload image-refs' ] || exit 1\nexec \"$KOMIZO_TEST_EXECUTABLE\" -test.run=TestImageRefsSubprocess\n")
+				write(t, filepath.Join(bin, "komizo-box"), 0o755, testProcessScript("TestImageRefsSubprocess", "KOMIZO_IMAGE_REFS_TEST_HELPER"))
 			}
 			write(t, filepath.Join(root, ".env"), 0o600, "APP_VERSION="+tc.live+"\n")
 			switch tc.compose {
@@ -185,7 +190,7 @@ func TestAppImagePruneUsesOnlyTrustedTagsAndKeepsReferences(t *testing.T) {
 			program := filepath.Join(root, "prune-blog")
 			write(t, program, 0o755, body)
 			cmd := exec.Command("sh", append([]string{program}, tc.args...)...)
-			cmd.Env = append(os.Environ(), "KOMIZO_IMAGE_REFS_TEST_HELPER=1", "KOMIZO_TEST_EXECUTABLE="+os.Args[0], "DOCKER_LOG="+log, "FAIL_DOCKER="+tc.fail, "ROLLBACK_CONFIG="+tc.rollback, "DOCKER_HOST=untrusted", "DOCKER_CONTEXT=untrusted", "DOCKER_CONFIG=untrusted")
+			cmd.Env = append(os.Environ(), "DOCKER_LOG="+log, "FAIL_DOCKER="+tc.fail, "ROLLBACK_CONFIG="+tc.rollback, "DOCKER_HOST=untrusted", "DOCKER_CONTEXT=untrusted", "DOCKER_CONFIG=untrusted")
 			out, err := cmd.CombinedOutput()
 			if (err != nil) != tc.wantError {
 				t.Fatalf("error %v, output %s", err, out)

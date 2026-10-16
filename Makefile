@@ -10,7 +10,7 @@ ARCHES     := amd64 arm64
 AGENT_DIR  := internal/agent/bin
 VERSION    ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
-.PHONY: all build agents product-build clean test check help install lint unit integration artifact-check browser-install e2e vuln dev stop ui-check
+.PHONY: all build agents product-build clean test check help install lint unit integration portability artifact-check browser-install e2e vuln dev stop ui-check
 
 all: build
 
@@ -53,10 +53,12 @@ install:
 lint:
 	bash tools/engineering/lint.sh
 unit:
-	go test -race -count=1 ./internal/workflows
+	bash tools/engineering/unit.sh
 integration: agents
 	bash tools/engineering/integration.sh
 test: unit integration
+portability: agents
+	bash tools/engineering/portability.sh
 build: agents
 	VERSION="$(VERSION)" bash tools/engineering/build-release.sh
 artifact-check: build

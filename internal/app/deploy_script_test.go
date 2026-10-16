@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/nicodes/komizo/internal/workload"
-	"github.com/nicodes/komizo/scripts"
 )
 
 // Historical v76 migration regression fixture, excluded from release binaries.
@@ -89,7 +88,7 @@ exit 0
 `)
 	// The helper executes the real workload validator. Only host file ownership
 	// is simulated here; the CLI tests cover ownership independently.
-	write(t, filepath.Join(b.bin, "komizo-box"), 0755, "#!/bin/sh\nKOMIZO_WORKLOAD_TEST_HELPER=1\nexport KOMIZO_WORKLOAD_TEST_HELPER\nexec "+scripts.ShQuote(os.Args[0])+" -test.run=^TestDeployWorkloadHelper$ -- \"$@\"\n")
+	write(t, filepath.Join(b.bin, "komizo-box"), 0755, testProcessScript("TestDeployWorkloadHelper", "KOMIZO_WORKLOAD_TEST_HELPER"))
 	policy, err := workload.NewPolicy("blog", b.appDir, "ghcr.io/you/blog-config", "edge")
 	if err != nil {
 		t.Fatal(err)
