@@ -206,7 +206,7 @@ func (h *hostActivation) reconcile(parent context.Context, r reconciliationReque
 		if h.reconciliationReady != nil {
 			return h.reconciliationReady(ctx, r.Serving, compose)
 		}
-		if p.Static != nil && r.Outcome == "accept-candidate" {
+		if p.Static != nil {
 			return workload.VerifyStaticReadiness(ctx, h.run, h.staticClient(), p, r.Serving)
 		}
 		return workload.VerifyReadiness(ctx, h.run, h.staticClient(), p, r.Serving, composePath, compose)
