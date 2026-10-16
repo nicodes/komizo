@@ -8,7 +8,9 @@
     "security-scan.yml",
     "release.yml"
   ],
-  "legacy_apis": {},
+  "legacy_apis": {
+    "ci.yml": "Build & Test"
+  },
   "ci_gates": [
     "Test"
   ],
