@@ -34,7 +34,7 @@ updates:
       - minor
       - patch
     managed-releases:
-      patterns: &id001
+      patterns:
       - nicodes/tools/*
       - nicodes/cicd/*
       - nicodes/komizo-actions/*
@@ -106,7 +106,11 @@ updates:
       - minor
       - patch
     managed-releases:
-      patterns: *id001
+      patterns:
+      - nicodes/tools/*
+      - nicodes/cicd/*
+      - nicodes/komizo-actions/*
+      - aviorstudio/gdam-actions/*
       update-types:
       - minor
       - patch
