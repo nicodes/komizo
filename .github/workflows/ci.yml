@@ -130,7 +130,7 @@ jobs:
       # One Make invocation retains UI freshness, functional/security checks and
       # every shipping target, while shared native-agent prerequisites run once.
       - name: Run engineering stage
-        timeout-minutes: 45
+        timeout-minutes: 42
         shell: bash
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.sha }}
