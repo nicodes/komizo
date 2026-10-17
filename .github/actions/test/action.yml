@@ -7,9 +7,8 @@ description: >
   job, under the caller's name — CI / test, Release / test — rather than as a
   nested "caller / callee" check.
 
-  One definition, called by CI and by Release both. Two would drift in a single
-  direction: the copy guarding the release gets trimmed to make releases
-  faster, until it no longer matches the one people trust on a pull request.
+  Release calls this wrapper. CI selects the same canonical Make stages through
+  engineering-plan.json; production events always retain the complete gate.
 
   Assumes Go is already set up. The caller does that, because the toolchain
   version and its cache keys are a property of the job rather than of this
