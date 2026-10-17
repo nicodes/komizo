@@ -58,6 +58,9 @@ jobs:
       # enough that a cold cache or a slow mirror is not reported as one.
       - name: "Check out source"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
         timeout-minutes: 5
       - name: Validate unified workflow contract
         shell: bash
@@ -124,24 +127,12 @@ jobs:
           restore-keys: |
             go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', 'go.sum', '.mise.toml') }}-
 
-      # The web export is COMMITTED (internal/ui/embed.go says why: a bare
-      # `go test` and `go install module@version` must work with no Node), so
-      # this step is the drift check, not the build: rebuild it from ui/ and
-      # diff. If the bytes differ, what the binary serves is not what the
-      # source produces, and that is a failure -- not something to push from
-      # here, because a CI job editing committed bytes is a check nobody read.
-      - name: The committed web export matches its source
-        timeout-minutes: 12
+      # One Make invocation retains UI freshness, functional/security checks and
+      # every shipping target, while shared native-agent prerequisites run once.
+      - name: Run engineering stage
+        timeout-minutes: 45
         shell: bash
-        run: make ui-check
-
-      # Run local unit/component checks before packaging all shipping targets.
-      - name: Test
-        # The Go suite bounds itself at 5m; this bounds everything around it,
-        # including the shellcheck pin and the scripts that run real sh.
-        timeout-minutes: 15
-        uses: ./.github/actions/test
-
-      - name: Build
-        timeout-minutes: 15
-        uses: ./.github/actions/build
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.sha }}
+          VERSION: dev
+        run: make verify-changed
