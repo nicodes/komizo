@@ -5,7 +5,7 @@ updates:
   schedule:
     interval: weekly
     day: monday
-    time: 09:08
+    time: "09:08"
     timezone: Etc/UTC
   groups:
     routine-updates:
@@ -34,7 +34,7 @@ updates:
       - minor
       - patch
     managed-releases:
-      patterns: &id001
+      patterns:
       - nicodes/tools/*
       - nicodes/cicd/*
       - nicodes/komizo-actions/*
@@ -74,7 +74,7 @@ updates:
   schedule:
     interval: weekly
     day: monday
-    time: 09:08
+    time: "09:08"
     timezone: Etc/UTC
   open-pull-requests-limit: 5
   cooldown:
@@ -106,7 +106,11 @@ updates:
       - minor
       - patch
     managed-releases:
-      patterns: *id001
+      patterns:
+      - nicodes/tools/*
+      - nicodes/cicd/*
+      - nicodes/komizo-actions/*
+      - aviorstudio/gdam-actions/*
       update-types:
       - minor
       - patch
