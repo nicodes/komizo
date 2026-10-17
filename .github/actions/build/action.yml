@@ -7,9 +7,9 @@ description: >
   job, under the caller's name — CI / build, Release / build — rather than as a
   nested "caller / callee" check.
 
-  Shared by CI and Release so a pull request builds exactly what a release
-  builds, with no switches between them. The only difference is that one of them
-  goes on to publish.
+  Release calls this wrapper. CI selects the same artifact-check Make stage
+  through engineering-plan.json, preserving every shipping target for source
+  changes. Production events always retain the complete gate.
 
   NOTHING LEAVES THE RUNNER. The archives are left in ./dist. Creating the
   release is a step the caller writes out, so nothing named "build" can publish

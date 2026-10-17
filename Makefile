@@ -43,6 +43,7 @@ product-build: agents
 
 
 help:
+	@echo 'make plan / verify-changed BASE=<commit>: explain / run affected checks'
 	@printf '%s\n' 'make install: pinned tools, Go modules and locked UI dependencies' 'make lint / unit / integration: selectable layers' 'make test: unit + integration' 'make build: exact release archives, no publication' 'make artifact-check: checksums and archived binary identity' 'make check: all applicable checks'
 install:
 	python3 scripts/workspace_storage.py check --path ui/node_modules --reserve-bytes 1073741824
@@ -72,3 +73,11 @@ browser-install e2e dev stop:
 check: lint test vuln ui-check artifact-check
 clean:
 	rm -rf bin dist $(AGENT_DIR)/komizo-box-*
+
+# The caller owns affected-input rules; unknown and production inputs require the full gate.
+export BASE
+.PHONY: plan verify-changed
+plan:
+	@python3 "$$(python3 scripts/engineering-bootstrap.py)/helpers/verification-plan.py" --base "$$BASE"
+verify-changed:
+	@python3 "$$(python3 scripts/engineering-bootstrap.py)/helpers/verification-plan.py" --base "$$BASE" --output .artifacts/contract/verification-plan.json --run lint ui-check unit integration vuln artifact-check

@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "full_targets": [
+    "lint",
+    "ui-check",
+    "unit",
+    "integration",
+    "vuln",
+    "artifact-check"
+  ],
+  "always": [
+    "lint"
+  ],
+  "rules": [
+    {
+      "paths": [
+        "README.md"
+      ],
+      "targets": [
+        "lint",
+        "integration"
+      ]
+    },
+    {
+      "paths": [
+        "AGENTS.md"
+      ],
+      "targets": [
+        "lint"
+      ]
+    }
+  ],
+  "force_full": []
+}
