@@ -89,7 +89,7 @@ jobs:
       # toolchain the same way. The cost is that the Go version now lives in
       # .mise.toml as well as go.mod; the step below is what keeps them honest.
       - name: "Set up tools"
-        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
         timeout-minutes: 10
 
       - name: Toolchain pins agree
@@ -186,7 +186,7 @@ jobs:
         with:
           persist-credentials: false
       - name: "Download artifacts"
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         timeout-minutes: 5
         with:
           artifact-ids: ${{ needs.release.outputs.candidate-artifact }}
@@ -243,14 +243,14 @@ jobs:
         with:
           persist-credentials: false
       - name: "Download artifacts"
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         timeout-minutes: 5
         with:
           artifact-ids: ${{ needs.native-acceptance.outputs.evidence-artifact }}
           merge-multiple: true
           path: native-results
       - name: "Download artifacts"
-        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         timeout-minutes: 5
         with:
           artifact-ids: ${{ needs.release.outputs.candidate-artifact }}
