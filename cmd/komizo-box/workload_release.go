@@ -354,6 +354,12 @@ func statefulRetryAllowed(p workload.Policy, version, dir string, candidate work
 	if !p.RequireStatefulContract {
 		return nil
 	}
+	if _, err := os.Lstat(filepath.Join(p.AppDir, ".komizo-image-retention")); os.IsNotExist(err) {
+		h := newHostActivation()
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		return h.initialRetryAllowed(ctx, p, dir)
+	}
 	current, _, err := retainedRevisions(p)
 	if err != nil {
 		return err
