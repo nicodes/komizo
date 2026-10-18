@@ -38,7 +38,7 @@ func runWorkloadReconciliation(args []string) error {
 	fs.StringVar(&r.PolicySHA256, "policy-sha256", "", "reviewed policy bytes")
 	fs.StringVar(&r.Phase, "expected-phase", "", "reviewed interrupted phase")
 	fs.StringVar(&r.Serving, "serving-version", "", "revision whose serving identity must be established")
-	fs.StringVar(&r.Outcome, "outcome", "", "restore-serving or accept-candidate")
+	fs.StringVar(&r.Outcome, "outcome", "", "restore-serving, accept-candidate or abandon-initial")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -84,10 +84,10 @@ func reconciliationIdentity(value string, size int) bool {
 // retries provider work. Interrupted writes are repeatable from the same retained
 // snapshot; the fence closes only after local artifacts and serving postconditions.
 func (h *hostActivation) reconcile(parent context.Context, r reconciliationRequest, queue string) (map[string]any, error) {
-	if !reconciliationIdentity(r.ID, 32) || !reconciliationIdentity(r.Candidate, 40) || !reconciliationIdentity(r.Serving, 40) || !reconciliationIdentity(r.PolicySHA256, 64) {
+	if !reconciliationIdentity(r.ID, 32) || !reconciliationIdentity(r.Candidate, 40) || (r.Outcome != "abandon-initial" && !reconciliationIdentity(r.Serving, 40)) || !reconciliationIdentity(r.PolicySHA256, 64) {
 		return nil, errors.New("reconciliation requires exact reviewed identities")
 	}
-	if r.Outcome != "restore-serving" && r.Outcome != "accept-candidate" {
+	if r.Outcome != "restore-serving" && r.Outcome != "accept-candidate" && r.Outcome != "abandon-initial" {
 		return nil, errors.New("unknown reconciliation outcome")
 	}
 	ctx, cancel := context.WithTimeout(parent, 3*time.Minute)
@@ -126,6 +126,9 @@ func (h *hostActivation) reconcile(parent context.Context, r reconciliationReque
 	case "staging", "staging_failed", "configured", "activating", "activation_failed", "readiness_failed", "failed":
 	default:
 		return nil, errors.New("operation is not an interrupted reconciliation fence")
+	}
+	if r.Outcome == "abandon-initial" {
+		return h.reconcileInitial(ctx, r, op, filepath.Dir(path))
 	}
 	composePath := filepath.Join(p.AppDir, "compose.yml")
 	compose, err := h.readBytes(composePath)
