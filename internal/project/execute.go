@@ -105,7 +105,7 @@ func prepare(root, platform string, selected []string) (Manifest, []string, stri
 		values["BACKUP_ALLOWED_SLUGS"] = string(slugs)
 	}
 	for name, value := range m.Validation {
-		if name != "workflow" && name != "operations" {
+		if name != "workflow" {
 			return m, nil, "", fmt.Errorf("unknown validation declaration %q", name)
 		}
 		path := filepath.Join(output, name+".json")
@@ -115,8 +115,6 @@ func prepare(root, platform string, selected []string) (Manifest, []string, stri
 		switch name {
 		case "workflow":
 			values["KOMIZO_WORKFLOW_POLICY"] = path
-		case "operations":
-			values["KOMIZO_WORKFLOW_OPERATIONS"] = path
 		default:
 			return m, nil, "", fmt.Errorf("unknown validation declaration %q", name)
 		}

@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,6 +37,17 @@ func TestPrivateTargetIsBoundToRepositoryAndCannotMoveImplicitly(t *testing.T) {
 	if err := bindProjectTarget("example/site", target, "site"); err != nil {
 		t.Fatal("idempotent setup failed", err)
 	}
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	configuredPort := 22
+	fs.IntVar(&configuredPort, "port", 22, "port")
+	configuredHost, configuredApp := "", ""
+	if _, err := defaultProjectTarget(repo, &configuredHost, &configuredPort, &configuredApp, fs); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveTarget(fs, configuredHost, configuredPort)
+	if err != nil || resolved.port != 2222 || !resolved.portExplicit {
+		t.Fatalf("private port lost to SSH defaults: %+v %v", resolved, err)
+	}
 	_, binding, err := projectBinding(repo)
 	if err != nil || binding.Host != target.addr() || binding.Port != 2222 {
 		t.Fatal(binding, err)
@@ -45,7 +57,7 @@ func TestPrivateTargetIsBoundToRepositoryAndCannotMoveImplicitly(t *testing.T) {
 		t.Fatal("setup silently moved a project target")
 	}
 	host, port, app := "", 22, "different"
-	if _, err := defaultProjectTarget(repo, &host, &port, &app); err == nil {
+	if _, err := defaultProjectTarget(repo, &host, &port, &app, nil); err == nil {
 		t.Fatal("project changed its private application scope")
 	}
 	if err := os.WriteFile(path, bytes.ReplaceAll(body, []byte("example/site"), []byte("example/foreign")), 0600); err != nil {

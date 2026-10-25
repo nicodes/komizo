@@ -58,7 +58,7 @@ func RunPreview(args []string) (err error) {
 	}
 
 	projectDefault := host == ""
-	m, resolveErr := defaultProjectTarget(*directory, &host, &port, &app)
+	m, resolveErr := defaultProjectTarget(*directory, &host, &port, &app, fs)
 	if resolveErr != nil {
 		return resolveErr
 	}

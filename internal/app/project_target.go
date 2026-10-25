@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"flag"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/nicodes/komizo/internal/project"
@@ -128,7 +130,7 @@ func projectBinding(directory string) (project.Manifest, projectTarget, error) {
 	}
 	return m, binding, nil
 }
-func defaultProjectTarget(directory string, host *string, port *int, app *string) (project.Manifest, error) {
+func defaultProjectTarget(directory string, host *string, port *int, app *string, fs *flag.FlagSet) (project.Manifest, error) {
 	if *host != "" {
 		return project.Manifest{}, nil
 	}
@@ -139,7 +141,14 @@ func defaultProjectTarget(directory string, host *string, port *int, app *string
 	if *app != "" && *app != binding.App {
 		return m, errors.New("application differs from the private repository binding")
 	}
-	*host, *port, *app = binding.Host, binding.Port, binding.App
+	*host, *app = binding.Host, binding.App
+	if fs == nil {
+		*port = binding.Port
+	} else if !portWasSet(fs) {
+		if err := fs.Set("port", strconv.Itoa(binding.Port)); err != nil {
+			return m, err
+		}
+	}
 	return m, nil
 }
 func projectRevision(directory string) (string, error) {

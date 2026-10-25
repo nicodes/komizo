@@ -292,7 +292,7 @@ func RunDeploy(args []string) (err error) {
 		return errors.New("deploy accepts only flags")
 	}
 	projectDefault := *host == ""
-	if _, err := defaultProjectTarget(*directory, host, port, app); err != nil {
+	if _, err := defaultProjectTarget(*directory, host, port, app, fs); err != nil {
 		return err
 	}
 	if projectDefault && *version == "" {
