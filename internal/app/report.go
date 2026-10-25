@@ -44,7 +44,7 @@ const BoxBin = "/usr/local/bin/komizo-box"
 type errNoAgent struct{ host string }
 
 func (e errNoAgent) Error() string {
-	return fmt.Sprintf("%s has no komizo agent installed.\n\n    komizo init --host %s\n\n"+
+	return fmt.Sprintf("%s has no komizo agent installed.\n\n    komizo setup --host %s\n\n"+
 		"    That installs %s, which is how komizo reads a server.",
 		e.host, e.host, BoxBin)
 }
@@ -72,7 +72,7 @@ var askBox = askBoxOverSSH
 
 func askBoxOverSSH(t target, args ...string) ([]byte, error) {
 	var stdout, stderr bytes.Buffer
-	c := exec.Command("ssh", t.sshArgs(BoxBin+" "+strings.Join(args, " "))...)
+	c := commandExec("ssh", t.sshArgs(BoxBin+" "+strings.Join(args, " "))...)
 	c.Stdout, c.Stderr = &stdout, &stderr
 	if err := c.Run(); err != nil {
 		var ee *exec.ExitError

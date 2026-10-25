@@ -24,3 +24,5 @@ if grep -q -- '--- SKIP' <<<"$out"; then
   exit 1
 fi
 
+
+CICD_TEST_POSTGRES=1 python3 -m unittest discover -s internal/project/runtime/tests -p test_postgres_recovery.py -v

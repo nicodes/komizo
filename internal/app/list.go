@@ -1,10 +1,8 @@
 package app
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
-	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -442,6 +440,7 @@ func (n netRow) duplicateAliases() map[string][]string {
 
 func RunList(args []string) error {
 	fs := flag.NewFlagSet("list", flag.ContinueOnError)
+	fs.SetOutput(commandFlags())
 	fs.Usage = func() { usageList(fs) }
 	var host string
 	var port int
@@ -469,7 +468,7 @@ func RunList(args []string) error {
 		return err
 	}
 	if asJSON {
-		return json.NewEncoder(os.Stdout).Encode(rep.Apps)
+		return emitResult(rep.Apps)
 	}
 
 	inv := inventoryFromReport(rep)
@@ -478,19 +477,19 @@ func RunList(args []string) error {
 	if !srv.ready() {
 		if srv.state == "docker-stopped" {
 			return fmt.Errorf("Docker is installed on %s but not running.\n"+
-				"    Try 'rc-service docker start' there, or re-run 'komizo init --host %s'.", tgt.host, host)
+				"    Try 'rc-service docker start' there, or re-run 'komizo setup --host %s'.", tgt.host, host)
 		}
-		return fmt.Errorf("%s is not set up yet.\n\n    komizo init --host %s\n\n"+
+		return fmt.Errorf("%s is not set up yet.\n\n    komizo setup --host %s\n\n"+
 			"    That installs Docker and the shared network. Nothing app-specific.", tgt.host, host)
 	}
 
 	if len(apps) == 0 {
-		fmt.Printf("No apps set up on %s yet. Add one with:\n\n    komizo add --host %s --app NAME --config REF\n\n",
+		fmt.Fprintf(commandOutput(), "No apps set up on %s yet. Add one with:\n\n    komizo add --host %s --app NAME --config REF\n\n",
 			tgt.host, host)
 		return nil
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	w := tabwriter.NewWriter(commandOutput(), 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "APP\tACCOUNT\tDIRECTORY\tVERSION\tUP\tROUTES\tCONFIG IMAGE")
 	for _, a := range apps {
 		routes := strings.Join(a.allRoutes(), ",")
@@ -509,7 +508,7 @@ func RunList(args []string) error {
 	}
 	w.Flush()
 
-	fmt.Println()
+	fmt.Fprintln(commandOutput())
 	switch {
 	case !proxy.installed:
 		note("No shared reverse proxy. Apps must publish their own ports.\n" +

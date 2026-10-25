@@ -17,6 +17,7 @@ func RunSetSecret(args []string) (err error) {
 	validation := localInput(&err)
 	defer validation.finish()
 	fs := flag.NewFlagSet("set-secret", flag.ContinueOnError)
+	fs.SetOutput(commandFlags())
 	fs.Usage = func() { usageSetSecret(fs) }
 	var host, app, name, from, uid string
 	var port int
@@ -122,7 +123,7 @@ func setSecretCommand(app, name, uid string, asFile bool) (string, error) {
 // path. Bytes, not text: a file secret may be a PEM or a binary identity, and
 // its trailing newline is part of it.
 func readSecretValue(from string) ([]byte, error) {
-	var input io.Reader = os.Stdin
+	var input io.Reader = commandInput()
 	if from != "" && from != "-" {
 		file, err := os.Open(from)
 		if err != nil {

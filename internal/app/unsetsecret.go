@@ -35,6 +35,7 @@ func RunUnsetSecret(args []string) (err error) {
 	validation := localInput(&err)
 	defer validation.finish()
 	fs := flag.NewFlagSet("unset-secret", flag.ContinueOnError)
+	fs.SetOutput(commandFlags())
 	fs.Usage = func() { usageUnsetSecret(fs) }
 	var host, app, names, keep string
 	var port int
@@ -188,7 +189,7 @@ func secretNames(list string) ([]string, error) {
 }
 
 func usageUnsetSecret(fs *flag.FlagSet) {
-	fmt.Print(`komizo unset-secret - take secrets off a server
+	fmt.Fprint(commandOutput(), `komizo unset-secret - take secrets off a server
 
   komizo unset-secret --host root@myhost --app blog --list
   komizo unset-secret --host root@myhost --app blog --name OLD_API_KEY --yes
@@ -219,7 +220,7 @@ these.
 Flags:
 `)
 	fs.PrintDefaults()
-	fmt.Println()
+	fmt.Fprintln(commandOutput())
 }
 
 func validSecretName(app, name string) bool {

@@ -1,16 +1,63 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 72462a2a311eff9321bf5a24ca97acb7065667515e9428e8cfc25928ef08785b -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: e4a0eaabe75a21ca286b348b2fe9b334d591e700d1cc6e66d03d30f039d666f7 -->
 
 # Komizo
 
-Agent-first, application-agnostic CLI for operating your own Compose hosts over SSH. The application host remains one box. No hosted Komizo account is required. Applications own their images, Compose files, topology and readiness; operators explicitly authorize their source and resource limits.
+CLI for developing, verifying and operating projects and Compose hosts over SSH. The application host remains one box. No hosted Komizo account is required. Applications own their images, Compose files, topology and readiness; operators explicitly authorize their source and resource limits.
+
+## Project commands
+
+Install a published archive as described below, then work from your project checkout:
+
+```sh
+komizo dev
+komizo check
+komizo status
+```
+
+`komizo.json` declares the recipe, exact tool versions, project commands and development credential selection. `komizo.lock` binds those inputs to the installed Komizo release and its bundled runtime. Komizo installs the declared tools automatically. `komizo check` runs applicable verification and records source and artifact receipts; unchanged outputs are reused only while their recorded inputs and bytes still match.
+
+To adopt an existing project:
+
+```sh
+komizo init --recipe static-site   # also: go-service, godot-app
+komizo lock                      # after changing declared inputs
+komizo describe                  # inspect capabilities without running project code
+komizo run unit                  # run a selected stage
+komizo exec -- go version         # run a command with the locked tools
+```
+
+Static sites use Bun install/build/dev and `scripts/test-site.sh` for their output assertions. Go services default to a root main package, Go formatting/vet, race-enabled tests, an executable build and vulnerability scanning. Godot applications supply their game-specific test/export scripts. Override a recipe stage with argument arrays in `stages`; an inapplicable stage requires a reason. `tasks` adds named project commands accessible through `komizo run NAME`. Initialization creates configuration for existing application source.
+
+Development runs in the foreground until Ctrl-C. The declared default selects Preview credentials where supported; `komizo dev --mode local` selects offline fixtures. `--mode preview` requests Preview explicitly. Selected credentials are injected into the child process environment and are never written to a `.env` file. Development credential retrieval requires the repository's trusted `ghenv.yml` workflow and GitHub CLI authentication. Production credentials are excluded from that handoff.
+
+Host setup records a private repository-to-host binding in the workstation's Komizo configuration directory. Once an operator has configured that binding, `komizo deploy` selects the checkout's clean committed revision, `komizo preview --pr NUMBER` uses its declared published images, and `komizo status` reads its installed health. Explicit `--host` and `--app` remain available. Project manifests cannot grant host authority. Deployments and previews require their published images and the host's existing authorization checks.
+
+All project commands accept `--directory DIR`. Finite commands accept `--timeout DURATION`; development has no deadline unless one is selected. Verification failures include a focused rerun command.
+
+## GitHub Actions
+
+Pin the setup action to the exact full source commit recorded in `komizo.lock.platform_revision`. It installs the locked platform release, checks its checksum and source attestation, then validates the project lock. Use the same command as locally:
+
+```yaml
+steps:
+  - uses: actions/checkout@FULL_40_CHARACTER_CHECKOUT_COMMIT
+    with:
+      persist-credentials: false
+  - uses: nicodes/komizo/setup@FULL_40_CHARACTER_KOMIZO_SOURCE_COMMIT
+    env:
+      GH_TOKEN: ${{ github.token }}
+  - run: komizo check
+```
+
+The job needs read access to repository contents and attestations. Project source verification does not require deployment credentials. Publication and deployment remain separate authorized steps.
 
 ## Install
 
-Download a matching Darwin/Linux, arm64/x86_64 archive from [releases](https://github.com/nicodes/komizo/releases). These examples pin v0.0.123, including structured management results and exact-stage platform recovery. Verify its checksum and GitHub attestation before executing it. The workstation needs SSH; platform maintenance also uses Python 3. The application server uses Alpine Linux with OpenRC, amd64 or arm64, and root SSH access.
+Download a matching Darwin/Linux, arm64/x86_64 archive from [releases](https://github.com/nicodes/komizo/releases). These examples pin v0.1.0, including structured management results and exact-stage platform recovery. Verify its checksum and GitHub attestation before executing it. The workstation needs SSH; platform maintenance also uses Python 3. The application server uses Alpine Linux with OpenRC, amd64 or arm64, and root SSH access.
 
 ```sh
 # Linux x86_64; choose the matching archive for your workstation.
-gh release download v0.0.123 --repo nicodes/komizo \
+gh release download v0.1.0 --repo nicodes/komizo \
   -p komizo_Linux_x86_64.tar.gz -p checksums.txt
 sha256sum -c checksums.txt --ignore-missing
 gh attestation verify komizo_Linux_x86_64.tar.gz --repo nicodes/komizo
@@ -18,7 +65,7 @@ tar xzf komizo_Linux_x86_64.tar.gz
 ./komizo capabilities
 ```
 
-Release archives embed both host architectures and need no Go compiler. Published releases include attested acceptance and performance receipts for the declared disposable Alpine test profile. With the matching Go toolchain, the source alternative is `go run github.com/nicodes/komizo@v0.0.123 --json setup --host root@your-server`; it builds the matching host executable when needed. Use only hosts you own or administer.
+Release archives embed both host architectures and need no Go compiler. Published releases include attested acceptance and performance receipts for the declared disposable Alpine test profile. With the matching Go toolchain, the source alternative is `go run github.com/nicodes/komizo@v0.1.0 --json setup --host root@your-server`; it builds the matching host executable when needed. Use only hosts you own or administer.
 
 ## Agent journey
 
@@ -35,7 +82,7 @@ Pin the server SSH key before setup. First-use trust is explicit with `--accept-
 
 Existing ready hosts are observed without an incidental upgrade. Existing application keys and established workload authority are preserved. A changed definition requires the separate reviewed authority migration. An older executor without setup capabilities must be explicitly upgraded before registration. Setup returns the private key's filename; it never prints its contents. `--key PATH` selects a destination. The default is a private Komizo directory under the workstation's OS configuration directory. A registration interrupted after writing its key can resume with the intact key bound to the same app and host.
 
-Use `setup --host root@your-server` without a definition to prepare just the host. All commands support `--help`. `list --json` returns raw registered apps; the historical `report --json` continues to return its raw versioned report.
+Use `setup --host root@your-server` without a definition to prepare just the host. All commands support `--help`. `komizo --json list` returns registered applications; `komizo --json report` returns the typed host report.
 
 ## Application definition
 
@@ -90,6 +137,6 @@ Inspect the journal before choosing recovery. Recovery restores the recorded pri
 
 Prefix any supported finite command with `--json`. Stdout is one version-1 envelope containing `version`, `command`, `ok`, `exit_code`, `data` and `error`, plus a safe `next_action` argv when applicable. Progress goes to stderr. `capabilities` publishes the envelope schema, command effects and result formats. Management commands return structured objects or arrays. A receipt acknowledges successful command completion; readiness remains a separate observation. `capabilities` publishes a common management receipt schema. Application logs, complete command help and printable installer source are explicitly wrapped in `data.text`.
 
-Errors include a stable code, diagnostic message, `retryable: false` and `reconciliation_required`. Local validation uses `invalid_input` without uncertain remote effects; inventory differences use `state_mismatch` with typed findings. Missing or malformed structured results fail as `invalid_response`. Flag values spelled `--help` cannot clear mutation uncertainty. A failed mutating command is conservatively uncertain; inspect before retrying. Failed doctor checks and acknowledged operation IDs remain in `data` when available. `komizo --json --timeout 5m COMMAND ...` selects a deadline from one second to one hour; the default is 30 minutes. Captured stdout is bounded at 4 MiB. Timeouts do not cancel durable host work. Interactive UI and retired hosted-account commands are outside the machine interface. Help succeeds; invalid flags still fail.
+Errors include a stable code, diagnostic message, `retryable: false` and `reconciliation_required`. Local validation uses `invalid_input` without uncertain remote effects; inventory differences use `state_mismatch` with typed findings. Missing or malformed structured results fail as `invalid_response`. Flag values spelled `--help` cannot clear mutation uncertainty. A failed mutating command is conservatively uncertain; inspect before retrying. Failed doctor checks and acknowledged operation IDs remain in `data` when available. `komizo --json --timeout 5m COMMAND ...` selects a deadline from one second to one hour; the default is 30 minutes. Structured results and retained log/help output are bounded at 4 MiB. Results are emitted directly by command handlers; Komizo does not relaunch itself or parse its printed output. Timeouts do not cancel durable host work. Interactive development and UI commands use the foreground terminal. Hosted-account commands are unavailable. Help succeeds; invalid flags still fail.
 
 For lifecycle and advanced operations use `start`, `stop`, `restart`, `logs`, `set-secret`, `preview`, `platform`, `operator`, `workspace`, `artifact` and their command help. The protected operator/broker is optional; it is not another application-host requirement. Authority changes, upgrades and package maintenance retain their explicit reviewed plan/apply interfaces.

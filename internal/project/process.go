@@ -1,0 +1,12 @@
+package project
+
+import (
+	"context"
+	"github.com/nicodes/komizo/internal/devenv"
+	"os/exec"
+	"time"
+)
+
+func runCommand(ctx context.Context, cmd *exec.Cmd) error {
+	return devenv.RunCommand(ctx, cmd, 2*time.Second)
+}

@@ -3,7 +3,6 @@ package app
 import (
 	"bytes"
 	"encoding/base64"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -130,6 +129,7 @@ func runAdd(args []string, receipt bool) (err error) {
 	validation := localInput(&err)
 	defer validation.finish()
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
+	fs.SetOutput(commandFlags())
 	fs.Usage = func() { UsageAdd(fs) }
 	var o addOpts
 	fs.BoolVar(&o.reuseKey, "reuse-key", false, "resume registration with an intact existing Komizo --key file for this app and host")
@@ -311,7 +311,7 @@ func runAdd(args []string, receipt bool) (err error) {
 	}
 
 	if machineMode() {
-		return json.NewEncoder(os.Stdout).Encode(map[string]any{"app": o.app, "host": tgt.addr(), "registered": true, "key_file": o.keyPath, "key_unchanged": o.keepKey, "known_hosts": res.knownHosts})
+		return emitResult(map[string]any{"app": o.app, "host": tgt.addr(), "registered": true, "key_file": o.keyPath, "key_unchanged": o.keepKey, "known_hosts": res.knownHosts})
 	}
 	if o.quiet {
 		return nil

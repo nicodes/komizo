@@ -41,6 +41,7 @@ func RunProxy(args []string) (err error) {
 	validation := localInput(&err)
 	defer validation.finish()
 	fs := flag.NewFlagSet("proxy", flag.ContinueOnError)
+	fs.SetOutput(commandFlags())
 	fs.Usage = func() { usageProxy(fs) }
 	var o proxyOpts
 	fs.StringVar(&o.host, "host", "", "server, [user@]HOST (user defaults to root)")
@@ -136,7 +137,7 @@ func validateNetworkName(s string) error {
 }
 
 func usageProxy(fs *flag.FlagSet) {
-	fmt.Print(`komizo proxy - install the one shared reverse proxy on a server
+	fmt.Fprint(commandOutput(), `komizo proxy - install the one shared reverse proxy on a server
 
   komizo proxy --host root@myhost
 
@@ -174,5 +175,5 @@ carry a hostnames file. See docs/proxy.md.
 Flags:
 `)
 	fs.PrintDefaults()
-	fmt.Println()
+	fmt.Fprintln(commandOutput())
 }

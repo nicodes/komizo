@@ -2,9 +2,7 @@ package app
 
 import (
 	"bytes"
-	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 
 	"github.com/nicodes/komizo/internal/agent"
@@ -36,7 +34,7 @@ func installAgent(t target) error {
 	// The stamp comes back with the bytes because the two paths record
 	// different KINDS of stamp, and only agent.Get knows which one it took.
 	path, version := moduleRef()
-	bin, stamp, err := agent.Get(context.Background(), path, version, arch)
+	bin, stamp, err := agent.Get(commandContext(), path, version, arch)
 	if err != nil {
 		return err
 	}
@@ -76,7 +74,7 @@ func boxArch(t target) (string, error) {
 // overwriting a running executable is ETXTBSY at best and a half-written binary
 // at worst.
 func stageAgent(t target, bin []byte) error {
-	c := exec.Command("ssh", t.sshArgs("cat > "+scripts.ShQuote(scripts.StagedAgent))...)
+	c := commandExec("ssh", t.sshArgs("cat > "+scripts.ShQuote(scripts.StagedAgent))...)
 	c.Stdin = bytes.NewReader(bin)
 	var errb bytes.Buffer
 	c.Stderr = &errb

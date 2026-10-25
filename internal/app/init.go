@@ -1,15 +1,8 @@
 package app
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
-	"os/exec"
-	"os/signal"
-	"syscall"
 
 	"github.com/nicodes/komizo/box"
 	"github.com/nicodes/komizo/scripts"
@@ -39,6 +32,7 @@ func runInit(args []string, receipt bool) (err error) {
 	validation := localInput(&err)
 	defer validation.finish()
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	fs.SetOutput(commandFlags())
 	fs.Usage = func() { usageInit(fs) }
 	var o initOpts
 	fs.StringVar(&o.host, "host", "", "server to set up, [user@]HOST (user defaults to root)")
@@ -120,9 +114,9 @@ func runInit(args []string, receipt bool) (err error) {
 }
 
 func usageInit(fs *flag.FlagSet) {
-	fmt.Print(`komizo init - prepare a fresh server
+	fmt.Fprint(commandOutput(), `komizo init - prepare a fresh server
 
-  komizo init --host root@myhost
+  komizo setup --host root@myhost
 
 Installs Docker, enables it at boot, creates the network apps share, and starts
 the one reverse proxy that terminates TLS for all of them. Nothing app-specific:
@@ -145,118 +139,5 @@ apps with 'komizo setup --definition app.json' or 'komizo add'.
 Flags:
 `)
 	fs.PrintDefaults()
-	fmt.Println()
-}
-
-// enrolAdvice says what to do about a registration that did not happen.
-//
-// Two causes with two different remedies, and telling them apart matters now
-// that operating a box needs no account: "not signed in" is fixed by signing in,
-// and waiting for a service that is already up would be waiting forever.
-func enrolAdvice(err error, host string) string {
-	if errors.Is(err, errNotSignedIn) {
-		return fmt.Sprintf("run `komizo login`, then `komizo enrol --host %s`, to file it under your account.", host)
-	}
-	return fmt.Sprintf("run `komizo enrol --host %s` when the service is reachable.", host)
-}
-
-// registerAndEnrol files a box under whoever is signed in, and enrols it.
-//
-// RETAINED BUT UNREACHED: the komizo service is decommissioned, `komizo init`
-// no longer registers, and the tokenless `komizo enrol` that also called this
-// refuses at its gate. Kept -- gated, not ripped out -- until the command
-// surface itself is reduced.
-//
-// The point of the CLI having an account. The enrolment token is minted and
-// spent inside this one command, so nothing is carried between two surfaces --
-// and the server appears in the app the moment the box is genuinely ready,
-// rather than as a pending row that may never become anything.
-//
-// Called AFTER the box is set up, deliberately. A failure before this point
-// leaves nothing behind, which is what design/enrolment.md §3 promises and what
-// creating the row first would quietly break.
-// signalContextCLI cancels on ctrl-c, so a slow service call does not have to
-// be waited out.
-func signalContextCLI() (context.Context, context.CancelFunc) {
-	return signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-}
-
-func registerAndEnrol(t target, name, apiHost string, keys []string, forget bool) error {
-	s, err := requireSession()
-	if err != nil {
-		return err
-	}
-	if name == "" {
-		name = t.host
-	}
-	endpoint, err := box.APIHostFor(t.host, apiHost)
-	if err != nil {
-		return err
-	}
-
-	ctx, stop := signalContextCLI()
-	defer stop()
-
-	// A box that has enrolled before already HAS a row, and its id is in the
-	// credential root wrote there. Re-enrolling one must reissue against that
-	// row rather than create a second: a duplicate is a server in somebody's
-	// app that will never report again, beside the one that does, with the same
-	// name and no way to tell them apart.
-	//
-	// Asked of the BOX rather than remembered here, because this laptop is not
-	// the only thing that ever enrols it.
-	created, err := reuseOrCreate(ctx, t, s, name)
-	if err != nil {
-		return err
-	}
-
-	// The token goes over stdin as part of the script rather than on the remote
-	// command line: a command line is visible in the box's process table to
-	// every account on it, for as long as the command runs.
-	sh := scripts.AgentEnrol(s.API, created.Token, endpoint, keys, forget)
-	if err := t.runScript(sh, nil); err != nil {
-		return fmt.Errorf("the server was created but did not enrol -- run `komizo enrol --host %s` to retry", t.host)
-	}
-
-	note("this server is in your app as %q.", name)
-	if endpoint == "" {
-		note("no endpoint: %s is an address, not a name, so the app cannot open it.", t.host)
-	}
-	return nil
-}
-
-// reuseOrCreate reissues for the server this box is already filed under, or
-// creates one if it is not filed under anything.
-//
-// A failure to READ the existing id is not a failure to enrol -- an unreadable
-// credential means a box that has never enrolled, or one whose file is gone,
-// and both of those want a new row.
-func reuseOrCreate(ctx context.Context, t target, s Session, name string) (createdServer, error) {
-	if id := existingServerID(t); id != "" {
-		c, err := reissueEnrolmentFor(ctx, s, id)
-		if err == nil {
-			return c, nil
-		}
-		// The row may have been removed in the app, or belong to another
-		// account now. Creating one is the right answer to both, and is what
-		// somebody re-running this expects.
-		note("this box named a server that could not be reissued; filing it as a new one.")
-	}
-	return createServer(ctx, s, name)
-}
-
-// existingServerID reads what enrolment last wrote on the box.
-func existingServerID(t target) string {
-	var stdout bytes.Buffer
-	c := exec.Command("ssh", t.sshArgs("cat "+box.AgentConfPath+" 2>/dev/null")...)
-	c.Stdout = &stdout
-	if err := c.Run(); err != nil {
-		return ""
-	}
-	out := stdout.Bytes()
-	var conf box.AgentConf
-	if err := json.Unmarshal(out, &conf); err != nil {
-		return ""
-	}
-	return conf.ServerID
+	fmt.Fprintln(commandOutput())
 }

@@ -78,6 +78,7 @@ func defaultUIServer(static fs.FS) *uiServer {
 
 func RunUI(args []string) error {
 	fs := flag.NewFlagSet("ui", flag.ContinueOnError)
+	fs.SetOutput(commandFlags())
 	fs.Usage = func() { usageUI(fs) }
 	bind := fs.String("bind", "127.0.0.1", "address to listen on (default loopback; set the tailnet interface address to reach it from your tailnet)")
 	port := fs.Int("port", 8480, "port to listen on")
@@ -110,7 +111,7 @@ func RunUI(args []string) error {
 	} else if *bind != "127.0.0.1" && *bind != "localhost" && *bind != "::1" {
 		note("--bind %s: no auth beyond reachability -- that address is the boundary.", *bind)
 	}
-	fmt.Printf("komizo ui on http://%s\n", ln.Addr())
+	fmt.Fprintf(commandOutput(), "komizo ui on http://%s\n", ln.Addr())
 
 	srv := &http.Server{
 		Handler:           defaultUIServer(static).routes(),
@@ -349,7 +350,7 @@ func boundedBody(r *http.Request) io.Reader {
 }
 
 func usageUI(fs *flag.FlagSet) {
-	fmt.Print(`komizo ui - this box, as a web app
+	fmt.Fprint(commandOutput(), `komizo ui - this box, as a web app
 
   komizo ui
   komizo ui --bind 100.x.y.z    # the tailnet interface address
@@ -370,5 +371,5 @@ whatever the page asks for, nothing else is done.
 Flags:
 `)
 	fs.PrintDefaults()
-	fmt.Println()
+	fmt.Fprintln(commandOutput())
 }
