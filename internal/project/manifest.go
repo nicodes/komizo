@@ -200,7 +200,7 @@ func Read(root string) (Manifest, []byte, error) {
 		}
 	}
 	for name := range m.Validation {
-		if name != "workflow" && name != "operations" {
+		if name != "workflow" {
 			return m, nil, fmt.Errorf("unknown validation field %q", name)
 		}
 	}

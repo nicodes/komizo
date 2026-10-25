@@ -126,3 +126,16 @@ func TestReleaseWorkflowRetainsSerializationAndMainTrust(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestNamedOperationsCannotBeSuccessfulPlaceholders(t *testing.T) {
+	for _, command := range []string{"true", "echo", ":"} {
+		root := manifestFixture(t, `{"version":1,"recipe":"static-site","tasks":{"production-verification":[["`+command+`"]]}}`)
+		if _, err := WriteLock(root, "test-platform"); err != nil {
+			t.Fatal(err)
+		}
+		// A project without CI still validates its fixed operational tasks.
+		if _, err := Validate(root, "test-platform"); err == nil {
+			t.Fatal("successful operational placeholder accepted", command)
+		}
+	}
+}
