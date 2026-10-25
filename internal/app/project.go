@@ -143,6 +143,7 @@ func projectCommand(parent context.Context, args []string, in io.Reader, out, pr
 				result.Error.Code = "timeout"
 			}
 			if r, ok := data.(project.Result); ok {
+				result.Error.ReconciliationRequired = r.ReconciliationRequired
 				result.NextAction = r.NextAction
 			}
 		}

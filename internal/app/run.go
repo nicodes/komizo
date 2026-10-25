@@ -169,6 +169,10 @@ func Main(args []string) (err error) {
 		}
 		fmt.Fprintln(commandOutput(), "komizo "+versionText())
 		return nil
+	case "dependencies":
+		return RunDependencies(args[1:])
+	case "metadata":
+		return RunMetadata(args[1:])
 	case "capabilities":
 		if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
 			return RunCapabilities(nil)

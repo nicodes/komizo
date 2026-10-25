@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 462c4c510ab1a859db35c553de0a97b5e90235404303df58a41cf82c8437538f -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: a70ebe0dccb5d3977f32845760e2b58028cc62e948d5c86ac8308f8ac50aca52 -->
 
 # Komizo
 
@@ -144,3 +144,9 @@ Prefix any supported finite command with `--json`. Stdout is one version-1 envel
 Errors include a stable code, diagnostic message, `retryable: false` and `reconciliation_required`. Local validation uses `invalid_input` without uncertain remote effects; inventory differences use `state_mismatch` with typed findings. Missing or malformed structured results fail as `invalid_response`. Flag values spelled `--help` cannot clear mutation uncertainty. A failed mutating command is conservatively uncertain; inspect before retrying. Failed doctor checks and acknowledged operation IDs remain in `data` when available. `komizo --json --timeout 5m COMMAND ...` selects a deadline from one second to one hour; the default is 30 minutes. Structured results and retained log/help output are bounded at 4 MiB. Results are emitted directly by command handlers; Komizo does not relaunch itself or parse its printed output. Timeouts do not cancel durable host work. Interactive development and UI commands use the foreground terminal. Hosted-account commands are unavailable. Help succeeds; invalid flags still fail.
 
 For lifecycle and advanced operations use `start`, `stop`, `restart`, `logs`, `set-secret`, `preview`, `platform`, `operator`, `workspace`, `artifact` and their command help. The protected operator/broker is optional; it is not another application-host requirement. Authority changes, upgrades and package maintenance retain their explicit reviewed plan/apply interfaces.
+
+## Dependency automation
+
+`komizo dependencies inspect [--pr NUMBER]` returns decisions based on signed bot metadata, current head/base revisions and CI evidence. `komizo dependencies apply` permits a merge only after those checks; it never runs pull-request code or project tool hooks. GitHub automation supplies its repository/event identity and authenticated GitHub CLI context. `--output NEW_FILE` retains a report. Review-required updates remain open.
+
+`komizo --json metadata` parses a dependency metadata block from stdin. Parsing does not authorize a merge; signatures, authorship and source/CI checks remain mandatory in the dependency client.

@@ -139,3 +139,30 @@ func TestNamedOperationsCannotBeSuccessfulPlaceholders(t *testing.T) {
 		}
 	}
 }
+
+func TestPreviewLifecycleMustRetainCleanup(t *testing.T) {
+	root := workflowProject(t, workflowFixture)
+	path := filepath.Join(root, ".github/workflows/pr-preview.yml")
+	content := `name: PR Preview
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+jobs:
+  preview:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: 'true'
+`
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Validate(root, "test-platform"); err == nil {
+		t.Fatal("preview cleanup was optional")
+	}
+	if err := os.WriteFile(path, []byte(strings.Replace(content, "ready_for_review]", "ready_for_review, closed]", 1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Validate(root, "test-platform"); err != nil {
+		t.Fatal(err)
+	}
+}
