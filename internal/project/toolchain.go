@@ -15,6 +15,10 @@ import (
 
 const miseVersion = "2026.9.12"
 
+// The pinned Linux executable is about 130 MiB. Keep a finite ceiling above
+// every published workstation executable, including uncompressed downloads.
+const maxToolchainBytes = 256 << 20
+
 var miseChecksums = map[string]string{
 	"linux-amd64":  "e79ae57945034903aee8aa2ea66b4c7ca9cd4f4edd5a8a78a589cbae6d0f428a",
 	"linux-arm64":  "f344c6961190ed2f68e595ed7cb4f03c36c17812bd608886bec799a3082180ff",
@@ -29,7 +33,7 @@ func ensureMise(ctx context.Context) (string, error) {
 	}
 	valid := func(path string) bool {
 		info, err := os.Lstat(path)
-		if err != nil || !info.Mode().IsRegular() {
+		if err != nil || !info.Mode().IsRegular() || info.Size() > maxToolchainBytes {
 			return false
 		}
 		data, err := os.ReadFile(path)
@@ -70,12 +74,26 @@ func ensureMise(ctx context.Context) (string, error) {
 	if response.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("toolchain bootstrap returned HTTP %d", response.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, (64<<20)+1))
-	if err != nil || len(data) > 64<<20 || digest(data) != want {
-		return "", errors.New("toolchain bootstrap checksum differs")
+	data, err := verifiedToolchain(response.Body, want)
+	if err != nil {
+		return "", err
 	}
 	if err = atomicFile(path, data, 0o700); err != nil {
 		return "", err
 	}
 	return path, nil
+}
+
+func verifiedToolchain(reader io.Reader, want string) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, maxToolchainBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("toolchain bootstrap download: %w", err)
+	}
+	if len(data) > maxToolchainBytes {
+		return nil, errors.New("toolchain bootstrap exceeds 256 MiB")
+	}
+	if digest(data) != want {
+		return nil, errors.New("toolchain bootstrap checksum differs")
+	}
+	return data, nil
 }
