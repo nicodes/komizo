@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -274,7 +273,7 @@ func (t *target) resolvePort() {
 	if t.portExplicit {
 		return
 	}
-	out, err := exec.Command("ssh", "-G", t.addr()).Output()
+	out, err := commandExec("ssh", "-G", t.addr()).Output()
 	if err != nil {
 		return // fall back to the default already set
 	}
@@ -291,7 +290,7 @@ func (t *target) resolvePort() {
 // quiet is run with stderr suppressed, for probes where a failure is an
 // expected answer rather than something to report.
 func (t target) quiet(cmd string) (string, error) {
-	c := exec.Command("ssh", t.sshArgs(cmd)...)
+	c := commandExec("ssh", t.sshArgs(cmd)...)
 	out, err := c.Output()
 	return strings.TrimRight(string(out), "\n"), err
 }
@@ -322,7 +321,7 @@ func (t target) runScript(script string, env map[string]string) error {
 // having spoken depends on the verb, and only the caller knows the verb. See
 // lifecycle.go's heardOn for what goes wrong when it is decided here.
 func (t target) runScriptHeard(script string, env map[string]string) (onOut, onErr bool, err error) {
-	return t.runScriptHeardTo(script, env, os.Stdout)
+	return t.runScriptHeardTo(script, env, commandOutput())
 }
 
 // runScriptSafeHeard is runScriptHeard for output nobody on this side wrote.
@@ -345,14 +344,14 @@ func (t target) runScriptHeard(script string, env map[string]string) (onOut, onE
 // somebody their app had logged nothing. A log made entirely of escape
 // sequences was still a log the box had.
 func (t target) runScriptSafeHeard(script string, env map[string]string) (onOut, onErr bool, err error) {
-	w := &scrubWriter{to: os.Stdout}
+	w := &scrubWriter{to: commandOutput()}
 	onOut, onErr, err = t.runScriptHeardTo(script, env, w)
 	w.flush()
 	return onOut, onErr, err
 }
 
 func (t target) runScriptTo(script string, env map[string]string, out io.Writer) error {
-	return t.sshScript(script, env, out, os.Stderr)
+	return t.sshScript(script, env, out, commandProgress())
 }
 
 // runScriptHeardTo is runScriptTo with both streams watched, separately.
@@ -379,7 +378,7 @@ func (t target) runScriptTo(script string, env map[string]string, out io.Writer)
 // matters most and the ones with no question to answer, so they keep the plain
 // path in runScriptTo above.
 func (t target) runScriptHeardTo(script string, env map[string]string, out io.Writer) (onOut, onErr bool, err error) {
-	o, e := &heardWriter{to: out}, &heardWriter{to: os.Stderr}
+	o, e := &heardWriter{to: out}, &heardWriter{to: commandProgress()}
 	err = t.sshScript(script, env, o, e)
 	return o.heard, e.heard, err
 }
@@ -387,7 +386,7 @@ func (t target) runScriptHeardTo(script string, env map[string]string, out io.Wr
 // sshScript is the one exec every streaming run goes through, so there is a
 // single place where what komizo pipes to a box as root is decided.
 func (t target) sshScript(script string, env map[string]string, out, errOut io.Writer) error {
-	c := exec.Command("ssh", t.sshArgs(envPrefix(env)+"sh -s")...)
+	c := commandExec("ssh", t.sshArgs(envPrefix(env)+"sh -s")...)
 	c.Stdin = strings.NewReader(script)
 	c.Stdout = out
 	c.Stderr = errOut
@@ -475,9 +474,9 @@ func envPrefix(env map[string]string) string {
 // stdout. Used for read-only inventory where we want to parse the result
 // rather than stream it.
 func (t target) runCapture(script string) (string, error) {
-	c := exec.Command("ssh", t.sshArgs("sh -s")...)
+	c := commandExec("ssh", t.sshArgs("sh -s")...)
 	c.Stdin = strings.NewReader(script)
-	c.Stderr = os.Stderr
+	c.Stderr = commandProgress()
 	out, err := c.Output()
 	return strings.TrimRight(string(out), "\n"), err
 }
@@ -504,9 +503,9 @@ func portWasSet(fs *flag.FlagSet) bool {
 // set-secret binary on the box already requires and for the same reason --
 // arguments are visible in the host's process list to every other user on it.
 func (t target) runPiped(cmd string, stdin io.Reader, out io.Writer) error {
-	c := exec.Command("ssh", t.sshArgs(cmd)...)
+	c := commandExec("ssh", t.sshArgs(cmd)...)
 	c.Stdin = stdin
 	c.Stdout = out
-	c.Stderr = os.Stderr
+	c.Stderr = commandProgress()
 	return c.Run()
 }

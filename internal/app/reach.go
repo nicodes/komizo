@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -37,7 +36,7 @@ func (r reachResult) ok() bool { return r.kind == reachOK }
 // probe opens a session and classifies the failure. Matched on ssh's stderr:
 // its exit status is 255 for everything, so the text is the only signal.
 func (t target) probe() reachResult {
-	c := exec.Command("ssh", t.sshArgs("true")...)
+	c := commandExec("ssh", t.sshArgs("true")...)
 	var errBuf strings.Builder
 	c.Stderr = &errBuf
 	if err := c.Run(); err == nil {
@@ -189,14 +188,14 @@ func acceptHostKey(t target, assumeYes bool) error {
 	}
 
 	if !assumeYes {
-		fmt.Printf("\n  %s has not been seen before. Its fingerprints are:\n\n", t.host)
+		fmt.Fprintf(commandOutput(), "\n  %s has not been seen before. Its fingerprints are:\n\n", t.host)
 		for _, ln := range fingerprints(scan) {
-			fmt.Printf("      %s\n", ln)
+			fmt.Fprintf(commandOutput(), "      %s\n", ln)
 		}
-		fmt.Printf("\n  These came from the network, not from the server's own /etc/ssh --\n" +
-			"  nothing here has verified them. Compare against your provider's\n" +
+		fmt.Fprintf(commandOutput(), "\n  These came from the network, not from the server's own /etc/ssh --\n"+
+			"  nothing here has verified them. Compare against your provider's\n"+
 			"  console before accepting.\n\n  Add to known_hosts? [y/N] ")
-		ans, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		ans, _ := bufio.NewReader(commandInput()).ReadString('\n')
 		if a := strings.ToLower(strings.TrimSpace(ans)); a != "y" && a != "yes" {
 			return fmt.Errorf("not accepted")
 		}
@@ -226,7 +225,7 @@ func scanHostKeys(t target) ([]byte, error) {
 		args = append(args, "-p", fmt.Sprint(t.port))
 	}
 	args = append(args, t.host)
-	scan, err := exec.Command("ssh-keyscan", args...).Output()
+	scan, err := commandExec("ssh-keyscan", args...).Output()
 	if err != nil || len(strings.TrimSpace(string(scan))) == 0 {
 		return nil, fmt.Errorf("could not reach %s to read its host key", t.host)
 	}
@@ -236,7 +235,7 @@ func scanHostKeys(t target) ([]byte, error) {
 // fingerprints is the scanned keys in the form a person can compare against a
 // provider's console.
 func fingerprints(scan []byte) []string {
-	fp := exec.Command("ssh-keygen", "-l", "-f", "-")
+	fp := commandExec("ssh-keygen", "-l", "-f", "-")
 	fp.Stdin = strings.NewReader(string(scan))
 	out, _ := fp.Output()
 	var lines []string

@@ -3,10 +3,8 @@ package app
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"flag"
-	"fmt"
 	"os"
 
 	"github.com/nicodes/komizo/internal/agent"
@@ -15,6 +13,7 @@ import (
 // Only embedded release bytes may be exported; this never builds or downloads.
 func RunArtifact(args []string) error {
 	fs := flag.NewFlagSet("artifact", flag.ContinueOnError)
+	fs.SetOutput(commandFlags())
 	arch := fs.String("arch", "", "embedded Linux architecture: amd64 or arm64")
 	output := fs.String("output", "", "new output file (must not exist)")
 	if err := fs.Parse(args); err != nil {
@@ -31,9 +30,8 @@ func RunArtifact(args []string) error {
 		return err
 	}
 	sum := sha256.Sum256(body)
-	receipt, _ := json.Marshal(map[string]string{"version": versionText(), "architecture": *arch, "sha256": hex.EncodeToString(sum[:]), "stamp": agent.Stamp()})
-	fmt.Println(string(receipt))
-	return nil
+	receipt := map[string]string{"version": versionText(), "architecture": *arch, "sha256": hex.EncodeToString(sum[:]), "stamp": agent.Stamp()}
+	return emitResult(receipt)
 }
 
 func writeAgentArtifact(path string, body []byte) error {

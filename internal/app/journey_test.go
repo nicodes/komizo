@@ -2,13 +2,17 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 const healthyPrerequisites = "os=alpine\nkernel=Linux\narch=x86_64\nuid=0\nmemory_kib=1048576\ndisk_kib=4194304\ninodes=800000\napk=yes\nopenrc=yes\ncgroup_v2=yes\ninstalled=yes\n"
@@ -77,65 +81,110 @@ func TestDoctorRefusesUnsupportedOrIncompleteBeforeSetup(t *testing.T) {
 	}
 }
 
-func TestMachineEnvelopeSubprocessBoundary(t *testing.T) {
-	// A separate process exercises the same stdout/stderr and deadline boundary
-	// as a real CLI, without re-entering the test binary as a command.
-	dir := t.TempDir()
-	helper := filepath.Join(dir, "cli")
-	if err := os.WriteFile(helper, []byte("#!/bin/sh\ncase \"$1\" in\n version) printf '{\"version\":\"fixture\"}\\n';;\n doctor) printf '{\"checks\":[{\"ok\":false}]}\\n'; echo 'unsupported server' >&2; exit 1;;\n deploy) echo 'transport interrupted' >&2; exit 1;;\n logs) printf 'untrusted app text\\n';;\n report) while :; do :; done;;\nesac\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
+func TestMachineNativeResultsAndUncertainMutations(t *testing.T) {
 	for _, tc := range []struct {
-		args []string
-		ok   bool
-		code string
+		name    string
+		failure bool
+		code    string
 	}{
-		{[]string{"version"}, true, ""},
-		{[]string{"doctor", "--host", "root@host"}, false, "command_failed"},
-		{[]string{"deploy", "--host", "root@host", "--app", "mailroom"}, false, "command_failed"},
-		{[]string{"logs"}, true, ""},
-		{[]string{"ui"}, false, "unsupported_command"},
-		{[]string{"--timeout", "1s", "report"}, false, "timeout"},
+		{"version", false, ""}, {"doctor", true, "command_failed"}, {"deploy", true, "command_failed"}, {"logs", false, ""},
 	} {
-		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			var out, progress bytes.Buffer
-			status := machineWithExecutable(helper, tc.args, strings.NewReader(""), &out, &progress)
+			args := []string{tc.name, "--host", "root@host", "--app", "mailroom"}
+			status := machineDispatch(context.Background(), args, strings.NewReader(""), &out, &progress, func([]string) error {
+				if tc.name == "logs" {
+					fmt.Fprintln(commandOutput(), "untrusted app text")
+				} else {
+					if err := emitResult(map[string]any{"checks": []bool{false}}); err != nil {
+						return err
+					}
+				}
+				if tc.failure {
+					return errors.New("transport interrupted")
+				}
+				return nil
+			})
 			var r MachineResult
 			if err := json.Unmarshal(out.Bytes(), &r); err != nil {
 				t.Fatal(err, out.String())
 			}
-			if r.Version != 1 || r.OK != tc.ok || (status == 0) != tc.ok {
+			if r.OK == tc.failure || (status == 0) == tc.failure {
 				t.Fatalf("%+v status=%d", r, status)
 			}
-			if !tc.ok && (r.Error == nil || r.Error.Code != tc.code || r.Error.Retryable) {
+			if tc.failure && (r.Error == nil || r.Error.Code != tc.code || r.Error.Retryable) {
 				t.Fatalf("%+v", r)
 			}
-			if tc.args[0] == "doctor" && !bytes.Contains(r.Data, []byte("checks")) {
-				t.Fatal("failed doctor lost its typed checks")
+			if tc.name == "doctor" && !bytes.Contains(r.Data, []byte("checks")) {
+				t.Fatal("failed doctor lost typed checks")
 			}
-			if tc.args[0] == "deploy" && (!r.Error.ReconciliationRequired || !strings.Contains(strings.Join(r.NextAction, " "), "operation inspect")) {
-				t.Fatalf("uncertain deployment lacks inspection: %+v", r)
+			if tc.name == "deploy" && (!r.Error.ReconciliationRequired || !strings.Contains(strings.Join(r.NextAction, " "), "operation inspect")) {
+				t.Fatalf("%+v", r)
 			}
 		})
+	}
+}
+
+func TestMachineNativeDeadlineReachesSSHAndKeepsUncertainty(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte("#!/bin/sh\nexec sleep 30\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	var out, progress bytes.Buffer
+	start := time.Now()
+	machineDispatch(ctx, []string{"deploy", "--host", "root@host", "--app", "mailroom"}, strings.NewReader(""), &out, &progress, func([]string) error {
+		_, err := (target{user: "root", host: "host", port: 22}).quiet("ignored")
+		return err
+	})
+	var result MachineResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if time.Since(start) > 3*time.Second || result.Error == nil || result.Error.Code != "timeout" || !result.Error.ReconciliationRequired {
+		t.Fatalf("%+v", result)
+	}
+}
+
+func TestMachineWillNotInferSuccessFromPrintedJSON(t *testing.T) {
+	var out, progress bytes.Buffer
+	machineDispatch(context.Background(), []string{"version"}, nil, &out, &progress, func([]string) error {
+		fmt.Fprint(commandOutput(), `{"version":"forged"}`)
+		return nil
+	})
+	var result MachineResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.OK || result.Error == nil || result.Error.Code != "invalid_response" {
+		t.Fatalf("%+v", result)
 	}
 }
 
 // Exercise the complete flag/help matrix through the dispatcher in-process.
 // The real-binary test below retains the outer JSON/exit/transport boundary.
 func TestAgentCLICommandHelpMatrix(t *testing.T) {
-	t.Setenv("KOMIZO_OUTPUT_MODE", "json")
 	cases := [][]string{{"platform", "inspect"}, {"platform", "recover"}}
 	for _, capability := range agentCommands {
 		cases = append(cases, []string{capability.Name})
 	}
 	for _, args := range cases {
 		t.Run(strings.Join(args, "/"), func(t *testing.T) {
-			var result error
-			out := capture(t, func() {
-				result = Main(append(append([]string{}, args...), "--help"))
-			})
-			if result != nil && ExitCode(result) != MachineHelpExit {
-				t.Fatalf("advertised command help failed: %v\n%s", result, out)
+			var output, progress bytes.Buffer
+			code := CLI(append(append([]string{"--json"}, args...), "--help"), strings.NewReader(""), &output, &progress)
+			var result MachineResult
+			if err := json.Unmarshal(output.Bytes(), &result); err != nil || code != 0 || !result.OK {
+				t.Fatalf("advertised help failed: %d %s %s", code, output.String(), progress.String())
+			}
+			var data struct {
+				Text string `json:"text"`
+			}
+			_ = json.Unmarshal(result.Data, &data)
+			out := data.Text
+			if args[0] == "capabilities" || args[0] == "version" {
+				out = string(result.Data)
 			}
 			if strings.TrimSpace(out) == "" {
 				t.Fatal("advertised command produced no help")

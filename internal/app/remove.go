@@ -13,6 +13,7 @@ func RunRemove(args []string) (err error) {
 	validation := localInput(&err)
 	defer validation.finish()
 	fs := flag.NewFlagSet("remove", flag.ContinueOnError)
+	fs.SetOutput(commandFlags())
 	fs.Usage = func() { usageRemove(fs) }
 	var host, app string
 	var port int
@@ -68,7 +69,7 @@ func RunScript(args []string) error {
 	}
 	switch which {
 	case "-h", "--help", "help":
-		fmt.Print(`komizo script - print the shell komizo runs on your server
+		fmt.Fprint(commandOutput(), `komizo script - print the shell komizo runs on your server
 
   komizo script [init|add|remove|unset-secret|proxy]
 
@@ -84,15 +85,15 @@ account, the doas rules and the sshd restrictions.
 `)
 		return nil
 	case "init":
-		fmt.Print(scripts.AlpineInitScript)
+		fmt.Fprint(commandOutput(), scripts.AlpineInitScript)
 	case "add":
-		fmt.Print(scripts.AlpineScript)
+		fmt.Fprint(commandOutput(), scripts.AlpineScript)
 	case "remove":
-		fmt.Print(scripts.AlpineRemoveScript)
+		fmt.Fprint(commandOutput(), scripts.AlpineRemoveScript)
 	case "unset-secret":
-		fmt.Print(scripts.AlpineUnsetSecretScript)
+		fmt.Fprint(commandOutput(), scripts.AlpineUnsetSecretScript)
 	case "proxy":
-		fmt.Print(scripts.AlpineProxyScript)
+		fmt.Fprint(commandOutput(), scripts.AlpineProxyScript)
 	default:
 		return fmt.Errorf("no such script %q -- try 'init', 'add', 'remove', 'unset-secret' or 'proxy'", which)
 	}
@@ -100,7 +101,7 @@ account, the doas rules and the sshd restrictions.
 }
 
 func usageRemove(fs *flag.FlagSet) {
-	fmt.Print(`komizo remove - tear one app off a server
+	fmt.Fprint(commandOutput(), `komizo remove - tear one app off a server
 
   komizo remove --host root@myhost --app blog --yes
 
@@ -115,5 +116,5 @@ gone for good.
 Flags:
 `)
 	fs.PrintDefaults()
-	fmt.Println()
+	fmt.Fprintln(commandOutput())
 }

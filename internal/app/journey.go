@@ -71,6 +71,7 @@ func RunSetup(args []string) (err error) {
 	validation := localInput(&err)
 	defer validation.finish()
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
+	fs.SetOutput(commandFlags())
 	fs.Usage = func() {
 		usageJourney("setup", "komizo setup --host root@HOST [--definition app.json] [--key PRIVATE_FILE]", "Check prerequisites, prepare the host and optionally register an app. Existing app authority and keys are preserved; changed policy requires a separate reviewed migration.")
 		fs.PrintDefaults()
@@ -106,7 +107,7 @@ func RunSetup(args []string) (err error) {
 		return err
 	}
 	if !preflight.Supported {
-		_ = json.NewEncoder(os.Stdout).Encode(preflight)
+		_ = emitResult(preflight)
 		return errors.New("server prerequisites failed; setup made no installation changes")
 	}
 	connection := []string{"--host", tgt.addr(), "--port", strconv.Itoa(tgt.port)}
@@ -196,9 +197,13 @@ func RunSetup(args []string) (err error) {
 		if !existing {
 			result["deploy_key_file"] = *key
 		}
+		if err := bindProjectTarget(d.Policy.SourceRepository, tgt, d.App); err != nil {
+			_ = emitResult(result)
+			return fmt.Errorf("host setup completed; local target binding needs attention: %w", err)
+		}
 		result["next_action"] = []string{"komizo", "--json", "deploy", "--host", tgt.addr(), "--port", strconv.Itoa(tgt.port), "--app", d.App, "--version", "COMMIT"}
 	}
-	return json.NewEncoder(os.Stdout).Encode(result)
+	return emitResult(result)
 }
 
 // Secrets are read only from bounded regular private files, never argv, env or
@@ -238,7 +243,7 @@ func journeyRemote(tgt target, args []string, body []byte) ([]byte, error) {
 	if len(args) > 1 && args[1] == "activation-wait" {
 		timeout = 26 * time.Minute
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(commandContext(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "ssh", tgt.sshArgs(command.String())...)
 	cmd.WaitDelay = 2 * time.Second
@@ -265,11 +270,13 @@ func RunDeploy(args []string) (err error) {
 	validation := localInput(&err)
 	defer validation.finish()
 	fs := flag.NewFlagSet("deploy", flag.ContinueOnError)
+	fs.SetOutput(commandFlags())
 	fs.Usage = func() {
 		usageJourney("deploy", "komizo deploy --host root@HOST --app APP --version COMMIT [--proof FILE]", "Submit through installed root-reviewed deployment authority. Registry tokens stay in private files/stdin. On uncertainty inspect the operation; never resubmit blindly.")
 		fs.PrintDefaults()
 	}
-	host := fs.String("host", "", "server, [user@]HOST")
+	directory := fs.String("directory", ".", "project directory for private target and source defaults")
+	host := fs.String("host", "", "server, [user@]HOST; defaults to the private project target")
 	port := fs.Int("port", 22, "SSH port")
 	app := fs.String("app", "", "registered application")
 	version := fs.String("version", "", "exact 40-character source commit")
@@ -283,6 +290,16 @@ func RunDeploy(args []string) (err error) {
 	}
 	if fs.NArg() != 0 {
 		return errors.New("deploy accepts only flags")
+	}
+	projectDefault := *host == ""
+	if _, err := defaultProjectTarget(*directory, host, port, app); err != nil {
+		return err
+	}
+	if projectDefault && *version == "" {
+		*version, err = projectRevision(*directory)
+		if err != nil {
+			return err
+		}
 	}
 	if err := validateApp(*app); err != nil {
 		return err
@@ -338,7 +355,7 @@ func RunDeploy(args []string) (err error) {
 	if *wait {
 		_, err = journeyRemote(tgt, []string{"workload", "activation-wait", "--id", id}, nil)
 		if err != nil {
-			_ = json.NewEncoder(os.Stdout).Encode(result)
+			_ = emitResult(result)
 			return errors.New("deployment outcome needs inspection; do not resubmit")
 		}
 		inspection, err := inspectOperation(tgt, *app)
@@ -353,7 +370,7 @@ func RunDeploy(args []string) (err error) {
 		}
 		result["completed"], result["operation"] = true, inspection
 	}
-	return json.NewEncoder(os.Stdout).Encode(result)
+	return emitResult(result)
 }
 
 func decodeDeploymentAcknowledgement(body []byte) (string, string, error) {
@@ -403,6 +420,7 @@ func RunOperation(args []string) (err error) {
 	}
 	sub := args[0]
 	fs := flag.NewFlagSet("operation "+sub, flag.ContinueOnError)
+	fs.SetOutput(commandFlags())
 	fs.Usage = func() {
 		usageJourney("operation "+sub, "komizo operation inspect --host root@HOST --app APP", "Recover requires --id, --version, --policy-sha256, --expected-phase, --serving-version and --outcome from reviewed inspection. No automatic restart, data restore, new pull or fence deletion.")
 		fs.PrintDefaults()
@@ -452,7 +470,7 @@ func RunOperation(args []string) (err error) {
 		if err != nil {
 			return err
 		}
-		return json.NewEncoder(os.Stdout).Encode(operationView(tgt, result))
+		return emitResult(operationView(tgt, result))
 	}
 	body, err := journeyRemote(tgt, remote, nil)
 	if err != nil {
@@ -461,8 +479,7 @@ func RunOperation(args []string) (err error) {
 	if !json.Valid(body) {
 		return errors.New("invalid reconciliation receipt")
 	}
-	_, err = os.Stdout.Write(body)
-	return err
+	return emitProtocol(body)
 }
 
 func operationView(tgt target, inspection operationInspection) map[string]any {

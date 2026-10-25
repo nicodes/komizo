@@ -398,9 +398,9 @@ esac
 # would stop meaning anything.
 
 command -v docker >/dev/null 2>&1 \
-	|| die "this server is not set up yet -- run 'komizo init' first"
+	|| die "this server is not set up yet -- run 'komizo setup' first"
 command -v doas >/dev/null 2>&1 \
-	|| die "doas is missing -- run 'komizo init' first to install it"
+	|| die "doas is missing -- run 'komizo setup' first to install it"
 docker info >/dev/null 2>&1 \
 	|| die "Docker is installed but not running -- try 'rc-service docker start'"
 

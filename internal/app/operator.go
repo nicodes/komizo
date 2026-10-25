@@ -1,10 +1,9 @@
 package app
 
 import (
-	"encoding/json"
+	"bytes"
 	"errors"
 	"flag"
-	"os"
 
 	"github.com/nicodes/komizo/internal/operator"
 )
@@ -14,6 +13,7 @@ func RunOperator(args []string) error {
 		return errors.New("operator requires plan, apply, status, recover or export")
 	}
 	fs := flag.NewFlagSet("operator", flag.ContinueOnError)
+	fs.SetOutput(commandFlags())
 	directory := fs.String("directory", "", "new private directory for the authenticated operator bundle")
 	expected := fs.String("expected-plan", "", "reviewed operator installation plan SHA256")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -30,7 +30,11 @@ func RunOperator(args []string) error {
 		if args[0] != "apply" && *expected != "" {
 			return errors.New("only apply accepts an expected plan")
 		}
-		return operator.Lifecycle(args[0], *expected, os.Stdout)
+		var output bytes.Buffer
+		if err := operator.Lifecycle(commandContext(), args[0], *expected, &output, commandProgress()); err != nil {
+			return err
+		}
+		return emitProtocol(output.Bytes())
 	case "export":
 		if *expected != "" {
 			return errors.New("export accepts no expected plan")
@@ -43,7 +47,7 @@ func RunOperator(args []string) error {
 			if err != nil {
 				return err
 			}
-			return json.NewEncoder(os.Stdout).Encode(map[string]any{"version": 1, "directory": *directory, "files": files, "exported": true})
+			return emitResult(map[string]any{"version": 1, "directory": *directory, "files": files, "exported": true})
 		}
 		return nil
 	default:

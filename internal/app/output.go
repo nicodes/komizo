@@ -46,7 +46,7 @@ func noteTo(w io.Writer, format string, a ...any) {
 }
 
 func warn(format string, a ...any) {
-	fmt.Fprintf(os.Stderr, "warning: "+format+"\n", a...)
+	fmt.Fprintf(commandProgress(), "warning: "+format+"\n", a...)
 }
 
 // stdoutIsTTY reports whether stdout is a terminal rather than a pipe, a file or
@@ -54,7 +54,14 @@ func warn(format string, a ...any) {
 // would persist. A character device is what a terminal is; a redirected or
 // piped stdout is not.
 func stdoutIsTTY() bool {
-	fi, err := os.Stdout.Stat()
+	if machineMode() {
+		return false
+	}
+	file, ok := commandOutput().(*os.File)
+	if !ok {
+		return false
+	}
+	fi, err := file.Stat()
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
@@ -86,32 +93,32 @@ const rule = "------------------------------------------------------------------
 // goes wrong, so --key is the better habit for anything scripted: it keeps the
 // value out of the scrollback and out of any log the run is piped into.
 func printNextSteps(o addOpts, t target, knownHosts, key string) {
-	fmt.Printf("\n%s\n Add these under Settings -> Secrets and variables -> Actions\n%s\n", rule, rule)
+	fmt.Fprintf(commandOutput(), "\n%s\n Add these under Settings -> Secrets and variables -> Actions\n%s\n", rule, rule)
 
-	fmt.Printf("\n 1. SECRET    KOMIZO_DEPLOY_KEY\n\n")
+	fmt.Fprintf(commandOutput(), "\n 1. SECRET    KOMIZO_DEPLOY_KEY\n\n")
 	if o.keyPath != "" {
 		// The VALUE is the file's contents. Spelled out because "cat <path>" on
 		// a line of its own reads like a value, and pasting that literal string
 		// into the secret produces a deploy that fails much later with an
 		// unhelpful authentication error.
-		fmt.Printf("        the private key in this file (contents not shown here):\n"+
+		fmt.Fprintf(commandOutput(), "        the private key in this file (contents not shown here):\n"+
 			"        %s\n", o.keyPath)
 		if clipboardAvailable() {
-			fmt.Printf("\n        To put it on the clipboard without printing it:\n"+
+			fmt.Fprintf(commandOutput(), "\n        To put it on the clipboard without printing it:\n"+
 				"        %s < %s\n", strings.Join(clipboardCmd(), " "), o.keyPath)
 		}
 	} else {
-		fmt.Printf("        Not written to disk. This is the only copy:\n\n")
+		fmt.Fprintf(commandOutput(), "        Not written to disk. This is the only copy:\n\n")
 		for _, ln := range strings.Split(strings.TrimRight(key, "\n"), "\n") {
-			fmt.Printf("        %s\n", ln)
+			fmt.Fprintf(commandOutput(), "        %s\n", ln)
 		}
-		fmt.Printf("\n        Pass --key PATH to write it somewhere instead of printing it.\n")
+		fmt.Fprintf(commandOutput(), "\n        Pass --key PATH to write it somewhere instead of printing it.\n")
 	}
-	fmt.Printf("\n 2. VARIABLE  KOMIZO_KNOWN_HOSTS\n\n")
+	fmt.Fprintf(commandOutput(), "\n 2. VARIABLE  KOMIZO_KNOWN_HOSTS\n\n")
 	for _, ln := range strings.Split(knownHosts, "\n") {
-		fmt.Printf("        %s\n", ln)
+		fmt.Fprintf(commandOutput(), "        %s\n", ln)
 	}
-	fmt.Printf("\n    A variable, not a secret: it needs integrity, not secrecy, and leaving\n" +
+	fmt.Fprintf(commandOutput(), "\n    A variable, not a secret: it needs integrity, not secrecy, and leaving\n"+
 		"    it unmasked keeps a host-key mismatch readable in the log.\n")
 
 	// The address CI dials, as a variable rather than a line in the workflow.
@@ -123,25 +130,25 @@ func printNextSteps(o addOpts, t target, knownHosts, key string) {
 	// name and appends the port on any box not using 22 -- a known_hosts
 	// pattern, not an address. The port is a separate input, written into the
 	// snippet below.
-	fmt.Printf("\n 3. VARIABLE  KOMIZO_SERVER_URL\n\n        %s\n", t.serverURL())
+	fmt.Fprintf(commandOutput(), "\n 3. VARIABLE  KOMIZO_SERVER_URL\n\n        %s\n", t.serverURL())
 
 	// The app name selects the deploy account, both privileged commands, and the
 	// gate the shared proxy is pointed at. Hold this one more loosely than
 	// the three above: it is also written into the app's own compose.yml -- the
 	// service must be named <app>-gate -- and into its image names, all
 	// committed. This variable is where CI reads it, not where it is decided.
-	fmt.Printf("\n 4. VARIABLE  KOMIZO_APP_NAME\n\n        %s\n", o.app)
-	fmt.Printf("\n%s\n", rule)
+	fmt.Fprintf(commandOutput(), "\n 4. VARIABLE  KOMIZO_APP_NAME\n\n        %s\n", o.app)
+	fmt.Fprintf(commandOutput(), "\n%s\n", rule)
 
 	if o.rotateKey {
-		fmt.Printf("\n The old key stopped working the moment this ran -- keys are matched on\n" +
-			" their comment, so the rotation replaced it rather than adding a second.\n" +
+		fmt.Fprintf(commandOutput(), "\n The old key stopped working the moment this ran -- keys are matched on\n"+
+			" their comment, so the rotation replaced it rather than adding a second.\n"+
 			" Update KOMIZO_DEPLOY_KEY before your next deploy.\n\n")
 		return
 	}
 
 	if !o.hardenSSHD {
-		fmt.Printf("\n Only %q was restricted in sshd -- no forwarding, no password auth.\n"+
+		fmt.Fprintf(commandOutput(), "\n Only %q was restricted in sshd -- no forwarding, no password auth.\n"+
 			" Every other account, including root, is untouched. To also disable\n"+
 			" password login machine-wide, re-run with --harden-sshd.\n", o.user)
 	}
@@ -161,7 +168,7 @@ func printNextSteps(o addOpts, t target, knownHosts, key string) {
 	// immutable v0.0.x tags -- `@v0` used to move and no longer does, so a
 	// snippet still offering it would send every new app at a tag frozen before
 	// this CLI existed. See actionsVersion.
-	fmt.Printf(`
+	fmt.Fprintf(commandOutput(), `
  Then in your app repo: a compose.yml with a service named %[1]s-gate --
  your own Caddy, nginx, whatever -- listening on :80 and joined to the shared
  network. That container owns everything about how requests reach your app.
