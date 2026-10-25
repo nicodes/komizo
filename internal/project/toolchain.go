@@ -42,11 +42,11 @@ func ensureMise(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	base := filepath.Join(cache, "toolchain")
+	base := filepath.Join(cache, "toolchain", miseVersion+"-"+runtime.GOOS+"-"+runtime.GOARCH)
 	if err = os.MkdirAll(base, 0o700); err != nil {
 		return "", err
 	}
-	path := filepath.Join(base, "mise-"+miseVersion+"-"+runtime.GOOS+"-"+runtime.GOARCH)
+	path := filepath.Join(base, "mise")
 	if valid(path) {
 		return path, nil
 	}

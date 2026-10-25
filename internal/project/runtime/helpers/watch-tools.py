@@ -75,9 +75,13 @@ def caddy_updates(root):
 
 def main():
     root = Path.cwd()
-    installed = json.loads((root / 'komizo.json').read_text())['tools']
+    description = json.loads(subprocess.check_output([os.environ['KOMIZO_EXECUTABLE'], '--json', 'describe'], text=True, timeout=30))
+    if not description.get('ok'):
+        raise ValueError('cannot inspect the locked project toolchain')
+    installed = description['data']['tools']
     outdated = json.loads(subprocess.check_output(
-        ['mise', 'outdated', '--bump', '--local', '--json'], text=True, timeout=600))
+        ['mise', 'outdated', '--bump', '--local', '--json'], text=True, timeout=600,
+        env={**os.environ, 'MISE_OVERRIDE_CONFIG_FILENAMES': '.komizo.mise.toml'}))
     pending = updates(root, installed, outdated) + caddy_updates(root)
     repo = os.environ['GITHUB_REPOSITORY']
     # Caller identity is checked before any API write.

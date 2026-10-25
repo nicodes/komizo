@@ -9,13 +9,14 @@ import (
 // materializing tools. Credential values and fixed development settings are
 // deliberately absent, so a private fleet audit needs no product execution.
 type Description struct {
-	Version    int                 `json:"version"`
-	Repository string              `json:"repository,omitempty"`
-	Recipe     string              `json:"recipe"`
-	Platform   string              `json:"platform"`
-	Stages     map[string]bool     `json:"stages"`
-	Tasks      []string            `json:"tasks"`
-	Commands   map[string][]string `json:"commands"`
+	Version    int                        `json:"version"`
+	Tools      map[string]json.RawMessage `json:"tools"`
+	Repository string                     `json:"repository,omitempty"`
+	Recipe     string                     `json:"recipe"`
+	Platform   string                     `json:"platform"`
+	Stages     map[string]bool            `json:"stages"`
+	Tasks      []string                   `json:"tasks"`
+	Commands   map[string][]string        `json:"commands"`
 }
 
 func Describe(root, platform string) (Description, error) {
@@ -32,7 +33,7 @@ func Describe(root, platform string) (Description, error) {
 		return d, err
 	}
 	d = Description{Version: 1, Repository: m.Repository, Recipe: m.Recipe, Platform: platform,
-		Stages: map[string]bool{}, Tasks: []string{}, Commands: map[string][]string{}}
+		Stages: map[string]bool{}, Tasks: []string{}, Commands: map[string][]string{}, Tools: m.ToolsForRecipe()}
 	stages := contract["stages"].(map[string]json.RawMessage)
 	for name, value := range stages {
 		var commands [][]string

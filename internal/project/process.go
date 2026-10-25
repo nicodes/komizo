@@ -8,5 +8,9 @@ import (
 )
 
 func runCommand(ctx context.Context, cmd *exec.Cmd) error {
-	return devenv.RunCommand(ctx, cmd, 2*time.Second)
+	err := devenv.RunCommand(ctx, cmd, 2*time.Second)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
 }
