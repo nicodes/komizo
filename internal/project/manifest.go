@@ -346,19 +346,9 @@ func Init(root, name, platform string) (Lock, error) {
 	if _, err := os.Lstat(filepath.Join(root, ManifestName)); !errors.Is(err, os.ErrNotExist) {
 		return Lock{}, errors.New("komizo.json already exists or cannot be inspected")
 	}
-	m := Manifest{Version: 1, Recipe: name, Tools: map[string]json.RawMessage{
-		"python": json.RawMessage(`"3.13.11"`), "bun": json.RawMessage(`"1.4.1"`),
-	}}
+	m := Manifest{Version: 1, Recipe: name}
 	if name != "static-site" {
 		m.Auth = &Auth{Provider: "none"}
-	}
-	if name == "go-service" {
-		delete(m.Tools, "bun")
-		m.Tools["go:golang.org/x/vuln/cmd/govulncheck"] = json.RawMessage(`"1.7.0"`)
-		m.Tools["go"] = json.RawMessage(`"1.27.3"`)
-	}
-	if name == "static-site" {
-		m.Tools["node"] = json.RawMessage(`"24.18.1"`)
 	}
 	if err := writeJSON(filepath.Join(root, ManifestName), m); err != nil {
 		return Lock{}, err
@@ -368,7 +358,7 @@ func Init(root, name, platform string) (Lock, error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return Lock{}, err
 	}
-	for _, line := range []string{".artifacts/", ".komizo.mise.toml", ".komizo.mise.lock"} {
+	for _, line := range []string{".artifacts/", ".komizo.mise*.toml", ".komizo.mise*.lock"} {
 		if !strings.Contains("\n"+string(data)+"\n", "\n"+line+"\n") {
 			data = append(data, []byte("\n"+line+"\n")...)
 		}
@@ -385,7 +375,7 @@ func WriteLock(root, platform string) (Lock, error) {
 		return Lock{}, err
 	}
 	r, _ := recipe(m.Recipe)
-	b, _ := json.Marshal(r)
+	b, _ := json.Marshal(map[string]any{"stages": r, "tools": recipeTools(m.Recipe)})
 	l := Lock{Version: 1, Platform: platform, PlatformRevision: SourceRevision(), ManifestSHA256: digest(data), RuntimeSHA256: RuntimeIdentity(), RecipeSHA256: digest(b)}
 	return l, writeJSON(filepath.Join(root, LockName), l)
 }
@@ -400,7 +390,7 @@ func CheckLock(root, platform string, data []byte, m Manifest) error {
 		return err
 	}
 	r, _ := recipe(m.Recipe)
-	raw, _ := json.Marshal(r)
+	raw, _ := json.Marshal(map[string]any{"stages": r, "tools": recipeTools(m.Recipe)})
 	if lock.Version != 1 || lock.Platform != platform || lock.PlatformRevision != SourceRevision() || lock.ManifestSHA256 != digest(data) || lock.RuntimeSHA256 != RuntimeIdentity() || lock.RecipeSHA256 != digest(raw) {
 		return errors.New("project lock differs from the manifest or installed Komizo; run komizo lock with the intended platform version")
 	}
@@ -413,4 +403,24 @@ func writeJSON(path string, value any) error {
 		return err
 	}
 	return atomicFile(path, append(data, '\n'), 0o600)
+}
+
+func recipeTools(name string) map[string]json.RawMessage {
+	tools := map[string]json.RawMessage{"python": json.RawMessage(`"3.13.11"`)}
+	if name == "go-service" {
+		tools["go"] = json.RawMessage(`"1.27.3"`)
+		tools["go:golang.org/x/vuln/cmd/govulncheck"] = json.RawMessage(`"1.7.0"`)
+	}
+	if name == "static-site" || name == "godot-app" {
+		tools["bun"] = json.RawMessage(`"1.4.1"`)
+		tools["node"] = json.RawMessage(`"24.18.1"`)
+	}
+	return tools
+}
+func (m Manifest) ToolsForRecipe() map[string]json.RawMessage {
+	tools := recipeTools(m.Recipe)
+	for name, version := range m.Tools {
+		tools[name] = version
+	}
+	return tools
 }

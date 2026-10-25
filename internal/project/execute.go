@@ -38,7 +38,7 @@ func setEnv(base []string, values map[string]string) []string {
 	return result
 }
 
-func prepare(root, platform string) (Manifest, []string, string, error) {
+func prepare(root, platform string, selected []string) (Manifest, []string, string, error) {
 	m, data, err := Read(root)
 	if err != nil {
 		return m, nil, "", err
@@ -62,7 +62,8 @@ func prepare(root, platform string) (Manifest, []string, string, error) {
 	if err = writeJSON(contractPath, contract); err != nil {
 		return m, nil, "", err
 	}
-	config, err := toolConfig(m.Tools)
+	resolvedTools := m.ToolsForRecipe()
+	config, err := toolConfig(resolvedTools)
 	if err != nil {
 		return m, nil, "", err
 	}
@@ -70,10 +71,28 @@ func prepare(root, platform string) (Manifest, []string, string, error) {
 	if err = atomicFile(misePath, []byte(config), 0o600); err != nil {
 		return m, nil, "", err
 	}
+	if len(selected) > 0 {
+		tools := map[string]json.RawMessage{}
+		for _, name := range selected {
+			value, exists := resolvedTools[name]
+			if !exists || tools[name] != nil {
+				return m, nil, "", fmt.Errorf("select unique declared tools; invalid selection %q", name)
+			}
+			tools[name] = value
+		}
+		config, err = toolConfig(tools)
+		if err != nil {
+			return m, nil, "", err
+		}
+		misePath = filepath.Join(root, ".komizo.mise-"+digest([]byte(config))[:16]+".toml")
+		if err = atomicFile(misePath, []byte(config), 0600); err != nil {
+			return m, nil, "", err
+		}
+	}
 	values := map[string]string{"CICD_ENGINEERING": runtimeRoot, "KOMIZO_CONTRACT": contractPath,
 		"KOMIZO_PROJECT": filepath.Join(root, ManifestName), "KOMIZO_TOOLCHAIN": misePath,
 		"PYTHONDONTWRITEBYTECODE": "1", "GOTOOLCHAIN": "local",
-		"MISE_OVERRIDE_CONFIG_FILENAMES": ".komizo.mise.toml", "MISE_TRUSTED_CONFIG_PATHS": root}
+		"MISE_OVERRIDE_CONFIG_FILENAMES": filepath.Base(misePath), "MISE_TRUSTED_CONFIG_PATHS": root}
 	executable, err := os.Executable()
 	if err != nil {
 		return m, nil, "", err
@@ -106,12 +125,13 @@ func prepare(root, platform string) (Manifest, []string, string, error) {
 }
 
 // Exec runs an explicit command with the project's locked tools and runtime.
-func Exec(ctx context.Context, root, platform string, arguments []string, in io.Reader, out, progress io.Writer) (Result, error) {
-	result := Result{Targets: []string{"exec"}}
+func Exec(ctx context.Context, root, platform string, arguments, selected []string, in io.Reader, out, progress io.Writer) (result Result, err error) {
+	result = Result{Targets: []string{"exec"}}
+	defer func() { result.failed(err) }()
 	if len(arguments) == 0 {
 		return result, errors.New("specify a command after --")
 	}
-	m, environment, _, err := prepare(root, platform)
+	m, environment, _, err := prepare(root, platform, selected)
 	result.Recipe = m.Recipe
 	if err != nil {
 		return result, err
@@ -121,13 +141,14 @@ func Exec(ctx context.Context, root, platform string, arguments []string, in io.
 		return result, err
 	}
 	cmd := exec.Command(mise, append([]string{"exec", "--"}, arguments...)...)
+	environment = toolchainEnvironment(environment, mise)
 	cmd.Dir, cmd.Env, cmd.Stdin, cmd.Stdout, cmd.Stderr = root, environment, in, out, progress
 	err = runCommand(ctx, cmd)
 	result.Completed = err == nil
 	if err != nil {
 		result.ExitCode = 1
 		var exit *exec.ExitError
-		if errors.As(err, &exit) {
+		if errors.As(err, &exit) && exit.ExitCode() > 0 {
 			result.ExitCode = exit.ExitCode()
 		}
 	}
@@ -135,17 +156,25 @@ func Exec(ctx context.Context, root, platform string, arguments []string, in io.
 }
 
 // Execute uses the same resolved recipe, inputs and toolchain locally and in CI.
-func Execute(ctx context.Context, root, platform string, targets []string, mode string, in io.Reader, progress io.Writer) (Result, error) {
-	return execute(ctx, root, platform, targets, mode, in, progress, ensureMise)
+func Execute(ctx context.Context, root, platform string, targets []string, mode string, selected []string, in io.Reader, progress io.Writer) (Result, error) {
+	return execute(ctx, root, platform, targets, mode, selected, in, progress, ensureMise)
 }
 
-func execute(ctx context.Context, root, platform string, targets []string, mode string, in io.Reader, progress io.Writer, toolchain func(context.Context) (string, error)) (Result, error) {
-	result := Result{Targets: targets}
-	m, environment, runtimeRoot, err := prepare(root, platform)
+func execute(ctx context.Context, root, platform string, targets []string, mode string, selected []string, in io.Reader, progress io.Writer, toolchain func(context.Context) (string, error)) (result Result, err error) {
+	result = Result{Targets: targets}
+	defer func() { result.failed(err) }()
+	m, environment, runtimeRoot, err := prepare(root, platform, selected)
 	result.Recipe = m.Recipe
 	if err != nil {
 		result.ExitCode = 1
 		return result, err
+	}
+	if len(selected) > 0 {
+		for _, target := range targets {
+			if m.Tasks[target] == nil {
+				return result, errors.New("tool selection is available only for named tasks; verification stages require the complete declared toolchain")
+			}
+		}
 	}
 	for _, target := range targets {
 		if target == "check" || target == "lint" {
@@ -196,13 +225,14 @@ func execute(ctx context.Context, root, platform string, targets []string, mode 
 		return result, err
 	}
 	cmd := exec.Command(mise, args...)
+	environment = toolchainEnvironment(environment, mise)
 	cmd.Dir, cmd.Env, cmd.Stdin, cmd.Stdout, cmd.Stderr = root, environment, in, progress, progress
 	err = runCommand(ctx, cmd)
 	result.Completed = err == nil
 	if err != nil {
 		result.ExitCode = 1
 		var exit *exec.ExitError
-		if errors.As(err, &exit) {
+		if errors.As(err, &exit) && exit.ExitCode() > 0 {
 			result.ExitCode = exit.ExitCode()
 		}
 		result.NextAction = append([]string{"komizo", "run", "--directory", root}, targets...)
@@ -219,4 +249,29 @@ func environmentForRuntime(root, runtimeRoot string) []string {
 		"KOMIZO_CONTRACT=" + filepath.Join(root, ".artifacts", "komizo", "contract.json"),
 		"KOMIZO_TOOLCHAIN=" + filepath.Join(root, ".komizo.mise.toml"), "PYTHONDONTWRITEBYTECODE=1", "GOTOOLCHAIN=local",
 		"MISE_OVERRIDE_CONFIG_FILENAMES=.komizo.mise.toml", "MISE_TRUSTED_CONFIG_PATHS=" + root}
+}
+
+func toolchainEnvironment(environment []string, mise string) []string {
+	for _, entry := range environment {
+		if value, ok := strings.CutPrefix(entry, "PATH="); ok {
+			return setEnv(environment, map[string]string{"PATH": filepath.Dir(mise) + string(os.PathListSeparator) + value})
+		}
+	}
+	return setEnv(environment, map[string]string{"PATH": filepath.Dir(mise)})
+}
+
+func (result *Result) failed(err error) {
+	if err == nil {
+		return
+	}
+	result.Completed = false
+	if result.ExitCode <= 0 {
+		result.ExitCode = 1
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		result.ExitCode = 124
+	}
+	if errors.Is(err, context.Canceled) {
+		result.ExitCode = 130
+	}
 }

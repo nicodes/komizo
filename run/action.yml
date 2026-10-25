@@ -1,0 +1,154 @@
+name: Run project stages
+description: Run the locked Komizo project stages with optional compiler and image caches
+inputs:
+  target:
+    description: Space-separated project stages or named tasks
+    required: false
+    default: check
+  build-cache:
+    description: Restore explicitly selected BuildKit component caches
+    required: false
+    default: 'false'
+  go-cache:
+    description: Reuse native Go compiler entries; opt in only when external library inputs are bound
+    required: false
+    default: 'false'
+  web-cache:
+    description: Restore separately bound Expo compiler caches; always rebuild and verify outputs
+    required: false
+    default: 'false'
+  directory:
+    description: Project directory
+    required: false
+    default: .
+  tools:
+    description: Optional declared tool subset for named tasks
+    required: false
+    default: ''
+  timeout:
+    description: Command execution deadline
+    required: false
+    default: 2h
+runs:
+  using: composite
+  steps:
+    - name: Verify adapter source
+      shell: bash
+      env:
+        KOMIZO_ACTION_SOURCE: ${{ github.action_ref }}
+        KOMIZO_DIRECTORY: ${{ inputs.directory }}
+      run: |
+        python3 - <<'PYTHON'
+        import json, os, re
+        from pathlib import Path
+        lock = json.loads((Path(os.environ['KOMIZO_DIRECTORY'])/'komizo.lock').read_text())
+        source = os.environ['KOMIZO_ACTION_SOURCE']
+        if not re.fullmatch('[a-f0-9]{40}', source) or lock['platform_revision'] != source:
+            raise SystemExit('Pin the run action to the same source as the locked Komizo release')
+        PYTHON
+    - name: Start cache setup measurement
+      id: cache-start
+      shell: bash
+      run: python3 -c 'import time; print("started="+str(time.monotonic()))' >> "$GITHUB_OUTPUT"
+    - name: Restore native Go compiler entries
+      id: go-cache
+      if: inputs.go-cache == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/fleet-go-compiler
+        key: gocompiler-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.repository }}-${{ github.job }}-${{ hashFiles('komizo.lock', '**/go.mod', '**/go.sum') }}-${{ github.sha }}
+        restore-keys: |
+          gocompiler-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.repository }}-${{ github.job }}-${{ hashFiles('komizo.lock', '**/go.mod', '**/go.sum') }}-
+    - name: Restore web compiler transforms
+      id: web-cache
+      if: inputs.web-cache == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ runner.temp }}/fleet-webcompiler/*/metro-cache
+          ${{ runner.temp }}/fleet-webcompiler/*/state.json
+        key: webcompiler-v2-${{ runner.os }}-${{ github.repository }}-${{ github.sha }}
+        restore-keys: |
+          webcompiler-v2-${{ runner.os }}-${{ github.repository }}-
+    - name: Restore component layer caches
+      id: layer-cache
+      if: inputs.build-cache == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/fleet-buildkit
+        key: layers-${{ runner.os }}-${{ github.repository }}-${{ github.sha }}
+        restore-keys: |
+          layers-${{ runner.os }}-${{ github.repository }}-
+    - name: "Set up Docker Buildx"
+      if: inputs.build-cache == 'true'
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+    - name: Record cache setup evidence
+      if: always()
+      continue-on-error: true
+      shell: bash
+      env:
+        KOMIZO_DIRECTORY: ${{ inputs.directory }}
+        CACHE_STARTED_AT: ${{ steps.cache-start.outputs.started }}
+        GO_CACHE_ENABLED: ${{ inputs.go-cache }}
+        GO_CACHE_HIT: ${{ steps.go-cache.outputs.cache-hit }}
+        WEB_CACHE_ENABLED: ${{ inputs.web-cache }}
+        WEB_CACHE_HIT: ${{ steps.web-cache.outputs.cache-hit }}
+        LAYER_CACHE_ENABLED: ${{ inputs.build-cache }}
+        LAYER_CACHE_HIT: ${{ steps.layer-cache.outputs.cache-hit }}
+      run: >-
+        komizo exec --directory "$KOMIZO_DIRECTORY" --tools python --
+        python3 -c 'import os,runpy;runpy.run_path(os.environ["CICD_ENGINEERING"]+"/helpers/cache-evidence.py",run_name="__main__")'
+
+    - name: Run project stages
+      shell: bash
+      env:
+        ENGINEERING_TARGET: ${{ inputs.target }}
+        KOMIZO_DIRECTORY: ${{ inputs.directory }}
+        KOMIZO_TOOLS: ${{ inputs.tools }}
+        KOMIZO_TIMEOUT: ${{ inputs.timeout }}
+        CACHE_ENABLED: ${{ inputs.build-cache }}
+        WEB_CACHE_ENABLED: ${{ inputs.web-cache }}
+        GO_CACHE_ENABLED: ${{ inputs.go-cache }}
+      run: |
+        set -euo pipefail
+        target_pattern='^[a-z][a-z0-9]*(-[a-z0-9]+)*( [a-z][a-z0-9]*(-[a-z0-9]+)*)*$'
+        [[ "$ENGINEERING_TARGET" =~ $target_pattern ]] || { echo 'Malformed target list' >&2; exit 1; }
+        read -r -a targets <<< "$ENGINEERING_TARGET"
+        if [ "$CACHE_ENABLED" = true ]; then
+          export FLEET_BUILDKIT_CACHE="$RUNNER_TEMP/fleet-buildkit"
+        fi
+        if [ "${WEB_CACHE_ENABLED:-false}" = true ]; then
+          export FLEET_WEB_CACHE="$RUNNER_TEMP/fleet-webcompiler"
+        fi
+        if [ "${GO_CACHE_ENABLED:-false}" = true ]; then
+          export GOCACHE="$RUNNER_TEMP/fleet-go-compiler"
+        fi
+        arguments=(run --directory "$KOMIZO_DIRECTORY" --timeout "$KOMIZO_TIMEOUT")
+        if [ -n "$KOMIZO_TOOLS" ]; then arguments+=(--tools "$KOMIZO_TOOLS"); fi
+        komizo "${arguments[@]}" "${targets[@]}"
+    - name: Summarize project stages
+      if: always()
+      shell: bash
+      env:
+        KOMIZO_DIRECTORY: ${{ inputs.directory }}
+      run: |
+        if [ -f "$KOMIZO_DIRECTORY/.artifacts/contract/timings.jsonl" ]; then
+          komizo exec --directory "$KOMIZO_DIRECTORY" --tools python -- python3 -c 'import os,runpy;runpy.run_path(os.environ["CICD_ENGINEERING"]+"/helpers/timing-summary.py",run_name="__main__")' --summary "$GITHUB_STEP_SUMMARY"
+        fi
+      continue-on-error: true
+    - name: "Upload artifacts"
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: engineering-${{ github.job }}-${{ github.run_attempt }}-${{ github.action }}
+        path: |
+          ${{ inputs.directory }}/.artifacts/contract/timings.jsonl
+          ${{ inputs.directory }}/.artifacts/contract/build.json
+          ${{ inputs.directory }}/.artifacts/contract/test.json
+          ${{ inputs.directory }}/.artifacts/contract/cache.json
+          ${{ inputs.directory }}/.artifacts/contract/verification-plan.json
+          ${{ inputs.directory }}/.artifacts/contract/failure.json
+        include-hidden-files: true
+        if-no-files-found: ignore
+        retention-days: 30
+      continue-on-error: true

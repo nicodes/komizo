@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: e4a0eaabe75a21ca286b348b2fe9b334d591e700d1cc6e66d03d30f039d666f7 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 462c4c510ab1a859db35c553de0a97b5e90235404303df58a41cf82c8437538f -->
 
 # Komizo
 
@@ -14,7 +14,7 @@ komizo check
 komizo status
 ```
 
-`komizo.json` declares the recipe, exact tool versions, project commands and development credential selection. `komizo.lock` binds those inputs to the installed Komizo release and its bundled runtime. Komizo installs the declared tools automatically. `komizo check` runs applicable verification and records source and artifact receipts; unchanged outputs are reused only while their recorded inputs and bytes still match.
+`komizo.json` declares the recipe, project commands and development credential selection. Recipes supply exact tool versions; `tools` overrides only the versions or tools a project needs to change. `komizo.lock` binds those inputs to the installed Komizo release and its bundled runtime. Komizo installs the declared tools automatically. `komizo check` runs applicable verification and records source and artifact receipts; unchanged outputs are reused only while their recorded inputs and bytes still match.
 
 To adopt an existing project:
 
@@ -31,6 +31,8 @@ Static sites use Bun install/build/dev and `scripts/test-site.sh` for their outp
 Development runs in the foreground until Ctrl-C. The declared default selects Preview credentials where supported; `komizo dev --mode local` selects offline fixtures. `--mode preview` requests Preview explicitly. Selected credentials are injected into the child process environment and are never written to a `.env` file. Development credential retrieval requires the repository's trusted `ghenv.yml` workflow and GitHub CLI authentication. Production credentials are excluded from that handoff.
 
 Host setup records a private repository-to-host binding in the workstation's Komizo configuration directory. Once an operator has configured that binding, `komizo deploy` selects the checkout's clean committed revision, `komizo preview --pr NUMBER` uses its declared published images, and `komizo status` reads its installed health. Explicit `--host` and `--app` remain available. Project manifests cannot grant host authority. Deployments and previews require their published images and the host's existing authorization checks.
+
+Use `komizo run --tools python TASK` or `komizo exec --tools python -- COMMAND` for a named maintenance task that only needs selected declared tools. Verification stages always use the complete recipe toolchain. `komizo describe` reports the resolved tools.
 
 All project commands accept `--directory DIR`. Finite commands accept `--timeout DURATION`; development has no deadline unless one is selected. Verification failures include a focused rerun command.
 
@@ -49,15 +51,17 @@ steps:
   - run: komizo check
 ```
 
+For compiler or image caches and retained verification receipts, run `nicodes/komizo/run` at the same pinned source after setup. Its `target` input selects stages, with `check` as the default; optional `go-cache`, `web-cache` and `build-cache` inputs enable the corresponding caches.
+
 The job needs read access to repository contents and attestations. Project source verification does not require deployment credentials. Publication and deployment remain separate authorized steps.
 
 ## Install
 
-Download a matching Darwin/Linux, arm64/x86_64 archive from [releases](https://github.com/nicodes/komizo/releases). These examples pin v0.1.0, including structured management results and exact-stage platform recovery. Verify its checksum and GitHub attestation before executing it. The workstation needs SSH; platform maintenance also uses Python 3. The application server uses Alpine Linux with OpenRC, amd64 or arm64, and root SSH access.
+Download a matching Darwin/Linux, arm64/x86_64 archive from [releases](https://github.com/nicodes/komizo/releases). These examples pin v0.1.1, including structured management results and exact-stage platform recovery. Verify its checksum and GitHub attestation before executing it. The workstation needs SSH; platform maintenance also uses Python 3. The application server uses Alpine Linux with OpenRC, amd64 or arm64, and root SSH access.
 
 ```sh
 # Linux x86_64; choose the matching archive for your workstation.
-gh release download v0.1.0 --repo nicodes/komizo \
+gh release download v0.1.1 --repo nicodes/komizo \
   -p komizo_Linux_x86_64.tar.gz -p checksums.txt
 sha256sum -c checksums.txt --ignore-missing
 gh attestation verify komizo_Linux_x86_64.tar.gz --repo nicodes/komizo
@@ -65,7 +69,7 @@ tar xzf komizo_Linux_x86_64.tar.gz
 ./komizo capabilities
 ```
 
-Release archives embed both host architectures and need no Go compiler. Published releases include attested acceptance and performance receipts for the declared disposable Alpine test profile. With the matching Go toolchain, the source alternative is `go run github.com/nicodes/komizo@v0.1.0 --json setup --host root@your-server`; it builds the matching host executable when needed. Use only hosts you own or administer.
+Release archives embed both host architectures and need no Go compiler. Published releases include attested acceptance and performance receipts for the declared disposable Alpine test profile. With the matching Go toolchain, the source alternative is `go run github.com/nicodes/komizo@v0.1.1 --json setup --host root@your-server`; it builds the matching host executable when needed. Use only hosts you own or administer.
 
 ## Agent journey
 
