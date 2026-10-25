@@ -27,3 +27,7 @@ elif [ -z "${got#komizo }" ] || [ "${got#komizo }" = "$got" ]; then
   exit 1
 fi
 
+
+if [[ ${GITHUB_ACTIONS:-} == true ]]; then
+  bash tools/engineering/cold-project.sh
+fi
