@@ -12,7 +12,6 @@ import re
 import subprocess
 import zipfile
 
-import yaml
 
 spec = importlib.util.spec_from_file_location('dependency_policy', Path(__file__).with_name('dependency-policy.py'))
 policy_engine = importlib.util.module_from_spec(spec)
@@ -96,25 +95,14 @@ def metadata(commits, head):
     blocks = re.findall(r'^---\s*\n(updated-dependencies:\n.*?)(?:^\.\.\.\s*$)', message, re.M | re.S)
     if len(blocks) != 1:
         raise ValueError('one signed dependency metadata block required')
-    # No YAML aliases or custom objects are needed by Dependabot's scalar metadata.
-    if any(isinstance(token, (yaml.tokens.AliasToken, yaml.tokens.AnchorToken, yaml.tokens.TagToken))
-           for token in yaml.scan(blocks[0])):
-        raise ValueError('unexpected YAML indirection in bot metadata')
-    class UniqueLoader(yaml.SafeLoader):
-        pass
-    def mapping(loader, node, deep=False):
-        result = {}
-        for key, val in node.value:
-            key = loader.construct_object(key, deep=deep)
-            if key in result:
-                raise ValueError('duplicate metadata key')
-            result[key] = loader.construct_object(val, deep=deep)
-        return result
-    UniqueLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, mapping)
-    value = yaml.load(blocks[0], Loader=UniqueLoader)
-    if not isinstance(value, dict) or set(value) != {'updated-dependencies'}:
-        raise ValueError('unexpected dependency metadata')
-    return value['updated-dependencies']
+    result = subprocess.run([os.environ['KOMIZO_EXECUTABLE'], '--json', 'metadata'],
+        input=blocks[0].encode(), capture_output=True, timeout=10)
+    if result.returncode or len(result.stdout)>65536:
+        raise ValueError('dependency metadata parser refused the signed block')
+    envelope=json.loads(result.stdout)
+    if envelope.get('ok') is not True or not isinstance(envelope.get('data'),dict):
+        raise ValueError('invalid dependency metadata parser response')
+    return envelope['data']['updated-dependencies']
 
 
 def integration(repo, head, base, run, policy):
@@ -293,7 +281,7 @@ def main():
     for number in numbers:
         try:
             row = inspect(repo, number, base, policy, args.apply)
-        except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError, yaml.YAMLError, zipfile.BadZipFile) as error:
+        except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError, zipfile.BadZipFile) as error:
             row = {'pull_request': number, 'state': 'error', 'reason': str(error)[:1000]}
         rows.append(row)
         print(json.dumps(row), flush=True)

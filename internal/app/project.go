@@ -10,6 +10,7 @@ import (
 	"io"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/nicodes/komizo/internal/project"
@@ -45,6 +46,10 @@ func projectCommand(parent context.Context, args []string, in io.Reader, out, pr
 	if name == "dev" || name == "run" {
 		fs.StringVar(&mode, "mode", "auto", "auto, preview or local development")
 	}
+	var tools string
+	if name == "run" || name == "exec" {
+		fs.StringVar(&tools, "tools", "", "comma-separated declared tools for a named task or explicit command")
+	}
 	defaultTimeout := 30 * time.Minute
 	if name == "dev" {
 		defaultTimeout = 0
@@ -55,12 +60,30 @@ func projectCommand(parent context.Context, args []string, in io.Reader, out, pr
 	code := 0
 	if err = fs.Parse(args[1:]); err == nil {
 		*root, err = filepath.Abs(*root)
+		if err == nil {
+			*root, err = filepath.EvalSymlinks(*root)
+		}
 	}
-	if err == nil && (*timeout < 0 || *timeout == 0 && name != "dev" || *timeout > 24*time.Hour) {
+	if err == nil && name == "run" && fs.NArg() == 1 && fs.Arg(0) == "dev" {
+		explicit := false
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "timeout" {
+				explicit = true
+			}
+		})
+		if !explicit {
+			*timeout = 0
+		}
+	}
+	if err == nil && (*timeout < 0 || *timeout == 0 && name != "dev" && !(name == "run" && fs.NArg() == 1 && fs.Arg(0) == "dev") || *timeout > 24*time.Hour) {
 		err = errors.New("execution deadline must be positive and no more than 24h")
 	}
-	if err == nil && machine && name == "dev" {
+	if err == nil && machine && (name == "dev" || name == "run" && slices.Contains(fs.Args(), "dev")) {
 		err = errors.New("dev is an interactive foreground command; run komizo dev without --json")
+	}
+	var selected []string
+	if tools != "" {
+		selected = strings.Split(tools, ",")
 	}
 	if err == nil {
 		switch name {
@@ -96,7 +119,7 @@ func projectCommand(parent context.Context, args []string, in io.Reader, out, pr
 				stream = progress
 			}
 			var result project.Result
-			result, err = project.Exec(ctx, *root, versionText(), fs.Args(), in, stream, progress)
+			result, err = project.Exec(ctx, *root, versionText(), fs.Args(), selected, in, stream, progress)
 			data, code = result, result.ExitCode
 		default:
 			targets := []string{name}
@@ -113,7 +136,7 @@ func projectCommand(parent context.Context, args []string, in io.Reader, out, pr
 			ctx, cancel := projectDeadline(parent, *timeout)
 			defer cancel()
 			var result project.Result
-			result, err = project.Execute(ctx, *root, versionText(), targets, mode, in, progress)
+			result, err = project.Execute(ctx, *root, versionText(), targets, mode, selected, in, progress)
 			data, code = result, result.ExitCode
 		}
 	}
@@ -134,6 +157,7 @@ func projectCommand(parent context.Context, args []string, in io.Reader, out, pr
 				result.Error.Code = "timeout"
 			}
 			if r, ok := data.(project.Result); ok {
+				result.Error.ReconciliationRequired = r.ReconciliationRequired
 				result.NextAction = r.NextAction
 			}
 		}

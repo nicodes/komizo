@@ -126,3 +126,43 @@ func TestReleaseWorkflowRetainsSerializationAndMainTrust(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestNamedOperationsCannotBeSuccessfulPlaceholders(t *testing.T) {
+	for _, command := range []string{"true", "echo", ":"} {
+		root := manifestFixture(t, `{"version":1,"recipe":"static-site","tasks":{"production-verification":[["`+command+`"]]}}`)
+		if _, err := WriteLock(root, "test-platform"); err != nil {
+			t.Fatal(err)
+		}
+		// A project without CI still validates its fixed operational tasks.
+		if _, err := Validate(root, "test-platform"); err == nil {
+			t.Fatal("successful operational placeholder accepted", command)
+		}
+	}
+}
+
+func TestPreviewLifecycleMustRetainCleanup(t *testing.T) {
+	root := workflowProject(t, workflowFixture)
+	path := filepath.Join(root, ".github/workflows/pr-preview.yml")
+	content := `name: PR Preview
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+jobs:
+  preview:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: 'true'
+`
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Validate(root, "test-platform"); err == nil {
+		t.Fatal("preview cleanup was optional")
+	}
+	if err := os.WriteFile(path, []byte(strings.Replace(content, "ready_for_review]", "ready_for_review, closed]", 1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Validate(root, "test-platform"); err != nil {
+		t.Fatal(err)
+	}
+}

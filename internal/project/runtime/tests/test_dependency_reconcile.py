@@ -3,6 +3,9 @@ import base64
 import copy
 import importlib.util
 import io
+import os
+import subprocess
+import tempfile
 import json
 from pathlib import Path
 import unittest
@@ -14,6 +17,21 @@ import zipfile
 spec = importlib.util.spec_from_file_location('reconcile', Path(__file__).resolve().parents[1]/'helpers/dependency-reconcile.py')
 reconcile = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(reconcile)
+
+
+def setUpModule():
+    global _directory, _environment
+    _directory = tempfile.TemporaryDirectory()
+    executable = str(Path(_directory.name)/'komizo')
+    source = Path(__file__).resolve().parents[4]
+    subprocess.run(['go', 'build', '-o', executable, '.'], cwd=source, check=True, capture_output=True, timeout=120)
+    _environment = patch.dict(os.environ, {'KOMIZO_EXECUTABLE':executable})
+    _environment.start()
+
+
+def tearDownModule():
+    _environment.stop()
+    _directory.cleanup()
 
 
 class DependencyGroups(unittest.TestCase):

@@ -273,7 +273,8 @@ class Runner:
             failure = {'version': 1, 'stage': name, 'exit_code': result,
                        'source_commit': self.source_commit,
                        'execution_context': execution_context(),
-                       'rerun': ['komizo', 'run', name],
+                       'rerun': [] if name in self.data.get('tasks', {}) else ['komizo', 'run', name],
+                       'reconciliation_required': name in self.data.get('tasks', {}),
                        'timings': '.artifacts/contract/timings.jsonl'}
             try:
                 (self.root/'failure.json').write_text(json.dumps(failure, sort_keys=True)+'\n')
@@ -308,9 +309,9 @@ def main():
     if args.targets == ['validate']:
         print('engineering contract v1: valid')
     elif args.targets == ['help']:
-        print('Make targets: '+', '.join((*STAGES, *GROUPS)))
+        print('Project stages: '+', '.join((*STAGES, *GROUPS)))
     else:
-        # Checkout-wide lock: separate Make processes and make -j cannot race
+        # Checkout-wide lock: concurrent verification commands cannot race
         # shared outputs. Put it outside cleanable artifacts to preserve ownership.
         git_dir = Path(subprocess.check_output(['git', 'rev-parse', '--git-path', 'engineering.lock'], text=True).strip())
         if any(target in ('dev', 'stop') for target in args.targets):
@@ -319,10 +320,18 @@ def main():
             Runner(data).stage(args.targets[0])
             return
         with git_dir.open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
             runner = Runner(data)
             for target in args.targets:
-                runner.stage(target)
+                if target in data.get('tasks', {}):
+                    # Named tasks may compose verification commands. Their
+                    # child stages acquire the same checkout lock themselves.
+                    runner.stage(target)
+                    continue
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                try:
+                    runner.stage(target)
+                finally:
+                    fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 if __name__ == '__main__':

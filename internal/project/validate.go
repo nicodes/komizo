@@ -101,6 +101,21 @@ func Validate(root, platform string) (Validation, error) {
 	if err = CheckLock(root, platform, data, m); err != nil {
 		return report, err
 	}
+	for name, raw := range m.Tasks {
+		if _, operation := workflowNames[name+".yml"]; !operation {
+			continue
+		}
+		var commands [][]string
+		if err = decode(raw, &commands); err != nil {
+			return report, err
+		}
+		for _, command := range commands {
+			if len(command) == 0 || command[0] == "echo" || command[0] == "true" || command[0] == ":" {
+				return report, errors.New("successful placeholders are not operations")
+			}
+		}
+	}
+
 	policy := WorkflowPolicy{Required: []string{"ci.yml"}}
 	if raw := m.Validation["workflow"]; len(raw) > 0 {
 		if err = decode(raw, &policy); err != nil {
@@ -134,6 +149,9 @@ func Validate(root, platform string) (Validation, error) {
 		b, err := os.ReadFile(filepath.Join(folder, name))
 		if err != nil {
 			return report, err
+		}
+		if len(b) > 1<<20 {
+			return report, errors.New("workflow exceeds 1 MiB")
 		}
 		var node yaml.Node
 		if err = yaml.Unmarshal(b, &node); err != nil {
@@ -189,6 +207,20 @@ func Validate(root, platform string) (Validation, error) {
 			for _, gate := range policy.CIGates {
 				if !seen[gate] {
 					return report, fmt.Errorf("required CI gate %s is absent", gate)
+				}
+			}
+		}
+		if name == "pr-preview.yml" {
+			types, _ := mapping(events["pull_request"])["types"].([]any)
+			seen := map[string]bool{}
+			for _, value := range types {
+				if name, ok := value.(string); ok {
+					seen[name] = true
+				}
+			}
+			for _, required := range []string{"opened", "synchronize", "reopened", "ready_for_review", "closed"} {
+				if !seen[required] {
+					return report, errors.New("preview lifecycle requires ready and cleanup events")
 				}
 			}
 		}
@@ -259,30 +291,7 @@ func Validate(root, platform string) (Validation, error) {
 		sort.Strings(names)
 		return report, fmt.Errorf("required workflows missing: %s", strings.Join(names, ", "))
 	}
-	if operations := m.Validation["operations"]; len(operations) > 0 {
-		var specs map[string]struct {
-			Commands [][]string `json:"commands"`
-			Timeout  int        `json:"timeout_seconds,omitempty"`
-		}
-		if err = decode(operations, &specs); err != nil {
-			return report, err
-		}
-		for name, spec := range specs {
-			if len(spec.Commands) == 0 {
-				return report, fmt.Errorf("%s has no operation", name)
-			}
-			for _, command := range spec.Commands {
-				if len(command) == 0 || command[0] == "echo" || command[0] == "true" || command[0] == ":" {
-					return report, errors.New("successful placeholders are not operations")
-				}
-				for _, arg := range command {
-					if arg == "" || strings.ContainsRune(arg, 0) {
-						return report, errors.New("invalid fixed operation arguments")
-					}
-				}
-			}
-		}
-	}
+
 	report.Checks = []string{"manifest", "platform lock", "workflow purposes", "immutable action pins", "privileged source boundaries", "fixed operations"}
 	return report, nil
 }
