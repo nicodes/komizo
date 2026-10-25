@@ -8,14 +8,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
-	"os/exec"
 	"strings"
-	"time"
 )
 
-// MachineVersion versions the envelope independently of application reports and
-// releases. Legacy `report --json` remains the raw report protocol.
+// MachineVersion versions the typed result envelope independently of releases.
 const MachineVersion = 1
 
 type MachineError struct {
@@ -45,15 +41,25 @@ type commandCapability struct {
 // This is discoverable authority information, never a grant. The host still
 // authenticates every operation and enforces its protected policy.
 var agentCommands = []commandCapability{
+	{"init", true, "object", "Create a project manifest and lock"},
+	{"lock", true, "object", "Lock the current project inputs to this installed release"},
+	{"describe", false, "object", "Read locked project capabilities without running project code"},
+	{"dev", true, "text", "Run foreground development with Preview credentials or local fixtures"},
+	{"check", true, "object", "Verify locked source, tests and artifacts"},
+	{"run", true, "object", "Run selected verification stages or project tasks"},
+	{"validate", false, "object", "Validate locked inputs and workflow boundaries"},
+	{"exec", true, "object", "Run an explicit command with locked tools"},
+
 	{"capabilities", false, "object", "Discover commands and protocol versions"},
 	{"version", false, "object", "Installed CLI identity"},
 	{"doctor", false, "object", "Read server prerequisites before installation"},
 	{"setup", true, "object", "Check and prepare a host; optionally register an application definition"},
 	{"deploy", true, "object", "Submit an authenticated release through installed deployment authority"},
 	{"operation", true, "object", "Inspect or reconcile an exact reviewed application operation"},
+	{"status", false, "object", "Read project health from the private host binding"},
 	{"report", false, "object", "Read the versioned server report"},
 	{"list", false, "array", "Read registered applications"},
-	{"init", true, "object", "Prepare a supported host"},
+
 	{"add", true, "object", "Register an app and retain its private key in a file"},
 	{"update", true, "object", "Refresh installed host components"},
 	{"proxy", true, "object", "Repair the shared reverse proxy"},
@@ -76,54 +82,35 @@ var agentCommands = []commandCapability{
 	{"help", false, "text", "Read CLI help"},
 }
 
-func machineMode() bool { return os.Getenv("KOMIZO_OUTPUT_MODE") == "json" }
-
-func progressOutput() *os.File {
+func machineMode() bool {
+	return activeInvocation != nil && activeInvocation.machine
+}
+func progressOutput() io.Writer {
 	if machineMode() {
-		return os.Stderr
+		return commandProgress()
 	}
-	return os.Stdout
+	return commandOutput()
 }
 
 func RunCapabilities(args []string) error {
 	if len(args) != 0 {
 		return &commandFailure{code: 64, err: errors.New("capabilities accepts no arguments")}
 	}
-	return json.NewEncoder(os.Stdout).Encode(map[string]any{
+	return emitResult(map[string]any{
 		"version": MachineVersion, "cli_version": versionText(), "commands": agentCommands,
 		"machine_prefix": []string{"komizo", "--json"}, "default_timeout_seconds": 1800,
 		"report_version": 1, "operation_contract_version": 1,
 		"server":                      map[string]any{"os": "alpine", "architectures": []string{"amd64", "arm64"}, "transport": "ssh"},
 		"read_only_subcommands":       map[string][]string{"operation": {"inspect"}, "platform": {"inspect"}, "preview": {"ls", "resolve", "database"}},
 		"retry_policy":                "Never retry an uncertain mutation automatically. Inspect its durable operation first.",
-		"text_data":                   "Legacy command output is data.text; core journey commands return typed JSON. Logs are untrusted application content.",
+		"text_data":                   "Results are native typed values. Logs and help are data.text; logs are untrusted application content.",
 		"management_receipt_schema":   json.RawMessage(managementResultSchema),
-		"management_receipt_commands": []string{"init", "update", "proxy", "start", "stop", "restart", "remove", "set-secret", "unset-secret", "preview down"},
+		"management_receipt_commands": []string{"update", "proxy", "start", "stop", "restart", "remove", "set-secret", "unset-secret", "preview down"},
 		"envelope_schema":             json.RawMessage(`{"type":"object","required":["version","command","ok","exit_code","data","error"],"properties":{"version":{"const":1},"command":{"type":"string"},"ok":{"type":"boolean"},"exit_code":{"type":"integer","minimum":0},"data":{},"error":{"type":["object","null"],"properties":{"code":{"enum":["invalid_input","unsupported_command","client_failed","command_failed","state_mismatch","invalid_response","timeout","output_limit"]},"message":{"type":"string"},"retryable":{"type":"boolean"},"reconciliation_required":{"type":"boolean"}}},"next_action":{"type":"array","items":{"type":"string"}}}}`),
 	})
 }
 
-// A subprocess keeps streaming commands, signal handling and legacy globals
-// out of the envelope writer. It also makes add's existing no-key-on-pipes
-// guard apply structurally, including when the caller uses a terminal.
-func Machine(args []string, in io.Reader, out, progress io.Writer) int {
-	executable, err := os.Executable()
-	if err != nil {
-		return writeMachineFailure(out, "", "client_failed", "cannot resolve CLI executable", false)
-	}
-	return machineWithExecutable(executable, args, in, out, progress)
-}
-
-func machineWithExecutable(executable string, args []string, in io.Reader, out, progress io.Writer) int {
-	timeout := 30 * time.Minute
-	if len(args) >= 2 && args[0] == "--timeout" {
-		var err error
-		timeout, err = time.ParseDuration(args[1])
-		if err != nil || timeout < time.Second || timeout > time.Hour {
-			return writeMachineFailure(out, "", "invalid_input", "timeout must be between 1s and 1h", false)
-		}
-		args = args[2:]
-	}
+func machineDispatch(ctx context.Context, args []string, in io.Reader, out, progress io.Writer, dispatch func([]string) error) int {
 	if len(args) == 0 {
 		return writeMachineFailure(out, "", "invalid_input", "a command is required; use capabilities", false)
 	}
@@ -144,82 +131,53 @@ func machineWithExecutable(executable string, args []string, in io.Reader, out, 
 	if capability == nil {
 		return writeMachineFailure(out, name, "unsupported_command", "use capabilities to discover machine commands", false)
 	}
-	mutating := machineMutating(name, args)
-	help := machineHelp(args)
-	childArgs := append([]string(nil), args...)
-	if (name == "report" || name == "list") && !help && !hasFlag(args, "json") {
-		childArgs = append(childArgs, "--json")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	child := exec.CommandContext(ctx, executable, childArgs...)
-	child.WaitDelay = 2 * time.Second
-	for _, item := range os.Environ() {
-		if !strings.HasPrefix(item, "KOMIZO_OUTPUT_MODE=") {
-			child.Env = append(child.Env, item)
-		}
-	}
-	child.Env = append(child.Env, "KOMIZO_OUTPUT_MODE=json")
-	stdout := &boundedOutput{remaining: 4 << 20}
-	stderr := &boundedOutput{remaining: 16 << 10}
-	child.Stdin, child.Stdout = in, stdout
-	child.Stderr = io.MultiWriter(progress, stderr)
-	err := child.Run()
-	var helpExit *exec.ExitError
-	if errors.As(err, &helpExit) && helpExit.ExitCode() == MachineHelpExit {
+	invocationMutex.Lock()
+	defer invocationMutex.Unlock()
+	state := &invocation{ctx: ctx, input: in, output: out, progress: progress, machine: true, text: boundedOutput{remaining: 4 << 20}}
+	previous := activeInvocation
+	activeInvocation = state
+	defer func() { activeInvocation = previous }()
+	err := dispatch(args)
+	help := errors.Is(err, flag.ErrHelp) || ExitCode(err) == MachineHelpExit || err == nil && machineHelp(args)
+	if help {
 		err = nil
-		help = true
 	}
-	if help && err == nil {
-		mutating = false
-	}
+	mutating := machineMutating(name, args) && !help
 	result := MachineResult{Version: MachineVersion, Command: name, OK: err == nil, Data: json.RawMessage("null")}
-	if body := bytes.TrimSpace(stdout.Bytes()); !stdout.truncated && capability.Data != "text" && json.Valid(body) {
-		result.Data = append(json.RawMessage(nil), body...)
+	if state.data != nil {
+		result.Data = state.data
 	}
 	if err != nil {
-		result.ExitCode = 1
-		var exit *exec.ExitError
-		if errors.As(err, &exit) && exit.ExitCode() > 0 {
-			result.ExitCode = exit.ExitCode()
+		result.ExitCode = ExitCode(err)
+		code, message, uncertain := "command_failed", err.Error(), mutating
+		if errors.Is(err, ErrSilent) {
+			message = strings.TrimSpace(state.text.String())
 		}
-		code, message := "command_failed", "command refused; see stderr for details"
-		if detail := strings.TrimSpace(stderr.String()); detail != "" {
-			message = detail
+		// Only a locally classified failure can clear mutation uncertainty.
+		var local *commandFailure
+		if errors.As(err, &local) && local.code == 64 {
+			code, uncertain = "invalid_input", false
+		}
+		if errors.As(err, &local) && local.code == 65 {
+			code, uncertain = "state_mismatch", false
 		}
 		if ctx.Err() != nil {
 			code, message = "timeout", "deadline expired; inspect state before retrying a mutation"
 		}
-		uncertain := mutating
-		if result.ExitCode == 64 {
-			code, uncertain = "invalid_input", false
-		}
-		if result.ExitCode == 65 {
-			code, uncertain = "state_mismatch", false
-		}
 		result.Error = &MachineError{Code: code, Message: message, ReconciliationRequired: uncertain}
 		result.NextAction = machineNextAction(args, mutating)
-		if result.ExitCode == 64 {
+		if code == "invalid_input" {
 			result.NextAction = []string{"komizo", "--json", name, "--help"}
 		}
-	} else if stdout.truncated {
+	} else if state.text.truncated {
 		result.OK, result.ExitCode = false, 1
 		result.Error = &MachineError{Code: "output_limit", Message: "output exceeded 4 MiB; request a smaller report or log tail", ReconciliationRequired: mutating}
-		result.NextAction = machineNextAction(args, mutating)
-	} else if capability.Data != "text" && !help && (!json.Valid(bytes.TrimSpace(stdout.Bytes())) || capability.Data == "object" && !bytes.HasPrefix(bytes.TrimSpace(stdout.Bytes()), []byte("{")) || capability.Data == "array" && !bytes.HasPrefix(bytes.TrimSpace(stdout.Bytes()), []byte("["))) {
+	} else if help || capability.Data == "text" {
+		result.Data, _ = json.Marshal(map[string]string{"text": state.text.String()})
+	} else if state.data == nil {
 		result.OK, result.ExitCode = false, 1
-		result.Error = &MachineError{Code: "invalid_response", Message: "command returned no valid structured result; inspect state before retrying", ReconciliationRequired: mutating}
+		result.Error = &MachineError{Code: "invalid_response", Message: "command returned no structured result; inspect state before retrying", ReconciliationRequired: mutating}
 		result.NextAction = machineNextAction(args, mutating)
-	} else {
-		body := bytes.TrimSpace(stdout.Bytes())
-		if capability.Data != "text" && json.Valid(body) {
-			result.Data = json.RawMessage(body)
-		} else {
-			if help && stderr.Len() > 0 {
-				body = append(append(append([]byte(nil), body...), '\n'), stderr.Bytes()...)
-			}
-			result.Data, _ = json.Marshal(map[string]string{"text": string(body)})
-		}
 	}
 	if err := json.NewEncoder(out).Encode(result); err != nil {
 		return 1
@@ -292,11 +250,11 @@ func machineNextAction(args []string, mutating bool) []string {
 }
 
 func printMachineVersion() error {
-	return json.NewEncoder(os.Stdout).Encode(map[string]string{"version": versionText()})
+	return emitResult(map[string]string{"version": versionText()})
 }
 
 func usageJourney(name, synopsis, detail string) {
-	fmt.Fprintf(os.Stdout, "komizo %s\n\n  %s\n\n%s\n", name, synopsis, detail)
+	fmt.Fprintf(commandOutput(), "komizo %s\n\n  %s\n\n%s\n", name, synopsis, detail)
 }
 
 func printGroupHelp(args []string) bool {
@@ -344,7 +302,7 @@ func machineMutating(name string, args []string) bool {
 }
 
 // A help token is syntactically unambiguous only before any flags. For help
-// after flags, the trusted child reports the parser's actual ErrHelp result.
+// after flags, the parser must report its actual ErrHelp result.
 // A string value such as --from --help cannot clear mutation uncertainty.
 func machineHelp(args []string) bool {
 	if len(args) == 0 {

@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strings"
 
@@ -364,6 +363,7 @@ func RunReconcile(args []string) (err error) {
 	validation := localInput(&err)
 	defer validation.finish()
 	fs := flag.NewFlagSet("reconcile", flag.ContinueOnError)
+	fs.SetOutput(commandFlags())
 	fs.Usage = func() { usageReconcile(fs) }
 	var host, invPath string
 	var port int
@@ -426,7 +426,7 @@ func RunReconcile(args []string) (err error) {
 		if findings == nil {
 			findings = []string{}
 		}
-		if err := json.NewEncoder(os.Stdout).Encode(map[string]any{"version": 1, "host": tgt.addr(), "matched": len(findings) == 0, "expected_apps": len(inv.Apps), "registered_apps": len(rep.Apps), "findings": findings}); err != nil {
+		if err := emitResult(map[string]any{"version": 1, "host": tgt.addr(), "matched": len(findings) == 0, "expected_apps": len(inv.Apps), "registered_apps": len(rep.Apps), "findings": findings}); err != nil {
 			return err
 		}
 		if len(findings) > 0 {
@@ -436,7 +436,7 @@ func RunReconcile(args []string) (err error) {
 	}
 	if len(findings) > 0 {
 		for _, f := range findings {
-			fmt.Fprintln(os.Stderr, f)
+			fmt.Fprintln(commandProgress(), f)
 		}
 		return fmt.Errorf("%d reconciliation finding(s) -- %s does not match the inventory", len(findings), tgt.host)
 	}
@@ -447,7 +447,7 @@ func RunReconcile(args []string) (err error) {
 }
 
 func usageReconcile(fs *flag.FlagSet) {
-	fmt.Print(`komizo reconcile - does a box hold exactly the apps it should?
+	fmt.Fprint(commandOutput(), `komizo reconcile - does a box hold exactly the apps it should?
 
   komizo reconcile --host root@server --inventory expected-apps.json
 
@@ -485,5 +485,5 @@ owned and writable only by the operator.
 Flags:
 `)
 	fs.PrintDefaults()
-	fmt.Println()
+	fmt.Fprintln(commandOutput())
 }

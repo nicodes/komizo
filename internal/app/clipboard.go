@@ -85,7 +85,7 @@ func copyToSystemClipboard(text string) error {
 	if argv == nil {
 		return fmt.Errorf("no clipboard tool found (looked for wl-copy, pbcopy, xclip, xsel, clip.exe)")
 	}
-	c := exec.Command(argv[0], argv[1:]...)
+	c := commandExec(argv[0], argv[1:]...)
 	c.Stdin = strings.NewReader(text)
 	// The helper forks a child that serves the selection; without this it dies
 	// with us and the paste comes back empty.

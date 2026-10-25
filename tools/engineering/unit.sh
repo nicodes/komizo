@@ -12,3 +12,6 @@ python3 -m unittest discover -s scripts -p preview_database_test.py -v
 python3 -m unittest discover -s scripts -p compressed_swap_test.py -v
 python3 -m unittest discover -s scripts -p publication_prepare_test.py -v
 python3 -m unittest discover -s scripts -p proxy_prepare_test.py -v
+
+node --test setup/setup.test.mjs
+python3 -m unittest discover -s internal/project/runtime/tests -p 'test_*.py' -v

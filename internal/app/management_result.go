@@ -1,10 +1,8 @@
 package app
 
 import (
-	"encoding/json"
 	"errors"
 	"flag"
-	"os"
 )
 
 // A receipt acknowledges successful command completion. It does not claim
@@ -25,7 +23,7 @@ func managementReceipt(action string, tgt target, app string, details map[string
 	if details == nil {
 		details = map[string]any{}
 	}
-	return json.NewEncoder(os.Stdout).Encode(managementResult{Version: 1, Action: action, Host: tgt.addr(), App: app, Details: details, Acknowledged: true})
+	return emitResult(managementResult{Version: 1, Action: action, Host: tgt.addr(), App: app, Details: details, Acknowledged: true})
 }
 
 const MachineHelpExit = 66

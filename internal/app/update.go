@@ -50,6 +50,7 @@ func RunUpdate(args []string) (err error) {
 	validation := localInput(&err)
 	defer validation.finish()
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	fs.SetOutput(commandFlags())
 	fs.Usage = func() { usageUpdate(fs) }
 	var o updateOpts
 	fs.StringVar(&o.host, "host", "", "server to update, [user@]HOST (user defaults to root)")

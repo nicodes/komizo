@@ -10,7 +10,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"os"
 	"runtime/debug"
 	"strings"
 )
@@ -85,8 +84,6 @@ func versionText() string {
 // REGISTER a box, not to OPERATE one. See needsSession.
 func runCommand(name string, args []string) error {
 	switch name {
-	case "init":
-		return RunInit(args)
 	case "update":
 		return RunUpdate(args)
 	case "add":
@@ -95,8 +92,6 @@ func runCommand(name string, args []string) error {
 		return RunList(args)
 	case "report":
 		return RunReport(args)
-	case "enrol":
-		return RunEnrol(args)
 	case "remove":
 		return RunRemove(args)
 	case "set-secret":
@@ -172,13 +167,15 @@ func Main(args []string) (err error) {
 		if machineMode() {
 			return printMachineVersion()
 		}
-		fmt.Println("komizo " + versionText())
+		fmt.Fprintln(commandOutput(), "komizo "+versionText())
 		return nil
 	case "capabilities":
 		if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
 			return RunCapabilities(nil)
 		}
 		return RunCapabilities(args[1:])
+	case "status":
+		return RunStatus(args[1:])
 	case "doctor":
 		return RunDoctor(args[1:])
 	case "setup":
@@ -190,11 +187,7 @@ func Main(args []string) (err error) {
 	// Grouped for what they are rather than for what they need: nothing in this
 	// switch needs an account, and the two operations that do ask where they
 	// happen. Sign-in is here because it is how you get one.
-	case "login":
-		err = RunLogin(args[1:])
-	case "logout":
-		err = RunLogout(args[1:])
-	case "init", "update", "add", "list", "report", "enrol", "remove", "proxy",
+	case "update", "add", "list", "report", "remove", "proxy",
 		"start", "stop", "restart", "logs", "preview", "ui", "reconcile",
 		"set-secret", "unset-secret":
 		// No gate. An account is needed to REGISTER a box, and the two places
@@ -236,9 +229,9 @@ func Main(args []string) (err error) {
 		// generic usage -- somebody typing the thing the README taught them is
 		// the last person who should have to work out what changed.
 		if strings.HasPrefix(args[0], "-") {
-			fmt.Fprintf(os.Stderr, "unknown flag %q\n\n", args[0])
+			fmt.Fprintf(commandProgress(), "unknown flag %q\n\n", args[0])
 			Usage()
-			os.Exit(2)
+			return &commandFailure{code: 64, err: ErrSilent}
 		}
 		// A space in `root @host`. The shell handed this two arguments and the
 		// second carries the hostname, so the address was typed correctly and
@@ -250,9 +243,9 @@ func Main(args []string) (err error) {
 		// address is echoed back, so the suggestion below is not built from
 		// half of one.
 		if len(args) > 1 && strings.HasPrefix(args[1], "@") && !strings.Contains(args[0], "@") {
-			fmt.Fprintf(os.Stderr, "there is a space in the address, so %q was read as the whole host.\n\n    komizo report --host %s%s\n\n",
+			fmt.Fprintf(commandProgress(), "there is a space in the address, so %q was read as the whole host.\n\n    komizo report --host %s%s\n\n",
 				args[0], args[0], args[1])
-			os.Exit(2)
+			return &commandFailure{code: 64, err: ErrSilent}
 		}
 		// RETURNED, not exited on. Every other outcome of this switch comes back
 		// as an error and `Main` is what tests drive -- an os.Exit here takes
@@ -267,57 +260,45 @@ func Main(args []string) (err error) {
 }
 
 func Usage() {
-	fmt.Print(`komizo - operate your own application hosts over SSH
+	fmt.Fprint(commandOutput(), `komizo - develop, verify and operate projects
 
-Start here:
-  komizo capabilities
+Projects:
+  komizo init --recipe static-site|go-service|godot-app
+  komizo dev [--mode preview|local]
+  komizo check
+  komizo run STAGE [STAGE...]
+  komizo describe
+  komizo preview --pr NUMBER
+  komizo deploy
+  komizo status
+  komizo lock
+  komizo exec -- COMMAND [ARGS...]
+
+Hosts:
   komizo doctor --host root@HOST
   komizo setup --host root@HOST [--definition app.json]
   komizo deploy --host root@HOST --app APP --version COMMIT
-  komizo operation inspect --host root@HOST --app APP
+  komizo operation inspect|recover --host root@HOST --app APP
   komizo report --host root@HOST
-
-Agent interface:
-  komizo --json COMMAND [FLAGS]
-  komizo --json --timeout 5m COMMAND [FLAGS]
-
-One versioned JSON result goes to stdout; progress goes to stderr. Discover
-command effects and result formats with capabilities. Failed mutations may
-have completed remotely: inspect their operation before retrying.
-
-Applications:
-  komizo list    --host root@HOST
-  komizo add     --host root@HOST --app APP --config REF --key PRIVATE_FILE
-  komizo start|stop|restart|logs --host root@HOST --app APP
-  komizo remove --host root@HOST --app APP --yes
-  komizo set-secret|unset-secret --host root@HOST --app APP
   komizo preview --help
+  komizo start|stop|restart|logs --host root@HOST --app APP
+  komizo set-secret|unset-secret --host root@HOST --app APP
 
-Host and advanced operations:
-  komizo init|update|proxy --host root@HOST
-  komizo reconcile --host root@HOST --inventory expected-apps.json
-  komizo platform --help
-  komizo operator plan|apply|status|recover|export
-  komizo artifact --arch amd64|arm64 --output NEW_FILE
-  komizo publication prepare --help
-  komizo workspace check|plan|clean --help
-  komizo workload acceptance --help
-  komizo script [init|add|remove|unset-secret|proxy]
-  komizo ui --help
+Use komizo capabilities to discover all commands, or COMMAND --help for inputs.
+komizo.json declares project behavior; komizo.lock binds its platform and tools.
+Private host authority is managed by the operator, independently of project code.
 
-Supported application hosts use Alpine Linux and amd64 or arm64. No hosted
-Komizo account is required. Each app supplies its own Compose artifacts and
-explicit configuration. Run COMMAND --help for options. Legacy login/enrolment
-commands only retain decommissioning and removal behavior.
+Use --json before a command for one typed result on stdout and progress on stderr.
+--timeout 5m sets the deadline. Interrupted host mutations may have completed:
+inspect their recorded operation before retrying. No hosted account is required.
 
 Reconcile performs a reachability preflight and reads the report once. SSH may
-create or tighten ~/.ssh for its control socket; explicit --accept-host-key
-can append to local known_hosts. Reconcile writes nothing on the server.
+create or tighten ~/.ssh; explicit host trust can append to local known_hosts.
 `)
 }
 
 func UsageAdd(fs *flag.FlagSet) {
-	fmt.Print(`komizo add - set an app up on a server, or update one
+	fmt.Fprint(commandOutput(), `komizo add - set an app up on a server, or update one
 
   komizo add --host root@myapp.example.com --app myapp \
     --config ghcr.io/you/myapp-config
@@ -332,11 +313,11 @@ deploy account, so a key that leaks from one repo reaches only that app.
 Flags:
 `)
 	fs.PrintDefaults()
-	fmt.Println()
+	fmt.Fprintln(commandOutput())
 }
 
 func usageList(fs *flag.FlagSet) {
-	fmt.Print(`komizo list - what apps are on a server
+	fmt.Fprint(commandOutput(), `komizo list - what apps are on a server
 
   komizo list --host root@myapp.example.com
 
@@ -346,5 +327,5 @@ A directory under /srv with no script behind it is reported as an orphan.
 Flags:
 `)
 	fs.PrintDefaults()
-	fmt.Println()
+	fmt.Fprintln(commandOutput())
 }

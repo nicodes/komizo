@@ -29,8 +29,10 @@ func RunPreview(args []string) (err error) {
 		sub, args = args[0], args[1:]
 	}
 	fs := flag.NewFlagSet("preview "+sub, flag.ContinueOnError)
+	fs.SetOutput(commandFlags())
 	fs.Usage = func() { usagePreview(fs, sub) }
 	var host, app, profileFile string
+	directory := fs.String("directory", ".", "project directory for private target and image defaults")
 	var profileBody []byte
 	var pr, port int
 	var acceptHostKey bool
@@ -43,6 +45,9 @@ func RunPreview(args []string) (err error) {
 	if err := fs.Parse(args); err != nil {
 		return silentFlagError(err)
 	}
+	if sub == "" {
+		sub = "up"
+	}
 	switch sub {
 	case "up", "down", "resolve", "ls", "gc", "database", "configure":
 	default:
@@ -52,6 +57,21 @@ func RunPreview(args []string) (err error) {
 		return fmt.Errorf("preview database accepts only host connection flags")
 	}
 
+	projectDefault := host == ""
+	m, resolveErr := defaultProjectTarget(*directory, &host, &port, &app)
+	if resolveErr != nil {
+		return resolveErr
+	}
+	images := fs.Args()
+	if projectDefault && sub == "up" && len(images) == 0 {
+		revision, err := projectRevision(*directory)
+		if err != nil {
+			return err
+		}
+		for _, image := range m.Images {
+			images = append(images, strings.ReplaceAll(image, "{revision}", revision))
+		}
+	}
 	if sub == "configure" {
 		if err := validateApp(app); err != nil {
 			return err
@@ -81,10 +101,10 @@ func RunPreview(args []string) (err error) {
 			return fmt.Errorf("--pr must be a positive integer, got %d", pr)
 		}
 	}
-	if sub == "up" && fs.NArg() == 0 {
+	if sub == "up" && len(images) == 0 {
 		return fmt.Errorf("preview up needs at least one image -- a preview is images and nothing else")
 	}
-	for _, image := range fs.Args() {
+	for _, image := range images {
 		if !onlyChars(image, imageChars+"@=") {
 			return fmt.Errorf("image %q contains characters that are not valid in an image reference", image)
 		}
@@ -106,7 +126,7 @@ func RunPreview(args []string) (err error) {
 	if sub == "configure" {
 		remote = append(remote, "--app", app)
 	}
-	remote = append(remote, fs.Args()...)
+	remote = append(remote, images...)
 
 	var sb strings.Builder
 	if sub == "configure" {
@@ -125,12 +145,19 @@ func RunPreview(args []string) (err error) {
 		}
 		return managementReceipt("preview down", tgt, app, map[string]any{"pr": pr})
 	}
-	_, _, err = tgt.runScriptHeardTo(sb.String(), nil, os.Stdout)
+	if machineMode() {
+		body, err := tgt.runCapture(sb.String())
+		if err != nil {
+			return err
+		}
+		return emitProtocol([]byte(body))
+	}
+	_, _, err = tgt.runScriptHeardTo(sb.String(), nil, commandOutput())
 	return err
 }
 
 func usagePreview(fs *flag.FlagSet, sub string) {
-	fmt.Printf(`komizo preview %s - ephemeral PR-preview environments
+	fmt.Fprintf(commandOutput(), `komizo preview %s - ephemeral PR-preview environments
 
   komizo preview up   --host root@box --app myapp --pr 12 ghcr.io/you/web:pr-12 [more images...]
   komizo preview down --host root@box --app myapp --pr 12
@@ -154,5 +181,5 @@ disagree about what a preview is.
 Flags:
 `, sub)
 	fs.PrintDefaults()
-	fmt.Println()
+	fmt.Fprintln(commandOutput())
 }

@@ -2,11 +2,9 @@ package app
 
 import (
 	"bufio"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 )
@@ -50,6 +48,7 @@ func RunDoctor(args []string) (err error) {
 	validation := localInput(&err)
 	defer validation.finish()
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	fs.SetOutput(commandFlags())
 	fs.Usage = func() {
 		usageJourney("doctor", "komizo doctor --host root@HOST", "Read-only checks for supported OS, architecture, privileges and installation space. SSH host trust stays explicit.")
 		fs.PrintDefaults()
@@ -75,7 +74,7 @@ func RunDoctor(args []string) (err error) {
 	if err != nil {
 		return err
 	}
-	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+	if err := emitResult(result); err != nil {
 		return err
 	}
 	if !result.Supported {

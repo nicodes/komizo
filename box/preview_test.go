@@ -1181,7 +1181,7 @@ func TestPreviewUpRefusesWhenKomizosDatabaseServerIsMissing(t *testing.T) {
 	if err == nil {
 		t.Fatal("a missing preview database server was accepted")
 	}
-	if !strings.Contains(err.Error(), PreviewDBContainer) || !strings.Contains(err.Error(), "komizo init") {
+	if !strings.Contains(err.Error(), PreviewDBContainer) || !strings.Contains(err.Error(), "komizo setup") {
 		t.Errorf("the refusal does not say what to do: %v", err)
 	}
 }

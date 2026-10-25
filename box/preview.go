@@ -889,11 +889,11 @@ func RemovePreviewRoute(ctx context.Context, run previewRun, proxy, routesDir, f
 func ensurePreviewDBReady(ctx context.Context, run previewRun, allowStart bool) error {
 	out, err := run(ctx, "", "inspect", PreviewDBContainer, "--format", "{{.State.Running}}")
 	if err != nil {
-		return fmt.Errorf("komizo's preview database server (%s) is not running -- run komizo init on this host to provision it", PreviewDBContainer)
+		return fmt.Errorf("komizo's preview database server (%s) is not running -- run komizo setup for this host to provision it", PreviewDBContainer)
 	}
 	if strings.TrimSpace(out) != "true" {
 		if !allowStart || strings.TrimSpace(out) != "false" {
-			return fmt.Errorf("komizo's preview database server (%s) is not running -- run komizo init on this host to provision it", PreviewDBContainer)
+			return fmt.Errorf("komizo's preview database server (%s) is not running -- run komizo setup for this host to provision it", PreviewDBContainer)
 		}
 		if _, err := run(ctx, "", "start", PreviewDBContainer); err != nil {
 			return fmt.Errorf("could not start the provisioned preview database: %w", err)
