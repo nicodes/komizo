@@ -150,6 +150,9 @@ func Validate(root, platform string) (Validation, error) {
 		if err != nil {
 			return report, err
 		}
+		if len(b) > 1<<20 {
+			return report, errors.New("workflow exceeds 1 MiB")
+		}
 		var node yaml.Node
 		if err = yaml.Unmarshal(b, &node); err != nil {
 			return report, err
@@ -204,6 +207,20 @@ func Validate(root, platform string) (Validation, error) {
 			for _, gate := range policy.CIGates {
 				if !seen[gate] {
 					return report, fmt.Errorf("required CI gate %s is absent", gate)
+				}
+			}
+		}
+		if name == "pr-preview.yml" {
+			types, _ := mapping(events["pull_request"])["types"].([]any)
+			seen := map[string]bool{}
+			for _, value := range types {
+				if name, ok := value.(string); ok {
+					seen[name] = true
+				}
+			}
+			for _, required := range []string{"opened", "synchronize", "reopened", "ready_for_review", "closed"} {
+				if !seen[required] {
+					return report, errors.New("preview lifecycle requires ready and cleanup events")
 				}
 			}
 		}

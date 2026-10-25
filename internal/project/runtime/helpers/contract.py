@@ -273,7 +273,8 @@ class Runner:
             failure = {'version': 1, 'stage': name, 'exit_code': result,
                        'source_commit': self.source_commit,
                        'execution_context': execution_context(),
-                       'rerun': ['komizo', 'run', name],
+                       'rerun': [] if name in self.data.get('tasks', {}) else ['komizo', 'run', name],
+                       'reconciliation_required': name in self.data.get('tasks', {}),
                        'timings': '.artifacts/contract/timings.jsonl'}
             try:
                 (self.root/'failure.json').write_text(json.dumps(failure, sort_keys=True)+'\n')

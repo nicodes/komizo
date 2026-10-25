@@ -398,3 +398,40 @@ func TestToolchainEnvironmentMakesTheVerifiedExecutableAvailableToHelpers(t *tes
 		t.Fatal(err, string(output))
 	}
 }
+
+func TestFailedNamedTaskRequiresInspectionInsteadOfAutomaticRerun(t *testing.T) {
+	t.Setenv("KOMIZO_CACHE_DIR", t.TempDir())
+	root := manifestFixture(t, `{"version":1,"recipe":"static-site","tasks":{"publish":[["sh","-c","printf partial > partial-output; exit 7"]]}}`)
+	if _, err := WriteLock(root, "test-platform"); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "."}, {"-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "fixture"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if body, err := cmd.CombinedOutput(); err != nil {
+			t.Fatal(err, string(body))
+		}
+	}
+	mise := filepath.Join(t.TempDir(), "mise")
+	if err := os.WriteFile(mise, []byte("#!/bin/sh\nshift 2\nexec \"$@\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	result, err := execute(context.Background(), root, "test-platform", []string{"publish"}, "local", nil, nil, io.Discard, func(context.Context) (string, error) { return mise, nil })
+	if err == nil || result.ExitCode != 7 || !result.ReconciliationRequired || len(result.NextAction) != 0 {
+		t.Fatalf("%+v %v", result, err)
+	}
+	if body, err := os.ReadFile(filepath.Join(root, "partial-output")); err != nil || string(body) != "partial" {
+		t.Fatal(err, string(body))
+	}
+	var failure struct {
+		ReconciliationRequired bool     `json:"reconciliation_required"`
+		Rerun                  []string `json:"rerun"`
+	}
+	body, err := os.ReadFile(filepath.Join(root, ".artifacts/contract/failure.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if json.Unmarshal(body, &failure) != nil || !failure.ReconciliationRequired || len(failure.Rerun) != 0 {
+		t.Fatal(string(body))
+	}
+}

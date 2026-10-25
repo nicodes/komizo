@@ -16,12 +16,13 @@ import (
 
 // Result is shared by the human and machine presentation layers.
 type Result struct {
-	Recipe     string   `json:"recipe"`
-	Targets    []string `json:"targets,omitempty"`
-	Completed  bool     `json:"completed"`
-	ExitCode   int      `json:"exit_code"`
-	Receipt    string   `json:"receipt,omitempty"`
-	NextAction []string `json:"next_action,omitempty"`
+	Recipe                 string   `json:"recipe"`
+	Targets                []string `json:"targets,omitempty"`
+	Completed              bool     `json:"completed"`
+	ReconciliationRequired bool     `json:"reconciliation_required"`
+	ExitCode               int      `json:"exit_code"`
+	Receipt                string   `json:"receipt,omitempty"`
+	NextAction             []string `json:"next_action,omitempty"`
 }
 
 func setEnv(base []string, values map[string]string) []string {
@@ -142,6 +143,7 @@ func Exec(ctx context.Context, root, platform string, arguments, selected []stri
 	environment = toolchainEnvironment(environment, mise)
 	cmd.Dir, cmd.Env, cmd.Stdin, cmd.Stdout, cmd.Stderr = root, environment, in, out, progress
 	err = runCommand(ctx, cmd)
+	result.ReconciliationRequired = err != nil
 	result.Completed = err == nil
 	if err != nil {
 		result.ExitCode = 1
@@ -234,6 +236,13 @@ func execute(ctx context.Context, root, platform string, targets []string, mode 
 			result.ExitCode = exit.ExitCode()
 		}
 		result.NextAction = append([]string{"komizo", "run", "--directory", root}, targets...)
+		for _, target := range targets {
+			if m.Tasks[target] != nil {
+				result.ReconciliationRequired = true
+				result.NextAction = nil
+				break
+			}
+		}
 		result.Receipt = ".artifacts/contract/failure.json"
 	} else {
 		result.Receipt = ".artifacts/contract"
