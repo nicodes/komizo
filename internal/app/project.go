@@ -60,11 +60,25 @@ func projectCommand(parent context.Context, args []string, in io.Reader, out, pr
 	code := 0
 	if err = fs.Parse(args[1:]); err == nil {
 		*root, err = filepath.Abs(*root)
+		if err == nil {
+			*root, err = filepath.EvalSymlinks(*root)
+		}
 	}
-	if err == nil && (*timeout < 0 || *timeout == 0 && name != "dev" || *timeout > 24*time.Hour) {
+	if err == nil && name == "run" && fs.NArg() == 1 && fs.Arg(0) == "dev" {
+		explicit := false
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "timeout" {
+				explicit = true
+			}
+		})
+		if !explicit {
+			*timeout = 0
+		}
+	}
+	if err == nil && (*timeout < 0 || *timeout == 0 && name != "dev" && !(name == "run" && fs.NArg() == 1 && fs.Arg(0) == "dev") || *timeout > 24*time.Hour) {
 		err = errors.New("execution deadline must be positive and no more than 24h")
 	}
-	if err == nil && machine && name == "dev" {
+	if err == nil && machine && (name == "dev" || name == "run" && slices.Contains(fs.Args(), "dev")) {
 		err = errors.New("dev is an interactive foreground command; run komizo dev without --json")
 	}
 	var selected []string

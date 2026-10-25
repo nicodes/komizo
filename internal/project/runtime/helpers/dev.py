@@ -5,6 +5,7 @@ import ctypes
 import fcntl
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import select
@@ -136,6 +137,14 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError('this checkout already owns a development stack') from None
+        session = os.environ.get('KOMIZO_DEV_SESSION', '')
+        marker = os.environ.get('KOMIZO_DEV_SESSION_FILE', '')
+        if marker:
+            expected = root/'.artifacts/komizo'/f'dev-session-{session}.json'
+            if not re.fullmatch('[a-f0-9]{32}', session) or Path(marker) != expected:
+                raise RuntimeError('invalid development session marker')
+            with expected.open('x') as receipt:
+                json.dump({'version':1,'session':session}, receipt)
         Path('control.sock').unlink(missing_ok=True)
         token = secrets.token_hex(32)
         Path('token').write_text(token)

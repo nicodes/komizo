@@ -94,6 +94,10 @@ func RunDependencies(args []string) (err error) {
 		if json.Unmarshal(body, &result) != nil || result.Version != 1 || result.Repository != os.Getenv("GITHUB_REPOSITORY") || !exactHex(result.Base, 40) {
 			return errors.New("invalid dependency report")
 		}
+
+		if err := emitResult(result); err != nil {
+			return err
+		}
 		if *output != "" {
 			file, err := os.OpenFile(*output, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 			if err != nil {
@@ -107,9 +111,6 @@ func RunDependencies(args []string) (err error) {
 			if closeErr != nil {
 				return closeErr
 			}
-		}
-		if err := emitResult(result); err != nil {
-			return err
 		}
 	} else if runErr == nil {
 		return errors.New("dependency client produced no bounded report")
