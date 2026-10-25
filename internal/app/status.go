@@ -26,7 +26,7 @@ func RunStatus(args []string) (err error) {
 	if fs.NArg() != 0 {
 		return errors.New("status accepts only flags")
 	}
-	if _, err = defaultProjectTarget(*directory, host, port, app); err != nil {
+	if _, err = defaultProjectTarget(*directory, host, port, app, fs); err != nil {
 		return err
 	}
 	if *app != "" {

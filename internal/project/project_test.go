@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"go/format"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func manifestFixture(t *testing.T, data string) string {
@@ -86,7 +88,7 @@ func TestInitPreservesExistingInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(filepath.Join(root, ".gitignore"))
-	if !bytes.Contains(b, []byte("owned/\n")) || !bytes.Contains(b, []byte(".komizo.mise.toml")) {
+	if !bytes.Contains(b, []byte("owned/\n")) || !bytes.Contains(b, []byte(".komizo.mise*.toml")) {
 		t.Fatal(string(b))
 	}
 	before, _ := os.ReadFile(filepath.Join(root, ManifestName))
@@ -197,7 +199,7 @@ func TestActualArtifactReuseAndFailurePropagation(t *testing.T) {
 	}
 	tool := func(context.Context) (string, error) { return mise, nil }
 	run := func(targets ...string) (Result, error) {
-		return execute(context.Background(), root, "test-platform", targets, "local", nil, io.Discard, tool)
+		return execute(context.Background(), root, "test-platform", targets, "local", nil, nil, io.Discard, tool)
 	}
 	if result, err := run("check"); err != nil || !result.Completed {
 		t.Fatalf("first check: %#v %v", result, err)
@@ -233,6 +235,7 @@ func TestActualArtifactReuseAndFailurePropagation(t *testing.T) {
 }
 
 func TestGeneratedContractNeverFollowsAnArtifactDirectoryLink(t *testing.T) {
+	t.Setenv("KOMIZO_CACHE_DIR", t.TempDir())
 	root := manifestFixture(t, `{"version":1,"recipe":"static-site"}`)
 	if _, err := WriteLock(root, "test-platform"); err != nil {
 		t.Fatal(err)
@@ -241,9 +244,9 @@ func TestGeneratedContractNeverFollowsAnArtifactDirectoryLink(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(root, ".artifacts")); err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, err := prepare(root, "test-platform")
-	if err == nil {
-		t.Fatal("followed generated output directory outside checkout")
+	_, _, _, err := prepare(root, "test-platform", nil)
+	if err == nil || !strings.Contains(err.Error(), "generated directory") {
+		t.Fatal("wrong refusal for generated output directory link", err)
 	}
 	entries, err := os.ReadDir(outside)
 	if err != nil || len(entries) != 0 {
@@ -298,12 +301,278 @@ func TestGoRecipeBuildsAndChecksAnActualApplication(t *testing.T) {
 		t.Fatal(err)
 	}
 	var progress bytes.Buffer
-	result, err := execute(context.Background(), root, "test-platform", []string{"check"}, "local", nil, &progress, func(context.Context) (string, error) { return mise, nil })
+	result, err := execute(context.Background(), root, "test-platform", []string{"check"}, "local", nil, nil, &progress, func(context.Context) (string, error) { return mise, nil })
 	if err != nil || !result.Completed {
 		t.Fatal(err, progress.String())
 	}
 	body, err := exec.Command(filepath.Join(root, ".artifacts/build/app")).Output()
 	if err != nil || string(body) != "ready" {
+		t.Fatal(err, string(body))
+	}
+}
+
+func TestSelectedToolsUseIsolatedConfigurationsAndCannotCertifyVerification(t *testing.T) {
+	t.Setenv("KOMIZO_CACHE_DIR", t.TempDir())
+	root := manifestFixture(t, `{"version":1,"recipe":"static-site","tools":{"python":"3.13.11","node":"24.18.1"},"tasks":{"publish":[["true"]]}}`)
+	if _, err := WriteLock(root, "test-platform"); err != nil {
+		t.Fatal(err)
+	}
+	_, first, _, err := prepare(root, "test-platform", []string{"python"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := func(environment []string) string {
+		for _, item := range environment {
+			if value, ok := strings.CutPrefix(item, "KOMIZO_TOOLCHAIN="); ok {
+				return value
+			}
+		}
+		t.Fatal("no toolchain path")
+		return ""
+	}
+	firstPath := configPath(first)
+	body, err := os.ReadFile(firstPath)
+	if err != nil || !bytes.Contains(body, []byte("python")) || bytes.Contains(body, []byte("node")) {
+		t.Fatal(string(body), err)
+	}
+	_, second, _, err := prepare(root, "test-platform", []string{"node"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configPath(second) == firstPath {
+		t.Fatal("parallel subsets share a mutable configuration")
+	}
+	unchanged, _ := os.ReadFile(firstPath)
+	if !bytes.Equal(unchanged, body) {
+		t.Fatal("second selection modified first selection")
+	}
+	for _, selection := range [][]string{{"unknown"}, {"python", "python"}} {
+		if _, _, _, err := prepare(root, "test-platform", selection); err == nil {
+			t.Fatal("invalid selection accepted", selection)
+		}
+	}
+	called := false
+	result, err := execute(context.Background(), root, "test-platform", []string{"unit"}, "local", []string{"python"}, nil, io.Discard, func(context.Context) (string, error) { called = true; return "", nil })
+	if err == nil || called || result.ExitCode == 0 {
+		t.Fatalf("verification tool selection ran: %+v %v", result, err)
+	}
+}
+
+func TestProjectDeadlineReturnsATimeoutWithoutSuccess(t *testing.T) {
+	t.Setenv("KOMIZO_CACHE_DIR", t.TempDir())
+	root := manifestFixture(t, `{"version":1,"recipe":"static-site","stages":{"unit":[["sh","-c","sleep 30"]]}}`)
+	if _, err := WriteLock(root, "test-platform"); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "."}, {"-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "fixture"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if b, err := cmd.CombinedOutput(); err != nil {
+			t.Fatal(err, string(b))
+		}
+	}
+	mise := filepath.Join(t.TempDir(), "mise")
+	if err := os.WriteFile(mise, []byte("#!/bin/sh\nshift 2\nexec \"$@\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	result, err := execute(ctx, root, "test-platform", []string{"unit"}, "local", nil, nil, io.Discard, func(context.Context) (string, error) { return mise, nil })
+	if !errors.Is(err, context.DeadlineExceeded) || result.Completed || result.ExitCode != 124 || time.Since(start) > 3*time.Second {
+		t.Fatalf("%+v %v", result, err)
+	}
+}
+
+func TestToolchainEnvironmentMakesTheVerifiedExecutableAvailableToHelpers(t *testing.T) {
+	directory := t.TempDir()
+	body := []byte("#!/bin/sh\nprintf '%s' verified\n")
+	executable := filepath.Join(directory, "mise")
+	if err := os.WriteFile(executable, body, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sh", "-c", "mise")
+	cmd.Env = toolchainEnvironment([]string{"PATH=/usr/bin:/bin"}, executable)
+	output, err := cmd.Output()
+	if err != nil || string(output) != "verified" {
+		t.Fatal(err, string(output))
+	}
+}
+
+func TestFailedNamedTaskRequiresInspectionInsteadOfAutomaticRerun(t *testing.T) {
+	t.Setenv("KOMIZO_CACHE_DIR", t.TempDir())
+	root := manifestFixture(t, `{"version":1,"recipe":"static-site","tasks":{"publish":[["sh","-c","printf partial > partial-output; exit 7"]]}}`)
+	if _, err := WriteLock(root, "test-platform"); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "."}, {"-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "fixture"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if body, err := cmd.CombinedOutput(); err != nil {
+			t.Fatal(err, string(body))
+		}
+	}
+	mise := filepath.Join(t.TempDir(), "mise")
+	if err := os.WriteFile(mise, []byte("#!/bin/sh\nshift 2\nexec \"$@\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	result, err := execute(context.Background(), root, "test-platform", []string{"publish"}, "local", nil, nil, io.Discard, func(context.Context) (string, error) { return mise, nil })
+	if err == nil || result.ExitCode != 7 || !result.ReconciliationRequired || len(result.NextAction) != 0 {
+		t.Fatalf("%+v %v", result, err)
+	}
+	if body, err := os.ReadFile(filepath.Join(root, "partial-output")); err != nil || string(body) != "partial" {
+		t.Fatal(err, string(body))
+	}
+	var failure struct {
+		ReconciliationRequired bool     `json:"reconciliation_required"`
+		Rerun                  []string `json:"rerun"`
+	}
+	body, err := os.ReadFile(filepath.Join(root, ".artifacts/contract/failure.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if json.Unmarshal(body, &failure) != nil || !failure.ReconciliationRequired || len(failure.Rerun) != 0 {
+		t.Fatal(string(body))
+	}
+}
+
+func TestDevExitCleansOnlyTheSessionThatActuallyStarted(t *testing.T) {
+	t.Setenv("KOMIZO_CACHE_DIR", t.TempDir())
+	runtime, err := Runtime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := manifestFixture(t, `{"version":1,"recipe":"static-site"}`)
+	m, _, err := Read(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Stages = map[string]json.RawMessage{
+		"dev":  command("python3", filepath.Join(runtime, "helpers/dev.py"), "run", "--", "python3", "-c", "from pathlib import Path; import time; Path('started').write_text('yes'); time.sleep(30)"),
+		"stop": command("sh", "-c", "printf stopping > stopping; while [ ! -f allow-stop ]; do sleep 0.05; done; printf stopped > stopped"),
+	}
+	if err = writeJSON(filepath.Join(root, ManifestName), m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = WriteLock(root, "test-platform"); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "."}, {"-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "fixture"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if body, err := cmd.CombinedOutput(); err != nil {
+			t.Fatal(err, string(body))
+		}
+	}
+	mise := filepath.Join(t.TempDir(), "mise")
+	if err = os.WriteFile(mise, []byte("#!/bin/sh\nshift 2\nexec \"$@\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	tool := func(context.Context) (string, error) { return mise, nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan error, 1)
+	go func() {
+		_, err := execute(ctx, root, "test-platform", []string{"dev"}, "local", nil, nil, io.Discard, tool)
+		finished <- err
+	}()
+	waiting := true
+	defer func() {
+		cancel()
+		if waiting {
+			select {
+			case <-finished:
+			case <-time.After(20 * time.Second):
+				t.Error("development did not stop")
+			}
+		}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(root, "started")); err == nil {
+			break
+		}
+		select {
+		case err := <-finished:
+			waiting = false
+			t.Fatal("development failed before startup", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("development never started")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	second, stop := context.WithTimeout(context.Background(), 3*time.Second)
+	_, err = execute(second, root, "test-platform", []string{"dev"}, "local", nil, nil, io.Discard, tool)
+	stop()
+	if err == nil {
+		t.Fatal("second session unexpectedly started")
+	}
+	if _, err := os.Stat(filepath.Join(root, "stopped")); !os.IsNotExist(err) {
+		t.Fatal("refused second session stopped the first")
+	}
+	select {
+	case err := <-finished:
+		waiting = false
+		t.Fatal("first session exited", err)
+	default:
+	}
+	cancel()
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(root, "stopping")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("owned session did not begin cleanup")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	third, stop := context.WithTimeout(context.Background(), 3*time.Second)
+	_, err = execute(third, root, "test-platform", []string{"dev"}, "local", nil, nil, io.Discard, tool)
+	stop()
+	if err == nil {
+		t.Fatal("replacement session started before owned cleanup finished")
+	}
+	if err = os.WriteFile(filepath.Join(root, "allow-stop"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-finished:
+		waiting = false
+	case <-time.After(20 * time.Second):
+		t.Fatal("owned session did not exit")
+	}
+	body, err := os.ReadFile(filepath.Join(root, "stopped"))
+	if err != nil || string(body) != "stopped" {
+		t.Fatal("owned cleanup did not run", err, string(body))
+	}
+}
+
+func TestNamedTasksCanComposeLockedVerificationWithoutDeadlock(t *testing.T) {
+	t.Setenv("KOMIZO_CACHE_DIR", t.TempDir())
+	root := manifestFixture(t, `{"version":1,"recipe":"static-site","stages":{"unit":[["sh","-c","printf tested > tested"]]},"tasks":{"composed":[["sh","-c","python3 \"$CICD_ENGINEERING/helpers/contract.py\" --manifest \"$KOMIZO_CONTRACT\" unit"]]}}`)
+	if _, err := WriteLock(root, "test-platform"); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "."}, {"-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "fixture"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if body, err := cmd.CombinedOutput(); err != nil {
+			t.Fatal(err, string(body))
+		}
+	}
+	mise := filepath.Join(t.TempDir(), "mise")
+	if err := os.WriteFile(mise, []byte("#!/bin/sh\nshift 2\nexec \"$@\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result, err := execute(ctx, root, "test-platform", []string{"composed"}, "local", nil, nil, io.Discard, func(context.Context) (string, error) { return mise, nil })
+	if err != nil || !result.Completed {
+		t.Fatalf("nested verification did not finish: %+v %v", result, err)
+	}
+	if body, err := os.ReadFile(filepath.Join(root, "tested")); err != nil || string(body) != "tested" {
 		t.Fatal(err, string(body))
 	}
 }

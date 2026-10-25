@@ -105,6 +105,8 @@ class ToolWatchTests(unittest.TestCase):
         os.chdir(root)
         outdated = {'bun': {'source': {'path': str(root/'.komizo.mise.toml')}, 'bump': '1.2.4'}}
         def check_output(args, **kwargs):
+            if args[0]=="fixture-komizo":
+                return json.dumps({"ok":True,"data":{"tools":{"bun":"1.2.3"}}})
             if args[0] == 'mise':
                 return json.dumps(outdated)
             self.assertEqual(args[:3], ['gh', 'issue', 'list'])
@@ -114,7 +116,7 @@ class ToolWatchTests(unittest.TestCase):
             # The body file lives in a TemporaryDirectory main() removes;
             # capture argv and body while the file still exists.
             calls.append((list(argv), Path(argv[argv.index('--body-file') + 1]).read_text()))
-        with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'nicodes/cicd', 'MAINTENANCE_ASSIGNEE': 'nicodes'}), \
+        with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'example/tools', 'MAINTENANCE_ASSIGNEE': 'example', 'KOMIZO_EXECUTABLE':'fixture-komizo'}), \
              patch.object(watch.subprocess, 'check_output', side_effect=check_output), \
              patch.object(watch.subprocess, 'run', side_effect=run):
             watch.main()
@@ -132,8 +134,8 @@ class ToolWatchTests(unittest.TestCase):
             self.addCleanup(os.chdir, cwd)
             root, (argv, body) = self.run_main([{'number': 9, 'title': title},
                                                 {'number': 3, 'title': title}])
-            self.assertEqual(argv[:8], ['gh', 'issue', 'edit', '3', '--repo', 'nicodes/cicd',
-                                        '--add-assignee', 'nicodes'])
+            self.assertEqual(argv[:8], ['gh', 'issue', 'edit', '3', '--repo', 'example/tools',
+                                        '--add-assignee', 'example'])
             self.assertNotIn('--assignee', argv)
             self.assertIn('upstream releases', body)
             self.assertIn('| `bun` | `1.2.3` | `1.2.4` |', body)
@@ -147,7 +149,7 @@ class ToolWatchTests(unittest.TestCase):
             self.addCleanup(os.chdir, cwd)
             _, (argv, body) = self.run_main([])
             self.assertEqual(argv[:7], ['gh', 'issue', 'create', '--title', title,
-                                        '--repo', 'nicodes/cicd'])
-            self.assertEqual(argv[7:9], ['--assignee', 'nicodes'])
+                                        '--repo', 'example/tools'])
+            self.assertEqual(argv[7:9], ['--assignee', 'example'])
             self.assertNotIn('--add-assignee', argv)
             self.assertIn('upstream releases', body)
