@@ -435,3 +435,144 @@ func TestFailedNamedTaskRequiresInspectionInsteadOfAutomaticRerun(t *testing.T) 
 		t.Fatal(string(body))
 	}
 }
+
+func TestDevExitCleansOnlyTheSessionThatActuallyStarted(t *testing.T) {
+	t.Setenv("KOMIZO_CACHE_DIR", t.TempDir())
+	runtime, err := Runtime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := manifestFixture(t, `{"version":1,"recipe":"static-site"}`)
+	m, _, err := Read(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Stages = map[string]json.RawMessage{
+		"dev":  command("python3", filepath.Join(runtime, "helpers/dev.py"), "run", "--", "python3", "-c", "from pathlib import Path; import time; Path('started').write_text('yes'); time.sleep(30)"),
+		"stop": command("sh", "-c", "printf stopping > stopping; while [ ! -f allow-stop ]; do sleep 0.05; done; printf stopped > stopped"),
+	}
+	if err = writeJSON(filepath.Join(root, ManifestName), m); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = WriteLock(root, "test-platform"); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "."}, {"-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "fixture"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if body, err := cmd.CombinedOutput(); err != nil {
+			t.Fatal(err, string(body))
+		}
+	}
+	mise := filepath.Join(t.TempDir(), "mise")
+	if err = os.WriteFile(mise, []byte("#!/bin/sh\nshift 2\nexec \"$@\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	tool := func(context.Context) (string, error) { return mise, nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := make(chan error, 1)
+	go func() {
+		_, err := execute(ctx, root, "test-platform", []string{"dev"}, "local", nil, nil, io.Discard, tool)
+		finished <- err
+	}()
+	waiting := true
+	defer func() {
+		cancel()
+		if waiting {
+			select {
+			case <-finished:
+			case <-time.After(20 * time.Second):
+				t.Error("development did not stop")
+			}
+		}
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(root, "started")); err == nil {
+			break
+		}
+		select {
+		case err := <-finished:
+			waiting = false
+			t.Fatal("development failed before startup", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("development never started")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	second, stop := context.WithTimeout(context.Background(), 3*time.Second)
+	_, err = execute(second, root, "test-platform", []string{"dev"}, "local", nil, nil, io.Discard, tool)
+	stop()
+	if err == nil {
+		t.Fatal("second session unexpectedly started")
+	}
+	if _, err := os.Stat(filepath.Join(root, "stopped")); !os.IsNotExist(err) {
+		t.Fatal("refused second session stopped the first")
+	}
+	select {
+	case err := <-finished:
+		waiting = false
+		t.Fatal("first session exited", err)
+	default:
+	}
+	cancel()
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(root, "stopping")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("owned session did not begin cleanup")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	third, stop := context.WithTimeout(context.Background(), 3*time.Second)
+	_, err = execute(third, root, "test-platform", []string{"dev"}, "local", nil, nil, io.Discard, tool)
+	stop()
+	if err == nil {
+		t.Fatal("replacement session started before owned cleanup finished")
+	}
+	if err = os.WriteFile(filepath.Join(root, "allow-stop"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-finished:
+		waiting = false
+	case <-time.After(20 * time.Second):
+		t.Fatal("owned session did not exit")
+	}
+	body, err := os.ReadFile(filepath.Join(root, "stopped"))
+	if err != nil || string(body) != "stopped" {
+		t.Fatal("owned cleanup did not run", err, string(body))
+	}
+}
+
+func TestNamedTasksCanComposeLockedVerificationWithoutDeadlock(t *testing.T) {
+	t.Setenv("KOMIZO_CACHE_DIR", t.TempDir())
+	root := manifestFixture(t, `{"version":1,"recipe":"static-site","stages":{"unit":[["sh","-c","printf tested > tested"]]},"tasks":{"composed":[["sh","-c","python3 \"$CICD_ENGINEERING/helpers/contract.py\" --manifest \"$KOMIZO_CONTRACT\" unit"]]}}`)
+	if _, err := WriteLock(root, "test-platform"); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "."}, {"-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "fixture"}} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = root
+		if body, err := cmd.CombinedOutput(); err != nil {
+			t.Fatal(err, string(body))
+		}
+	}
+	mise := filepath.Join(t.TempDir(), "mise")
+	if err := os.WriteFile(mise, []byte("#!/bin/sh\nshift 2\nexec \"$@\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	result, err := execute(ctx, root, "test-platform", []string{"composed"}, "local", nil, nil, io.Discard, func(context.Context) (string, error) { return mise, nil })
+	if err != nil || !result.Completed {
+		t.Fatalf("nested verification did not finish: %+v %v", result, err)
+	}
+	if body, err := os.ReadFile(filepath.Join(root, "tested")); err != nil || string(body) != "tested" {
+		t.Fatal(err, string(body))
+	}
+}

@@ -2,6 +2,8 @@ package project
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/nicodes/komizo/internal/devenv"
 )
@@ -59,7 +62,8 @@ func prepare(root, platform string, selected []string) (Manifest, []string, stri
 	if err != nil {
 		return m, nil, "", err
 	}
-	contractPath := filepath.Join(output, "contract.json")
+	contractBytes, _ := json.Marshal(contract)
+	contractPath := filepath.Join(output, "contract-"+digest(contractBytes)[:16]+".json")
 	if err = writeJSON(contractPath, contract); err != nil {
 		return m, nil, "", err
 	}
@@ -85,10 +89,10 @@ func prepare(root, platform string, selected []string) (Manifest, []string, stri
 		if err != nil {
 			return m, nil, "", err
 		}
-		misePath = filepath.Join(root, ".komizo.mise-"+digest([]byte(config))[:16]+".toml")
-		if err = atomicFile(misePath, []byte(config), 0600); err != nil {
-			return m, nil, "", err
-		}
+	}
+	misePath = filepath.Join(root, ".komizo.mise-"+digest([]byte(config))[:16]+".toml")
+	if err = atomicFile(misePath, []byte(config), 0600); err != nil {
+		return m, nil, "", err
 	}
 	values := map[string]string{"CICD_ENGINEERING": runtimeRoot, "KOMIZO_CONTRACT": contractPath,
 		"KOMIZO_PROJECT": filepath.Join(root, ManifestName), "KOMIZO_TOOLCHAIN": misePath,
@@ -190,7 +194,16 @@ func execute(ctx context.Context, root, platform string, targets []string, mode 
 			return result, fmt.Errorf("unknown project target %q", target)
 		}
 	}
-	if len(targets) == 1 && targets[0] == "dev" {
+	contractPath := environmentValue(environment, "KOMIZO_CONTRACT")
+	misePath := environmentValue(environment, "KOMIZO_TOOLCHAIN")
+	development := len(targets) == 1 && targets[0] == "dev"
+	var session, marker string
+	if development {
+		release, leaseErr := developmentLease(root)
+		if leaseErr != nil {
+			return result, leaseErr
+		}
+		defer release()
 		profile := map[string]any{"version": 1, "repository": m.Repository, "default_mode": "local"}
 		for k, v := range m.Development {
 			profile[k] = v
@@ -209,17 +222,27 @@ func execute(ctx context.Context, root, platform string, targets []string, mode 
 		}
 		// Reapply only the verified runtime bindings after dropping inherited credentials.
 		trusted := map[string]string{}
-		for _, entry := range environmentForRuntime(root, runtimeRoot) {
+		for _, entry := range environmentForRuntime(root, runtimeRoot, contractPath, misePath) {
 			k, v, _ := strings.Cut(entry, "=")
 			trusted[k] = v
 		}
 		environment = setEnv(environment, trusted)
 	}
+	if development {
+		nonce := make([]byte, 16)
+		if _, err = rand.Read(nonce); err != nil {
+			return result, err
+		}
+		session = hex.EncodeToString(nonce)
+		marker = filepath.Join(root, ".artifacts", "komizo", "dev-session-"+session+".json")
+		environment = setEnv(environment, map[string]string{"KOMIZO_DEV_SESSION": session, "KOMIZO_DEV_SESSION_FILE": marker})
+		defer os.Remove(marker)
+	}
 	actualTargets := append([]string{}, targets...)
 	if len(targets) == 1 && targets[0] == "check" {
 		actualTargets = []string{"install", "check"}
 	}
-	args := append([]string{"exec", "--", "python3", filepath.Join(runtimeRoot, "helpers", "contract.py"), "--manifest", filepath.Join(root, ".artifacts", "komizo", "contract.json")}, actualTargets...)
+	args := append([]string{"exec", "--", "python3", filepath.Join(runtimeRoot, "helpers", "contract.py"), "--manifest", contractPath}, actualTargets...)
 	mise, err := toolchain(ctx)
 	if err != nil {
 		return result, err
@@ -227,7 +250,17 @@ func execute(ctx context.Context, root, platform string, targets []string, mode 
 	cmd := exec.Command(mise, args...)
 	environment = toolchainEnvironment(environment, mise)
 	cmd.Dir, cmd.Env, cmd.Stdin, cmd.Stdout, cmd.Stderr = root, environment, in, progress, progress
-	err = runCommand(ctx, cmd)
+	if development {
+		err = devenv.RunCommand(ctx, cmd, 15*time.Second)
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		if cleanupErr := cleanupDevelopment(root, m, environment, mise, session, marker, progress); cleanupErr != nil {
+			err = errors.Join(err, cleanupErr)
+		}
+	} else {
+		err = runCommand(ctx, cmd)
+	}
 	result.Completed = err == nil
 	if err != nil {
 		result.ExitCode = 1
@@ -250,12 +283,12 @@ func execute(ctx context.Context, root, platform string, targets []string, mode 
 	return result, err
 }
 
-func environmentForRuntime(root, runtimeRoot string) []string {
+func environmentForRuntime(root, runtimeRoot, contractPath, misePath string) []string {
 	executable, _ := os.Executable()
 	return []string{"KOMIZO_EXECUTABLE=" + executable, "KOMIZO_DEV_PROJECT=komizo-" + digest([]byte(filepath.Clean(root)))[:16], "CICD_ENGINEERING=" + runtimeRoot, "KOMIZO_PROJECT=" + filepath.Join(root, ManifestName),
-		"KOMIZO_CONTRACT=" + filepath.Join(root, ".artifacts", "komizo", "contract.json"),
-		"KOMIZO_TOOLCHAIN=" + filepath.Join(root, ".komizo.mise.toml"), "PYTHONDONTWRITEBYTECODE=1", "GOTOOLCHAIN=local",
-		"MISE_OVERRIDE_CONFIG_FILENAMES=.komizo.mise.toml", "MISE_TRUSTED_CONFIG_PATHS=" + root}
+		"KOMIZO_CONTRACT=" + contractPath,
+		"KOMIZO_TOOLCHAIN=" + misePath, "PYTHONDONTWRITEBYTECODE=1", "GOTOOLCHAIN=local",
+		"MISE_OVERRIDE_CONFIG_FILENAMES=" + filepath.Base(misePath), "MISE_TRUSTED_CONFIG_PATHS=" + root}
 }
 
 func toolchainEnvironment(environment []string, mise string) []string {
@@ -281,4 +314,52 @@ func (result *Result) failed(err error) {
 	if errors.Is(err, context.Canceled) {
 		result.ExitCode = 130
 	}
+}
+
+func environmentValue(environment []string, name string) string {
+	for _, entry := range environment {
+		if value, ok := strings.CutPrefix(entry, name+"="); ok {
+			return value
+		}
+	}
+	return ""
+}
+func cleanupDevelopment(root string, m Manifest, environment []string, mise, session, marker string, progress io.Writer) error {
+	info, err := os.Lstat(marker)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 1024 {
+		return errors.New("cannot establish ownership of the development cleanup")
+	}
+	body, err := os.ReadFile(marker)
+	if err != nil {
+		return err
+	}
+	var receipt struct {
+		Version int    `json:"version"`
+		Session string `json:"session"`
+	}
+	if json.Unmarshal(body, &receipt) != nil || receipt.Version != 1 || receipt.Session != session {
+		return errors.New("development cleanup ownership changed")
+	}
+	contract, err := m.Contract()
+	if err != nil {
+		return err
+	}
+	raw := contract["stages"].(map[string]json.RawMessage)["stop"]
+	var commands [][]string
+	if json.Unmarshal(raw, &commands) != nil {
+		return nil
+	} // Explicitly inapplicable.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	for _, arguments := range commands {
+		cmd := exec.Command(mise, append([]string{"exec", "--"}, arguments...)...)
+		cmd.Dir, cmd.Env, cmd.Stdout, cmd.Stderr = root, environment, progress, progress
+		if err := runCommand(ctx, cmd); err != nil {
+			return fmt.Errorf("development cleanup failed: %w", err)
+		}
+	}
+	return nil
 }
