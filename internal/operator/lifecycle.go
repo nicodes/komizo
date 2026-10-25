@@ -13,7 +13,7 @@ import (
 
 // Lifecycle applies only the authenticated embedded bundle. Caller input
 // supplies the verb and reviewed plan identity, never executable paths or code.
-func Lifecycle(verb, expected string, output io.Writer) error {
+func Lifecycle(parent context.Context, verb, expected string, output, progress io.Writer) error {
 	if os.Geteuid() != 0 {
 		return errors.New("operator installation requires the root operator")
 	}
@@ -36,14 +36,14 @@ func Lifecycle(verb, expected string, output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 150*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, "/usr/bin/python3", "-I", "-c", string(script), verb, "--expected-plan", expected)
 	command.Env = []string{"PATH=/usr/bin:/bin", "LC_ALL=C"}
 	command.Dir = "/"
 	command.Stdin = bytes.NewReader(wire)
 	command.Stdout = output
-	command.Stderr = os.Stderr
+	command.Stderr = progress
 	command.WaitDelay = 2 * time.Second
 	return command.Run()
 }

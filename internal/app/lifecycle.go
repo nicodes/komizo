@@ -5,7 +5,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"strconv"
 )
@@ -58,6 +57,7 @@ func lifecycle(verb string, args []string) (err error) {
 	validation := localInput(&err)
 	defer validation.finish()
 	fs := flag.NewFlagSet(verb, flag.ContinueOnError)
+	fs.SetOutput(commandFlags())
 	fs.Usage = func() { usageLifecycle(verb, fs) }
 	var host, app, service string
 	var port, tail int
@@ -268,11 +268,11 @@ func reportSilence(w io.Writer, verb, subject, listCmd string) {
 // A function rather than an inline branch so the decision can be asserted --
 // the same reason scrubs() is one, and for the same failure: this is wiring,
 // and wiring is the half that regresses without anything looking wrong.
-func quietStream(verb string) *os.File {
+func quietStream(verb string) io.Writer {
 	if verb == "logs" {
-		return os.Stderr
+		return commandProgress()
 	}
-	return os.Stdout
+	return commandOutput()
 }
 
 // scrubs reports whether a verb's output was written by somebody else.
@@ -345,7 +345,7 @@ func boxCmd(verb string, args ...string) string {
 }
 
 func usageLifecycle(verb string, fs *flag.FlagSet) {
-	fmt.Printf(`komizo %s - %s
+	fmt.Fprintf(commandOutput(), `komizo %s - %s
 
   komizo %s --host [user@]HOST --app NAME
   komizo %s --host [user@]HOST --proxy
@@ -356,7 +356,7 @@ code path a signed command from the app takes, so the two cannot drift.
 Flags:
 `, verb, lifecycleBlurb[verb], verb, verb)
 	fs.PrintDefaults()
-	fmt.Println()
+	fmt.Fprintln(commandOutput())
 }
 
 var lifecycleBlurb = map[string]string{

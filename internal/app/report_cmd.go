@@ -3,7 +3,6 @@ package app
 import (
 	"flag"
 	"fmt"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,6 +24,7 @@ import (
 
 func RunReport(args []string) error {
 	fs := flag.NewFlagSet("report", flag.ContinueOnError)
+	fs.SetOutput(commandFlags())
 	fs.Usage = func() { usageReport(fs) }
 	var host string
 	var port int
@@ -79,22 +79,12 @@ func RunReport(args []string) error {
 		args2 = append(args2, "--volumes")
 	}
 
-	// --json prints what the BOX said, byte for byte, rather than this binary's
-	// re-encoding of it. The difference matters the moment the two disagree,
-	// which is exactly when somebody would be asking for the raw document -- so
-	// it deliberately skips the decode as well.
-	if asJSON {
-		raw, err := askBox(tgt, args2...)
-		if err != nil {
-			return err
-		}
-		fmt.Println(string(raw))
-		return nil
-	}
-
 	r, err := fetchBox[box.Report](tgt, args2...)
 	if err != nil {
 		return err
+	}
+	if asJSON || machineMode() {
+		return emitResult(r)
 	}
 	printReport(r, tgt.host, cached)
 
@@ -134,7 +124,7 @@ func printKnownHosts(r box.Report, tgt target) {
 	}
 	for _, a := range r.Apps {
 		step("KOMIZO_KNOWN_HOSTS for %s", a.Name)
-		fmt.Println(formatKnownHosts(tgt.namedFor(a.KnownAs), keys))
+		fmt.Fprintln(commandOutput(), formatKnownHosts(tgt.namedFor(a.KnownAs), keys))
 	}
 	if len(r.Apps) == 0 {
 		note("no apps on this box, so nothing pins a known_hosts value yet.")
@@ -156,7 +146,7 @@ func printUsage(tgt target) error {
 		return err
 	}
 
-	fmt.Println()
+	fmt.Fprintln(commandOutput())
 	// THE PROCESSOR NEEDS TWO READINGS AND THERE IS NO OTHER WAY TO GET ONE.
 	// System.CPU is cumulative jiffies, so a single reading is a total since
 	// boot rather than a rate -- which is why this asks for history at all and
@@ -188,8 +178,8 @@ func printUsage(tgt target) error {
 
 	// PER APP, and failures separately. "Is anything reaching this" and "is any
 	// of it failing" are different questions and one total answers neither.
-	fmt.Println()
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(commandOutput())
+	w := tabwriter.NewWriter(commandOutput(), 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "APP\tREQUESTS\t5XX")
 	for _, name := range appsIn(rows) {
 		s := seriesFor(rows, name, from, now.Unix())
@@ -228,9 +218,9 @@ func sum(v []float64) int {
 // whatever is wrong, and a page that makes you scroll past forty healthy rows
 // to find the broken one has buried the only thing you opened it for.
 func printReport(r box.Report, host string, cached bool) {
-	fmt.Printf("%s -- %s, %s\n", host, r.Server.OSName(), r.Server.State)
+	fmt.Fprintf(commandOutput(), "%s -- %s, %s\n", host, r.Server.OSName(), r.Server.State)
 	if r.Server.Komizo.Installed {
-		fmt.Printf("  komizo %s, agent %s\n",
+		fmt.Fprintf(commandOutput(), "  komizo %s, agent %s\n",
 			dashIfEmpty(r.Server.Komizo.Version), dashIfEmpty(r.Server.Komizo.Agent))
 	}
 	// WHETHER THAT VERSION IS BEHIND THIS ONE, which is a different question
@@ -245,7 +235,7 @@ func printReport(r box.Report, host string, cached bool) {
 	if s, remedy := agentBehind(r.Server.Komizo, host); s != "" {
 		warn("%s\n\n    %s", s, remedy)
 	}
-	fmt.Println()
+	fmt.Fprintln(commandOutput())
 
 	// Only --cached can be stale: without it the box measures on the spot. Said
 	// before anything else, because every line below is a claim about a moment
@@ -255,7 +245,7 @@ func printReport(r box.Report, host string, cached bool) {
 		warn("this reading is %s old -- the agent may not be running.\n"+
 			"    Check with: rc-service komizo-rootd status",
 			time.Since(r.At).Round(time.Second))
-		fmt.Println()
+		fmt.Fprintln(commandOutput())
 	}
 
 	if len(r.Problems) == 0 {
@@ -265,7 +255,7 @@ func printReport(r box.Report, host string, cached bool) {
 		warn("%s", p.Detail)
 	}
 	if len(r.Problems) > 0 {
-		fmt.Println()
+		fmt.Fprintln(commandOutput())
 	}
 
 	if !r.Server.Ready() {
@@ -273,9 +263,9 @@ func printReport(r box.Report, host string, cached bool) {
 	}
 
 	if len(r.Apps) == 0 {
-		fmt.Printf("No apps set up on %s yet.\n", host)
+		fmt.Fprintf(commandOutput(), "No apps set up on %s yet.\n", host)
 	} else {
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		w := tabwriter.NewWriter(commandOutput(), 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "APP\tVERSION\tUP\tROUTES")
 		for _, a := range r.Apps {
 			state := fmt.Sprintf("%d/%d", a.Running(), len(a.Containers))
@@ -291,7 +281,7 @@ func printReport(r box.Report, host string, cached bool) {
 		w.Flush()
 	}
 
-	fmt.Println()
+	fmt.Fprintln(commandOutput())
 	if r.Proxy == nil {
 		note("no shared reverse proxy. Apps must publish their own ports.")
 	} else if r.Proxy.Running() {
@@ -320,9 +310,9 @@ func printReport(r box.Report, host string, cached bool) {
 	// "not asked", not "none" -- and printing a zero here would say the second
 	// about a box that was never asked the first.
 	if len(s.Volumes) > 0 {
-		fmt.Println()
+		fmt.Fprintln(commandOutput())
 		rows := volumesFromBox(s.Volumes)
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		w := tabwriter.NewWriter(commandOutput(), 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "APP\tVOLUMES")
 		for _, a := range r.Apps {
 			// SHARED VOLUMES COUNTED ONCE. Two services of one app mounting the
@@ -351,12 +341,12 @@ func dashIfEmpty(s string) string {
 }
 
 func usageReport(fs *flag.FlagSet) {
-	fmt.Fprint(os.Stderr, `komizo report -- what a server says about itself
+	fmt.Fprint(commandProgress(), `komizo report -- what a server says about itself
 
   komizo report --host root@server
   komizo report --host root@server --json
 
-Reads the box through the komizo agent. Install one with 'komizo init'.
+Reads the box through the komizo agent. Install one with 'komizo setup'.
 
 Flags:
 `)
@@ -383,7 +373,7 @@ func agentBehind(k box.KomizoInstall, host string) (string, string) {
 	update := "komizo update --host " + host
 	switch {
 	case !k.Installed:
-		return "no komizo agent on this box.", "komizo init --host " + host
+		return "no komizo agent on this box.", "komizo setup --host " + host
 	case k.Version == "":
 		// Installed by a komizo old enough to have recorded only a stamp. There
 		// is nothing to compare, and the update is what starts recording a

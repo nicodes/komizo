@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
-	"os"
 	"path"
 	"strings"
 )
@@ -16,6 +15,7 @@ func runPlatformOperation(args []string) (err error) {
 	defer validation.finish()
 	sub := args[0]
 	fs := flag.NewFlagSet("platform "+sub, flag.ContinueOnError)
+	fs.SetOutput(commandFlags())
 	host := fs.String("host", "", "operator SSH host")
 	port := fs.Int("port", 22, "SSH port")
 	stage := fs.String("stage", "", "exact protected server stage from the reviewed plan")
@@ -55,8 +55,7 @@ func runPlatformOperation(args []string) (err error) {
 	if json.Unmarshal(body, &result) != nil || result.Version != 1 || result.Manifest != *expected || !oneOf(result.Phase, "prepared", "installing", "recovering", "complete", "recovered") {
 		return errors.New("platform executor returned an invalid operation identity")
 	}
-	_, err = os.Stdout.Write(body)
-	return err
+	return emitProtocol(body)
 }
 
 func oneOf(value string, choices ...string) bool {

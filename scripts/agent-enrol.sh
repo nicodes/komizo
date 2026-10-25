@@ -9,7 +9,7 @@ log() { printf '\n==> %s\n' "$*"; }
 # for as long as it runs.
 
 [ -x /usr/local/bin/komizo-box ] || {
-	echo "error: no komizo agent on this box -- run 'komizo init' first" >&2
+	echo "error: no komizo agent on this box -- run 'komizo setup' first" >&2
 	exit 1
 }
 

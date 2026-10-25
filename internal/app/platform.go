@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"github.com/nicodes/komizo/scripts"
-	"os"
 	"os/exec"
 	"strconv"
 	"time"
@@ -21,12 +20,12 @@ func RunPlatform(args []string) error {
 		return nil
 	}
 	if len(args) > 0 && args[0] == "maintenance" {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+		ctx, cancel := context.WithTimeout(commandContext(), 20*time.Minute)
 		defer cancel()
 		command := exec.CommandContext(ctx, "/usr/bin/python3", append([]string{"-I", "-c", scripts.MaintenancePrepare}, args[1:]...)...)
 		command.WaitDelay = 2 * time.Second
-		command.Stdout, command.Stderr = os.Stdout, os.Stderr
-		return command.Run()
+		command.Stdout, command.Stderr = commandOutput(), commandProgress()
+		return runProtocolCommand(command, args)
 	}
 	proxy := len(args) > 0 && args[0] == "proxy"
 	controls := len(args) > 0 && args[0] == "controls"
@@ -36,7 +35,7 @@ func RunPlatform(args []string) error {
 	if len(args) == 0 || (args[0] != "plan" && args[0] != "apply") {
 		return errors.New("platform requires plan or apply; installed recovery uses komizo-box platform recover")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	ctx, cancel := context.WithTimeout(commandContext(), 15*time.Minute)
 	defer cancel()
 	program := scripts.PlatformPrepare
 	if proxy {
@@ -47,7 +46,7 @@ func RunPlatform(args []string) error {
 	}
 	command := exec.CommandContext(ctx, "/usr/bin/python3", append([]string{"-I", "-c", program}, args...)...)
 	command.WaitDelay = 2 * time.Second
-	command.Stdout, command.Stderr = os.Stdout, os.Stderr
+	command.Stdout, command.Stderr = commandOutput(), commandProgress()
 	command.Stdin = nil
-	return command.Run()
+	return runProtocolCommand(command, args)
 }

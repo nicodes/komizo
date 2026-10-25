@@ -518,76 +518,15 @@ func TestTheSuggestedListNamesTheBoxTheWayThisCommandDid(t *testing.T) {
 // requireSession is swapped rather than read, because a test that consults
 // whether the person running it happens to be signed in is a test about the
 // environment. That exact mistake failed in CI on this branch's predecessor.
-func TestOnlyRegisteringABoxNeedsAnAccount(t *testing.T) {
-	orig := requireSession
-	requireSession = func() (Session, error) { return Session{}, errNotSignedIn }
-	defer func() { requireSession = orig }()
-
-	// A host that fails VALIDATION, so nothing here opens a connection. What is
-	// under test is only whether the gate fired, and the alternative -- a real
-	// hostname that does not resolve -- spent forty seconds of the suite waiting
-	// for DNS to say no.
-	const unreachable = "root@not a host"
-
-	// Nothing in the dispatch asks. The two operations that reach the service
-	// ask where they happen, and everything here is SSH to a machine whose root
-	// key the caller holds.
-	for _, verb := range []string{"init", "update", "add", "list", "report", "remove", "proxy",
-		"start", "stop", "restart", "logs"} {
-		err := Main([]string{verb, "--host", unreachable})
-		if errors.Is(err, errNotSignedIn) {
-			t.Errorf("komizo %s asked for an account to touch somebody's own server", verb)
-		}
-		if err == nil {
-			t.Errorf("komizo %s succeeded against %q", verb, unreachable)
+func TestHostOperationsHaveNoHostedAccountDependency(t *testing.T) {
+	for _, verb := range []string{"setup", "doctor", "update", "add", "list", "report", "remove", "proxy", "start", "stop", "restart", "logs"} {
+		if err := Main([]string{verb, "--host", "root@not a host"}); err == nil {
+			t.Fatalf("%s accepted an invalid host", verb)
 		}
 	}
-
-	// enrol is the conditional one: with a token it needs nobody, because the
-	// token IS the authority. Without one it used to ask for an account; the
-	// service that account belonged to is decommissioned, so it now refuses
-	// with the decommission error instead -- still from its own check, still
-	// before anything is reached for.
-	err := Main([]string{"enrol", "--host", unreachable, "--token", "kmz_enr_x"})
-	if errors.Is(err, errNotSignedIn) {
-		t.Error("komizo enrol --token asked for an account it does not need")
-	}
-	err = Main([]string{"enrol", "--host", unreachable})
-	if !errors.Is(err, errServiceDecommissioned) {
-		t.Errorf("komizo enrol with no token = %v, want the decommission refusal", err)
-	}
-
-	// AND `--remove` NEVER DOES. It is what somebody runs when they are leaving
-	// komizo or their account is already gone -- the single command most likely
-	// to be needed by a person who cannot sign in. The exemption was there and
-	// nothing tested it: deleting it left the whole suite green.
-	if err := Main([]string{"enrol", "--host", unreachable, "--remove"}); errors.Is(err, errNotSignedIn) {
-		t.Error("komizo enrol --remove asked for an account it does not need")
-	}
-
-	// The interface is a route into a server like any other. It was gated while
-	// `komizo` on its own reached the same screens without one, because the
-	// address prompt runs before that switch -- so it refused the documented way
-	// in and allowed the undocumented one.
-	if err := Main([]string{"root@not a host"}); errors.Is(err, errNotSignedIn) {
-		t.Error("the interface asked for an account to reach somebody's own server")
-	}
-}
-
-// And the gate names exactly what talks to the service.
-// And init is not gated either.
-//
-// The reason once recorded for gating it was wrong about the code beside it: a
-// failed registration is a NOTE and the box is still set up, so the gate was not
-// preventing a half-provisioned machine. It was refusing to let somebody without
-// a komizo account provision their own server at all -- the capability gate
-// appify.md §7 says must not exist.
-func TestSettingABoxUpNeedsNoAccount(t *testing.T) {
-	orig := requireSession
-	requireSession = func() (Session, error) { return Session{}, errNotSignedIn }
-	defer func() { requireSession = orig }()
-
-	if err := Main([]string{"init", "--host", "root@not a host"}); errors.Is(err, errNotSignedIn) {
-		t.Error("komizo init refused to set a box up without a komizo account")
+	for _, verb := range []string{"login", "logout", "enrol"} {
+		if err := Main([]string{verb, "--help"}); err == nil || !strings.Contains(err.Error(), "is not a command") {
+			t.Fatalf("retired command remains available: %s: %v", verb, err)
+		}
 	}
 }

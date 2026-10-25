@@ -81,7 +81,7 @@ case "$TLS_ASK" in
 		esac ;;
 	*) die "TLS_ASK must be an http:// or https:// URL" ;;
 esac
-command -v docker >/dev/null 2>&1 || die "this server is not set up yet -- run 'komizo init' first"
+command -v docker >/dev/null 2>&1 || die "this server is not set up yet -- run 'komizo setup' first"
 # Refuse unavailable/drifted resources before changing a route or container.
 # Bootstrap applied declared controllers before starting Docker; proxy updates
 # cannot silently change the host-wide resource allocation.

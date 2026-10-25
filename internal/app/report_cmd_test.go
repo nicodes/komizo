@@ -37,7 +37,7 @@ func TestReportSaysWhenTheAgentOnABoxIsBehind(t *testing.T) {
 			name:   "never set up",
 			k:      box.KomizoInstall{Installed: false},
 			want:   "no komizo agent",
-			remedy: "komizo init --host root@box",
+			remedy: "komizo setup --host root@box",
 		},
 		{
 			// Set up by a komizo old enough to have recorded only a stamp.
