@@ -14,4 +14,6 @@ python3 -m unittest discover -s scripts -p publication_prepare_test.py -v
 python3 -m unittest discover -s scripts -p proxy_prepare_test.py -v
 
 node --test setup/setup.test.mjs
-python3 -m unittest discover -s internal/project/runtime/tests -p 'test_*.py' -v
+# Each runtime fixture owns its own project declaration. Do not inherit the
+# enclosing native check's resolved contract into those disposable projects.
+env -u KOMIZO_CONTRACT python3 -m unittest discover -s internal/project/runtime/tests -p 'test_*.py' -v
