@@ -448,8 +448,9 @@ func TestDevExitCleansOnlyTheSessionThatActuallyStarted(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.Stages = map[string]json.RawMessage{
-		"dev":  command("python3", filepath.Join(runtime, "helpers/dev.py"), "run", "--", "python3", "-c", "from pathlib import Path; import time; Path('started').write_text('yes'); time.sleep(30)"),
-		"stop": command("sh", "-c", "printf stopping > stopping; while [ ! -f allow-stop ]; do sleep 0.05; done; printf stopped > stopped"),
+		"dev":   command("python3", filepath.Join(runtime, "helpers/dev.py"), "run", "--", "python3", "-c", "from pathlib import Path; import time; Path('started').write_text('yes'); time.sleep(30)"),
+		"stop":  command("sh", "-c", "printf stopping > stopping; while [ ! -f allow-stop ]; do sleep 0.05; done; printf stopped > stopped"),
+		"clean": command("sh", "-c", "printf cleaned > cleaned; rm -rf .artifacts"),
 	}
 	if err = writeJSON(filepath.Join(root, ManifestName), m); err != nil {
 		t.Fatal(err)
@@ -534,6 +535,13 @@ func TestDevExitCleansOnlyTheSessionThatActuallyStarted(t *testing.T) {
 	if err == nil {
 		t.Fatal("replacement session started before owned cleanup finished")
 	}
+	_, err = execute(context.Background(), root, "test-platform", []string{"clean"}, "local", nil, nil, io.Discard, tool)
+	if err == nil || !strings.Contains(err.Error(), "already owns a development session") {
+		t.Fatal("clean was not refused during development cleanup", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "cleaned")); !os.IsNotExist(err) {
+		t.Fatal("clean executed while resources were still owned", err)
+	}
 	if err = os.WriteFile(filepath.Join(root, "allow-stop"), nil, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -615,5 +623,37 @@ func TestLibraryBuildCompilesSourceWithoutInventingAnExecutable(t *testing.T) {
 	}
 	if artifacts, ok := proof["artifacts"].(map[string]any); !ok || len(artifacts) != 0 {
 		t.Fatal("library build claimed application artifacts", proof)
+	}
+}
+
+func TestToolchainAuthenticationHonorsExplicitCredentialSources(t *testing.T) {
+	t.Setenv("KOMIZO_CACHE_DIR", t.TempDir())
+	root := manifestFixture(t, `{"version":1,"recipe":"static-site"}`)
+	if _, err := WriteLock(root, "test-platform"); err != nil {
+		t.Fatal(err)
+	}
+	for _, explicit := range []string{"", "MISE_GITHUB_TOKEN", "GITHUB_API_TOKEN", "GITHUB_TOKEN"} {
+		t.Run(explicit, func(t *testing.T) {
+			for _, name := range []string{"MISE_GITHUB_TOKEN", "GITHUB_API_TOKEN", "GITHUB_TOKEN"} {
+				t.Setenv(name, "")
+			}
+			t.Setenv("GH_TOKEN", "synthetic-caller")
+			if explicit != "" {
+				t.Setenv(explicit, "synthetic-explicit")
+			}
+			_, env, _, err := prepare(root, "test-platform", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if explicit == "" && environmentValue(env, "MISE_GITHUB_TOKEN") != "synthetic-caller" {
+				t.Fatal("CLI authentication was not available to verified tool installs")
+			}
+			if explicit != "" && environmentValue(env, explicit) != "synthetic-explicit" {
+				t.Fatal("an explicit toolchain credential was overwritten")
+			}
+			if explicit != "" && explicit != "MISE_GITHUB_TOKEN" && environmentValue(env, "MISE_GITHUB_TOKEN") != "" {
+				t.Fatal("fallback obscured the explicit credential source")
+			}
+		})
 	}
 }
