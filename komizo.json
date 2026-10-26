@@ -1,0 +1,190 @@
+{
+  "version": 1,
+  "repository": "nicodes/komizo",
+  "recipe": "go-cli",
+  "tools": {
+    "go": "1.27.3",
+    "caddy": "2.11.6",
+    "go:golang.org/x/vuln/cmd/govulncheck": "1.7.0",
+    "shellcheck": "0.11.0",
+    "node": "26.7.0",
+    "bun": "1.4.1",
+    "actionlint": "1.7.12"
+  },
+  "validation": {
+    "workflow": {
+      "required": [
+        "security-scan.yml",
+        "release.yml",
+        "dependency-policy.yml",
+        "dependency-maintenance.yml",
+        "ci.yml"
+      ],
+      "ci_gates": [
+        "Test"
+      ]
+    }
+  },
+  "artifacts": [
+    "dist",
+    "internal/agent/bin"
+  ],
+  "build_environment": [
+    "VERSION"
+  ],
+  "build_environment_defaults": {
+    "VERSION": "dev"
+  },
+  "stages": {
+    "install": [
+      [
+        "python3",
+        "scripts/workspace_storage.py",
+        "check",
+        "--path",
+        "ui/node_modules",
+        "--reserve-bytes",
+        "1073741824"
+      ],
+      [
+        "go",
+        "mod",
+        "download"
+      ],
+      [
+        "npm",
+        "ci",
+        "--prefix",
+        "ui",
+        "--no-audit",
+        "--no-fund"
+      ]
+    ],
+    "lint": [
+      [
+        "bash",
+        "tools/engineering/lint.sh"
+      ],
+      [
+        "bash",
+        "tools/engineering/check-ui.sh"
+      ]
+    ],
+    "unit": [
+      [
+        "bash",
+        "tools/engineering/unit.sh"
+      ]
+    ],
+    "integration": [
+      [
+        "komizo",
+        "run",
+        "agents"
+      ],
+      [
+        "bash",
+        "tools/engineering/integration.sh"
+      ]
+    ],
+    "build": [
+      [
+        "komizo",
+        "run",
+        "agents"
+      ],
+      [
+        "bash",
+        "tools/engineering/build-release.sh"
+      ]
+    ],
+    "artifact-check": [
+      [
+        "bash",
+        "tools/engineering/artifact-check.sh"
+      ]
+    ],
+    "vuln": [
+      [
+        "govulncheck",
+        "./..."
+      ]
+    ],
+    "dev": {
+      "inapplicable": "Operator CLI has no application development server."
+    },
+    "stop": {
+      "inapplicable": "Operator CLI starts no application development server."
+    },
+    "clean": [
+      [
+        "python3",
+        "-c",
+        "import shutil;from pathlib import Path\nfor name in [\"bin\",\"dist\"]:\n p=Path(name);assert not p.is_symlink();shutil.rmtree(p,ignore_errors=True)\nfor p in Path(\"internal/agent/bin\").glob(\"komizo-box-*\"): p.unlink()"
+      ]
+    ]
+  },
+  "tasks": {
+    "agents": [
+      [
+        "bash",
+        "tools/engineering/build-agents.sh"
+      ]
+    ],
+    "ui": [
+      [
+        "npm",
+        "ci",
+        "--prefix",
+        "ui"
+      ],
+      [
+        "npm",
+        "run",
+        "--prefix",
+        "ui",
+        "build"
+      ]
+    ],
+    "ui-check": [
+      [
+        "bash",
+        "tools/engineering/check-ui.sh"
+      ]
+    ],
+    "portability": [
+      [
+        "komizo",
+        "run",
+        "agents"
+      ],
+      [
+        "bash",
+        "tools/engineering/portability.sh"
+      ]
+    ],
+    "dependency-maintenance": [
+      [
+        "python3",
+        "-c",
+        "import os,runpy;runpy.run_path(os.environ[\"CICD_ENGINEERING\"]+\"/helpers/watch-tools.py\",run_name=\"__main__\")"
+      ]
+    ],
+    "security-scan": [
+      [
+        "komizo",
+        "run",
+        "install",
+        "vuln"
+      ],
+      [
+        "npm",
+        "audit",
+        "--prefix",
+        "ui",
+        "--package-lock-only",
+        "--audit-level=high"
+      ]
+    ]
+  }
+}

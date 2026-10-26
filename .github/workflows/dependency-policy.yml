@@ -1,13 +1,19 @@
 name: Dependency Policy
-on:
+'on':
   pull_request_target:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types:
+    - opened
+    - synchronize
+    - reopened
+    - ready_for_review
   workflow_run:
-    workflows: ["Build & Test"]
-    types: [completed]
-  workflow_dispatch:
+    workflows:
+    - Build & Test
+    types:
+    - completed
+  workflow_dispatch: null
   schedule:
-    - cron: '8 6 * * *'
+  - cron: 4 6 * * *
 permissions:
   contents: write
   pull-requests: write
@@ -20,6 +26,39 @@ concurrency:
 jobs:
   auto-merge:
     name: Apply dependency policy
-    uses: nicodes/tools/.github/workflows/dependency-merge.yml@247267492cd455647facafcfcc6eed4c63c49c0e # v0.27.2
-    with:
-      runner: ubuntu-24.04
+    if: github.ref == 'refs/heads/main' && (github.event_name != 'pull_request_target' || (github.event.pull_request.user.login == 'dependabot[bot]'
+      && github.event.pull_request.draft == false))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+      checks: read
+      statuses: read
+      attestations: read
+    steps:
+    - name: Check out source
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+        ref: main
+      timeout-minutes: 3
+    - name: Set up locked Komizo
+      uses: nicodes/komizo/setup@40086036977a5fc0119d6c4c1d5eb6ae3ab3b4b9
+      env:
+        GH_TOKEN: ${{ github.token }}
+      timeout-minutes: 5
+    - name: Reconcile verified dependency updates
+      run: komizo dependencies apply --output "$RUNNER_TEMP/dependency-report.json"
+      env:
+        GH_TOKEN: ${{ github.token }}
+      timeout-minutes: 7
+    - name: Upload artifacts
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: dependency-policy-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/dependency-report.json
+        if-no-files-found: error
+        retention-days: 14

@@ -3,9 +3,10 @@ package workflows
 import (
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 )
 
 // THE JOB CEILING IS A BACKSTOP, AND THE COMMENTS SAY SO. This checks it.
@@ -82,29 +83,25 @@ func TestTheJobCeilingIsLargerThanEverythingItBacksUp(t *testing.T) {
 	}
 }
 
-// timeouts reads the job's ceiling and the sum of the step bounds.
-//
-// BY INDENTATION, which is what tells them apart: a job's key sits at four
-// spaces and a step's at eight. Crude on purpose -- pulling in a YAML parser to
-// read two integers is a dependency in the repository that holds a signing key,
-// and the failure mode of getting it wrong here is a spurious red rather than a
-// missed one.
+// timeouts reads actual YAML so equivalent list indentation has identical bounds.
+// The existing production YAML dependency supplies the parser.
 func timeouts(src string) (job, steps, n int) {
-	for _, ln := range strings.Split(src, "\n") {
-		t := strings.TrimSpace(ln)
-		if !strings.HasPrefix(t, "timeout-minutes:") || strings.HasPrefix(t, "#") {
-			continue
-		}
-		v, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(t, "timeout-minutes:")))
-		if err != nil {
-			continue
-		}
-		switch len(ln) - len(strings.TrimLeft(ln, " ")) {
-		case 4:
-			job = v
-		case 8:
-			steps += v
-			n++
+	var jobs map[string]struct {
+		Timeout int `yaml:"timeout-minutes"`
+		Steps   []struct {
+			Timeout int `yaml:"timeout-minutes"`
+		} `yaml:"steps"`
+	}
+	if err := yaml.Unmarshal([]byte(src), &jobs); err != nil {
+		return 0, 0, 0
+	}
+	for _, current := range jobs {
+		job = current.Timeout
+		for _, step := range current.Steps {
+			if step.Timeout > 0 {
+				steps += step.Timeout
+				n++
+			}
 		}
 	}
 	return job, steps, n
@@ -148,6 +145,18 @@ func TestJobCeilingsDoNotBorrowAnotherJobsStepBounds(t *testing.T) {
 		_, steps, n := timeouts(sources[i])
 		if steps != want || n != 1 {
 			t.Fatalf("bounds crossed jobs: %d %d", steps, n)
+		}
+	}
+}
+
+func TestEquivalentYAMLIndentationKeepsStepDeadlines(t *testing.T) {
+	for _, source := range []string{
+		"  verify:\n    timeout-minutes: 20\n    steps:\n      - run: verify\n        timeout-minutes: 10\n",
+		"  verify:\n    timeout-minutes: 20\n    steps:\n    - run: verify\n      timeout-minutes: 10\n",
+	} {
+		job, steps, count := timeouts(source)
+		if job != 20 || steps != 10 || count != 1 {
+			t.Fatalf("lost actual deadlines: %d %d %d", job, steps, count)
 		}
 	}
 }
