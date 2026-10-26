@@ -168,7 +168,7 @@ func usagePreview(fs *flag.FlagSet, sub string) {
   komizo preview configure --host root@box --app myapp --profile-file preview-profile.json
 
 A preview is an isolated compose project per pull request -- its own
-containers, its own database inside Komizo's private preview server (created on up,
+containers, its own database inside komizo's private preview server (created on up,
 dropped on down, separate from production data), its own route at
 the host-configured preview domain, capped memory and cpu, and a ceiling on how many
 may exist with least-recently-used eviction. 'up' refuses below the

@@ -1247,7 +1247,7 @@ fi
 # to perform one privileged operation, without being given Docker membership
 # or a shell grant.
 #
-# THE SCRIPT COMES FROM THE APP, THE MECHANISM COMES FROM KOMIZO. It used to
+# THE SCRIPT COMES FROM THE APP, THE MECHANISM COMES FROM komizo. It used to
 # be the other way round: 181 lines of one product's operations -- its
 # compose project, its service names, its volume names, the path of a binary
 # only it ships -- were compiled into this file, which is otherwise the
@@ -1356,7 +1356,7 @@ trap 'mv -f "$doas_bak" /etc/doas.conf 2>/dev/null || true; exit 129' INT TERM H
 # distro later does not orphan rules written by this one.
 # Drop the previous account's block too, if this app was renamed onto a new
 # account (OLD_CI_USER is set only when it is safe to retire the old one).
-# ADOPT ANYTHING IN THE BLOCK KOMIZO DID NOT WRITE, BEFORE DELETING IT.
+# ADOPT ANYTHING IN THE BLOCK komizo DID NOT WRITE, BEFORE DELETING IT.
 #
 # The removal below drops the account's whole block, and the append after it
 # writes back exactly the rules komizo knows about. Any line an operator added

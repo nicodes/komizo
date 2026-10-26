@@ -336,7 +336,7 @@ func reachable(t *testing.T) {
 	t.Cleanup(func() { ensureReachable = orig })
 }
 
-// A BOX SET UP BY A `go run` KOMIZO IS NOT PERMANENTLY OUT OF DATE.
+// A BOX SET UP BY A `go run` komizo IS NOT PERMANENTLY OUT OF DATE.
 //
 // nicodes/komizo-be#177. A komizo carrying embedded agents stamps by CONTENT; one
 // that compiled its agent on demand stamps by VERSION, prefixed "v:". Comparing a

@@ -9,10 +9,10 @@ import (
 	"errors"
 )
 
-// Resume only Komizo's unencrypted single-ed25519 format, bound to this exact
+// Resume only komizo's unencrypted single-ed25519 format, bound to this exact
 // app/host comment. Never overwrite or silently substitute a different key.
 func readExistingKey(path, comment string) (keypair, error) {
-	bad := errors.New("existing key is not an intact Komizo key for this application and host")
+	bad := errors.New("existing key is not an intact komizo key for this application and host")
 	body, err := readJourneyFile(path, 64<<10, true)
 	if err != nil {
 		return keypair{}, err

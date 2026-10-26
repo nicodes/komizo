@@ -58,7 +58,7 @@ func registeredFixture() box.Report {
 }
 
 // withoutApp is the fixture with one registration gone -- the state the
-// rebuild left Termcade in.
+// rebuild left termcade in.
 func withoutApp(r box.Report, name string) box.Report {
 	var kept []box.App
 	for _, a := range r.Apps {
@@ -129,7 +129,7 @@ func TestReconcilePassesWhenTheBoxMatchesExactly(t *testing.T) {
 	}
 }
 
-// MISSING TERMCADE. The fixture without its termcade registration is the
+// MISSING termcade. The fixture without its termcade registration is the
 // state the rebuild left the box in, and the finding is the stable line the
 // runbook greps for.
 func TestReconcileReportsAMissingRegisteredApp(t *testing.T) {

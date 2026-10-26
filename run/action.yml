@@ -1,5 +1,5 @@
 name: Run project stages
-description: Run the locked Komizo project stages with optional compiler and image caches
+description: Run the locked komizo project stages with optional compiler and image caches
 inputs:
   target:
     description: Space-separated project stages or named tasks
@@ -49,7 +49,7 @@ runs:
         lock = json.loads((Path(os.environ['KOMIZO_DIRECTORY'])/'komizo.lock').read_text())
         source = os.environ['KOMIZO_ACTION_SOURCE']
         if not re.fullmatch('[a-f0-9]{40}', source) or lock['platform_revision'] != source:
-            raise SystemExit('Pin the run action to the same source as the locked Komizo release')
+            raise SystemExit('Pin the run action to the same source as the locked komizo release')
         PYTHON
     - name: Start cache setup measurement
       id: cache-start
