@@ -440,7 +440,7 @@ func recipeTools(name string) map[string]json.RawMessage {
 		tools["go"] = json.RawMessage(`"1.27.3"`)
 		tools["go:golang.org/x/vuln/cmd/govulncheck"] = json.RawMessage(`"1.7.0"`)
 	}
-	if name == "static-site" || name == "godot-app" || name == "godot-addon" {
+	if name == "static-site" || name == "godot-app" {
 		tools["bun"] = json.RawMessage(`"1.4.1"`)
 		tools["node"] = json.RawMessage(`"24.18.1"`)
 	}

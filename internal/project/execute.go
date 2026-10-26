@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -104,6 +105,9 @@ func prepare(root, platform string, selected []string) (Manifest, []string, stri
 		return m, nil, "", err
 	}
 	values["KOMIZO_EXECUTABLE"] = executable
+	if os.Getenv("MISE_GITHUB_TOKEN") == "" && os.Getenv("GITHUB_API_TOKEN") == "" && os.Getenv("GITHUB_TOKEN") == "" && os.Getenv("GH_TOKEN") != "" {
+		values["MISE_GITHUB_TOKEN"] = os.Getenv("GH_TOKEN")
+	}
 	values["KOMIZO_DEV_PROJECT"] = "komizo-" + digest([]byte(filepath.Clean(root)))[:16]
 	values["PATH"] = filepath.Dir(executable) + string(os.PathListSeparator) + os.Getenv("PATH")
 	if app := m.Release["project"]; app != "" {
@@ -168,6 +172,9 @@ func Execute(ctx context.Context, root, platform string, targets []string, mode 
 func execute(ctx context.Context, root, platform string, targets []string, mode string, selected []string, in io.Reader, progress io.Writer, toolchain func(context.Context) (string, error)) (result Result, err error) {
 	result = Result{Targets: targets}
 	defer func() { result.failed(err) }()
+	if slices.Contains(targets, "dev") && (len(targets) != 1) {
+		return result, errors.New("development must run as its own foreground session")
+	}
 	m, environment, runtimeRoot, err := prepare(root, platform, selected)
 	result.Recipe = m.Recipe
 	if err != nil {
@@ -198,6 +205,13 @@ func execute(ctx context.Context, root, platform string, targets []string, mode 
 	contractPath := environmentValue(environment, "KOMIZO_CONTRACT")
 	misePath := environmentValue(environment, "KOMIZO_TOOLCHAIN")
 	development := len(targets) == 1 && targets[0] == "dev"
+	if slices.Contains(targets, "clean") {
+		release, leaseErr := developmentLease(root)
+		if leaseErr != nil {
+			return result, leaseErr
+		}
+		defer release()
+	}
 	var session, marker string
 	if development {
 		release, leaseErr := developmentLease(root)

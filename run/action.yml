@@ -41,6 +41,7 @@ runs:
       env:
         KOMIZO_ACTION_SOURCE: ${{ github.action_ref }}
         KOMIZO_DIRECTORY: ${{ inputs.directory }}
+        MISE_GITHUB_TOKEN: ${{ github.token }}
       run: |
         python3 - <<'PYTHON'
         import json, os, re
@@ -92,6 +93,7 @@ runs:
       shell: bash
       env:
         KOMIZO_DIRECTORY: ${{ inputs.directory }}
+        MISE_GITHUB_TOKEN: ${{ github.token }}
         CACHE_STARTED_AT: ${{ steps.cache-start.outputs.started }}
         GO_CACHE_ENABLED: ${{ inputs.go-cache }}
         GO_CACHE_HIT: ${{ steps.go-cache.outputs.cache-hit }}
@@ -108,6 +110,7 @@ runs:
       env:
         ENGINEERING_TARGET: ${{ inputs.target }}
         KOMIZO_DIRECTORY: ${{ inputs.directory }}
+        MISE_GITHUB_TOKEN: ${{ github.token }}
         KOMIZO_TOOLS: ${{ inputs.tools }}
         KOMIZO_TIMEOUT: ${{ inputs.timeout }}
         KOMIZO_BASE: ${{ inputs.base }}
@@ -141,6 +144,7 @@ runs:
       shell: bash
       env:
         KOMIZO_DIRECTORY: ${{ inputs.directory }}
+        MISE_GITHUB_TOKEN: ${{ github.token }}
       run: |
         if [ -f "$KOMIZO_DIRECTORY/.artifacts/contract/timings.jsonl" ]; then
           komizo exec --directory "$KOMIZO_DIRECTORY" --tools python -- python3 -c 'import os,runpy;runpy.run_path(os.environ["CICD_ENGINEERING"]+"/helpers/timing-summary.py",run_name="__main__")' --summary "$GITHUB_STEP_SUMMARY"
