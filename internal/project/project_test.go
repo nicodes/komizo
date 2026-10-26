@@ -448,9 +448,10 @@ func TestDevExitCleansOnlyTheSessionThatActuallyStarted(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.Stages = map[string]json.RawMessage{
-		"dev":   command("python3", filepath.Join(runtime, "helpers/dev.py"), "run", "--", "python3", "-c", "from pathlib import Path; import time; Path('started').write_text('yes'); time.sleep(30)"),
-		"stop":  command("sh", "-c", "printf stopping > stopping; while [ ! -f allow-stop ]; do sleep 0.05; done; printf stopped > stopped"),
-		"clean": command("sh", "-c", "printf cleaned > cleaned; rm -rf .artifacts"),
+		"install": inapplicable("The process fixture has no dependencies"),
+		"dev":     command("python3", filepath.Join(runtime, "helpers/dev.py"), "run", "--", "python3", "-c", "from pathlib import Path; import time; Path('started').write_text('yes'); time.sleep(30)"),
+		"stop":    command("sh", "-c", "printf stopping > stopping; while [ ! -f allow-stop ]; do sleep 0.05; done; printf stopped > stopped"),
+		"clean":   command("sh", "-c", "printf cleaned > cleaned; rm -rf .artifacts"),
 	}
 	if err = writeJSON(filepath.Join(root, ManifestName), m); err != nil {
 		t.Fatal(err)
@@ -653,6 +654,64 @@ func TestToolchainAuthenticationHonorsExplicitCredentialSources(t *testing.T) {
 			}
 			if explicit != "" && explicit != "MISE_GITHUB_TOKEN" && environmentValue(env, "MISE_GITHUB_TOKEN") != "" {
 				t.Fatal("fallback obscured the explicit credential source")
+			}
+		})
+	}
+}
+
+func TestColdDevelopmentInstallsBeforeStartingAndRefusesChangedPolicy(t *testing.T) {
+	for _, mode := range []string{"success", "install-fails", "policy-changes"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("KOMIZO_CACHE_DIR", t.TempDir())
+			t.Setenv("CLERK_SECRET_KEY", "synthetic-parent-provider")
+			t.Setenv("RUNTIME_DATABASE_URL", "synthetic-parent-database")
+			t.Setenv("GH_TOKEN", "synthetic-installer-identity")
+			root := manifestFixture(t, `{"version":1,"recipe":"static-site"}`)
+			m, _, err := Read(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			installer := `import os; from pathlib import Path; assert not os.environ.get('CLERK_SECRET_KEY'); assert not os.environ.get('RUNTIME_DATABASE_URL'); assert os.environ.get('GH_TOKEN')=='synthetic-installer-identity'; Path('.artifacts/dependency-ready').write_text('installed')`
+			if mode == "install-fails" {
+				installer += "; raise SystemExit(7)"
+			}
+			if mode == "policy-changes" {
+				installer += `; import json,hashlib; p=Path('komizo.json'); value=json.loads(p.read_text()); value['development']={'default_mode':'preview','secrets':'OTHER'}; data=json.dumps(value).encode(); p.write_bytes(data); l=Path('komizo.lock'); lock=json.loads(l.read_text()); lock['manifest_sha256']=hashlib.sha256(data).hexdigest(); l.write_text(json.dumps(lock))`
+			}
+			m.Stages = map[string]json.RawMessage{
+				"install": command("python3", "-c", installer),
+				"dev":     command("python3", "-c", `import os; from pathlib import Path; assert Path('.artifacts/dependency-ready').read_text()=='installed'; assert not os.environ.get('GH_TOKEN'); assert not os.environ.get('CLERK_SECRET_KEY'); assert not os.environ.get('RUNTIME_DATABASE_URL'); Path('.artifacts/development-reached').write_text('yes')`),
+			}
+			if err = writeJSON(filepath.Join(root, ManifestName), m); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = WriteLock(root, "test-platform"); err != nil {
+				t.Fatal(err)
+			}
+			for _, args := range [][]string{{"init", "-q"}, {"add", "."}, {"-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "fixture"}} {
+				cmd := exec.Command("git", args...)
+				cmd.Dir = root
+				if output, err := cmd.CombinedOutput(); err != nil {
+					t.Fatal(err, string(output))
+				}
+			}
+			mise := filepath.Join(t.TempDir(), "mise")
+			if err = os.WriteFile(mise, []byte("#!/bin/sh\nshift 2\nexec \"$@\"\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			result, err := execute(context.Background(), root, "test-platform", []string{"dev"}, "local", nil, nil, io.Discard, func(context.Context) (string, error) { return mise, nil })
+			_, reached := os.Stat(filepath.Join(root, ".artifacts/development-reached"))
+			if mode == "success" {
+				if err != nil || !result.Completed || reached != nil {
+					t.Fatal("cold development did not start after installation", err, reached)
+				}
+			} else {
+				if err == nil || !os.IsNotExist(reached) {
+					t.Fatal("failed or changed setup reached the development process", err, reached)
+				}
+				if mode == "policy-changes" && !strings.Contains(err.Error(), "configuration changed during installation") {
+					t.Fatal("changed locked credential policy was not refused", err)
+				}
 			}
 		})
 	}
