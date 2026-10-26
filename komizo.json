@@ -27,7 +27,6 @@
   },
   "artifacts": [
     "dist",
-    "bin",
     "internal/agent/bin"
   ],
   "build_environment": [
