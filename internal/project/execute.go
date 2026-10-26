@@ -19,13 +19,14 @@ import (
 
 // Result is shared by the human and machine presentation layers.
 type Result struct {
-	Recipe                 string   `json:"recipe"`
-	Targets                []string `json:"targets,omitempty"`
-	Completed              bool     `json:"completed"`
-	ReconciliationRequired bool     `json:"reconciliation_required"`
-	ExitCode               int      `json:"exit_code"`
-	Receipt                string   `json:"receipt,omitempty"`
-	NextAction             []string `json:"next_action,omitempty"`
+	Recipe                 string            `json:"recipe"`
+	Targets                []string          `json:"targets,omitempty"`
+	Completed              bool              `json:"completed"`
+	ReconciliationRequired bool              `json:"reconciliation_required"`
+	ExitCode               int               `json:"exit_code"`
+	Receipt                string            `json:"receipt,omitempty"`
+	NextAction             []string          `json:"next_action,omitempty"`
+	Selection              *VerificationPlan `json:"selection,omitempty"`
 }
 
 func setEnv(base []string, values map[string]string) []string {

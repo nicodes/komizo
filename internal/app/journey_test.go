@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -313,6 +314,28 @@ func TestDeploymentAcknowledgementMatchesTheHostWireProtocol(t *testing.T) {
 	for _, bad := range []string{id, wire + "extra\n", strings.Replace(wire, "submitted="+id, "submitted="+strings.Repeat("c", 32), 1), strings.Replace(wire, previous, "unknown", 1)} {
 		if _, _, err := decodeDeploymentAcknowledgement([]byte(bad)); err == nil {
 			t.Fatal("ambiguous acknowledgement accepted", bad)
+		}
+	}
+}
+
+func TestNativeOutputCopyCannotBypassRetention(t *testing.T) {
+	output := &boundedOutput{remaining: 8}
+	count, err := io.Copy(output, strings.NewReader(strings.Repeat("x", 1024)))
+	if err != nil || count != 1024 || output.Len() != 8 || !output.truncated {
+		t.Fatalf("retention boundary failed: count=%d retained=%d truncated=%v error=%v", count, output.Len(), output.truncated, err)
+	}
+}
+
+func TestOperatorObservationFailureDoesNotClaimUncertainMutation(t *testing.T) {
+	for _, operation := range []string{"plan", "status"} {
+		var out, progress bytes.Buffer
+		machineDispatch(context.Background(), []string{"operator", operation}, strings.NewReader(""), &out, &progress, func([]string) error { return errors.New("unavailable service observation") })
+		var result MachineResult
+		if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+			t.Fatal(err)
+		}
+		if result.OK || result.Error == nil || result.Error.ReconciliationRequired {
+			t.Fatal(operation, out.String())
 		}
 	}
 }

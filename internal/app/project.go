@@ -40,7 +40,7 @@ func projectCommand(parent context.Context, args []string, in io.Reader, out, pr
 	root := fs.String("directory", ".", "project directory")
 	var recipe string
 	if name == "init" {
-		fs.StringVar(&recipe, "recipe", "", "static-site, go-service or godot-app")
+		fs.StringVar(&recipe, "recipe", "", "static-site, go-service, go-cli, go-library, godot-app, godot-addon or configuration")
 	}
 	mode := "auto"
 	if name == "dev" || name == "run" {
@@ -49,6 +49,12 @@ func projectCommand(parent context.Context, args []string, in io.Reader, out, pr
 	var tools string
 	if name == "run" || name == "exec" {
 		fs.StringVar(&tools, "tools", "", "comma-separated declared tools for a named task or explicit command")
+	}
+	var base string
+	var explain bool
+	if name == "check" {
+		fs.StringVar(&base, "base", "", "exact ancestor commit for affected-input verification")
+		fs.BoolVar(&explain, "explain", false, "describe selected verification without executing project code")
 	}
 	defaultTimeout := 30 * time.Minute
 	if name == "dev" {
@@ -89,7 +95,7 @@ func projectCommand(parent context.Context, args []string, in io.Reader, out, pr
 		switch name {
 		case "init":
 			if fs.NArg() != 0 || recipe == "" {
-				err = errors.New("usage: komizo init --recipe static-site|go-service|godot-app")
+				err = errors.New("usage: komizo init --recipe RECIPE; see komizo init --help")
 				break
 			}
 			data, err = project.Init(*root, recipe, versionText())
@@ -136,7 +142,15 @@ func projectCommand(parent context.Context, args []string, in io.Reader, out, pr
 			ctx, cancel := projectDeadline(parent, *timeout)
 			defer cancel()
 			var result project.Result
-			result, err = project.Execute(ctx, *root, versionText(), targets, mode, selected, in, progress)
+			if name == "check" && explain {
+				data, err = project.Plan(ctx, *root, versionText(), base)
+				break
+			}
+			if name == "check" && base != "" {
+				result, err = project.CheckSelected(ctx, *root, versionText(), base, in, progress)
+			} else {
+				result, err = project.Execute(ctx, *root, versionText(), targets, mode, selected, in, progress)
+			}
 			data, code = result, result.ExitCode
 		}
 	}
@@ -164,6 +178,11 @@ func projectCommand(parent context.Context, args []string, in io.Reader, out, pr
 		_ = json.NewEncoder(out).Encode(result)
 	} else if err != nil {
 		fmt.Fprintln(progress, "error:", err)
+	} else if plan, ok := data.(project.VerificationPlan); ok {
+		fmt.Fprintf(out, "Verification: %s\nStages: %s\n", plan.Mode, strings.Join(plan.Targets, ", "))
+		for _, reason := range plan.Reasons {
+			fmt.Fprintln(out, reason)
+		}
 	} else if !isHelp && name != "exec" {
 		fmt.Fprintln(out, name+": complete")
 	}

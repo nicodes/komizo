@@ -576,3 +576,44 @@ func TestNamedTasksCanComposeLockedVerificationWithoutDeadlock(t *testing.T) {
 		t.Fatal(err, string(body))
 	}
 }
+
+func TestLibraryBuildCompilesSourceWithoutInventingAnExecutable(t *testing.T) {
+	t.Setenv("KOMIZO_CACHE_DIR", t.TempDir())
+	root := t.TempDir()
+	if _, err := Init(root, "go-library", "test-platform"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.test/library\n\ngo 1.27\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "answer.go"), []byte("package library\n\nfunc Answer() int { return 42 }\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"init", "-q"}, {"add", "."}, {"-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-qm", "fixture"}} {
+		command := exec.Command("git", args...)
+		command.Dir = root
+		if body, err := command.CombinedOutput(); err != nil {
+			t.Fatal(err, string(body))
+		}
+	}
+	mise := filepath.Join(t.TempDir(), "mise")
+	if err := os.WriteFile(mise, []byte("#!/bin/sh\nshift 2\nexec \"$@\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	tool := func(context.Context) (string, error) { return mise, nil }
+	result, err := execute(context.Background(), root, "test-platform", []string{"build", "artifact-check"}, "local", nil, nil, io.Discard, tool)
+	if err != nil || !result.Completed {
+		t.Fatal(result, err)
+	}
+	body, err := os.ReadFile(filepath.Join(root, ".artifacts/contract/build.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var proof map[string]any
+	if err = json.Unmarshal(body, &proof); err != nil {
+		t.Fatal(err)
+	}
+	if artifacts, ok := proof["artifacts"].(map[string]any); !ok || len(artifacts) != 0 {
+		t.Fatal("library build claimed application artifacts", proof)
+	}
+}
