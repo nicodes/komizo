@@ -23,7 +23,7 @@ func installAgent(t target) error {
 	if err != nil {
 		return err
 	}
-	// EMBEDDED IF THIS KOMIZO CARRIES ONE, BUILT IF IT DOES NOT.
+	// EMBEDDED IF THIS komizo CARRIES ONE, BUILT IF IT DOES NOT.
 	//
 	// A release archive carries the agents, so this needs no toolchain and no
 	// network. A `go install`/`go run` build carries none -- the agents are

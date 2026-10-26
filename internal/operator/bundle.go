@@ -1,5 +1,5 @@
 // Package operator distributes the privileged merge operator from one owner.
-// The assets are embedded in authenticated Komizo releases; agent configuration
+// The assets are embedded in authenticated komizo releases; agent configuration
 // repositories neither implement nor replace this authority.
 package operator
 

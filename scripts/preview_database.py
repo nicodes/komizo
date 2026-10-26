@@ -1,4 +1,4 @@
-"""Provision only Komizo's private preview database within protected resources."""
+"""Provision only komizo's private preview database within protected resources."""
 import hashlib,json,os,re,secrets,tempfile,time
 
 IMAGE='postgres@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280'

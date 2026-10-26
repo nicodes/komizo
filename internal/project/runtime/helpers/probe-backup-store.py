@@ -30,7 +30,7 @@ def probe(credentials=None, put=None, open_request=None):
     open_request = open_request or transport.urlopen
     deadline = time.monotonic()+SECONDS
     key = 'komizo-capability/'+secrets.token_hex(16)+'.txt'
-    original = b'Komizo synthetic immutable-creation capability probe v1\n'
+    original = b'komizo synthetic immutable-creation capability probe v1\n'
     url = 'https://'+credentials['BACKUP_S3_HOSTNAME']+'/'+credentials['BACKUP_S3_BUCKET']+'/'+key
     params = (credentials['BACKUP_S3_ACCESS_KEY'], credentials['BACKUP_S3_SECRET_KEY'], credentials['BACKUP_S3_HOSTNAME'], deadline)
     result = {'version': 1, 'kind': 'synthetic-immutable-creation', 'key': key,

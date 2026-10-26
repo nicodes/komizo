@@ -43,7 +43,7 @@ func (p *Probe) localEngineEligible() bool {
 			return false
 		}
 	}
-	// Preserve customized wrappers, including the shell fixtures. Komizo's
+	// Preserve customized wrappers, including the shell fixtures. komizo's
 	// ordinary Alpine installation uses the packaged CLI at /usr/bin/docker.
 	path, err := exec.LookPath("docker")
 	if err != nil || (path != "/usr/bin/docker" && path != "/usr/local/bin/docker") {

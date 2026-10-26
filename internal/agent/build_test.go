@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// A KOMIZO WITH NO EMBEDDED AGENT CAN STILL PUT ONE ON A BOX.
+// A komizo WITH NO EMBEDDED AGENT CAN STILL PUT ONE ON A BOX.
 //
 // nicodes/komizo-be#177. `go run github.com/nicodes/komizo@vX init` set up
 // Docker, the shared network and the metadata block, and then failed at the
