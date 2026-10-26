@@ -32,14 +32,14 @@ func TestArchFor(t *testing.T) {
 	}
 }
 
-// A komizo built without `make agents` still works for everything except
+// A komizo built without `komizo run agents` still works for everything except
 // installing one, and says exactly that when asked. The alternative -- a build
 // that fails, or one that ships an empty file -- would make the build step
 // mandatory to run the tests, or put a zero-byte binary on somebody's server.
 func TestAMissingAgentSaysWhatToDo(t *testing.T) {
 	if _, err := For("sparc64"); err == nil {
 		t.Fatal("want an error for an architecture with no embedded agent")
-	} else if want := "make agents"; !strings.Contains(err.Error(), want) {
+	} else if want := "komizo run agents"; !strings.Contains(err.Error(), want) {
 		t.Errorf("the error should say %q, got %q", want, err)
 	}
 }
@@ -50,14 +50,14 @@ func TestAMissingAgentSaysWhatToDo(t *testing.T) {
 func TestStampCoversEveryAgentOrNone(t *testing.T) {
 	got := Stamp()
 	if got == "" {
-		// Built without `make agents`. Empty rather than a hash of nothing,
+		// Built without `komizo run agents`. Empty rather than a hash of nothing,
 		// which is the honest answer for a komizo with no agent to install.
 		for _, a := range Arches {
 			if _, err := For(a); err == nil {
 				t.Errorf("no stamp, but linux/%s is embedded", a)
 			}
 		}
-		t.Skip("no agents embedded; run `make agents`")
+		t.Skip("no agents embedded; run `komizo run agents`")
 	}
 	if len(got) != 12 {
 		t.Errorf("stamp = %q, want 12 characters", got)
