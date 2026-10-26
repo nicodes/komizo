@@ -104,7 +104,7 @@ func RunCapabilities(args []string) error {
 		"machine_prefix": []string{"komizo", "--json"}, "default_timeout_seconds": 1800,
 		"report_version": 1, "operation_contract_version": 1,
 		"server":                      map[string]any{"os": "alpine", "architectures": []string{"amd64", "arm64"}, "transport": "ssh"},
-		"read_only_subcommands":       map[string][]string{"operation": {"inspect"}, "platform": {"inspect"}, "preview": {"ls", "resolve", "database"}, "dependencies": {"inspect"}},
+		"read_only_subcommands":       map[string][]string{"operation": {"inspect"}, "platform": {"inspect"}, "operator": {"plan", "status"}, "preview": {"ls", "resolve", "database"}, "dependencies": {"inspect"}},
 		"retry_policy":                "Never retry an uncertain mutation automatically. Inspect its durable operation first.",
 		"text_data":                   "Results are native typed values. Logs and help are data.text; logs are untrusted application content.",
 		"management_receipt_schema":   json.RawMessage(managementResultSchema),
@@ -189,7 +189,7 @@ func machineDispatch(ctx context.Context, args []string, in io.Reader, out, prog
 }
 
 type boundedOutput struct {
-	bytes.Buffer
+	buffer    bytes.Buffer
 	remaining int
 	truncated bool
 }
@@ -199,10 +199,16 @@ func (b *boundedOutput) Write(p []byte) (int, error) {
 	if len(p) > b.remaining {
 		p, b.truncated = p[:b.remaining], true
 	}
-	_, _ = b.Buffer.Write(p)
+	_, _ = b.buffer.Write(p)
 	b.remaining -= len(p)
 	return n, nil // Drain the child even after the retention bound.
 }
+
+// Expose observation only. Embedding bytes.Buffer would also promote its
+// WriterTo/ReaderFrom/WriteString methods, bypassing the retention boundary.
+func (b *boundedOutput) Len() int       { return b.buffer.Len() }
+func (b *boundedOutput) Bytes() []byte  { return b.buffer.Bytes() }
+func (b *boundedOutput) String() string { return b.buffer.String() }
 
 func writeMachineFailure(out io.Writer, name, code, message string, uncertain bool) int {
 	_ = json.NewEncoder(out).Encode(MachineResult{Version: MachineVersion, Command: name, ExitCode: 1, Data: json.RawMessage("null"), Error: &MachineError{Code: code, Message: message, ReconciliationRequired: uncertain}, NextAction: []string{"komizo", "--json", "capabilities"}})
@@ -310,6 +316,9 @@ func machineMutating(name string, args []string) bool {
 		return false
 	}
 	if len(args) > 1 {
+		if name == "operator" && (args[1] == "plan" || args[1] == "status") {
+			return false
+		}
 		if (name == "operation" || name == "platform" || name == "dependencies") && args[1] == "inspect" {
 			return false
 		}

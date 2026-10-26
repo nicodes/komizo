@@ -53,7 +53,9 @@ def load(file):
         for command in value:
             if not isinstance(command, list) or not command or not all(isinstance(v, str) and v for v in command):
                 raise ValueError(f'{stage}: commands must be nonempty argument arrays')
-    if isinstance(data['stages']['build'], list) and not data.get('artifacts'):
+    source_only = (data.get('source_only_build') is True and not data.get('images')
+                   and isinstance(data['stages']['artifact-check'], dict))
+    if isinstance(data['stages']['build'], list) and not data.get('artifacts') and not source_only:
         raise ValueError('build must declare artifact paths')
     if not isinstance(data.get('artifacts', []), list):
         raise ValueError('artifact paths must be a list')
@@ -199,14 +201,9 @@ class Runner:
         if name in GROUPS:
             receipt = self.root/'test.json'
             receipt.unlink(missing_ok=True)
-            for child in GROUPS[name]:
+            for child in self.data.get('check_targets', GROUPS[name]) if name == 'check' else GROUPS[name]:
                 self.stage(child)
-            proof = self.provenance(identity(self.data))
-            if proof['tested_commit'] is not None:
-                proof.update(checkout_binding(), execution_context=execution_context())
-                temporary = self.root/'test.json.tmp'
-                temporary.write_text(json.dumps(proof, sort_keys=True)+'\n')
-                temporary.replace(receipt)
+            self.test_proof()
             self.done.add(name)
             return
         value = self.data['stages'].get(name, self.data.get('tasks', {}).get(name))
@@ -286,6 +283,17 @@ class Runner:
         finally:
             self.timing(name, started, result)
 
+    def test_proof(self):
+        applicable = {name for name in ('unit', 'integration') if isinstance(self.data['stages'][name], list)}
+        if not applicable or not applicable <= set(self.test_receipts):
+            return
+        proof = self.provenance(identity(self.data))
+        if proof['tested_commit'] is not None:
+            proof.update(checkout_binding(), execution_context=execution_context())
+            temporary = self.root/'test.json.tmp'
+            temporary.write_text(json.dumps(proof, sort_keys=True)+'\n')
+            temporary.replace(self.root/'test.json')
+
     def fresh(self):
         try:
             evidence = json.loads((self.root/'build.json').read_text())
@@ -332,6 +340,13 @@ def main():
                     runner.stage(target)
                 finally:
                     fcntl.flock(lock, fcntl.LOCK_UN)
+            # A focused selection earns a test receipt only when this very
+            # invocation actually completed every applicable test stage.
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                runner.test_proof()
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 if __name__ == '__main__':
