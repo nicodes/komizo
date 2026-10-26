@@ -5,6 +5,10 @@ inputs:
     description: Space-separated project stages or named tasks
     required: false
     default: check
+  base:
+    description: Optional exact ancestor commit for affected verification; target must be check
+    required: false
+    default: ''
   build-cache:
     description: Restore explicitly selected BuildKit component caches
     required: false
@@ -106,6 +110,7 @@ runs:
         KOMIZO_DIRECTORY: ${{ inputs.directory }}
         KOMIZO_TOOLS: ${{ inputs.tools }}
         KOMIZO_TIMEOUT: ${{ inputs.timeout }}
+        KOMIZO_BASE: ${{ inputs.base }}
         CACHE_ENABLED: ${{ inputs.build-cache }}
         WEB_CACHE_ENABLED: ${{ inputs.web-cache }}
         GO_CACHE_ENABLED: ${{ inputs.go-cache }}
@@ -122,6 +127,11 @@ runs:
         fi
         if [ "${GO_CACHE_ENABLED:-false}" = true ]; then
           export GOCACHE="$RUNNER_TEMP/fleet-go-compiler"
+        fi
+        if [ -n "${KOMIZO_BASE:-}" ]; then
+          [[ "$KOMIZO_BASE" =~ ^[a-f0-9]{40}$ ]] && [ "$ENGINEERING_TARGET" = check ] && [ -z "$KOMIZO_TOOLS" ] || { echo 'Affected verification requires check, an exact base and the complete toolchain' >&2; exit 1; }
+          komizo check --directory "$KOMIZO_DIRECTORY" --timeout "$KOMIZO_TIMEOUT" --base "$KOMIZO_BASE"
+          exit
         fi
         arguments=(run --directory "$KOMIZO_DIRECTORY" --timeout "$KOMIZO_TIMEOUT")
         if [ -n "$KOMIZO_TOOLS" ]; then arguments+=(--tools "$KOMIZO_TOOLS"); fi
