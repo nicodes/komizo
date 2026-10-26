@@ -266,10 +266,19 @@ func inapplicable(reason string) json.RawMessage {
 func recipe(name string) (map[string]json.RawMessage, error) {
 	stages := map[string]json.RawMessage{}
 	switch name {
-	case "godot-app", "godot-addon":
+	case "godot-app":
 		for _, stage := range stageNames {
 			stages[stage] = command("bash", "scripts/"+stage+".sh")
 		}
+	case "godot-addon":
+		for _, stage := range stageNames {
+			stages[stage] = inapplicable("No " + stage + " operation is declared for this addon")
+		}
+		for _, stage := range []string{"install", "lint", "unit", "build", "artifact-check", "clean"} {
+			stages[stage] = command("python3", "-c", `import os,runpy;runpy.run_path(os.environ["CICD_ENGINEERING"]+"/helpers/godot-addon.py",run_name="__main__")`, stage)
+		}
+		stages["dev"] = inapplicable("Use the addon from a consuming Godot project")
+		stages["stop"] = inapplicable("An addon has no standalone development process")
 	case "go-service":
 		for _, stage := range stageNames {
 			stages[stage] = inapplicable("No " + stage + " operation is declared for this Go application")
@@ -327,7 +336,7 @@ func (m Manifest) Contract() (map[string]any, error) {
 	artifacts := m.Artifacts
 	if len(artifacts) == 0 {
 		artifacts = []string{".artifacts/build"}
-		if m.Recipe == "static-site" {
+		if m.Recipe == "static-site" || m.Recipe == "godot-addon" {
 			artifacts = []string{"dist"}
 		} else if m.Recipe == "go-library" {
 			artifacts = []string{}
@@ -342,6 +351,8 @@ func (m Manifest) Contract() (map[string]any, error) {
 	}
 	if m.Verification != nil {
 		result["check_targets"] = m.Verification.FullTargets
+	} else if m.Recipe == "godot-addon" {
+		result["check_targets"] = []string{"lint", "build", "test", "artifact-check"}
 	}
 	if len(m.Images) > 0 {
 		result["images"] = m.Images
@@ -440,7 +451,7 @@ func recipeTools(name string) map[string]json.RawMessage {
 		tools["go"] = json.RawMessage(`"1.27.3"`)
 		tools["go:golang.org/x/vuln/cmd/govulncheck"] = json.RawMessage(`"1.7.0"`)
 	}
-	if name == "static-site" || name == "godot-app" || name == "godot-addon" {
+	if name == "static-site" || name == "godot-app" {
 		tools["bun"] = json.RawMessage(`"1.4.1"`)
 		tools["node"] = json.RawMessage(`"24.18.1"`)
 	}
