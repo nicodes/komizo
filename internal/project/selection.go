@@ -36,6 +36,7 @@ type VerificationPlan struct {
 	Head           string   `json:"head"`
 	Base           string   `json:"base,omitempty"`
 	ChangedPaths   []string `json:"changed_paths"`
+	PathsTruncated bool     `json:"paths_truncated,omitempty"`
 	ManifestSHA256 string   `json:"manifest_sha256"`
 	PolicySHA256   string   `json:"policy_sha256"`
 	Mode           string   `json:"mode"`
@@ -104,6 +105,9 @@ func (m Manifest) validateVerification() error {
 		}
 		patterns = append(patterns, rule.Paths...)
 	}
+	if len(patterns) > 1024 {
+		return errors.New("verification patterns exceed the finite policy budget")
+	}
 	for _, pattern := range patterns {
 		if len(pattern) == 0 || len(pattern) > 512 || !safeInputPath(pattern) {
 			return errors.New("verification patterns must remain inside the checkout")
@@ -117,14 +121,6 @@ func safeInputPath(name string) bool {
 		!slices.Contains(strings.Split(name, "/"), "..")
 }
 
-// Like shell filename matching, '*' and '?' match path text, including '/'.
-// Everything else is literal; there is no executable pattern language.
-func inputMatches(pattern, name string) bool {
-	pattern = regexp.QuoteMeta(pattern)
-	pattern = strings.ReplaceAll(strings.ReplaceAll(pattern, `\*`, ".*"), `\?`, ".")
-	return regexp.MustCompile("^(?:" + pattern + ")$").MatchString(name)
-}
-
 func selectedVerification(p VerificationPolicy, changed []string, event string) (string, []string, []string) {
 	full := event != "local" && event != "pull_request"
 	selected := map[string]bool{}
@@ -133,39 +129,51 @@ func selectedVerification(p VerificationPolicy, changed []string, event string) 
 	}
 	reasons := []string{}
 	if full {
-		reasons = append(reasons, "This event requires complete verification")
+		return "full", slices.Clone(p.FullTargets), []string{"This event requires complete verification"}
+	}
+	addReason := func(reason string) {
+		if len(reasons) < 256 {
+			reasons = append(reasons, reason)
+		}
+	}
+	matchers := map[string]*regexp.Regexp{}
+	matches := func(pattern, name string) bool {
+		matcher := matchers[pattern]
+		if matcher == nil {
+			patternText := regexp.QuoteMeta(pattern)
+			patternText = strings.ReplaceAll(strings.ReplaceAll(patternText, `\*`, ".*"), `\?`, ".")
+			matcher = regexp.MustCompile("^(?:" + patternText + ")$")
+			matchers[pattern] = matcher
+		}
+		return matcher.MatchString(name)
 	}
 	sensitive := []string{"komizo.json", "komizo.lock", ".github/*", ".gitmodules", "go.mod", "go.sum", "*/go.mod", "*/go.sum", "package.json", "*/package.json", "*lock*", "*requirements*"}
 	for _, name := range changed {
 		force := !safeInputPath(name)
 		for _, pattern := range append(sensitive, p.ForceFull...) {
-			force = force || inputMatches(pattern, name)
+			force = force || matches(pattern, name)
 		}
 		if force {
-			full = true
-			reasons = append(reasons, name+": shared, policy or dependency input requires complete verification")
-			continue
+			addReason(name + ": shared, policy or dependency input requires complete verification")
+			return "full", slices.Clone(p.FullTargets), reasons
 		}
 		matched := false
 		for _, rule := range p.Rules {
 			for _, pattern := range rule.Paths {
-				if inputMatches(pattern, name) {
+				if matches(pattern, name) {
 					matched = true
 					for _, target := range rule.Targets {
 						selected[target] = true
 					}
-					reasons = append(reasons, name+": selects "+strings.Join(rule.Targets, ", "))
+					addReason(name + ": selects " + strings.Join(rule.Targets, ", "))
 					break
 				}
 			}
 		}
 		if !matched {
-			full = true
-			reasons = append(reasons, name+": no reviewed dependency rule; complete verification required")
+			addReason(name + ": no reviewed dependency rule; complete verification required")
+			return "full", slices.Clone(p.FullTargets), reasons
 		}
-	}
-	if full {
-		return "full", slices.Clone(p.FullTargets), reasons
 	}
 	targets := []string{}
 	for _, name := range p.FullTargets {
@@ -259,6 +267,21 @@ func Plan(ctx context.Context, root, platform, base string) (VerificationPlan, e
 				plan.ChangedPaths = append(plan.ChangedPaths, name)
 			}
 			sort.Strings(plan.ChangedPaths)
+			retained, size := 0, 0
+			for _, name := range plan.ChangedPaths {
+				if retained >= 4096 || size+len(name) > 256<<10 {
+					break
+				}
+				retained++
+				size += len(name)
+			}
+			if retained < len(plan.ChangedPaths) {
+				plan.PathsTruncated = true
+				plan.ChangedPaths = plan.ChangedPaths[:retained]
+				plan.Reasons = []string{"Input inventory exceeds the display budget; complete verification required"}
+				plan.Command = append([]string{"komizo", "run", "install"}, plan.Targets...)
+				return plan, nil
+			}
 			event := os.Getenv("GITHUB_EVENT_NAME")
 			if event == "" {
 				event = "local"
@@ -282,6 +305,12 @@ func CheckSelected(ctx context.Context, root, platform, base string, in io.Reade
 	}
 	plan, err := Plan(ctx, root, platform, base)
 	if err != nil {
+		return result, err
+	}
+	if err = projectDirectory(root, ".artifacts", "contract"); err != nil {
+		return result, err
+	}
+	if err = writeJSON(filepath.Join(root, ".artifacts/contract/verification-plan.json"), plan); err != nil {
 		return result, err
 	}
 	if len(plan.Targets) == 0 {

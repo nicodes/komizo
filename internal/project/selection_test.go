@@ -3,6 +3,7 @@ package project
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -181,5 +182,28 @@ func TestGitInventoryBoundCannotBeBypassedByCopyInterfaces(t *testing.T) {
 	count, err := io.Copy(&output, strings.NewReader(strings.Repeat("a", (1<<20)+1)))
 	if err != nil || count != (1<<20)+1 || output.buffer.Len() > 1<<20 || !output.truncated {
 		t.Fatal("Git inventory was not drained under a finite retention bound")
+	}
+}
+
+func TestIncompleteInputInventoryAlwaysRequiresCompleteVerification(t *testing.T) {
+	t.Setenv("GITHUB_EVENT_NAME", "local")
+	root, base := selectionFixture(t)
+	folder := filepath.Join(root, "docs")
+	if err := os.Mkdir(folder, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4200; i++ {
+		name := filepath.Join(folder, fmt.Sprintf("page-%04d.md", i))
+		if err := os.WriteFile(name, nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan, err := Plan(context.Background(), root, "test-platform", base)
+	if err != nil || plan.Mode != "full" || !plan.PathsTruncated || len(plan.ChangedPaths) > 4096 {
+		t.Fatal(plan.Mode, plan.PathsTruncated, len(plan.ChangedPaths), err)
+	}
+	body, err := json.Marshal(plan)
+	if err != nil || len(body) > 4<<20 {
+		t.Fatal("plan exceeded machine output budget", len(body), err)
 	}
 }
