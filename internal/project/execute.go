@@ -212,8 +212,13 @@ func execute(ctx context.Context, root, platform string, targets []string, mode 
 		}
 		defer release()
 	}
-	var session, marker string
+	var session, marker, mise string
 	if development {
+		contract, _ := m.Contract()
+		var commands [][]string
+		if json.Unmarshal(contract["stages"].(map[string]json.RawMessage)["dev"], &commands) != nil {
+			return result, errors.New("this project declares no standalone development process")
+		}
 		release, leaseErr := developmentLease(root)
 		if leaseErr != nil {
 			return result, leaseErr
@@ -228,6 +233,54 @@ func execute(ctx context.Context, root, platform string, targets []string, mode 
 			profile["repository"] = "local/project"
 		}
 		path := filepath.Join(root, ".artifacts", "komizo", "development.json")
+		if err = writeJSON(path, profile); err != nil {
+			return result, err
+		}
+		// Install dependencies before obtaining Preview credentials. Tool downloads
+		// can use the caller's GitHub identity; application credentials and hooks
+		// from the parent environment never reach this setup process.
+		installation, installErr := devenv.Prepare(ctx, path, "local", environment)
+		if installErr != nil {
+			return result, installErr
+		}
+		trustedInstall := map[string]string{}
+		for _, entry := range environmentForRuntime(root, runtimeRoot, contractPath, misePath) {
+			key, value, _ := strings.Cut(entry, "=")
+			trustedInstall[key] = value
+		}
+		for _, key := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GITHUB_API_TOKEN", "MISE_GITHUB_TOKEN"} {
+			if value := environmentValue(environment, key); value != "" {
+				trustedInstall[key] = value
+			}
+		}
+		installation = setEnv(installation, trustedInstall)
+		mise, err = toolchain(ctx)
+		if err != nil {
+			return result, err
+		}
+		setup := exec.Command(mise, "exec", "--", "python3", filepath.Join(runtimeRoot, "helpers", "contract.py"), "--manifest", contractPath, "install")
+		setup.Dir, setup.Env, setup.Stdin, setup.Stdout, setup.Stderr = root, toolchainEnvironment(installation, mise), in, progress, progress
+		if err = runCommand(ctx, setup); err != nil {
+			result.ReconciliationRequired = true
+			result.Receipt = ".artifacts/contract/failure.json"
+			var exit *exec.ExitError
+			if errors.As(err, &exit) && exit.ExitCode() > 0 {
+				result.ExitCode = exit.ExitCode()
+			}
+			return result, err
+		}
+		// Revalidate source and regenerate trusted runtime files after package
+		// hooks. They cannot silently widen the authorized credential selection.
+		current, freshEnvironment, _, prepareErr := prepare(root, platform, selected)
+		if prepareErr != nil {
+			return result, prepareErr
+		}
+		originalPolicy, _ := json.Marshal(m)
+		currentPolicy, _ := json.Marshal(current)
+		if string(originalPolicy) != string(currentPolicy) {
+			return result, errors.New("project configuration changed during installation; review it before starting development")
+		}
+		environment = freshEnvironment
 		if err = writeJSON(path, profile); err != nil {
 			return result, err
 		}
@@ -258,9 +311,11 @@ func execute(ctx context.Context, root, platform string, targets []string, mode 
 		actualTargets = []string{"install", "check"}
 	}
 	args := append([]string{"exec", "--", "python3", filepath.Join(runtimeRoot, "helpers", "contract.py"), "--manifest", contractPath}, actualTargets...)
-	mise, err := toolchain(ctx)
-	if err != nil {
-		return result, err
+	if mise == "" {
+		mise, err = toolchain(ctx)
+		if err != nil {
+			return result, err
+		}
 	}
 	cmd := exec.Command(mise, args...)
 	environment = toolchainEnvironment(environment, mise)
