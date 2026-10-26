@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: a70ebe0dccb5d3977f32845760e2b58028cc62e948d5c86ac8308f8ac50aca52 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 0bfe125cd88afc492198ef755bed1f6ff43b30d7d0073050c67eacedd4f81b3f -->
 
 # Komizo
 
@@ -19,20 +19,22 @@ komizo status
 To adopt an existing project:
 
 ```sh
-komizo init --recipe static-site   # also: go-service, godot-app
+komizo init --recipe static-site   # also: go-service, go-cli, go-library, godot-app, godot-addon, configuration
 komizo lock                      # after changing declared inputs
 komizo describe                  # inspect capabilities without running project code
 komizo run unit                  # run a selected stage
 komizo exec -- go version         # run a command with the locked tools
 ```
 
-Static sites use Bun install/build/dev and `scripts/test-site.sh` for their output assertions. Go services default to a root main package, Go formatting/vet, race-enabled tests, an executable build and vulnerability scanning. Godot applications supply their game-specific test/export scripts. Override a recipe stage with argument arrays in `stages`; an inapplicable stage requires a reason. `tasks` adds named project commands accessible through `komizo run NAME`. Initialization creates configuration for existing application source.
+Static sites use Bun install/build/dev and `scripts/test-site.sh` for their output assertions. Go services default to a root main package, Go formatting/vet, race-enabled tests, an executable build and vulnerability scanning. Go CLI projects use the same executable checks. Go libraries compile their packages and explicitly declare that they publish source rather than an application executable. Godot applications and addons supply their test/package/export scripts. Configuration projects supply `scripts/lint.sh` and `scripts/unit.sh`; missing checks fail. Override a recipe stage with argument arrays in `stages`; an inapplicable stage requires a reason. `tasks` adds named project commands accessible through `komizo run NAME`. Initialization creates configuration for existing application source.
 
 Development runs in the foreground until Ctrl-C. The declared default selects Preview credentials where supported; `komizo dev --mode local` selects offline fixtures. `--mode preview` requests Preview explicitly. Selected credentials are injected into the child process environment and are never written to a `.env` file. Development credential retrieval requires the repository's trusted `ghenv.yml` workflow and GitHub CLI authentication. Production credentials are excluded from that handoff.
 
 Host setup records a private repository-to-host binding in the workstation's Komizo configuration directory. Once an operator has configured that binding, `komizo deploy` selects the checkout's clean committed revision, `komizo preview --pr NUMBER` uses its declared published images, and `komizo status` reads its installed health. Explicit `--host` and `--app` remain available. Project manifests cannot grant host authority. Deployments and previews require their published images and the host's existing authorization checks.
 
 Use `komizo run --tools python TASK` or `komizo exec --tools python -- COMMAND` for a named maintenance task that only needs selected declared tools. Verification stages always use the complete recipe toolchain. `komizo describe` reports the resolved tools.
+
+`komizo check --explain` describes the complete gate without executing project code. With `--base EXACT_COMMIT`, it explains or runs the affected stages declared under `verification` in `komizo.json`. Shared configuration, unknown paths, unavailable/non-ancestor bases and production events require the complete gate. The complete policy must cover every applicable recipe stage. Patterns use `*` and `?` over checkout-relative path text. Selection metadata is separate from successful test or publication evidence.
 
 All project commands accept `--directory DIR`. Finite commands accept `--timeout DURATION`; development has no deadline unless one is selected. Verification failures include a focused rerun command.
 
@@ -57,19 +59,21 @@ The job needs read access to repository contents and attestations. Project sourc
 
 ## Install
 
-Download a matching Darwin/Linux, arm64/x86_64 archive from [releases](https://github.com/nicodes/komizo/releases). These examples pin v0.1.1, including structured management results and exact-stage platform recovery. Verify its checksum and GitHub attestation before executing it. The workstation needs SSH; platform maintenance also uses Python 3. The application server uses Alpine Linux with OpenRC, amd64 or arm64, and root SSH access.
+Download a matching Darwin/Linux, arm64/x86_64 archive from [releases](https://github.com/nicodes/komizo/releases). These examples pin v0.2.0, including structured management results and exact-stage platform recovery. Verify its checksum and GitHub attestation before executing it. The workstation needs SSH; platform maintenance also uses Python 3. The application server uses Alpine Linux with OpenRC, amd64 or arm64, and root SSH access.
 
 ```sh
 # Linux x86_64; choose the matching archive for your workstation.
-gh release download v0.1.1 --repo nicodes/komizo \
+gh release download v0.2.0 --repo nicodes/komizo \
   -p komizo_Linux_x86_64.tar.gz -p checksums.txt
 sha256sum -c checksums.txt --ignore-missing
-gh attestation verify komizo_Linux_x86_64.tar.gz --repo nicodes/komizo
+gh attestation verify komizo_Linux_x86_64.tar.gz --repo nicodes/komizo \
+  --signer-workflow nicodes/komizo/.github/workflows/release.yml \
+  --source-ref refs/heads/main --deny-self-hosted-runners
 tar xzf komizo_Linux_x86_64.tar.gz
 ./komizo capabilities
 ```
 
-Release archives embed both host architectures and need no Go compiler. Published releases include attested acceptance and performance receipts for the declared disposable Alpine test profile. With the matching Go toolchain, the source alternative is `go run github.com/nicodes/komizo@v0.1.1 --json setup --host root@your-server`; it builds the matching host executable when needed. Use only hosts you own or administer.
+Release archives embed both host architectures and need no Go compiler. Published releases include attested acceptance and performance receipts for the declared disposable Alpine test profile. With the matching Go toolchain, the source alternative is `go run github.com/nicodes/komizo@v0.2.0 --json setup --host root@your-server`; it builds the matching host executable when needed. Use only hosts you own or administer.
 
 ## Agent journey
 

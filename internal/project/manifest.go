@@ -40,7 +40,7 @@ type Manifest struct {
 	ArtifactBrowser          bool                       `json:"artifact_browser,omitempty"`
 	Release                  map[string]string          `json:"release,omitempty"`
 	Development              map[string]json.RawMessage `json:"development,omitempty"`
-	Verification             json.RawMessage            `json:"verification,omitempty"`
+	Verification             *VerificationPolicy        `json:"verification,omitempty"`
 	Validation               map[string]json.RawMessage `json:"validation,omitempty"`
 }
 
@@ -137,7 +137,7 @@ func Read(root string) (Manifest, []byte, error) {
 	var m Manifest
 	p := filepath.Join(root, ManifestName)
 	info, err := os.Lstat(p)
-	if err != nil || !info.Mode().IsRegular() {
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
 		return m, nil, errors.New("a regular komizo.json is required; run komizo init --recipe RECIPE")
 	}
 	data, err := os.ReadFile(p)
@@ -153,7 +153,7 @@ func Read(root string) (Manifest, []byte, error) {
 	if _, err := recipe(m.Recipe); err != nil {
 		return m, nil, err
 	}
-	if m.Auth == nil && m.Recipe != "static-site" {
+	if m.Auth == nil && (m.Recipe == "go-service" || m.Recipe == "godot-app") {
 		return m, nil, errors.New("application recipes must declare auth.provider and auth.api")
 	}
 	if m.Auth != nil && m.Auth.Provider != "none" && m.Auth.Provider != "clerk" {
@@ -214,6 +214,9 @@ func Read(root string) (Manifest, []byte, error) {
 			}
 		}
 	}
+	if err := m.validateVerification(); err != nil {
+		return m, nil, err
+	}
 	return m, data, nil
 }
 
@@ -263,7 +266,7 @@ func inapplicable(reason string) json.RawMessage {
 func recipe(name string) (map[string]json.RawMessage, error) {
 	stages := map[string]json.RawMessage{}
 	switch name {
-	case "godot-app":
+	case "godot-app", "godot-addon":
 		for _, stage := range stageNames {
 			stages[stage] = command("bash", "scripts/"+stage+".sh")
 		}
@@ -283,6 +286,20 @@ func recipe(name string) (map[string]json.RawMessage, error) {
 		stages["dev"] = command("go", "run", ".")
 		stages["clean"] = helper("clean")
 		stages["stop"] = inapplicable("Development runs in the foreground; Ctrl-C stops its process group")
+	case "go-cli", "go-library":
+		stages, _ = recipe("go-service")
+		if name == "go-library" {
+			stages["build"] = command("go", "build", "./...")
+			stages["artifact-check"] = inapplicable("Go modules distribute reviewed source; no application executable is published")
+			stages["dev"] = inapplicable("A library has no foreground application; use its focused tests")
+			stages["stop"] = inapplicable("A library has no development process to stop")
+		}
+	case "configuration":
+		for _, stage := range stageNames {
+			stages[stage] = inapplicable("No " + stage + " operation is declared for this configuration project")
+		}
+		stages["lint"] = command("bash", "scripts/lint.sh")
+		stages["unit"] = command("bash", "scripts/unit.sh")
 	case "static-site":
 		for _, stage := range stageNames {
 			stages[stage] = inapplicable("Static site: no " + stage + " operation is declared")
@@ -294,7 +311,7 @@ func recipe(name string) (map[string]json.RawMessage, error) {
 		stages["stop"] = inapplicable("Development runs in the foreground; Ctrl-C stops its process group")
 		stages["clean"] = command("bun", "-e", `const fs=require('node:fs');for(const p of ['dist','.astro'])fs.rmSync(p,{recursive:true,force:true})`)
 	default:
-		return nil, fmt.Errorf("unknown recipe %q; choose static-site, go-service or godot-app", name)
+		return nil, fmt.Errorf("unknown recipe %q; choose static-site, go-service, go-cli, go-library, godot-app, godot-addon or configuration", name)
 	}
 	return stages, nil
 }
@@ -312,11 +329,19 @@ func (m Manifest) Contract() (map[string]any, error) {
 		artifacts = []string{".artifacts/build"}
 		if m.Recipe == "static-site" {
 			artifacts = []string{"dist"}
+		} else if m.Recipe == "go-library" {
+			artifacts = []string{}
 		}
 	}
 	result := map[string]any{"version": 1, "stages": stages, "artifacts": artifacts, "artifact_browser": m.ArtifactBrowser}
+	if m.Recipe == "go-library" && len(artifacts) == 0 && len(m.Images) == 0 {
+		result["source_only_build"] = true
+	}
 	if len(m.Tasks) > 0 {
 		result["tasks"] = m.Tasks
+	}
+	if m.Verification != nil {
+		result["check_targets"] = m.Verification.FullTargets
 	}
 	if len(m.Images) > 0 {
 		result["images"] = m.Images
@@ -347,7 +372,7 @@ func Init(root, name, platform string) (Lock, error) {
 		return Lock{}, errors.New("komizo.json already exists or cannot be inspected")
 	}
 	m := Manifest{Version: 1, Recipe: name}
-	if name != "static-site" {
+	if name == "go-service" || name == "godot-app" {
 		m.Auth = &Auth{Provider: "none"}
 	}
 	if err := writeJSON(filepath.Join(root, ManifestName), m); err != nil {
@@ -381,6 +406,10 @@ func WriteLock(root, platform string) (Lock, error) {
 }
 
 func CheckLock(root, platform string, data []byte, m Manifest) error {
+	info, err := os.Lstat(filepath.Join(root, LockName))
+	if err != nil || !info.Mode().IsRegular() || info.Size() > 1<<20 {
+		return errors.New("a bounded regular komizo.lock is required; run komizo lock")
+	}
 	b, err := os.ReadFile(filepath.Join(root, LockName))
 	if err != nil {
 		return errors.New("komizo.lock is required; run komizo lock")
@@ -407,11 +436,11 @@ func writeJSON(path string, value any) error {
 
 func recipeTools(name string) map[string]json.RawMessage {
 	tools := map[string]json.RawMessage{"python": json.RawMessage(`"3.13.11"`)}
-	if name == "go-service" {
+	if name == "go-service" || name == "go-cli" || name == "go-library" {
 		tools["go"] = json.RawMessage(`"1.27.3"`)
 		tools["go:golang.org/x/vuln/cmd/govulncheck"] = json.RawMessage(`"1.7.0"`)
 	}
-	if name == "static-site" || name == "godot-app" {
+	if name == "static-site" || name == "godot-app" || name == "godot-addon" {
 		tools["bun"] = json.RawMessage(`"1.4.1"`)
 		tools["node"] = json.RawMessage(`"24.18.1"`)
 	}
