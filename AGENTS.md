@@ -19,7 +19,7 @@ operational documentation belong in `nicodes/docs`.
 Prove behavior at the lowest useful layer: unit tests for decisions and parsers,
 local integration tests for component/process contracts, and minimal real-host
 acceptance for kernel, installation and recovery boundaries. Keep exhaustive
-input/error matrices below end-to-end tests. `make test` runs unit and integration
-checks; `make artifact-check` verifies all published workstation targets.
-`make portability` separately explores operating systems without published
+input/error matrices below end-to-end tests. `komizo run test` runs unit and integration
+checks; `komizo run build artifact-check` verifies all published workstation targets.
+`komizo run portability` separately explores operating systems without published
 archives. The fleet testing policy is canonical in private `nicodes/docs`.

@@ -1,5 +1,5 @@
 name: Security Scan
-on:
+'on':
   workflow_dispatch: null
 permissions:
   contents: read
@@ -8,19 +8,24 @@ concurrency:
   cancel-in-progress: false
 jobs:
   verify:
-    name: "Scan dependencies"
+    name: Scan dependencies
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 110
     steps:
-      - name: "Check out source"
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-        timeout-minutes: 5
-      - name: "Set up tools"
-        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
-        timeout-minutes: 10
-      - name: Security Scan
-        run: python3 .github/workflow_operation.py security-scan
-        timeout-minutes: 90
+    - name: Check out source
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+      timeout-minutes: 5
+    - name: Set up locked Komizo
+      uses: nicodes/komizo/setup@40086036977a5fc0119d6c4c1d5eb6ae3ab3b4b9
+      env:
+        GH_TOKEN: ${{ github.token }}
+      timeout-minutes: 5
+    - name: Security Scan
+      run: komizo run --timeout 7200s security-scan
+      timeout-minutes: 90
+    permissions:
+      contents: read
+      attestations: read

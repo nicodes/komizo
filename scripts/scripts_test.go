@@ -1,6 +1,7 @@
 package scripts
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
@@ -181,13 +182,13 @@ func needPinnedShellcheck(t *testing.T) {
 		}
 	}
 	if got != want {
-		unusable("shellcheck %s is on PATH but .mise.toml pins %s, and they disagree "+
+		unusable("shellcheck %s is on PATH but komizo.json pins %s, and they disagree "+
 			"about real rules (0.9.0 raises SC2015 on `A && B || continue`, 0.11.0 "+
 			"does not)", got, want)
 	}
 }
 
-// shellcheckPin is the version .mise.toml installs.
+// shellcheckPin is the version the native project installs.
 //
 // Read out of the file rather than written here, so there is one number. A pin
 // that cannot be found is fatal in every case, including a plain `go test`:
@@ -195,16 +196,22 @@ func needPinnedShellcheck(t *testing.T) {
 // and no version of this check is the right one to run.
 func shellcheckPin(t *testing.T) string {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join("..", ".mise.toml"))
+	b, err := os.ReadFile(filepath.Join("..", "komizo.json"))
 	if err != nil {
 		t.Fatalf("cannot read the shellcheck pin: %v", err)
 	}
-	m := regexp.MustCompile(`(?m)^shellcheck *= *"([^"]+)"`).FindSubmatch(b)
-	if m == nil {
-		t.Fatal("no shellcheck pin in .mise.toml -- the lint has no version to be, " +
+	var manifest struct {
+		Tools map[string]string `json:"tools"`
+	}
+	if err := json.Unmarshal(b, &manifest); err != nil {
+		t.Fatalf("cannot parse the native tool pins: %v", err)
+	}
+	pin := manifest.Tools["shellcheck"]
+	if !regexp.MustCompile(`^\d+\.\d+\.\d+$`).MatchString(pin) {
+		t.Fatal("no exact shellcheck pin in komizo.json -- the lint has no version to be, " +
 			"and whichever one happens to be installed would silently become the standard")
 	}
-	return string(m[1])
+	return pin
 }
 
 // TestShellcheck is the check `sh -n` cannot be.

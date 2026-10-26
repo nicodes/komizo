@@ -142,10 +142,10 @@ func TestTheBuiltAgentIsFoundInTheCrossCompileDirectory(t *testing.T) {
 // ASSERTED.
 //
 // The first version of this test assumed the embedded FS was empty and failed in
-// the RELEASE, which runs `make agents` before its tests -- while CI, which does
+// the RELEASE, which runs `komizo run agents` before its tests -- while CI, which does
 // not, passed it. The same test saw two different worlds and only complained in
 // one. That asymmetry is worth stating plainly: `.github/actions/build` runs
-// `make agents` and `.github/actions/test` does not, so a test whose answer
+// `komizo run agents` and `.github/actions/test` does not, so a test whose answer
 // depends on embedded agents tells you about the pipeline it happened to run in.
 //
 // So this branches on the fact instead of assuming it, and each branch asserts
@@ -191,7 +191,7 @@ func TestGetPrefersAnEmbeddedAgentAndOtherwiseNeedsAVersion(t *testing.T) {
 			}
 			// AND IT SAYS WHICH REMEDY APPLIES. "could not build" with no next
 			// step is the shape this project keeps deleting.
-			if !strings.Contains(err.Error(), "make agents") {
+			if !strings.Contains(err.Error(), "komizo run agents") {
 				t.Errorf("the refusal does not name the remedy:\n%v", err)
 			}
 		})

@@ -1,4 +1,4 @@
-name: Set up Komizo
+name: "Set up"
 description: Install the project-locked Komizo release and verify its source attestation
 inputs:
   directory:
