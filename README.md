@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 75ff3980aa01b4a58188d806c14cd8512da8ffa54470b3373a8dd9ab982eb15e -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 27e29319b1782313dcb1e7f5d35965721572606805b0929e6764db64ba812ea2 -->
 
 # Komizo
 
@@ -28,7 +28,7 @@ komizo exec -- go version         # run a command with the locked tools
 
 Static sites use Bun install/build/dev and `scripts/test-site.sh` for their output assertions. Go services default to a root main package, Go formatting/vet, race-enabled tests, an executable build and vulnerability scanning. Go CLI projects use the same executable checks. Go libraries compile their packages and explicitly declare that they publish source rather than an application executable. Godot applications and addons supply their test/package/export scripts. Configuration projects supply `scripts/lint.sh` and `scripts/unit.sh`; missing checks fail. Override a recipe stage with argument arrays in `stages`; an inapplicable stage requires a reason. `tasks` adds named project commands accessible through `komizo run NAME`. Initialization creates configuration for existing application source.
 
-Development runs in the foreground until Ctrl-C. The declared default selects Preview credentials where supported; `komizo dev --mode local` selects offline fixtures. `--mode preview` requests Preview explicitly. Selected credentials are injected into the child process environment and are never written to a `.env` file. Development credential retrieval requires the repository's trusted `ghenv.yml` workflow and GitHub CLI authentication. Production credentials are excluded from that handoff.
+Development installs locked dependencies before starting and runs in the foreground until Ctrl-C. Standard Astro scripts use foreground mode under Komizo’s checkout session lease. The declared default selects Preview credentials where supported; `komizo dev --mode local` selects offline fixtures. `--mode preview` requests Preview explicitly. Selected credentials are injected into the child process environment and are never written to a `.env` file. Development credential retrieval requires the repository's trusted `ghenv.yml` workflow and GitHub CLI authentication. Production credentials are excluded from that handoff.
 
 Host setup records a private repository-to-host binding in the workstation's Komizo configuration directory. Once an operator has configured that binding, `komizo deploy` selects the checkout's clean committed revision, `komizo preview --pr NUMBER` uses its declared published images, and `komizo status` reads its installed health. Explicit `--host` and `--app` remain available. Project manifests cannot grant host authority. Deployments and previews require their published images and the host's existing authorization checks.
 
@@ -59,11 +59,11 @@ The job needs read access to repository contents and attestations. Project sourc
 
 ## Install
 
-Download a matching Darwin/Linux, arm64/x86_64 archive from [releases](https://github.com/nicodes/komizo/releases). These examples pin v0.2.2, including structured management results and exact-stage platform recovery. Verify its checksum and GitHub attestation before executing it. The workstation needs SSH; platform maintenance also uses Python 3. The application server uses Alpine Linux with OpenRC, amd64 or arm64, and root SSH access.
+Download a matching Darwin/Linux, arm64/x86_64 archive from [releases](https://github.com/nicodes/komizo/releases). These examples pin v0.2.3, including structured management results and exact-stage platform recovery. Verify its checksum and GitHub attestation before executing it. The workstation needs SSH; platform maintenance also uses Python 3. The application server uses Alpine Linux with OpenRC, amd64 or arm64, and root SSH access.
 
 ```sh
 # Linux x86_64; choose the matching archive for your workstation.
-gh release download v0.2.2 --repo nicodes/komizo \
+gh release download v0.2.3 --repo nicodes/komizo \
   -p komizo_Linux_x86_64.tar.gz -p checksums.txt
 sha256sum -c checksums.txt --ignore-missing
 gh attestation verify komizo_Linux_x86_64.tar.gz --repo nicodes/komizo \
@@ -73,7 +73,7 @@ tar xzf komizo_Linux_x86_64.tar.gz
 ./komizo capabilities
 ```
 
-Release archives embed both host architectures and need no Go compiler. Published releases include attested acceptance and performance receipts for the declared disposable Alpine test profile. With the matching Go toolchain, the source alternative is `go run github.com/nicodes/komizo@v0.2.2 --json setup --host root@your-server`; it builds the matching host executable when needed. Use only hosts you own or administer.
+Release archives embed both host architectures and need no Go compiler. Published releases include attested acceptance and performance receipts for the declared disposable Alpine test profile. With the matching Go toolchain, the source alternative is `go run github.com/nicodes/komizo@v0.2.3 --json setup --host root@your-server`; it builds the matching host executable when needed. Use only hosts you own or administer.
 
 ## Agent journey
 
