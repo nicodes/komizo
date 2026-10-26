@@ -316,7 +316,7 @@ func recipe(name string) (map[string]json.RawMessage, error) {
 		stages["install"] = command("bun", "install", "--frozen-lockfile")
 		stages["build"] = command("bun", "run", "build")
 		stages["artifact-check"] = command("bash", "scripts/test-site.sh")
-		stages["dev"] = command("bun", "run", "dev")
+		stages["dev"] = command("python3", "-c", `import os,runpy;runpy.run_path(os.environ["CICD_ENGINEERING"]+"/helpers/static-site.py",run_name="__main__")`)
 		stages["stop"] = inapplicable("Development runs in the foreground; Ctrl-C stops its process group")
 		stages["clean"] = command("bun", "-e", `const fs=require('node:fs');for(const p of ['dist','.astro'])fs.rmSync(p,{recursive:true,force:true})`)
 	default:
