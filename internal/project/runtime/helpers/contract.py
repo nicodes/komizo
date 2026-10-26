@@ -342,11 +342,15 @@ def main():
                     fcntl.flock(lock, fcntl.LOCK_UN)
             # A focused selection earns a test receipt only when this very
             # invocation actually completed every applicable test stage.
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            try:
-                runner.test_proof()
-            finally:
-                fcntl.flock(lock, fcntl.LOCK_UN)
+            # A pure named task has no verification receipt to issue. Taking
+            # this lock would deadlock when its parent verification stage
+            # already owns it, even after the task's actual work finished.
+            if runner.test_receipts:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                try:
+                    runner.test_proof()
+                finally:
+                    fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 if __name__ == '__main__':

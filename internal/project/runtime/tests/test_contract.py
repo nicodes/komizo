@@ -75,6 +75,24 @@ class ContractBoundaries(unittest.TestCase):
             self.assertEqual(child.returncode, 0, (stdout, stderr))
         self.assertEqual(self.count(), 1)
 
+    def test_locked_stage_can_call_a_named_task_and_propagates_its_result(self):
+        self.data['stages']['unit'] = [['python3', str(HELPER), 'probe']]
+        self.data['tasks'] = {'probe': [['sh', '-c', 'exit 19']]}
+        self.run_target('unit', success=False)
+        self.assertFalse((self.root/'.artifacts/contract/test.json').exists())
+        self.data['tasks']['probe'] = [['sh', '-c', 'mkdir -p output; printf reached > output/probe']]
+        (self.root/'komizo.json').write_text(json.dumps(self.data))
+        result = subprocess.run(['python3', str(HELPER), 'unit'], cwd=self.root,
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root/'output/probe').read_text(), 'reached')
+        proof_path = self.root/'.artifacts/contract/test.json'
+        before = proof_path.read_bytes()
+        proof = json.loads(before)
+        self.assertEqual(proof['tested_commit'], proof['source_commit'])
+        self.run_target('probe')
+        self.assertEqual(proof_path.read_bytes(), before, 'a pure task cannot alter verified test evidence')
+
     def test_symlinked_artifacts_are_rejected(self):
         self.data['stages']['build'] = [['sh', '-c', 'mkdir -p output; ln -s ../input.txt output/value']]
         self.run_target('build', success=False)
