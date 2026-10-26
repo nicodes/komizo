@@ -62,7 +62,7 @@ func (m Manifest) validateVerification() error {
 	}
 	full := map[string]bool{}
 	for _, name := range p.FullTargets {
-		if full[name] || !slices.Contains(verificationStages, name) && name != "test" && m.Tasks[name] == nil {
+		if full[name] || !slices.Contains(verificationStages, name) && name != "test" {
 			return fmt.Errorf("invalid or duplicate verification target %q", name)
 		}
 		full[name] = true
