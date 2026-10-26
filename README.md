@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 27e29319b1782313dcb1e7f5d35965721572606805b0929e6764db64ba812ea2 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: fca8bf5f6edfacdfdfcee7cb6dfa22e78a5bf605a43d6c48784f80036eae72ad -->
 
 # Komizo
 
@@ -59,11 +59,11 @@ The job needs read access to repository contents and attestations. Project sourc
 
 ## Install
 
-Download a matching Darwin/Linux, arm64/x86_64 archive from [releases](https://github.com/nicodes/komizo/releases). These examples pin v0.2.3, including structured management results and exact-stage platform recovery. Verify its checksum and GitHub attestation before executing it. The workstation needs SSH; platform maintenance also uses Python 3. The application server uses Alpine Linux with OpenRC, amd64 or arm64, and root SSH access.
+Download a matching Darwin/Linux, arm64/x86_64 archive from [releases](https://github.com/nicodes/komizo/releases). These examples pin v0.2.4, including structured management results and exact-stage platform recovery. Verify its checksum and GitHub attestation before executing it. The workstation needs SSH; platform maintenance also uses Python 3. The application server uses Alpine Linux with OpenRC, amd64 or arm64, and root SSH access.
 
 ```sh
 # Linux x86_64; choose the matching archive for your workstation.
-gh release download v0.2.3 --repo nicodes/komizo \
+gh release download v0.2.4 --repo nicodes/komizo \
   -p komizo_Linux_x86_64.tar.gz -p checksums.txt
 sha256sum -c checksums.txt --ignore-missing
 gh attestation verify komizo_Linux_x86_64.tar.gz --repo nicodes/komizo \
@@ -73,7 +73,7 @@ tar xzf komizo_Linux_x86_64.tar.gz
 ./komizo capabilities
 ```
 
-Release archives embed both host architectures and need no Go compiler. Published releases include attested acceptance and performance receipts for the declared disposable Alpine test profile. With the matching Go toolchain, the source alternative is `go run github.com/nicodes/komizo@v0.2.3 --json setup --host root@your-server`; it builds the matching host executable when needed. Use only hosts you own or administer.
+Release archives embed both host architectures and need no Go compiler. Published releases include attested acceptance and performance receipts for the declared disposable Alpine test profile. With the matching Go toolchain, the source alternative is `go run github.com/nicodes/komizo@v0.2.4 --json setup --host root@your-server`; it builds the matching host executable when needed. Use only hosts you own or administer.
 
 ## Agent journey
 
