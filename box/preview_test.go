@@ -169,7 +169,7 @@ func writeTestPreview(t *testing.T, cfg PreviewUpConfig, app string, pr int, las
 }
 
 // ISOLATION, database side: up creates exactly one database, named for the
-// app and the PR, inside KOMIZO'S OWN postgres server -- and nothing else is
+// app and the PR, inside komizo'S OWN postgres server -- and nothing else is
 // created, dropped or named. Never a shared schema, never prod data.
 func TestPreviewUpCreatesOnlyItsOwnDatabase(t *testing.T) {
 	f := &fakeDocker{}
@@ -669,7 +669,7 @@ func TestPreviewNamesAndRefusals(t *testing.T) {
 		app string
 		pr  int
 	}{
-		{"Gdam", 1}, {"gd am", 1}, {"gdam", 0}, {"gdam", -3}, {"", 1},
+		{"Example", 1}, {"gd am", 1}, {"gdam", 0}, {"gdam", -3}, {"", 1},
 	} {
 		if err := validatePreviewArgs(bad.app, bad.pr); err == nil {
 			t.Errorf("validatePreviewArgs(%q, %d) passed", bad.app, bad.pr)
@@ -1238,7 +1238,7 @@ func TestPreviewUpCreatesNoDatabaseForAGateOnlyProduct(t *testing.T) {
 	}
 }
 
-// Teardown drops the preview's role and database from KOMIZO'S server, and
+// Teardown drops the preview's role and database from komizo'S server, and
 // names nothing of the app's.
 func TestPreviewDownDropsFromKomizosOwnServer(t *testing.T) {
 	f := &fakeDocker{}

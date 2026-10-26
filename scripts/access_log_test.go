@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// EVERY SITE BLOCK KOMIZO GENERATES WRITES AN ACCESS LOG.
+// EVERY SITE BLOCK komizo GENERATES WRITES AN ACCESS LOG.
 //
 // nicodes/komizo-be#163. `log` is a per-SITE-BLOCK directive in Caddy: the
 // global `log` option configures the RUNTIME log -- TLS renewals, ACME, startup

@@ -22,7 +22,7 @@ def development_command(root, arguments):
         astro = read_package(root/'node_modules/astro/package.json')
         version = re.fullmatch(r'([0-9]+)\.([0-9]+)\.[0-9]+(?:[-+].*)?', astro.get('version', ''))
         if version and tuple(map(int, version.group(1, 2))) >= (7, 1):
-            # Komizo already owns the foreground process group and checkout
+            # komizo already owns the foreground process group and checkout
             # lease. Astro's agent auto-backgrounding and PID lock would add
             # another supervisor whose PID may outlive its process namespace.
             command.append('--ignore-lock')

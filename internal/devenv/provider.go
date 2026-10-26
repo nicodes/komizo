@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Prepare uses the shared ghenv provider; Komizo owns the checkout session.
+// Prepare uses the shared ghenv provider; komizo owns the checkout session.
 func Prepare(ctx context.Context, profile, mode string, base []string) ([]string, error) {
 	return provider.Prepare(ctx, profile, mode, base)
 }

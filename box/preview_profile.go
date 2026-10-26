@@ -220,7 +220,7 @@ func (p *PreviewProfile) compose(r PreviewRecord, k PreviewKnob, network string)
 	return b.String(), nil
 }
 
-// The operator owns topology, but a profile cannot escape Komizo's preview
+// The operator owns topology, but a profile cannot escape komizo's preview
 // envelope or address host/production resources through Compose features.
 func (p *PreviewProfile) validateCompose(body string, r PreviewRecord, k PreviewKnob, network string) error {
 	var doc struct {

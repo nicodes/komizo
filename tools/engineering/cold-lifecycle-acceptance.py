@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run public Komizo lifecycle commands on a disposable Alpine Docker host.
+"""Run public komizo lifecycle commands on a disposable Alpine Docker host.
 
 Root bootstraps synthetic local images through release-bootstrap. This does not
 authenticate a new GitHub release, test product data or claim an OS/kernel boot.
@@ -205,7 +205,7 @@ def main():
         prefix=registry_address+'/example/fixturelocal-';config=prefix+'config'
         fixture.python("import time,urllib.request\nend=time.monotonic()+30\nwhile True:\n try:\n  response=urllib.request.urlopen("+repr('http://'+registry_address+'/v2/')+",timeout=1);assert response.status==200;break\n except Exception:\n  if time.monotonic()>=end:raise\n  time.sleep(.2)\n",timeout=40)
         fixture.write('/root/fixture/www/readyz',json.dumps({'revision':REVISION}).encode())
-        fixture.write('/root/fixture/www/index.html',b'synthetic Komizo lifecycle fixture\n')
+        fixture.write('/root/fixture/www/index.html',b'synthetic komizo lifecycle fixture\n')
         fixture.write('/root/fixture/Gatefile',('FROM '+BASE+'\nRUN apk add --no-cache python3\nCOPY www /www\nCMD ["python3","-m","http.server","80","--directory","/www"]\n').encode())
         compose={'services':{'fixturelocal-gate':{'image':prefix+'gate:'+REVISION,'networks':['edge']}},'networks':{'edge':{'external':True,'name':'edge'}}}
         fixture.write('/root/fixture/compose.yml',json.dumps(compose).encode())

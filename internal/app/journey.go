@@ -133,7 +133,7 @@ func RunSetup(args []string) (err error) {
 			PolicyBootstrap bool `json:"policy_bootstrap"`
 		}
 		if err != nil || json.Unmarshal(body, &capabilities) != nil || capabilities.Version != 1 || !capabilities.PolicyBootstrap {
-			return errors.New("installed executor needs an explicit Komizo upgrade before application setup; no registration or key change was made")
+			return errors.New("installed executor needs an explicit komizo upgrade before application setup; no registration or key change was made")
 		}
 		existing := false
 		for _, app := range verified.Apps {

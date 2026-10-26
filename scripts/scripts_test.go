@@ -395,7 +395,7 @@ func shippedTemplates(t *testing.T) map[string]string {
 	return out
 }
 
-// FIVE OF THE SIX SCRIPTS KOMIZO WRITES ONTO A BOX WERE PARSED AND NEVER LINTED.
+// FIVE OF THE SIX SCRIPTS komizo WRITES ONTO A BOX WERE PARSED AND NEVER LINTED.
 //
 // komizo#59. TestShellcheck above reads the FILES in this directory, and inside
 // those files each of these templates is the body of a QUOTED heredoc -- a
