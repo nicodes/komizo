@@ -132,7 +132,7 @@ func runAdd(args []string, receipt bool) (err error) {
 	fs.SetOutput(commandFlags())
 	fs.Usage = func() { UsageAdd(fs) }
 	var o addOpts
-	fs.BoolVar(&o.reuseKey, "reuse-key", false, "resume registration with an intact existing Komizo --key file for this app and host")
+	fs.BoolVar(&o.reuseKey, "reuse-key", false, "resume registration with an intact existing komizo --key file for this app and host")
 	fs.BoolVar(&o.quiet, "no-instructions", false, "suppress setup instructions; requires a key file or --keep-key")
 	o.bind(fs)
 	if err := fs.Parse(args); err != nil {

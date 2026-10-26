@@ -46,7 +46,7 @@ const (
 	SweepIntervalDefault = 24 * time.Hour
 )
 
-// SweepKnobPath is where the operator tunes the sweep. Komizo never creates
+// SweepKnobPath is where the operator tunes the sweep. komizo never creates
 // it, like the deploy floors: defaults above are the conservative answer, and
 // the file only ever makes the sweep GENTLER in cadence or stricter in age --
 // there is no key that widens what may be removed.

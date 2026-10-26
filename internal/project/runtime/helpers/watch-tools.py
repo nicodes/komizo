@@ -123,7 +123,7 @@ def main():
             'Caddy module updates belong in the central `internal/project/runtime/helpers/caddy.go.mod` and '
             '`caddy.go.sum` lock. Review the matcher compatibility patch and run the '
             'upstream race tests and actual binary scan, then lock the released '
-            'Komizo version in consuming repositories.\n\n'
+            'komizo version in consuming repositories.\n\n'
             'Run **komizo check** on the resulting PR and follow the caller repository’s review policy. '
             'This watcher does not authorize or auto-merge updates.\n')
     if len(body) > 15000:

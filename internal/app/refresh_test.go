@@ -1537,7 +1537,7 @@ func TestTheGuardsCatchEverySignalAnInterruptedUpdateSends(t *testing.T) {
 	nonEXIT := regexp.MustCompile(`(?m)^\s*trap\s+(?:'[^']*'|"[^"]*"|[A-Za-z_][A-Za-z0-9_]*)\s+((?:INT|TERM|HUP|PIPE|QUIT)(?:\s+(?:INT|TERM|HUP|PIPE|QUIT))*)\s*$`)
 	all := regexp.MustCompile(`(?m)^\s*trap\s+(?:'([^']*)'|"([^"]*)"|([A-Za-z_][A-Za-z0-9_]*))\s+([A-Z ]+)$`)
 
-	// EVERY SCRIPT KOMIZO WRITES ONTO A BOX, not one of them.
+	// EVERY SCRIPT komizo WRITES ONTO A BOX, not one of them.
 	//
 	// This read alpine.sh alone, and komizo#64 was the cost: alpine-remove.sh
 	// guarded /etc/doas.conf and /etc/ssh/sshd_config with `EXIT` only -- the

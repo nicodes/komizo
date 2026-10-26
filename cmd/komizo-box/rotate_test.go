@@ -154,7 +154,7 @@ func TestARotationRefusesAnEnvelopeThatWouldChangeAnythingElse(t *testing.T) {
 	}
 }
 
-// A KEY KOMIZO WOULD NOT ISSUE IS REFUSED, by the same rule app.add uses.
+// A KEY komizo WOULD NOT ISSUE IS REFUSED, by the same rule app.add uses.
 func TestARotationRefusesAKeyKomizoWouldNotIssue(t *testing.T) {
 	boxWithApp(t, fullRecord)
 	heldProvision(t)

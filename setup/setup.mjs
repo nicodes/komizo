@@ -105,5 +105,5 @@ export async function main() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch(error => {console.error(`Komizo setup failed: ${error.message}`); process.exitCode = 1;});
+  main().catch(error => {console.error(`komizo setup failed: ${error.message}`); process.exitCode = 1;});
 }

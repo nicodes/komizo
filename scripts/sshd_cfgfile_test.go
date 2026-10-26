@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// KOMIZO EDITS THE FILE THE DAEMON READS, OR IT EDITS NOTHING.
+// komizo EDITS THE FILE THE DAEMON READS, OR IT EDITS NOTHING.
 //
 // nicodes/komizo-be#164. Alpine's sshd init script takes `cfgfile` from
 // /etc/conf.d/sshd, so an operator can point their daemon at a config other

@@ -432,7 +432,7 @@ func CheckLock(root, platform string, data []byte, m Manifest) error {
 	r, _ := recipe(m.Recipe)
 	raw, _ := json.Marshal(map[string]any{"stages": r, "tools": recipeTools(m.Recipe)})
 	if lock.Version != 1 || lock.Platform != platform || lock.PlatformRevision != SourceRevision() || lock.ManifestSHA256 != digest(data) || lock.RuntimeSHA256 != RuntimeIdentity() || lock.RecipeSHA256 != digest(raw) {
-		return errors.New("project lock differs from the manifest or installed Komizo; run komizo lock with the intended platform version")
+		return errors.New("project lock differs from the manifest or installed komizo; run komizo lock with the intended platform version")
 	}
 	return nil
 }

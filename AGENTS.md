@@ -6,7 +6,7 @@ Read the exact versioned docs before writing any code:
 
 # Application independence
 
-Komizo is a reusable, application-agnostic host tool. Do not branch on particular
+komizo is a reusable, application-agnostic host tool. Do not branch on particular
 application names, GitHub accounts, domains, product services or business-specific
 credential names. Application definitions belong in caller-supplied artifacts and
 explicit operator-owned configuration. Shared behavior should depend on versioned
@@ -23,3 +23,7 @@ input/error matrices below end-to-end tests. `komizo run test` runs unit and int
 checks; `komizo run build artifact-check` verifies all published workstation targets.
 `komizo run portability` separately explores operating systems without published
 archives. The fleet testing policy is canonical in private `nicodes/docs`.
+
+# Product naming
+
+Use `komizo` in lowercase in user-facing text. Keep language identifiers, environment variables and protocol fields in their technical spelling. Usage documentation is generated from private `nicodes/docs`.

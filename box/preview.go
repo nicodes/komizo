@@ -47,7 +47,7 @@ import (
 // the app records and equally root-owned.
 const PreviewsDir = StateDir + "/previews"
 
-// PreviewKnobPath is the operator's tuning file. Komizo never creates it; the
+// PreviewKnobPath is the operator's tuning file. komizo never creates it; the
 // defaults below are the conservative answer.
 const PreviewKnobPath = "/etc/komizo/preview"
 
@@ -1264,7 +1264,7 @@ func PreviewUp(ctx context.Context, run previewRun, cfg PreviewUpConfig, app str
 	}()
 
 	// The database, before anything runs: a new role and database named for
-	// the PR, in KOMIZO'S OWN postgres, and nothing of the app's touched.
+	// the PR, in komizo'S OWN postgres, and nothing of the app's touched.
 	//
 	// Only when something other than the gate is going to ask for one. A
 	// gate-only product is a single static container with nothing to
