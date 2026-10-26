@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 0bfe125cd88afc492198ef755bed1f6ff43b30d7d0073050c67eacedd4f81b3f -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 1e1de52ff69cff3c7bd04f97a74de42640ebc8df2e5e72f501038dfe694d8015 -->
 
 # Komizo
 
@@ -34,7 +34,7 @@ Host setup records a private repository-to-host binding in the workstation's Kom
 
 Use `komizo run --tools python TASK` or `komizo exec --tools python -- COMMAND` for a named maintenance task that only needs selected declared tools. Verification stages always use the complete recipe toolchain. `komizo describe` reports the resolved tools.
 
-`komizo check --explain` describes the complete gate without executing project code. With `--base EXACT_COMMIT`, it explains or runs the affected stages declared under `verification` in `komizo.json`. Shared configuration, unknown paths, unavailable/non-ancestor bases and production events require the complete gate. The complete policy must cover every applicable recipe stage. Patterns use `*` and `?` over checkout-relative path text. Selection metadata is separate from successful test or publication evidence.
+`komizo check --explain` describes the complete gate without executing project code. With `--base EXACT_COMMIT`, it explains or runs the affected stages declared under `verification` in `komizo.json`. Shared configuration, unknown paths, unavailable/non-ancestor bases and production events require the complete gate. The complete policy must cover every applicable recipe stage. Patterns use `*` and `?` over checkout-relative path text. Selection metadata is separate from successful test or publication evidence. The optional `run` action accepts `base` with `target: check`; other targets and selected-tool execution refuse that input.
 
 All project commands accept `--directory DIR`. Finite commands accept `--timeout DURATION`; development has no deadline unless one is selected. Verification failures include a focused rerun command.
 

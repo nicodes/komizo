@@ -40,12 +40,13 @@ func TestCIAdapterPreservesArgumentsAndRejectsShellTargetText(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(directory, "komizo"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\"\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	run := func(targets string) (string, error) {
+	runConfigured := func(targets, selected, base string) (string, error) {
 		command := exec.Command("bash", "-c", script)
-		command.Env = []string{"PATH=" + directory + ":/usr/bin:/bin", "ENGINEERING_TARGET=" + targets, "KOMIZO_DIRECTORY=project with spaces", "KOMIZO_TIMEOUT=2h", "KOMIZO_TOOLS=python", "CACHE_ENABLED=false", "WEB_CACHE_ENABLED=false", "GO_CACHE_ENABLED=false"}
+		command.Env = []string{"PATH=" + directory + ":/usr/bin:/bin", "ENGINEERING_TARGET=" + targets, "KOMIZO_DIRECTORY=project with spaces", "KOMIZO_TIMEOUT=2h", "KOMIZO_TOOLS=" + selected, "KOMIZO_BASE=" + base, "CACHE_ENABLED=false", "WEB_CACHE_ENABLED=false", "GO_CACHE_ENABLED=false"}
 		output, err := command.Output()
 		return string(output), err
 	}
+	run := func(targets string) (string, error) { return runConfigured(targets, "python", "") }
 	output, err := run("install build artifact-check e2e")
 	want := []string{"run", "--directory", "project with spaces", "--timeout", "2h", "--tools", "python", "install", "build", "artifact-check", "e2e"}
 	if err != nil || !reflect.DeepEqual(strings.Split(strings.TrimSuffix(output, "\n"), "\n"), want) {
@@ -56,4 +57,16 @@ func TestCIAdapterPreservesArgumentsAndRejectsShellTargetText(t *testing.T) {
 			t.Fatalf("unsafe target %q: %v %s", bad, err, output)
 		}
 	}
+	base := strings.Repeat("a", 40)
+	output, err = runConfigured("check", "", base)
+	want = []string{"check", "--directory", "project with spaces", "--timeout", "2h", "--base", base}
+	if err != nil || !reflect.DeepEqual(strings.Split(strings.TrimSuffix(output, "\n"), "\n"), want) {
+		t.Fatal(err, output)
+	}
+	for _, invalid := range [][3]string{{"unit", "", base}, {"check", "python", base}, {"check", "", "main;true"}} {
+		if output, err := runConfigured(invalid[0], invalid[1], invalid[2]); err == nil || output != "" {
+			t.Fatal("invalid affected-check command executed", invalid, output, err)
+		}
+	}
+
 }
