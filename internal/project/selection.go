@@ -50,6 +50,9 @@ func (m Manifest) verificationPolicy() VerificationPolicy {
 	if m.Verification != nil {
 		return *m.Verification
 	}
+	if m.Recipe == "godot-addon" {
+		return VerificationPolicy{Version: 1, FullTargets: []string{"lint", "build", "test", "artifact-check"}}
+	}
 	return VerificationPolicy{Version: 1, FullTargets: slices.Clone(verificationStages)}
 }
 
