@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 6fa5870c2da5c89ada018f8734644eec6357a617b3b76b6c9d6f19a829f6d2b0 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 728a449295499261445e02222d5a96a023a570c584d4976404e7fff572823cae -->
 
 # komizo
 
@@ -58,6 +58,16 @@ For compiler or image caches and retained verification receipts, run `nicodes/ko
 The job needs read access to repository contents and attestations. Project source verification does not require deployment credentials. Publication and deployment remain separate authorized steps.
 
 ## Install
+
+Linux and macOS (x86_64 or arm64):
+
+```sh
+curl -fsSL https://komizo.dev/install | sh
+```
+
+Requires the GitHub CLI for release provenance verification. The installer verifies the archive checksum and GitHub attestation, then atomically installs to `~/.local/bin` without starting services. Use `--install-dir` or `--version` through `sh -s --` to choose another destination or release.
+
+### Manual download
 
 Download a matching Darwin/Linux, arm64/x86_64 archive from [releases](https://github.com/nicodes/komizo/releases). These examples pin v0.2.4, including structured management results and exact-stage platform recovery. Verify its checksum and GitHub attestation before executing it. The workstation needs SSH; platform maintenance also uses Python 3. The application server uses Alpine Linux with OpenRC, amd64 or arm64, and root SSH access.
 
