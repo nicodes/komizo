@@ -74,7 +74,8 @@ jobs:
         path: |
           ~/.cache/go-build
           ~/go/pkg/mod
-        key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', 'go.sum', 'komizo.lock') }}-${{ github.sha }}
+        key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', 'go.sum', 'komizo.lock') }}-${{ github.sha
+          }}
         restore-keys: |
           go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', 'go.sum', 'komizo.lock') }}-
     - name: Build
@@ -166,7 +167,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
-      contents: write
+      contents: read
       actions: read
       id-token: write
       attestations: write
@@ -202,19 +203,44 @@ jobs:
       uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
       with:
         subject-path: native-results/komizo-*.json
-    - name: Publish only the accepted release
+    - name: Verify accepted archive provenance
       timeout-minutes: 5
       env:
         GH_TOKEN: ${{ github.token }}
         RELEASE_TAG: ${{ needs.release.outputs.tag }}
-      run: |
+      run: |-
         set -euo pipefail
         gh attestation verify dist/komizo_Linux_x86_64.tar.gz --repo "$GITHUB_REPOSITORY" \
           --cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/heads/main" \
           --cert-oidc-issuer https://token.actions.githubusercontent.com \
           --signer-digest "$GITHUB_SHA" --source-digest "$GITHUB_SHA" \
           --source-ref refs/heads/main --deny-self-hosted-runners
-        gh release create "$RELEASE_TAG" dist/*.tar.gz dist/checksums.txt \
-          native-results/komizo-acceptance.json native-results/komizo-performance.json \
-          --target "$GITHUB_SHA" --title "$RELEASE_TAG" \
-          --notes 'Authenticated archives passed native lifecycle and fixed-budget performance acceptance. Verify archive and acceptance-receipt attestations before use.'
+    - name: Select accepted release payload
+      run: |-
+        set -euo pipefail
+        mkdir accepted-release
+        cp dist/*.tar.gz dist/checksums.txt native-results/komizo-acceptance.json native-results/komizo-performance.json accepted-release/
+    - name: Upload accepted release artifacts
+      id: accepted
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: accepted-cli-${{ github.sha }}-${{ github.run_attempt }}
+        path: accepted-release/
+        if-no-files-found: error
+        retention-days: 7
+    outputs:
+      artifact-id: ${{ steps.accepted.outputs.artifact-id }}
+  publish:
+    name: Publish release
+    needs:
+    - release
+    - promote
+    uses: nicodes/tools/.github/workflows/cli-publish.yml@0276991861118d6e70a92cd11432dd664d3b030f
+    permissions:
+      contents: write
+    with:
+      tools-ref: '0276991861118d6e70a92cd11432dd664d3b030f'
+      binary: komizo
+      tag: ${{ needs.release.outputs.tag }}
+      artifact-id: ${{ needs.promote.outputs.artifact-id }}
+      extra-files: komizo-acceptance.json komizo-performance.json
