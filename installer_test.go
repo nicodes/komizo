@@ -19,11 +19,9 @@ import (
 func TestCurlInstaller(t *testing.T) {
 	_, file, _, _ := runtime.Caller(0)
 	script := filepath.Join(filepath.Dir(file), "install.sh")
-	for _, scenario := range []string{"valid", "checksum", "symlink", "duplicate", "missing", "attestation"} {
+	for _, scenario := range []string{"valid", "checksum", "symlink", "duplicate", "missing", "attestation", "auth"} {
 		t.Run(scenario, func(t *testing.T) {
-			if scenario == "attestation" && "true" != "true" {
-				t.Skip("This product verifies release checksums.")
-			}
+
 			root := t.TempDir()
 			bin := filepath.Join(root, "bin")
 			fixture := filepath.Join(root, "fixture")
@@ -82,6 +80,7 @@ func TestCurlInstaller(t *testing.T) {
 			write(filepath.Join(fake, "uname"), []byte("#!/bin/sh\ncase \"$1\" in -s) echo Linux;; -m) echo x86_64;; *) exit 1;; esac\n"), 0700)
 			write(filepath.Join(fake, "curl"), []byte(`#!/bin/sh
 set -eu
+printf called >> "$INSTALL_FIXTURE/downloads"
 output=
 url=
 while [ "$#" -gt 0 ]; do
@@ -99,13 +98,24 @@ case "$url" in
  *) echo "unexpected download: $url" >&2; exit 1 ;;
 esac
 `), 0700)
-			write(filepath.Join(fake, "gh"), []byte("#!/bin/sh\n[ \"${INSTALL_ATTEST_FAIL:-0}\" != 1 ]\n"), 0700)
+			write(filepath.Join(fake, "gh"), []byte("#!/bin/sh\ncase \"$1 $2\" in \"auth status\") [ \"${INSTALL_AUTH_FAIL:-0}\" != 1 ];; \"attestation verify\") [ \"${INSTALL_ATTEST_FAIL:-0}\" != 1 ];; *) exit 2;; esac\n"), 0700)
 			cmd := exec.Command("sh", script, "--install-dir", bin)
 			cmd.Env = append(os.Environ(), "PATH="+fake+string(os.PathListSeparator)+os.Getenv("PATH"), "INSTALL_FIXTURE="+fixture)
 			if scenario == "attestation" {
 				cmd.Env = append(cmd.Env, "INSTALL_ATTEST_FAIL=1")
 			}
+			if scenario == "auth" {
+				cmd.Env = append(cmd.Env, "INSTALL_AUTH_FAIL=1")
+			}
 			output, err := cmd.CombinedOutput()
+			if scenario == "auth" {
+				if _, e := os.Stat(filepath.Join(fixture, "downloads")); !os.IsNotExist(e) {
+					t.Fatal("download started before authentication preflight")
+				}
+				if !strings.Contains(string(output), "gh auth login") {
+					t.Fatal("missing authentication instruction")
+				}
+			}
 			if scenario == "valid" && err != nil {
 				t.Fatalf("install: %v\n%s", err, output)
 			}

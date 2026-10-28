@@ -38,6 +38,8 @@ for command in curl tar mktemp awk grep cut cp chmod mv; do
     command -v "$command" >/dev/null 2>&1 || fail "Install $command first."
 done
 command -v gh >/dev/null 2>&1 || fail 'Install the GitHub CLI (gh) to verify release provenance.'
+gh auth status --hostname github.com >/dev/null 2>&1 \
+    || fail 'Authenticate the GitHub CLI first: gh auth login --hostname github.com (or provide GH_TOKEN).'
 if command -v sha256sum >/dev/null 2>&1; then
     checksum_tool=sha256sum
 elif command -v shasum >/dev/null 2>&1; then
