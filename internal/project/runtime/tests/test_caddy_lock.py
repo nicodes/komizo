@@ -97,5 +97,35 @@ class CaddyLock(unittest.TestCase):
                     self.assert_secure_lock(mod, changed)
 
 
+    NET_SUMS = {
+        'v0.62.0': 'h1:18ELalfM5+XNRwzM2nYqXsZQ9ByS1uhj2O/U7+5jqRY=',
+        'v0.62.0/go.mod': 'h1:WgDCOTH8iwtB66T4/GfI94AHo/hhdb7Hah9NDseQfiI=',
+    }
+
+    def assert_secure_net(self, mod, sums):
+        versions = re.findall(r'^\s*golang\.org/x/net\s+(\S+)', mod, re.M)
+        self.assertEqual(len(versions), 1)
+        release = re.fullmatch(r'v(\d+)\.(\d+)\.(\d+)', versions[0])
+        self.assertIsNotNone(release)
+        self.assertGreaterEqual(tuple(map(int, release.groups())), (0, 62, 0),
+                                'GO-2026-6860 and GO-2026-6866 require x/net v0.62.0')
+        for suffix in ('', '/go.mod'):
+            key = versions[0] + suffix
+            entries = [line.split() for line in sums.splitlines()
+                       if line.startswith(f'golang.org/x/net {key} ')]
+            self.assertEqual(len(entries), 1)
+            self.assertRegex(entries[0][2], r'^h1:[A-Za-z0-9+/]{43}=$')
+            if key in self.NET_SUMS:
+                self.assertEqual(entries[0][2], self.NET_SUMS[key])
+
+    def test_locked_html_parser_and_renderer_fixes(self):
+        self.assert_secure_net(self.mod, self.sums)
+        for version in ('v0.60.0', 'v0.61.0'):
+            changed = re.sub(r'(^\s*golang\.org/x/net\s+)\S+',
+                             lambda m: m[1] + version, self.mod, flags=re.M)
+            with self.subTest(version=version), self.assertRaises(AssertionError):
+                self.assert_secure_net(changed, self.sums)
+
+
 if __name__ == '__main__':
     unittest.main()
