@@ -10,6 +10,7 @@ import (
 	"io"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -183,6 +184,8 @@ func projectCommand(parent context.Context, args []string, in io.Reader, out, pr
 		for _, reason := range plan.Reasons {
 			fmt.Fprintln(out, reason)
 		}
+	} else if description, ok := data.(project.Description); ok {
+		printProjectDescription(out, description)
 	} else if !isHelp && name != "exec" {
 		fmt.Fprintln(out, name+": complete")
 	}
@@ -194,4 +197,44 @@ func projectDeadline(parent context.Context, duration time.Duration) (context.Co
 		return context.WithCancel(parent)
 	}
 	return context.WithTimeout(parent, duration)
+}
+
+func printProjectDescription(out io.Writer, d project.Description) {
+	fmt.Fprintf(out, "Recipe: %s\nPlatform: komizo %s\n", d.Recipe, d.Platform)
+	if d.Repository != "" {
+		fmt.Fprintf(out, "Repository: %s\n", d.Repository)
+	}
+	names := make([]string, 0, len(d.Tools))
+	for name := range d.Tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	fmt.Fprintln(out, "Tools:")
+	for _, name := range names {
+		var version string
+		if json.Unmarshal(d.Tools[name], &version) != nil {
+			version = string(d.Tools[name])
+		}
+		fmt.Fprintf(out, "  %s %s\n", name, version)
+	}
+	names = names[:0]
+	for name, available := range d.Stages {
+		if available {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	fmt.Fprintf(out, "Stages: %s\n", strings.Join(names, ", "))
+	if len(d.Tasks) > 0 {
+		fmt.Fprintf(out, "Tasks: %s\n", strings.Join(d.Tasks, ", "))
+	}
+	names = names[:0]
+	for name := range d.Commands {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	fmt.Fprintln(out, "Commands:")
+	for _, name := range names {
+		fmt.Fprintf(out, "  %s\n", strings.Join(d.Commands[name], " "))
+	}
 }
