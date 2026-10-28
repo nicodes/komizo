@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 728a449295499261445e02222d5a96a023a570c584d4976404e7fff572823cae -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 770ba5bc01ab6ecca050f414835bc5f993f3e5ed292d682a5a807f6977b94a08 -->
 
 # komizo
 
@@ -62,10 +62,11 @@ The job needs read access to repository contents and attestations. Project sourc
 Linux and macOS (x86_64 or arm64):
 
 ```sh
+gh auth login --hostname github.com   # one-time prerequisite after installing gh
 curl -fsSL https://komizo.dev/install | sh
 ```
 
-Requires the GitHub CLI for release provenance verification. The installer verifies the archive checksum and GitHub attestation, then atomically installs to `~/.local/bin` without starting services. Use `--install-dir` or `--version` through `sh -s --` to choose another destination or release.
+Requires the GitHub CLI and an authenticated GitHub.com session (`gh auth login --hostname github.com`, or an existing `GH_TOKEN`) for release provenance verification. Authentication is checked before any release download. The installer verifies the archive checksum and GitHub attestation, then atomically installs to `~/.local/bin` without starting services. Use `--install-dir` or `--version` through `sh -s --` to choose another destination or release.
 
 ### Manual download
 
