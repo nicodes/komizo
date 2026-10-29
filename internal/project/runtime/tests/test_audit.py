@@ -47,6 +47,22 @@ class VerifiedRepairs(unittest.TestCase):
     def test_exact_installed_repair(self):
         module.verify_repair(self.app, self.repair)
 
+    def test_other_packages_are_not_compared_to_image_size(self):
+        package = self.app/'node_modules/another-package'
+        package.mkdir()
+        (package/'package.json').write_text('{"version":"1.2.1"}')
+        (package/'parser.js').write_text('reviewed repair')
+        self.repair['package'] = 'another-package'
+        (self.package/'parser.js').write_text('unrelated source')
+        module.verify_repair(self.app, self.repair)
+
+        nested = self.app/'node_modules/other/node_modules/another-package'
+        nested.mkdir(parents=True)
+        (nested/'package.json').write_text('{"version":"1.2.1"}')
+        (nested/'parser.js').write_text('unpatched parser')
+        with self.assertRaisesRegex(RuntimeError, 'nested another-package'):
+            module.verify_repair(self.app, self.repair)
+
 
 if __name__ == '__main__':
     unittest.main()
