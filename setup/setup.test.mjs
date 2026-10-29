@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {gzipSync} from 'node:zlib';
 import test from 'node:test';
-import {assetName, checksum, executableFromArchive, validateLock} from './setup.mjs';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {assetName, checksum, executableFromArchive, validateLock, readActionBinding} from './setup.mjs';
 
 const source = '0123456789012345678901234567890123456789';
 const lock = {version: 1, platform: '0.1.0', platform_revision: source,
@@ -43,4 +46,38 @@ test('archive extraction refuses links, traversal, duplicates and missing binari
   for (const entries of [[['../komizo','0']], [['komizo','2']], [['komizo','0'],['komizo','0']], [['README.md','0']]]) {
     assert.throws(() => executableFromArchive(archive(entries)));
   }
+});
+
+test('a reviewed action binding preserves the immutable attested release identity', () => {
+  const action = 'd'.repeat(40);
+  const binding = {version: 1, platform_revision: source, action_revision: action};
+  const before = structuredClone(lock);
+  assert.equal(validateLock(lock, action, binding), 'v0.1.0');
+  assert.deepEqual(lock, before);
+  assert.throws(() => validateLock(lock, action));
+  assert.throws(() => validateLock(lock, source, binding));
+  for (const bad of [{...binding, version: 2}, {...binding, platform_revision: 'f'.repeat(40)},
+    {...binding, action_revision: 'main'}, {...binding, extra: true}]) {
+    assert.throws(() => validateLock(lock, action, bad));
+  }
+  assert.throws(() => validateLock({...lock, platform_revision: 'main'}, action, binding));
+});
+
+test('an optional action binding refuses links, oversized files and malformed JSON', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'komizo-action-binding-'));
+  t.after(() => fs.rm(directory, {recursive: true, force: true}));
+  assert.equal(await readActionBinding(directory), null);
+  await fs.mkdir(path.join(directory, '.github'));
+  const filename = path.join(directory, '.github', 'komizo-action-source.json');
+  const binding = {version: 1, platform_revision: source, action_revision: 'd'.repeat(40)};
+  await fs.writeFile(filename, JSON.stringify(binding));
+  assert.deepEqual(await readActionBinding(directory), binding);
+  await fs.writeFile(filename, '{');
+  await assert.rejects(() => readActionBinding(directory));
+  await fs.writeFile(filename, ' '.repeat(4097));
+  await assert.rejects(() => readActionBinding(directory));
+  await fs.unlink(filename);
+  await fs.writeFile(path.join(directory, 'target'), JSON.stringify(binding));
+  await fs.symlink('../target', filename);
+  await assert.rejects(() => readActionBinding(directory));
 });

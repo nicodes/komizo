@@ -6,17 +6,38 @@ import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {gunzipSync} from 'node:zlib';
 
-export function validateLock(lock, source) {
+export function validateLock(lock, source, binding = null) {
   assert.equal(lock.version, 1, 'unsupported project lock');
   assert.match(lock.platform, /^v?\d+\.\d+\.\d+(?:-[\w.-]+)?$/, 'an exact platform release is required');
   assert.match(source, /^[a-f0-9]{40}$/, 'pin this action to a full source commit');
-  assert.equal(lock.platform_revision, source, 'setup action and platform lock must name the same source');
+  assert.match(lock.platform_revision, /^[a-f0-9]{40}$/, 'pin the attested platform source');
+  let expectedSource = lock.platform_revision;
+  if (binding !== null) {
+    assert.deepEqual(Object.keys(binding).sort(), ['action_revision', 'platform_revision', 'version'], 'unknown action binding fields');
+    assert.equal(binding.version, 1, 'unsupported action source binding');
+    assert.match(binding.action_revision, /^[a-f0-9]{40}$/, 'pin the action source');
+    assert.equal(binding.platform_revision, lock.platform_revision, 'action binding names a different attested release source');
+    expectedSource = binding.action_revision;
+  }
+  assert.equal(source, expectedSource, 'action source differs from the reviewed project binding');
   for (const field of ['manifest_sha256', 'runtime_sha256', 'recipe_sha256']) {
     assert.match(lock[field], /^[a-f0-9]{64}$/, `missing ${field}`);
   }
   const fields = ['version', 'platform', 'platform_revision', 'manifest_sha256', 'runtime_sha256', 'recipe_sha256'];
   assert.deepEqual(Object.keys(lock).sort(), fields.sort(), 'unknown lock fields');
   return `v${lock.platform.replace(/^v/, '')}`;
+}
+
+export async function readActionBinding(directory) {
+  const filename = path.join(directory, '.github', 'komizo-action-source.json');
+  let info;
+  try { info = await fs.lstat(filename); }
+  catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+  assert.ok(info.isFile() && info.size <= 4096, 'action binding must be a bounded regular file');
+  const resolved = await fs.realpath(filename);
+  const root = await fs.realpath(directory);
+  assert.ok(resolved.startsWith(root + path.sep), 'action binding leaves the project');
+  return JSON.parse(await fs.readFile(filename, 'utf8'));
 }
 
 export function assetName(platform, architecture) {
@@ -84,7 +105,7 @@ export async function main() {
   const directory = path.resolve(workspace, process.env.INPUT_DIRECTORY || '.');
   assert.ok(directory === workspace || directory.startsWith(workspace + path.sep), 'project directory leaves the workspace');
   const lock = JSON.parse(await fs.readFile(path.join(directory, 'komizo.lock'), 'utf8'));
-  const tag = validateLock(lock, process.env.GITHUB_ACTION_REF || '');
+  const tag = validateLock(lock, process.env.GITHUB_ACTION_REF || '', await readActionBinding(directory));
   const repository = process.env.GITHUB_ACTION_REPOSITORY || '';
   assert.match(repository, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'missing action repository identity');
   const asset = assetName(process.platform, process.arch);

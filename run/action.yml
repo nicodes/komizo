@@ -42,15 +42,8 @@ runs:
         KOMIZO_ACTION_SOURCE: ${{ github.action_ref }}
         KOMIZO_DIRECTORY: ${{ inputs.directory }}
         MISE_GITHUB_TOKEN: ${{ github.token }}
-      run: |
-        python3 - <<'PYTHON'
-        import json, os, re
-        from pathlib import Path
-        lock = json.loads((Path(os.environ['KOMIZO_DIRECTORY'])/'komizo.lock').read_text())
-        source = os.environ['KOMIZO_ACTION_SOURCE']
-        if not re.fullmatch('[a-f0-9]{40}', source) or lock['platform_revision'] != source:
-            raise SystemExit('Pin the run action to the same source as the locked komizo release')
-        PYTHON
+        KOMIZO_SOURCE_VERIFIER: ${{ github.action_path }}/../setup/verify-source.mjs
+      run: node "$KOMIZO_SOURCE_VERIFIER"
     - name: Start cache setup measurement
       id: cache-start
       shell: bash
