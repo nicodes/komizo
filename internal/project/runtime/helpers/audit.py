@@ -28,10 +28,10 @@ def verify_repair(app, repair):
     if hashlib.sha256(patch.read_bytes()).hexdigest() != repair['patch_sha256']:
         raise RuntimeError('reviewed dependency patch changed')
     # Refuse a second unpatched copy hidden beneath another dependency.
-    for manifest in (app/'node_modules').rglob('image-size/package.json'):
+    for manifest in (app/'node_modules').rglob(repair['package']+'/package.json'):
         for relative, expected in repair['installed_sha256'].items():
             if hashlib.sha256((manifest.parent/relative).read_bytes()).hexdigest() != expected:
-                raise RuntimeError('a nested image-size copy lacks the verified repair')
+                raise RuntimeError(f"a nested {repair['package']} copy lacks the verified repair")
 
 
 def verify_accepted(accepted):
