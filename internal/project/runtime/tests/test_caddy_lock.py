@@ -126,6 +126,34 @@ class CaddyLock(unittest.TestCase):
             with self.subTest(version=version), self.assertRaises(AssertionError):
                 self.assert_secure_net(changed, self.sums)
 
+    JOSE_SUMS = {
+        'v4.1.6': 'h1:sNRkftxFJxwsILiQukqp5z83QBSmntVwmgRY7AqBDO4=',
+        'v4.1.6/go.mod': 'h1:x4oUasVrzR7071A4TnHLGSPpNOm2a21K9Kf04k1rs08=',
+    }
+
+    def assert_secure_jose(self, mod, sums):
+        versions = re.findall(r'^\s*github\.com/go-jose/go-jose/v4\s+(\S+)', mod, re.M)
+        self.assertEqual(len(versions), 1)
+        release = re.fullmatch(r'v(\d+)\.(\d+)\.(\d+)', versions[0])
+        self.assertIsNotNone(release)
+        self.assertGreaterEqual(tuple(map(int, release.groups())), (4, 1, 6),
+                                'CVE-2026-116587 requires go-jose v4.1.6')
+        for suffix in ('', '/go.mod'):
+            key = versions[0] + suffix
+            entries = [line.split() for line in sums.splitlines()
+                       if line.startswith(f'github.com/go-jose/go-jose/v4 {key} ')]
+            self.assertEqual(len(entries), 1)
+            self.assertRegex(entries[0][2], r'^h1:[A-Za-z0-9+/]{43}=$')
+            if key in self.JOSE_SUMS:
+                self.assertEqual(entries[0][2], self.JOSE_SUMS[key])
+
+    def test_locked_jwk_rsa_parameter_fix(self):
+        self.assert_secure_jose(self.mod, self.sums)
+        changed = re.sub(r'(^\s*github\.com/go-jose/go-jose/v4\s+)\S+',
+                         lambda m: m[1] + 'v4.1.5', self.mod, flags=re.M)
+        with self.assertRaises(AssertionError):
+            self.assert_secure_jose(changed, self.sums)
+
 
 if __name__ == '__main__':
     unittest.main()
