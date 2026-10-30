@@ -139,6 +139,10 @@ def main():
         if args.deployment_only:
             home=args.output/'client-home';home.mkdir(mode=0o700)
             env={'HOME':str(home),'PATH':str(keys)+':/usr/bin:/bin','LANG':'C.UTF-8'}
+            for forbidden in ('mise','go','bun','ghenv','gh'):
+                path=keys/forbidden
+                path.write_text('#!/bin/sh\necho unexpected SDK or GitHub dependency >&2\nexit 99\n');path.chmod(0o700)
+
 
         # A private filesystem lets the synthetic postgres UID allocate space
         # even when the controller's filesystem has reserved blocks. Its sparse
@@ -244,12 +248,12 @@ def main():
                 assert re.fullmatch('sha256:[a-f0-9]{64}',identity)
                 images[ref]=identity
             path=args.output/('approval-'+revision+'.json')
-            path.write_text(json.dumps({'version':1,'revision':revision,'images':images})+'\\n')
+            path.write_text(json.dumps({'version':1,'revision':revision,'images':images})+'\n')
             path.chmod(0o600)
             return path
         approval=approval_for(REVISION)
         # The root-only mode is never selected by generated CI wrappers.
-        refusal=fixture.python("import subprocess\\nr=subprocess.run(['komizo-box','workload','deployment-submit','--policy',"+repr(policy)+",'--version',"+repr(REVISION)+"],input=b'',capture_output=True)\\nassert r.returncode!=0\\nassert not Path('/var/lib/komizo/releases/fixturelocal/"+REVISION+".json').exists()\\nprint('CI submission refused owner authority')")
+        refusal=fixture.python("import subprocess\nr=subprocess.run(['komizo-box','workload','deployment-submit','--policy',"+repr(policy)+",'--version',"+repr(REVISION)+"],input=b'',capture_output=True)\nassert r.returncode!=0\nassert not Path('/var/lib/komizo/releases/fixturelocal/"+REVISION+".json').exists()\nprint('CI submission refused owner authority')")
         assert b'CI submission refused' in refusal
         started=time.monotonic()
         deployment=json.loads(driver.command('Deploy the supplied exact source revision of fixturelocal and wait for completion.',{'revision':REVISION,'approval':str(approval)},[str(cli),'--json','deploy','--host',address,'--app','fixturelocal','--version',REVISION,'--approval',str(approval)],'deploy',lambda data:data.get('completed') is True,timeout=180))
@@ -270,14 +274,14 @@ def main():
         for revision,selected in [(second,approval_for(second)),(REVISION,approval)]:
             result=json.loads(run([str(cli),'--json','deploy','--host',address,'--app','fixturelocal','--version',revision,'--approval',str(selected)],env=env,timeout=180))
             assert result['ok'] and result['data']['completed']
-            fixture.python("import json,urllib.request\\nr=urllib.request.urlopen('https://"+address+"/readyz',timeout=5);assert r.status==200;assert json.loads(r.read())['revision']=="+repr(revision))
+            fixture.python("import json,urllib.request\nr=urllib.request.urlopen('https://"+address+"/readyz',timeout=5);assert r.status==200;assert json.loads(r.read())['revision']=="+repr(revision))
             update_operations.append(result['data']['operation_id'])
         fixture.record('public_update_and_rollback',{'serving_revision':REVISION,'updated_revision':second,'operation_ids':update_operations,'health_verified':True,'data_restore_performed':False})
         if args.deployment_only:
             result={'version':1,'source':args.source,'candidate_cli':candidate_receipt,'steps':fixture.steps,
                     'accepted':True,'signed_release_acceptance':False,'private_docs_required':False,'github_credentials_present':any(k in env for k in ('GH_TOKEN','GITHUB_TOKEN')),
                     'sdk_path_present':False,'scope':'owned disposable Alpine host setup, explicit root SSH image approval, deploy, update, health and rollback'}
-            (args.output/'candidate-deployment.json').write_text(json.dumps(result,indent=2)+'\\n')
+            (args.output/'candidate-deployment.json').write_text(json.dumps(result,indent=2)+'\n')
             return
         def identity():
             return json.loads(fixture.python("import hashlib,json\npaths=[Path('/srv/fixturelocal/.env'),Path("+repr(policy)+"),Path('/srv/fixturelocal/.komizo-image-retention')]\nmounts=json.loads(__import__('subprocess').check_output(['docker','inspect','--format','{{json .Mounts}}','komizo-proxy']))\nprint(json.dumps({'files':{str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in paths},'certificates':sorted(m['Name'] for m in mounts if m['Type']=='volume' and m['Destination'] in ('/data','/config')),'platform_pending':Path('/var/lib/komizo/upgrades/pending.json').exists(),'activation_pending':Path('/var/lib/komizo/activations/pending.json').exists()}))"))

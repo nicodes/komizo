@@ -16,7 +16,7 @@ def export(observations, output, source):
  required={'public_setup','public_app_setup_idempotence','public_owner_approved_activation','public_update_and_rollback'}
  if not required <= {s['step'] for s in result['steps'] if s.get('accepted') is True}:raise ValueError('deployment observations missing')
  output.mkdir(mode=0o700)
- for name,row in rows.items():(output/name).write_text(json.dumps(row,indent=2)+'\\n')
+ for name,row in rows.items():(output/name).write_text(json.dumps(row,indent=2)+'\n')
 
 if __name__=='__main__':
  p=argparse.ArgumentParser(description=__doc__);p.add_argument('--observations',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--source',required=True)
