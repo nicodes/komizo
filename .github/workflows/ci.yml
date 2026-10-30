@@ -19,7 +19,7 @@ jobs:
   ci:
     name: Test
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 110
     steps:
     - name: Check out source
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -77,6 +77,7 @@ jobs:
           --output "$GITHUB_WORKSPACE/.artifacts/independent-deployment" --source "$GITHUB_SHA"
         sudo chown -R "$(id -u):$(id -g)" .artifacts/independent-deployment
     - name: Retain provisional deployment evidence
+      timeout-minutes: 3
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
         name: independent-deployment-${{ github.run_id }}-${{ github.run_attempt }}
