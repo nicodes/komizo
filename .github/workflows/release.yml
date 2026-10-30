@@ -79,12 +79,12 @@ jobs:
           go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', 'go.sum', 'mise.toml') }}-
     - name: Build
       timeout-minutes: 15
-      run: mise run install build artifact-check
+      run: mise run install && mise run build && mise run artifact-check
       env:
         VERSION: ${{ steps.release.outputs.version }}
     - name: Test
       timeout-minutes: 15
-      run: mise run lint test vuln
+      run: mise run lint && mise run test && mise run vuln
       env:
         VERSION: ${{ steps.release.outputs.version }}
     - name: Attest build provenance
