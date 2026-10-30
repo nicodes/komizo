@@ -1,5 +1,5 @@
 // Package agent carries the compiled komizo-box binaries, so that installing
-// one is something `komizo init` can do over a plain SSH connection.
+// one is something `komizo setup` can do over a plain SSH connection.
 //
 // EMBEDDED rather than downloaded. init already works on a box with nothing on
 // it but sshd, and making it fetch a release URL would add a network dependency
@@ -9,7 +9,7 @@
 //
 // The cost is the CLI's size, and one build-order constraint: the binaries have
 // to EXIST before the CLI is compiled, because //go:embed reads the filesystem
-// at build time and cannot invoke a compiler. `komizo run agents` builds them; the
+// at build time and cannot invoke a compiler. `mise run agents` builds them; the
 // release workflow runs it. A CLI built without that step still compiles and
 // still does everything else -- the failure is one clear message at the moment
 // somebody tries to install an agent, rather than a build nobody can run.
@@ -25,7 +25,7 @@ import (
 	"strings"
 )
 
-// bin holds one binary per architecture, built by `komizo run agents`.
+// bin holds one binary per architecture, built by `mise run agents`.
 //
 // all: so the directory embeds even when it holds nothing but the .keep that
 // keeps it in git. Without that this would not compile on a fresh checkout,
@@ -44,7 +44,7 @@ var Arches = []string{"amd64", "arm64"}
 // Get is the agent for one architecture, however this komizo can produce one.
 //
 // EMBEDDED FIRST, BUILT SECOND. A release archive carries the agents and needs
-// no toolchain, which is what makes `komizo init` work on a machine with no Go
+// no toolchain, which is what makes `komizo setup` work on a machine with no Go
 // on it. A `go install`/`go run` build carries none -- the agents are gitignored
 // build artifacts, so the module the proxy serves has only bin/.keep -- and for
 // that case the agent is compiled from the same module at the same version.
@@ -80,7 +80,7 @@ func Get(ctx context.Context, modulePath, version, arch string) ([]byte, string,
 		// CLI at all.
 		return nil, "", fmt.Errorf("this komizo carries no linux/%s agent and cannot work out "+
 			"which version of one to build.\n"+
-			"    Building from a checkout? Run `komizo run agents`, then build again.\n"+
+			"    Building from a checkout? Run `mise run agents`, then build again.\n"+
 			"    Installed a release archive? Please report this -- the release is broken.", arch)
 	}
 	b, err := build(ctx, modulePath, version, arch)
@@ -112,15 +112,15 @@ func For(arch string) ([]byte, error) {
 		// `go install github.com/nicodes/komizo@vX` and `go run ...@vX` are
 		// SOURCE builds -- the module the proxy serves carries bin/.keep and
 		// nothing else, since the binaries are gitignored build artifacts. So
-		// they produce exactly this, and "run komizo run agents" is advice the reader
+		// they produce exactly this, and "run mise run agents" is advice the reader
 		// cannot take: they have no checkout. The release archives are built by
-		// a workflow that runs `komizo run agents` first, which is why they work.
+		// a workflow that runs `mise run agents` first, which is why they work.
 		return nil, fmt.Errorf("this komizo was built without a linux/%s agent.\n"+
 			"    Installed with `go install` or run with `go run`? Those build from\n"+
 			"    source, and the agents are not in the module -- they are built by\n"+
-			"    `komizo run agents`. Take a release archive instead:\n"+
+			"    `mise run agents`. Take a release archive instead:\n"+
 			"        https://github.com/nicodes/komizo/releases\n"+
-			"    Building from a checkout? Run `komizo run agents`, then build again.\n"+
+			"    Building from a checkout? Run `mise run agents`, then build again.\n"+
 			"    Installed a release archive? Please report this -- the release is broken.", arch)
 	}
 	return b, nil

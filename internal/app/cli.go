@@ -11,18 +11,16 @@ import (
 	"time"
 )
 
-// CLI is the single process entry point for project and operator commands.
+// CLI is the single process entry point for deployment and host commands.
 func CLI(args []string, in io.Reader, out, progress io.Writer) int {
 	machine := false
 	timeout := 30 * time.Minute
-	timeoutSet := false
 	for len(args) > 0 {
 		switch args[0] {
 		case "--json":
 			machine = true
 			args = args[1:]
 		case "--timeout":
-			timeoutSet = true
 			var err error
 			if len(args) < 2 {
 				err = errors.New("--timeout requires a duration")
@@ -44,16 +42,6 @@ func CLI(args []string, in io.Reader, out, progress io.Writer) int {
 parsed:
 	baseCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	projectArgs := append([]string{}, args...)
-	if len(projectArgs) > 0 && timeoutSet {
-		projectArgs = append([]string{projectArgs[0], "--timeout", timeout.String()}, projectArgs[1:]...)
-	}
-	if machine {
-		projectArgs = append([]string{"--json"}, projectArgs...)
-	}
-	if handled, code := projectCommand(baseCtx, projectArgs, in, out, progress); handled {
-		return code
-	}
 	ctx, cancel := context.WithTimeout(baseCtx, timeout)
 	defer cancel()
 	if machine {

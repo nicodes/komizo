@@ -133,7 +133,7 @@ func (h *hostActivation) prepareStatic(ctx context.Context, r workload.Activatio
 		return err
 	}
 	h.static.record.GateImage = gate
-	active, err := workload.StaticRouteForProfile(route, r.App, r.Candidate, h.policy.Static.Hostnames, h.policy.Static.Profile)
+	active, err := workload.StaticRoute(route, r.App, r.Candidate, h.policy.Static.Hostnames, h.policy.Static.Serving)
 	if err != nil {
 		return err
 	}
@@ -153,7 +153,7 @@ func (h *hostActivation) prepareStatic(ctx context.Context, r workload.Activatio
 			return errors.New("static image declares an unreviewed volume")
 		}
 	}
-	if err := staticSpace(public, h.policy.Static.Profile); err != nil {
+	if err := staticSpace(public, h.policy.Static.Limits); err != nil {
 		return err
 	}
 
@@ -195,13 +195,10 @@ func (h *hostActivation) prepareStatic(ctx context.Context, r workload.Activatio
 	stage := filepath.Join(public, r.App, ".prepare-"+r.ID)
 	defer os.RemoveAll(stage)
 	var treeSHA string
-	source := ":/srv/public/app/."
-	if strings.HasPrefix(h.policy.Static.Profile, "godot-") {
-		source = ":/srv/public/."
-	}
+	source := ":" + h.policy.Static.ImageDirectory + "/."
 	err = stream(ctx, []string{"cp", cid + source, "-"}, func(reader io.Reader) error {
 		var err error
-		treeSHA, err = workload.StaticTreeForProfile(reader, stage, h.policy.Static.Profile)
+		treeSHA, err = workload.StaticTree(reader, stage, h.policy.Static.Limits)
 		return err
 	})
 	if err != nil {
@@ -213,7 +210,7 @@ func (h *hostActivation) prepareStatic(ctx context.Context, r workload.Activatio
 		if !info.IsDir() || h.staticDirectory(final, 0755) != nil {
 			return errors.New("unsafe existing public tree")
 		}
-		existing, err := workload.StaticTreeChecksumForProfile(final, h.policy.Static.Profile)
+		existing, err := workload.StaticTreeChecksum(final, h.policy.Static.Limits)
 		if err != nil || existing != treeSHA {
 			return errors.New("existing public tree differs from its admitted image")
 		}
@@ -376,7 +373,7 @@ func staticOwnerWithHost(ctx context.Context, verb string, sub subject, svc, by 
 	if record.Version != 1 || record.Proxy != p.Static.Proxy || !isStaticRevision(record.Revision) || len(record.DisabledRoute) == 0 || len(record.DisabledRoute) > workload.MaxBytes {
 		return true, errors.New("invalid protected static serving record")
 	}
-	if _, err := workload.StaticRouteForProfile(record.DisabledRoute, sub.app, record.Revision, p.Static.Hostnames, p.Static.Profile); err != nil {
+	if _, err := workload.StaticRoute(record.DisabledRoute, sub.app, record.Revision, p.Static.Hostnames, p.Static.Serving); err != nil {
 		return true, err
 	}
 	if err := box.RefuseScopedStart(sub.root, sub.app); err != nil && verb != "stop" {
@@ -482,7 +479,7 @@ func (h *hostActivation) pruneStatic(r workload.ActivationRequest) error {
 		if err != nil || !info.IsDir() || h.staticDirectory(target, 0755) != nil {
 			return errors.New("unsafe retired public tree")
 		}
-		if _, err := workload.StaticTreeChecksumForProfile(target, h.policy.Static.Profile); err != nil {
+		if _, err := workload.StaticTreeChecksum(target, h.policy.Static.Limits); err != nil {
 			return err
 		}
 		if err := os.RemoveAll(target); err != nil {

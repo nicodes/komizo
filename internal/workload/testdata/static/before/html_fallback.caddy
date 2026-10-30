@@ -1,0 +1,9 @@
+	encode zstd gzip
+	root * /srv/public/example/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+	try_files {path} {path}.html {path}/index.html /index.html
+	file_server
+	header {
+		X-Frame-Options DENY
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+	}

@@ -1,0 +1,31 @@
+
+	root * /srv/public/example/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+	@example_legacy path /index.js* /index.wasm* /index.pck* /index.audio* /index.service.worker* /index.offline*
+	respond @example_legacy 404
+	header {
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Embedder-Policy "require-corp"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Content-Security-Policy "default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+	}
+	# The previous front proxy supplies this fallback when the scratch gate
+	# leaves a direct Brotli download without a MIME type. Shared file serving
+	# must preserve that response rather than depending on proxy sniffing.
+	@example_brotli_download {
+		method GET
+		path *.br
+		file {path}
+		not path /index.js* /index.wasm* /index.pck* /index.audio* /index.service.worker* /index.offline*
+	}
+	header @example_brotli_download Content-Type "application/octet-stream"
+
+ @example_mutable not path /releases/*
+ header @example_mutable Cache-Control "no-cache, no-store, must-revalidate"
+ @example_immutable path /releases/*
+ header @example_immutable Cache-Control "public, max-age=31536000, immutable"
+ @example_packs path *.pck
+ header @example_packs Content-Type "application/octet-stream"
+ file_server {
+  precompressed gzip
+ }

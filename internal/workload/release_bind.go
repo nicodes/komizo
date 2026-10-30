@@ -22,15 +22,15 @@ func BindRelease(ctx context.Context, run ImageRun, p Policy, accepted ReleaseAc
 // BindLocalRelease checks the same accepted bytes using only immutable local
 // images. It never substitutes a tag, downloads an image or creates CI evidence.
 func BindLocalRelease(ctx context.Context, run ImageRun, p Policy, accepted ReleaseAcceptance, version, configImage string, compose []byte) ([]byte, error) {
-	if p.SourceRepository == "" {
+	if !p.HasReleaseAuthority() {
 		return nil, errors.New("local binding requires an authenticated source policy")
 	}
 	return bindRelease(ctx, run, p, accepted, version, configImage, compose, false)
 }
 
 func bindRelease(ctx context.Context, run ImageRun, p Policy, accepted ReleaseAcceptance, version, configImage string, compose []byte, pull bool) ([]byte, error) {
-	if p.SourceRepository == "" {
-		return compose, nil
+	if !p.HasReleaseAuthority() {
+		return nil, errors.New("release binding requires explicit protected admission authority")
 	}
 	if err := accepted.Check(p, version); err != nil {
 		return nil, err

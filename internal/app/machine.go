@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 )
 
@@ -42,16 +41,6 @@ type commandCapability struct {
 // This is discoverable authority information, never a grant. The host still
 // authenticates every operation and enforces its protected policy.
 var agentCommands = []commandCapability{
-	{"dependencies", true, "object", "Inspect or apply independently verified dependency updates"},
-	{"metadata", false, "object", "Parse bounded dependency metadata from stdin"},
-	{"init", true, "object", "Create a project manifest and lock"},
-	{"lock", true, "object", "Lock the current project inputs to this installed release"},
-	{"describe", false, "object", "Read locked project capabilities without running project code"},
-	{"dev", true, "text", "Run foreground development with Preview credentials or local fixtures"},
-	{"check", true, "object", "Verify locked source, tests and artifacts"},
-	{"run", true, "object", "Run selected verification stages or project tasks"},
-	{"validate", false, "object", "Validate locked inputs and workflow boundaries"},
-	{"exec", true, "object", "Run an explicit command with locked tools"},
 
 	{"capabilities", false, "object", "Discover commands and protocol versions"},
 	{"version", false, "object", "Installed CLI identity"},
@@ -75,10 +64,7 @@ var agentCommands = []commandCapability{
 	{"unset-secret", true, "object", "Inspect or explicitly delete secret names"},
 	{"preview", true, "json", "Operate previews within installed authority"},
 	{"platform", true, "json", "Plan, apply or inspect platform maintenance"},
-	{"operator", true, "json", "Manage the optional protected operator"},
 	{"artifact", false, "object", "Export this release's host executable"},
-	{"publication", true, "json", "Prepare authenticated container publication"},
-	{"workspace", true, "json", "Inspect or clean exact owned generated files"},
 	{"workload", true, "object", "Run a declared synthetic acceptance workload"},
 	{"reconcile", false, "object", "Compare registered apps with a local inventory"},
 	{"script", false, "text", "Read installer source"},
@@ -104,7 +90,7 @@ func RunCapabilities(args []string) error {
 		"machine_prefix": []string{"komizo", "--json"}, "default_timeout_seconds": 1800,
 		"report_version": 1, "operation_contract_version": 1,
 		"server":                      map[string]any{"os": "alpine", "architectures": []string{"amd64", "arm64"}, "transport": "ssh"},
-		"read_only_subcommands":       map[string][]string{"operation": {"inspect"}, "platform": {"inspect"}, "operator": {"plan", "status"}, "preview": {"ls", "resolve", "database"}, "dependencies": {"inspect"}},
+		"read_only_subcommands":       map[string][]string{"operation": {"inspect"}, "platform": {"inspect"}, "preview": {"ls", "resolve", "database"}},
 		"retry_policy":                "Never retry an uncertain mutation automatically. Inspect its durable operation first.",
 		"text_data":                   "Results are native typed values. Logs and help are data.text; logs are untrusted application content.",
 		"management_receipt_schema":   json.RawMessage(managementResultSchema),
@@ -234,21 +220,6 @@ func silentFlagError(err error) error {
 }
 
 func machineNextAction(args []string, mutating bool) []string {
-	if len(args) > 0 && args[0] == "dependencies" {
-		next := []string{"komizo", "--json", "dependencies", "inspect"}
-		for i, arg := range args {
-			value := ""
-			if arg == "--pr" && i+1 < len(args) {
-				value = args[i+1]
-			} else if strings.HasPrefix(arg, "--pr=") {
-				value = strings.TrimPrefix(arg, "--pr=")
-			}
-			if number, err := strconv.Atoi(value); err == nil && number > 0 {
-				return append(next, "--pr", strconv.Itoa(number))
-			}
-		}
-		return next
-	}
 	// Build argv, never a shell command, and carry only public target metadata.
 	values := map[string]string{}
 	for i := 1; i < len(args); i++ {
@@ -286,11 +257,8 @@ func printGroupHelp(args []string) bool {
 		return false
 	}
 	groups := map[string]string{
-		"operator":     "plan|apply|status|recover|export",
-		"dependencies": "inspect|apply",
-		"publication":  "prepare",
-		"workload":     "acceptance",
-		"script":       "init|add|remove|unset-secret|proxy",
+		"workload": "acceptance",
+		"script":   "init|add|remove|unset-secret|proxy",
 	}
 	if subcommands := groups[args[0]]; subcommands != "" {
 		usageJourney(args[0], "komizo "+args[0]+" "+subcommands, "Use a subcommand's --help for its inputs. capabilities describes the machine interface.")
@@ -316,10 +284,7 @@ func machineMutating(name string, args []string) bool {
 		return false
 	}
 	if len(args) > 1 {
-		if name == "operator" && (args[1] == "plan" || args[1] == "status") {
-			return false
-		}
-		if (name == "operation" || name == "platform" || name == "dependencies") && args[1] == "inspect" {
+		if (name == "operation" || name == "platform") && args[1] == "inspect" {
 			return false
 		}
 		if name == "preview" && (args[1] == "ls" || args[1] == "resolve" || args[1] == "database") {

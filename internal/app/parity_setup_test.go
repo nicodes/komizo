@@ -15,7 +15,7 @@ import (
 
 // Setting a server up files it under an account, and installs the agent.
 //
-// This shipped working from `komizo init` and not from the interface, which was
+// This shipped working from `komizo setup` and not from the interface, which was
 // then the surface most people used: the capability was written for one and the
 // other was never given it, so a box set up from the interface never appeared in
 // the app and there was nothing on screen to say why.

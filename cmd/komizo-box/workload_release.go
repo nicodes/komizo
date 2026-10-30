@@ -190,8 +190,11 @@ func admitWorkloadReleaseContext(ctx context.Context, p workload.Policy, version
 	if output == "" {
 		return errors.New("release admission needs a private output")
 	}
-	if p.SourceRepository == "" {
-		return workload.WritePrivateJSON(output, workload.ReleaseAcceptance{})
+	if !p.HasReleaseAuthority() {
+		return errors.New("release admission requires explicit protected authority")
+	}
+	if p.OwnerApproval && os.Geteuid() != 0 {
+		return errors.New("owner approval requires the root SSH operator")
 	}
 	if len(version) != 40 || strings.ContainsAny(version, "/.") {
 		return errors.New("authenticated releases require a full commit revision")
@@ -231,15 +234,20 @@ func admitWorkloadReleaseContext(ctx context.Context, p workload.Policy, version
 	if err := checkDeliveryAuthorization(p, version, time.Now().UTC()); err != nil {
 		return err
 	}
-	const frame = "komizo-release/v1:"
-	if !strings.HasPrefix(string(wire), frame) {
-		return errors.New("invalid release proof frame")
+	var accepted workload.ReleaseAcceptance
+	if p.OwnerApproval {
+		accepted, err = workload.ApproveOwnerRelease(wire, p, version, time.Now().UTC())
+	} else {
+		const frame = "komizo-release/v1:"
+		if !strings.HasPrefix(string(wire), frame) {
+			return errors.New("invalid release proof frame")
+		}
+		body, decodeErr := base64.StdEncoding.DecodeString(strings.TrimSpace(strings.TrimPrefix(string(wire), frame)))
+		if decodeErr != nil {
+			return errors.New("invalid release proof encoding")
+		}
+		accepted, err = workload.VerifyRelease(ctx, body, p, version, time.Now().UTC(), workload.GitHubReleaseKey)
 	}
-	body, err := base64.StdEncoding.DecodeString(strings.TrimSpace(strings.TrimPrefix(string(wire), frame)))
-	if err != nil {
-		return errors.New("invalid release proof encoding")
-	}
-	accepted, err := workload.VerifyRelease(ctx, body, p, version, time.Now().UTC(), workload.GitHubReleaseKey)
 	if err != nil {
 		return err
 	}

@@ -5,7 +5,7 @@ mkdir -p dist
 
 # The agents FIRST. internal/agent embeds them, and //go:embed reads the
 # filesystem at build time -- so a CLI compiled before they exist ships
-# without them and fails at the moment somebody runs `komizo init`.
+# without them and fails at the moment somebody runs `komizo setup`.
 # Always linux: this is the binary that goes on the server, whatever
 # platform the CLI beside it is for.
 test -s internal/agent/bin/komizo-box-linux-amd64

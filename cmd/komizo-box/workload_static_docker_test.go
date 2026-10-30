@@ -84,9 +84,26 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 	if !regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$`).MatchString(baselineHost) {
 		t.Fatal("explicit fixture gate hostname required")
 	}
-	if profile := os.Getenv("KOMIZO_STATIC_FIXTURE_PROFILE"); profile == "godot-v1" || profile == "godot-legacy-v1" || profile == "godot-immutable-v1" {
-		h.policy.Static.Profile = profile
+	if name := os.Getenv("KOMIZO_STATIC_FIXTURE_SETTINGS"); name != "" {
+		info, err := os.Lstat(name)
+		if err != nil || !info.Mode().IsRegular() || info.Size() > 65536 {
+			t.Fatal("explicit bounded static settings file required")
+		}
+		body, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var settings workload.StaticPolicy
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&settings); err != nil {
+			t.Fatal(err)
+		}
+		h.policy.Static.ImageDirectory = settings.ImageDirectory
+		h.policy.Static.Limits = settings.Limits
+		h.policy.Static.Serving = settings.Serving
 	}
+
 	h.makeStaticDir = nil
 	h.policy.Static.GateConfigSHA = hex.EncodeToString(sum[:])
 	fake := h.run
@@ -197,8 +214,8 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		remaining, err := io.Copy(hash, io.LimitReader(actual.Body, workload.GodotStaticMaxFileBytes-int64(len(body))+1))
-		if err != nil || int64(len(body))+remaining > workload.GodotStaticMaxFileBytes {
+		remaining, err := io.Copy(hash, io.LimitReader(actual.Body, workload.StaticFileBytesCeiling-int64(len(body))+1))
+		if err != nil || int64(len(body))+remaining > workload.StaticFileBytesCeiling {
 			t.Fatal("unbounded serving response", err)
 		}
 		out := response{status: fmt.Sprint(actual.StatusCode), body: body, checksum: hex.EncodeToString(hash.Sum(nil)), size: int64(len(body)) + remaining, headers: map[string]string{}}
@@ -251,8 +268,10 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 			paths = append(paths, path)
 		}
 	}
-	if strings.HasPrefix(h.policy.Static.Profile, "godot-") {
-		paths = append(paths, "/index.js", "/index.wasm", "/index.pck")
+	{
+		for _, pattern := range h.policy.Static.Serving.DenyPaths {
+			paths = append(paths, strings.TrimRight(pattern, "*"))
+		}
 		publicTree := filepath.Join(h.root, workload.StaticRoot, r.App, r.Candidate)
 		if err := filepath.WalkDir(publicTree, func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
@@ -356,10 +375,13 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 	loadPath := "/index.html"
 	var largest int64
 	for _, path := range paths {
-		if (strings.HasSuffix(path, ".pck") || strings.HasSuffix(path, ".wasm")) && (strings.HasPrefix(path, "/releases/") || h.policy.Static.Profile == "godot-legacy-v1") {
+		if strings.HasPrefix(path, "/") {
 			info, err := os.Stat(filepath.Join(h.root, workload.StaticRoot, r.App, r.Candidate, filepath.FromSlash(strings.TrimPrefix(path, "/"))))
 			if err != nil || !info.Mode().IsRegular() {
-				t.Fatal("fixture asset identity unavailable", err)
+				continue
+			}
+			if response := fetch(baselineProxy, "example.test", path, "identity"); !strings.HasPrefix(response.status, "200 ") {
+				continue
 			}
 			if info.Size() > largest {
 				loadPath = path
@@ -397,7 +419,7 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 				return
 			}
 			hash := sha256.New()
-			n, e := io.Copy(hash, io.LimitReader(res.Body, workload.GodotStaticMaxFileBytes+1))
+			n, e := io.Copy(hash, io.LimitReader(res.Body, workload.StaticFileBytesCeiling+1))
 			loads <- loaded{size: n, checksum: hex.EncodeToString(hash.Sum(nil)), err: e}
 		}()
 	}
@@ -458,6 +480,6 @@ func TestStaticDockerCopyAndCaddyParity(t *testing.T) {
 	}
 	loadProof := map[string]any{"asset": loadPath, "asset_bytes": expected.size, "concurrent_transfers": 2, "core_reads": 20, "core_allowance_ms": 2000, "maximum_core_ms": float64(maximumCore.Microseconds()) / 1000, "memory_events_before": before, "memory_events_after": after, "cpu_before": cpuBefore, "cpu_after": cpuAfter, "process_restart_recovered": true}
 
-	proof, _ := json.Marshal(map[string]any{"image": image, "configuration_sha256": h.policy.Static.GateConfigSHA, "tree_sha256": h.static.record.TreeSHA256, "paths": paths, "encodings": []string{"identity", "gzip", "br"}, "methods": []string{"GET", "HEAD"}, "range": "bytes=0-63", "profile": h.policy.Static.Profile, "proxy_image": proxyImage, "baseline_includes_front_proxy": true, "load": loadProof, "memory_bytes": 96 << 20, "milli_cpus": 100, "loopback_ports_only": true, "public_mount_read_only": true, "source_admission": "separate fixtures", "result": "passed"})
+	proof, _ := json.Marshal(map[string]any{"image": image, "configuration_sha256": h.policy.Static.GateConfigSHA, "tree_sha256": h.static.record.TreeSHA256, "paths": paths, "encodings": []string{"identity", "gzip", "br"}, "methods": []string{"GET", "HEAD"}, "range": "bytes=0-63", "serving": h.policy.Static.Serving, "image_directory": h.policy.Static.ImageDirectory, "limits": h.policy.Static.Limits, "proxy_image": proxyImage, "baseline_includes_front_proxy": true, "load": loadProof, "memory_bytes": 96 << 20, "milli_cpus": 100, "loopback_ports_only": true, "public_mount_read_only": true, "source_admission": "separate fixtures", "result": "passed"})
 	fmt.Println(string(proof))
 }

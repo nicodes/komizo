@@ -38,7 +38,7 @@ func TestTheRemainingFailureNamesARemedyTheReaderCanTake(t *testing.T) {
 	if err == nil {
 		t.Fatal("an architecture komizo does not ship returned an agent")
 	}
-	if !strings.Contains(err.Error(), "komizo run agents") {
+	if !strings.Contains(err.Error(), "mise run agents") {
 		t.Errorf("the missing-agent error does not name the remedy:\n%s", err)
 	}
 }

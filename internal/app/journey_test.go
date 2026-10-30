@@ -326,10 +326,10 @@ func TestNativeOutputCopyCannotBypassRetention(t *testing.T) {
 	}
 }
 
-func TestOperatorObservationFailureDoesNotClaimUncertainMutation(t *testing.T) {
-	for _, operation := range []string{"plan", "status"} {
+func TestPlatformObservationFailureDoesNotClaimUncertainMutation(t *testing.T) {
+	for _, operation := range []string{"inspect"} {
 		var out, progress bytes.Buffer
-		machineDispatch(context.Background(), []string{"operator", operation}, strings.NewReader(""), &out, &progress, func([]string) error { return errors.New("unavailable service observation") })
+		machineDispatch(context.Background(), []string{"platform", operation}, strings.NewReader(""), &out, &progress, func([]string) error { return errors.New("unavailable service observation") })
 		var result MachineResult
 		if err := json.Unmarshal(out.Bytes(), &result); err != nil {
 			t.Fatal(err)

@@ -118,19 +118,7 @@ func runCommand(name string, args []string) error {
 	return fmt.Errorf("unknown command %q", name)
 }
 
-// NO COMMAND IS GATED ON AN ACCOUNT. The two calls that reach the service ask
-// for one themselves -- registerAndEnrol, and `komizo enrol` when it has to mint
-// the token -- and everything else is SSH to a machine whose root key you hold.
-//
-// There was a one-entry table here, keeping `init` on a front gate, and the
-// reason recorded for it was wrong about the code beside it: it said failing at
-// the end would leave "a provisioned machine and an error", but init.go was
-// deliberately written so that a failed registration is a NOTE and the box is
-// still set up. So the gate was not preventing that outcome; it was refusing to
-// let somebody without a komizo account provision their own server at all,
-// which is the capability gate appify.md §7 says must not exist and which
-// app-only.md §7 left standing.
-
+// Host commands operate through the caller\'s SSH authority.
 func Main(args []string) (err error) {
 	defer func() {
 		if errors.Is(err, flag.ErrHelp) {
@@ -169,10 +157,6 @@ func Main(args []string) (err error) {
 		}
 		fmt.Fprintln(commandOutput(), "komizo "+versionText())
 		return nil
-	case "dependencies":
-		return RunDependencies(args[1:])
-	case "metadata":
-		return RunMetadata(args[1:])
 	case "capabilities":
 		if len(args) == 2 && (args[1] == "--help" || args[1] == "-h") {
 			return RunCapabilities(nil)
@@ -198,7 +182,7 @@ func Main(args []string) (err error) {
 		// that do it ask for one where they do it.
 		//
 		// registry.md §10 required one for all of these, on the argument that
-		// `komizo init` collapses three steps into one with nothing copied
+		// `komizo setup` collapses three steps into one with nothing copied
 		// between two surfaces. That argument holds for init and for nothing
 		// else -- app-only.md §7 -- and narrowing it makes §10's own constraint
 		// structural instead of something a cached session provides:
@@ -212,12 +196,6 @@ func Main(args []string) (err error) {
 		err = runCommand(args[0], args[1:])
 	case "platform":
 		err = RunPlatform(args[1:])
-	case "publication":
-		err = RunPublication(args[1:])
-	case "operator":
-		err = RunOperator(args[1:])
-	case "workspace":
-		err = RunWorkspace(args[1:])
 	case "workload":
 		err = RunWorkloadAcceptance(args[1:])
 	case "artifact":
@@ -264,19 +242,12 @@ func Main(args []string) (err error) {
 }
 
 func Usage() {
-	fmt.Fprint(commandOutput(), `komizo - develop, verify and operate projects
+	fmt.Fprint(commandOutput(), `komizo - deploy immutable workloads and operate supported hosts
 
-Projects:
-  komizo init --recipe static-site|go-service|godot-app
-  komizo dev [--mode preview|local]
-  komizo check
-  komizo run STAGE [STAGE...]
-  komizo describe
-  komizo preview --pr NUMBER
+Deployment:
   komizo deploy
   komizo status
-  komizo lock
-  komizo exec -- COMMAND [ARGS...]
+  komizo preview --pr NUMBER
 
 Hosts:
   komizo doctor --host root@HOST
@@ -289,8 +260,8 @@ Hosts:
   komizo set-secret|unset-secret --host root@HOST --app APP
 
 Use komizo capabilities to discover all commands, or COMMAND --help for inputs.
-komizo.json declares project behavior; komizo.lock binds its platform and tools.
-Private host authority is managed by the operator, independently of project code.
+Optional komizo.json selects a deployment repository and image references.
+Protected host policy independently authorizes application operations.
 
 Use --json before a command for one typed result on stdout and progress on stderr.
 --timeout 5m sets the deadline. Interrupted host mutations may have completed:

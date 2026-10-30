@@ -1,0 +1,21 @@
+{
+  "image_directory": "/srv/public/app",
+  "limits": {},
+  "serving": {
+    "fallbacks": [
+      "{path}",
+      "{path}.html",
+      "{path}/index.html",
+      "/index.html"
+    ],
+    "headers": {
+      "X-Frame-Options": "DENY",
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "strict-origin-when-cross-origin"
+    },
+    "encode": [
+      "zstd",
+      "gzip"
+    ]
+  }
+}

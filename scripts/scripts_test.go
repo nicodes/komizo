@@ -1,7 +1,6 @@
 package scripts
 
 import (
-	"encoding/json"
 	"fmt"
 	"maps"
 	"os"
@@ -34,8 +33,6 @@ func all(t *testing.T) map[string]string {
 		// whole-script check ever saw -- shellcheck reads them as files, but
 		// nothing looked at what a builder actually renders, and nothing would
 		// have seen a heredoc added inside one.
-		"agent-enrol":   AgentEnrol("https://api.komizo.dev", "kmz_enr_abc", "komizo.example.com", []string{"kmz_dev_abcdefgh"}, false),
-		"agent-unenrol": AgentUnenrol(),
 	}
 }
 
@@ -182,7 +179,7 @@ func needPinnedShellcheck(t *testing.T) {
 		}
 	}
 	if got != want {
-		unusable("shellcheck %s is on PATH but komizo.json pins %s, and they disagree "+
+		unusable("shellcheck %s is on PATH but mise.toml pins %s, and they disagree "+
 			"about real rules (0.9.0 raises SC2015 on `A && B || continue`, 0.11.0 "+
 			"does not)", got, want)
 	}
@@ -196,19 +193,13 @@ func needPinnedShellcheck(t *testing.T) {
 // and no version of this check is the right one to run.
 func shellcheckPin(t *testing.T) string {
 	t.Helper()
-	b, err := os.ReadFile(filepath.Join("..", "komizo.json"))
+	b, err := exec.Command("python3", "-I", "-c", "import tomllib; print(tomllib.load(open('../mise.toml','rb'))['tools']['shellcheck'])").Output()
 	if err != nil {
-		t.Fatalf("cannot read the shellcheck pin: %v", err)
+		t.Fatalf("cannot parse native tool pins: %v", err)
 	}
-	var manifest struct {
-		Tools map[string]string `json:"tools"`
-	}
-	if err := json.Unmarshal(b, &manifest); err != nil {
-		t.Fatalf("cannot parse the native tool pins: %v", err)
-	}
-	pin := manifest.Tools["shellcheck"]
+	pin := strings.TrimSpace(string(b))
 	if !regexp.MustCompile(`^\d+\.\d+\.\d+$`).MatchString(pin) {
-		t.Fatal("no exact shellcheck pin in komizo.json -- the lint has no version to be, " +
+		t.Fatal("no exact shellcheck pin in mise.toml -- the lint has no version to be, " +
 			"and whichever one happens to be installed would silently become the standard")
 	}
 	return pin

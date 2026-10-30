@@ -217,7 +217,7 @@ def main():
         policy='/etc/komizo/workloads/fixturelocal.json'
         definition={'version':1,'app':'fixturelocal','config':config,'policy':{
             'version':1,'app':'fixturelocal','app_dir':'/srv/fixturelocal','image_prefix':prefix,'shared_network':'edge',
-            'source_repository':'example/fixture','repository_id':'1',
+            'owner_approval':True,
             'resources':{'cgroup_parent':'/komizo-production','default':{'memory_bytes':32<<20,'memory_swap_bytes':32<<20,'milli_cpus':100},'max_memory_bytes':40<<20,'max_memory_swap_bytes':40<<20,'max_milli_cpus':100,'startup_allowance_bytes':8<<20},
             'readiness':{'probes':[{'url':'https://'+address+'/readyz','revision_field':'revision'}]}}}
         definition_file=args.output/'application.json';definition_file.write_text(json.dumps(definition)+'\n');definition_file.chmod(0o600)
@@ -228,17 +228,29 @@ def main():
         assert 'PRIVATE KEY' not in json.dumps(registered) and 'PRIVATE KEY' not in json.dumps(repeated)
         fixture.record('public_app_setup_idempotence',{'application_definition':True,'key_preserved':True,'private_key_not_printed':True})
         fixture.command(['komizo-box','workload','validate','--policy',policy,'--app','fixturelocal','--app-dir','/srv/fixturelocal','--version',REVISION,'--compose','/root/fixture/compose.yml','--output','/root/fixture/validated.json'])
-        fixture.command(['komizo-box','workload','release-bootstrap','--policy',policy,'--version',REVISION,'--config-image',config+':'+REVISION,'--compose','/root/fixture/compose.yml'])
-        fixture.write('/srv/fixturelocal/.env',('APP_VERSION='+REVISION+'\n').encode())
-        fixture.write('/srv/fixturelocal/.komizo-image-retention',('CURRENT='+REVISION+'\nPREVIOUS=\n').encode())
+        def approval_for(revision):
+            images={}
+            for component in ('gate','config'):
+                ref=prefix+component+':'+revision
+                identity=fixture.command(['docker','image','inspect','--format','{{.Id}}',ref]).decode().strip()
+                assert re.fullmatch('sha256:[a-f0-9]{64}',identity)
+                images[ref]=identity
+            path=args.output/('approval-'+revision+'.json')
+            path.write_text(json.dumps({'version':1,'revision':revision,'images':images})+'\\n')
+            path.chmod(0o600)
+            return path
+        approval=approval_for(REVISION)
+        # The root-only mode is never selected by generated CI wrappers.
+        refusal=fixture.python("import subprocess\\nr=subprocess.run(['komizo-box','workload','deployment-submit','--policy',"+repr(policy)+",'--version',"+repr(REVISION)+"],input=b'',capture_output=True)\\nassert r.returncode!=0\\nassert not Path('/var/lib/komizo/releases/fixturelocal/"+REVISION+".json').exists()\\nprint('CI submission refused owner authority')")
+        assert b'CI submission refused' in refusal
         started=time.monotonic()
-        deployment=json.loads(driver.command('Deploy the supplied exact source revision of fixturelocal and wait for completion.',{'revision':REVISION},[str(cli),'--json','deploy','--host',address,'--app','fixturelocal','--version',REVISION],'deploy',lambda data:data.get('completed') is True,timeout=180))
+        deployment=json.loads(driver.command('Deploy the supplied exact source revision of fixturelocal and wait for completion.',{'revision':REVISION,'approval':str(approval)},[str(cli),'--json','deploy','--host',address,'--app','fixturelocal','--version',REVISION,'--approval',str(approval)],'deploy',lambda data:data.get('completed') is True,timeout=180))
         deployment_seconds=driver.last_seconds
         assert deployment['ok'] and deployment['data']['completed']
         operation=deployment['data']['operation_id'];assert re.fullmatch('[a-f0-9]{32}',operation)
         inspection=json.loads(run([str(cli),'--json','operation','inspect','--host',address,'--app','fixturelocal'],env=env))
         assert inspection['ok'] and inspection['data']['inspection']['operation']['operation_id']==operation and not inspection['data']['reconciliation_required']
-        fixture.record('public_bootstrapped_activation',{'revision':REVISION,'operation_id':operation,'authority':'operator-bootstrap','new_github_source_authentication_tested':False,'machine_interface':1})
+        fixture.record('public_owner_approved_activation',{'revision':REVISION,'operation_id':operation,'authority':'owner-ssh','github_required':False,'private_docs_required':False,'sdk_runner_required':False,'ci_wrapper_refused':True,'machine_interface':1})
         def identity():
             return json.loads(fixture.python("import hashlib,json\npaths=[Path('/srv/fixturelocal/.env'),Path("+repr(policy)+"),Path('/srv/fixturelocal/.komizo-image-retention')]\nmounts=json.loads(__import__('subprocess').check_output(['docker','inspect','--format','{{json .Mounts}}','komizo-proxy']))\nprint(json.dumps({'files':{str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in paths},'certificates':sorted(m['Name'] for m in mounts if m['Type']=='volume' and m['Destination'] in ('/data','/config')),'platform_pending':Path('/var/lib/komizo/upgrades/pending.json').exists(),'activation_pending':Path('/var/lib/komizo/activations/pending.json').exists()}))"))
         def probe():
@@ -377,7 +389,7 @@ else:raise ValueError('private-file interruption window not observed')
         driver.save(True)
         fixture.record('public_onboarding',{'mode':'unfamiliar_agent' if args.onboarding_adapter else 'deterministic_public_cli','human_interventions':0})
         result={'version':1,'release':args.release,'source':args.source,'candidate_cli':candidate_receipt,'cli_sha256':hashlib.sha256(cli.read_bytes()).hexdigest(),'host_sha256':hashlib.sha256(box.read_bytes()).hexdigest(),'steps':fixture.steps,'runner_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-                'scope':'public machine CLI setup, application definition and key idempotence, direct deployment and operation inspection, Root local bootstrap, activation, same-release self/proxy upgrade, actual authority executor interruption/foreign-writer refusal/recovery/replay, cached reconfiguration and stop intent across service restart; no new CI-source admission or OS boot claim',
+                'scope':'public machine CLI setup, application definition and key idempotence, direct deployment and operation inspection, root SSH artifact approval, activation, same-release self/proxy upgrade, actual authority executor interruption/foreign-writer refusal/recovery/replay, cached reconfiguration and stop intent across service restart; no new CI-source admission or OS boot claim',
                 'private_cgroup_namespace':True,'host_global_kernel_controls_masked':True,'host_mounts':False,'host_docker_socket':False,'provider_calls':False,'real_data_accessed':False,'performance_accepted':performance['accepted'],'onboarding_mode':'unfamiliar_agent' if args.onboarding_adapter else 'deterministic_public_cli'}
         (args.output/'accepted.json').write_text(json.dumps(result,indent=2)+'\n')
     except Exception:

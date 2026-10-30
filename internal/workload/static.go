@@ -21,35 +21,28 @@ const StaticContainerRoot = "/srv/public"
 const StaticMaxBytes int64 = 64 << 20
 const StaticMaxFileBytes int64 = 16 << 20
 const StaticMaxEntries = 4096
-const GodotStaticMaxBytes int64 = 1 << 30
-const GodotStaticMaxFileBytes int64 = 128 << 20
 
-// StaticBounds keeps the general SPA envelope unchanged. Godot exports retain
-// large immutable packs and their precompressed sidecars.
-func StaticBounds(profile string) (total, file int64, err error) {
-	switch profile {
-	case "spa-v1":
-		return StaticMaxBytes, StaticMaxFileBytes, nil
-	case "godot-v1", "godot-legacy-v1", "godot-immutable-v1":
-		return GodotStaticMaxBytes, GodotStaticMaxFileBytes, nil
-	default:
-		return 0, 0, errors.New("unsupported static profile")
-	}
-}
-
-// StaticPolicy is an operator opt-in to a fixed serving profile. The exact
+// StaticPolicy is an operator opt-in to explicit static serving settings. The exact
 // gate configuration hash fences changes requiring new parity verification.
 // Only the public tree is mounted into the existing shared proxy.
 type StaticPolicy struct {
-	Profile       string   `json:"profile"`
-	GateConfigSHA string   `json:"gate_config_sha256"`
-	Proxy         string   `json:"proxy"`
-	Hostnames     []string `json:"hostnames"`
+	ImageDirectory string               `json:"image_directory"`
+	Limits         StaticLimits         `json:"limits,omitempty"`
+	Serving        StaticServingOptions `json:"serving"`
+	GateConfigSHA  string               `json:"gate_config_sha256"`
+	Proxy          string               `json:"proxy"`
+	Hostnames      []string             `json:"hostnames"`
 }
 
 func (s StaticPolicy) Check() error {
-	if (s.Profile != "spa-v1" && s.Profile != "godot-v1" && s.Profile != "godot-legacy-v1" && s.Profile != "godot-immutable-v1") || !contentIdentity.MatchString(s.GateConfigSHA) || !identifier.MatchString(s.Proxy) {
-		return errors.New("unsupported static serving profile")
+	if !contentIdentity.MatchString(s.GateConfigSHA) || !identifier.MatchString(s.Proxy) || !path.IsAbs(s.ImageDirectory) || path.Clean(s.ImageDirectory) != s.ImageDirectory || s.ImageDirectory == "/" || strings.ContainsAny(s.ImageDirectory, "\x00\r\n:\\") {
+		return errors.New("invalid protected static serving identity")
+	}
+	if _, _, err := StaticBounds(s.Limits); err != nil {
+		return err
+	}
+	if err := s.Serving.Check(); err != nil {
+		return err
 	}
 	if len(s.Hostnames) < 1 || len(s.Hostnames) > 16 {
 		return errors.New("static profiles require reviewed exact hostnames")
@@ -67,12 +60,8 @@ func (s StaticPolicy) Check() error {
 // StaticTree extracts an immutable, bounded public archive into a fresh
 // directory. Links, devices, traversal, duplicate/case-colliding names and
 // hidden files (except the exact Expo route manifest) are refused. No archive-controlled permission is retained.
-func StaticTree(reader io.Reader, destination string) (string, error) {
-	return StaticTreeForProfile(reader, destination, "spa-v1")
-}
-
-func StaticTreeForProfile(reader io.Reader, destination, profile string) (identity string, err error) {
-	maxBytes, maxFileBytes, err := StaticBounds(profile)
+func StaticTree(reader io.Reader, destination string, limits StaticLimits) (identity string, err error) {
+	maxBytes, maxFileBytes, err := StaticBounds(limits)
 	if err != nil {
 		return "", err
 	}
@@ -191,12 +180,8 @@ func StaticTreeForProfile(reader io.Reader, destination, profile string) (identi
 // The unmodified upstream route remains the disabled/owner-stopped route.
 var staticHostname = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$`)
 
-func StaticRoute(route []byte, app, revision string, hostnames []string) ([]byte, error) {
-	return StaticRouteForProfile(route, app, revision, hostnames, "spa-v1")
-}
-
-func StaticRouteForProfile(route []byte, app, revision string, hostnames []string, profile string) ([]byte, error) {
-	if _, _, err := StaticBounds(profile); err != nil {
+func StaticRoute(route []byte, app, revision string, hostnames []string, serving StaticServingOptions) ([]byte, error) {
+	if err := serving.Check(); err != nil {
 		return nil, err
 	}
 	if !identifier.MatchString(app) || !commitID.MatchString(revision) || len(route) > MaxBytes {
@@ -225,23 +210,7 @@ func StaticRouteForProfile(route []byte, app, revision string, hostnames []strin
 	if count < 1 || count > 64 {
 		return nil, errors.New("static profile requires exact host-generated gate routes")
 	}
-	snippet := "\tencode zstd gzip\n\troot * " + StaticContainerRoot + "/" + app + "/" + revision + "\n" +
-		"\ttry_files {path} {path}.html {path}/index.html /index.html\n\tfile_server\n" +
-		"\theader {\n\t\tX-Frame-Options DENY\n\t\tX-Content-Type-Options nosniff\n" +
-		"\t\tReferrer-Policy strict-origin-when-cross-origin\n\t}\n"
-	if strings.HasPrefix(profile, "godot-") {
-		snippet = godotStaticRoute(app, revision)
-		if profile == "godot-immutable-v1" {
-			snippet = godotImmutableStaticRoute(app, revision)
-		}
-		if profile == "godot-legacy-v1" {
-			legacy := "\t@" + app + "_legacy path /index.js* /index.wasm* /index.pck* /index.audio* /index.service.worker* /index.offline*\n\trespond @" + app + "_legacy 404\n"
-			snippet = strings.Replace(snippet, legacy, "", 1)
-			// This layout serves the legacy filenames too, including direct
-			// Brotli downloads. Only the immutable layouts refuse those paths.
-			snippet = strings.Replace(snippet, "\t\tnot path /index.js* /index.wasm* /index.pck* /index.audio* /index.service.worker* /index.offline*\n", "", 1)
-		}
-	}
+	snippet := staticServingRoute(app, revision, serving)
 	compiled := strings.ReplaceAll(string(route), needle, snippet)
 	// A local file server can return an error before the deferred response
 	// header runs. There is no upstream that can overwrite this identity, so
@@ -266,12 +235,8 @@ func StaticGate(compose []byte, app string) (string, error) {
 	return gate.Image, nil
 }
 
-func StaticTreeChecksum(directory string) (string, error) {
-	return StaticTreeChecksumForProfile(directory, "spa-v1")
-}
-
-func StaticTreeChecksumForProfile(directory, profile string) (string, error) {
-	maxBytes, maxFileBytes, err := StaticBounds(profile)
+func StaticTreeChecksum(directory string, limits StaticLimits) (string, error) {
+	maxBytes, maxFileBytes, err := StaticBounds(limits)
 	if err != nil {
 		return "", err
 	}

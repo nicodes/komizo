@@ -32,7 +32,7 @@ func TestStaticArchiveIsBoundedImmutableAndPreservesFileTime(t *testing.T) {
 	archive := staticArchive(t, []*tar.Header{{Name: "./index.html", Typeflag: tar.TypeReg, Size: 10, Mode: 0777, ModTime: stamp},
 		{Name: "./_expo/app.js", Typeflag: tar.TypeReg, Size: 12, Mode: 0777, ModTime: stamp}, {Name: "./_expo/.routes.json", Typeflag: tar.TypeReg, Size: 2}})
 	directory := filepath.Join(t.TempDir(), "public")
-	identity, err := StaticTree(bytes.NewReader(archive), directory)
+	identity, err := StaticTree(bytes.NewReader(archive), directory, StaticLimits{})
 	if err != nil || len(identity) != 64 {
 		t.Fatal(identity, err)
 	}
@@ -40,14 +40,14 @@ func TestStaticArchiveIsBoundedImmutableAndPreservesFileTime(t *testing.T) {
 	if err != nil || info.Mode().Perm() != 0444 || !info.ModTime().Equal(stamp) {
 		t.Fatal("archive-controlled permissions or altered cache validator", info, err)
 	}
-	actual, err := StaticTreeChecksum(directory)
+	actual, err := StaticTreeChecksum(directory, StaticLimits{})
 	if err != nil || actual != identity {
 		t.Fatal("extraction/checksum disagree", actual, identity, err)
 	}
 	if err := os.Chmod(filepath.Join(directory, "index.html"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := StaticTreeChecksum(directory); err == nil {
+	if _, err := StaticTreeChecksum(directory, StaticLimits{}); err == nil {
 		t.Fatal("writable cache accepted")
 	}
 }
@@ -65,7 +65,7 @@ func TestStaticArchiveRefusesEscapeLinksDuplicatesSecretsAndOversize(t *testing.
 		t.Run(header.Name+string(header.Typeflag), func(t *testing.T) {
 			directory := filepath.Join(t.TempDir(), "public")
 			body := staticArchive(t, []*tar.Header{{Name: "index.html", Typeflag: tar.TypeReg}, header})
-			if _, err := StaticTree(bytes.NewReader(body), directory); err == nil {
+			if _, err := StaticTree(bytes.NewReader(body), directory, StaticLimits{}); err == nil {
 				t.Fatal("unsafe public archive accepted")
 			}
 			if _, err := os.Lstat(directory); !os.IsNotExist(err) {
@@ -73,23 +73,23 @@ func TestStaticArchiveRefusesEscapeLinksDuplicatesSecretsAndOversize(t *testing.
 			}
 		})
 	}
-	if _, err := StaticTree(bytes.NewReader(nil), filepath.Join(t.TempDir(), "public")); err == nil {
+	if _, err := StaticTree(bytes.NewReader(nil), filepath.Join(t.TempDir(), "public"), StaticLimits{}); err == nil {
 		t.Fatal("missing entry point accepted")
 	}
 }
 
-func TestStaticProfilePreservesParentRouteAndRefusesAdditionalServices(t *testing.T) {
+func TestStaticServingPreservesParentRouteAndRefusesAdditionalServices(t *testing.T) {
 	parent := "example.invalid {\n\theader >X-Komizo-Revision \"" + strings.Repeat("a", 40) + "\"\n\theader Strict-Transport-Security max-age=31536000\n" +
 		"\treverse_proxy example-gate:80 {\n\t\theader_up X-Forwarded-For {remote_host}\n\t}\n}\n"
-	route, err := StaticRoute([]byte(parent), "example", strings.Repeat("a", 40), []string{"example.invalid"})
-	if err != nil || !strings.Contains(string(route), "try_files {path} {path}.html {path}/index.html /index.html") ||
+	route, err := StaticRoute([]byte(parent), "example", strings.Repeat("a", 40), []string{"example.invalid"}, staticFixture(t, "html_fallback").Serving)
+	if err != nil || !strings.Contains(string(route), "try_files \"{path}\" \"{path}.html\" \"{path}/index.html\" \"/index.html\"") ||
 		!strings.Contains(string(route), "header X-Komizo-Revision \""+strings.Repeat("a", 40)+"\"") || strings.Contains(string(route), "header >X-Komizo-Revision") || !strings.Contains(string(route), "Strict-Transport-Security max-age=31536000") || strings.Contains(string(route), "reverse_proxy") {
 		t.Fatal(string(route), err)
 	}
-	if _, err := StaticRoute([]byte(strings.ReplaceAll(parent, "example-gate", "other-gate")), "example", strings.Repeat("a", 40), []string{"example.invalid"}); err == nil {
+	if _, err := StaticRoute([]byte(strings.ReplaceAll(parent, "example-gate", "other-gate")), "example", strings.Repeat("a", 40), []string{"example.invalid"}, staticFixture(t, "html_fallback").Serving); err == nil {
 		t.Fatal("foreign upstream transformed")
 	}
-	if _, err := StaticRoute([]byte(parent), "example", strings.Repeat("a", 40), []string{"other.invalid"}); err == nil {
+	if _, err := StaticRoute([]byte(parent), "example", strings.Repeat("a", 40), []string{"other.invalid"}, staticFixture(t, "html_fallback").Serving); err == nil {
 		t.Fatal("unreviewed hostname transformed")
 	}
 	for _, services := range []map[string]any{
@@ -102,4 +102,20 @@ func TestStaticProfilePreservesParentRouteAndRefusesAdditionalServices(t *testin
 			t.Fatal("non-gate-only immutable workload accepted")
 		}
 	}
+}
+
+func staticFixture(t *testing.T, name string) StaticPolicy {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("testdata", "static", name+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var policy StaticPolicy
+	if err := json.Unmarshal(body, &policy); err != nil {
+		t.Fatal(err)
+	}
+	if err := policy.Serving.Check(); err != nil {
+		t.Fatal(err)
+	}
+	return policy
 }

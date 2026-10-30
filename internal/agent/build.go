@@ -33,7 +33,7 @@ import (
 // the same transparency log that vouched for the komizo they are already
 // running. Anything that could tamper with the agent could already have
 // tampered with the CLI, which is a strictly smaller claim than adding a
-// download to `komizo init`.
+// download to `komizo setup`.
 //
 // design/appify.md rejected FETCHING the agent, and this is not that. Nothing
 // new is reached over the network that was not already reached to get here, and
@@ -43,7 +43,7 @@ import (
 //
 // Generous, because a cold module cache means downloading the module and
 // compiling it, on whatever the operator's machine is. Bounded at all because
-// this runs inside `komizo init`, and a build that hangs would hang the setup
+// this runs inside `komizo setup`, and a build that hangs would hang the setup
 // with no way to tell it from a slow one.
 const buildTimeout = 5 * time.Minute
 

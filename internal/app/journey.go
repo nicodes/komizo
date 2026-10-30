@@ -61,7 +61,7 @@ func readDefinition(path string) (appDefinition, error) {
 	if err := d.Policy.Check(); err != nil {
 		return d, err
 	}
-	if d.Policy.SourceRepository == "" || d.Policy.Resources == nil || d.Policy.Readiness == nil {
+	if !d.Policy.HasReleaseAuthority() || d.Policy.Resources == nil || d.Policy.Readiness == nil {
 		return d, errors.New("definition needs explicit trusted source, finite resources and readiness")
 	}
 	return d, nil
@@ -197,9 +197,11 @@ func RunSetup(args []string) (err error) {
 		if !existing {
 			result["deploy_key_file"] = *key
 		}
-		if err := bindProjectTarget(d.Policy.SourceRepository, tgt, d.App); err != nil {
-			_ = emitResult(result)
-			return fmt.Errorf("host setup completed; local target binding needs attention: %w", err)
+		if d.Policy.SourceRepository != "" {
+			if err := bindDeploymentTarget(d.Policy.SourceRepository, tgt, d.App); err != nil {
+				_ = emitResult(result)
+				return fmt.Errorf("host setup completed; local target binding needs attention: %w", err)
+			}
 		}
 		result["next_action"] = []string{"komizo", "--json", "deploy", "--host", tgt.addr(), "--port", strconv.Itoa(tgt.port), "--app", d.App, "--version", "COMMIT"}
 	}
@@ -280,6 +282,7 @@ func RunDeploy(args []string) (err error) {
 	port := fs.Int("port", 22, "SSH port")
 	app := fs.String("app", "", "registered application")
 	version := fs.String("version", "", "exact 40-character source commit")
+	approval := fs.String("approval", "", "explicit image approval document; requires owner_approval host policy and root SSH")
 	proof := fs.String("proof", "", "authenticated release proof file; host verification remains mandatory")
 	user := fs.String("registry-user", "", "optional ghcr.io read credential username")
 	token := fs.String("registry-token-file", "", "private file containing registry token")
@@ -291,12 +294,18 @@ func RunDeploy(args []string) (err error) {
 	if fs.NArg() != 0 {
 		return errors.New("deploy accepts only flags")
 	}
+	if *proof != "" && *approval != "" {
+		return errors.New("choose one release admission proof")
+	}
+	if *approval != "" && *host == "" {
+		return errors.New("owner approval requires an explicit root SSH host")
+	}
 	projectDefault := *host == ""
-	if _, err := defaultProjectTarget(*directory, host, port, app, fs); err != nil {
+	if _, err := defaultDeploymentTarget(*directory, host, port, app, fs); err != nil {
 		return err
 	}
 	if projectDefault && *version == "" {
-		*version, err = projectRevision(*directory)
+		*version, err = deploymentRevision(*directory)
 		if err != nil {
 			return err
 		}
@@ -325,8 +334,13 @@ func RunDeploy(args []string) (err error) {
 		input = append(input, '\n')
 		remote = append(remote, "--registry", "ghcr.io", "--registry-user", *user)
 	}
-	if *proof != "" {
-		body, err := readJourneyFile(*proof, 128<<10, false)
+	admission := *proof
+	if *approval != "" {
+		admission = *approval
+		remote = append(remote, "--owner-approval")
+	}
+	if admission != "" {
+		body, err := readJourneyFile(admission, 128<<10, false)
 		if err != nil {
 			return err
 		}
@@ -338,6 +352,9 @@ func RunDeploy(args []string) (err error) {
 	tgt, err := resolveTarget(fs, *host, *port)
 	if err != nil {
 		return err
+	}
+	if *approval != "" && tgt.user != "root" {
+		return errors.New("owner approval requires root SSH")
 	}
 	validation.complete = true
 	if err := ensureReachable(tgt, false); err != nil {

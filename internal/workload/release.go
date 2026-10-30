@@ -30,11 +30,11 @@ var numericID = regexp.MustCompile(`^[1-9][0-9]{0,19}$`)
 // The Actions identity authenticates this entire document through its audience.
 type ReleaseManifest struct {
 	Version          int               `json:"version"`
-	Repository       string            `json:"repository"`
-	RepositoryID     string            `json:"repository_id"`
+	Repository       string            `json:"repository,omitempty"`
+	RepositoryID     string            `json:"repository_id,omitempty"`
 	Revision         string            `json:"revision"`
-	TestedCommit     string            `json:"tested_commit"`
-	RunID            string            `json:"run_id"`
+	TestedCommit     string            `json:"tested_commit,omitempty"`
+	RunID            string            `json:"run_id,omitempty"`
 	Images           map[string]string `json:"images"`
 	StatefulContract *StatefulContract `json:"stateful_contract,omitempty"`
 }
@@ -152,13 +152,13 @@ func rejectDuplicateJSON(body []byte) error {
 
 type actionsClaims struct {
 	jwt.RegisteredClaims
-	Repository        string `json:"repository"`
-	RepositoryID      string `json:"repository_id"`
+	Repository        string `json:"repository,omitempty"`
+	RepositoryID      string `json:"repository_id,omitempty"`
 	Ref               string `json:"ref"`
 	SHA               string `json:"sha"`
 	WorkflowRef       string `json:"workflow_ref"`
 	WorkflowSHA       string `json:"workflow_sha"`
-	RunID             string `json:"run_id"`
+	RunID             string `json:"run_id,omitempty"`
 	RunAttempt        string `json:"run_attempt"`
 	JobWorkflowRef    string `json:"job_workflow_ref"`
 	JobWorkflowSHA    string `json:"job_workflow_sha"`
@@ -272,10 +272,41 @@ func releaseSubject(subject string, p Policy) bool {
 func (a ReleaseAcceptance) Check(p Policy, version string) error {
 	switch a.Authority {
 	case actionsIssuer:
+		if p.OwnerApproval || p.SourceRepository == "" {
+			return errors.New("Actions evidence requires GitHub source authority")
+		}
 		return a.Manifest.Check(p, version)
+	case "owner-ssh":
+		if !p.OwnerApproval || !regexp.MustCompile("^[a-f0-9]{64}$").MatchString(a.EvidenceSHA256) {
+			return errors.New("owner approval requires explicit protected host authority and an approval identity")
+		}
+		return a.Manifest.check(p, version, false)
 	case "operator-bootstrap":
 		return a.Manifest.check(p, version, false)
 	default:
 		return errors.New("unknown host release authority")
 	}
+}
+
+// ApproveOwnerRelease validates explicit artifact selection by the root SSH
+// operator. The host authenticates the caller; this document supplies byte
+// identities and never claims CI tests, a hosted account or publisher identity.
+func ApproveOwnerRelease(body []byte, p Policy, version string, now time.Time) (ReleaseAcceptance, error) {
+	var zero ReleaseAcceptance
+	if err := p.Check(); err != nil {
+		return zero, err
+	}
+	if !p.OwnerApproval || p.SourceRepository != "" || p.RepositoryID != "" {
+		return zero, errors.New("host policy does not authorize owner SSH approval")
+	}
+	var m ReleaseManifest
+	if err := strictJSON(body, &m); err != nil {
+		return zero, err
+	}
+	if err := m.check(p, version, false); err != nil {
+		return zero, err
+	}
+	sum := sha256.Sum256(body)
+	accepted := ReleaseAcceptance{Manifest: m, Authority: "owner-ssh", VerifiedAt: now, EvidenceSHA256: fmt.Sprintf("%x", sum)}
+	return accepted, accepted.Check(p, version)
 }
