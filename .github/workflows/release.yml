@@ -31,7 +31,7 @@ jobs:
       with:
         fetch-depth: 0
     - name: Set up locked komizo
-      uses: nicodes/komizo/setup@40086036977a5fc0119d6c4c1d5eb6ae3ab3b4b9
+      uses: nicodes/komizo/setup@2ca94e2fd4bb05f41bb228e9c366e5cc733c75e6
       env:
         GH_TOKEN: ${{ github.token }}
       timeout-minutes: 5
@@ -235,11 +235,11 @@ jobs:
     needs:
     - release
     - promote
-    uses: nicodes/tools/.github/workflows/cli-publish.yml@a404cbcef2a2ccfb7a9aa1961f5d893e0c31ad42
+    uses: nicodes/tools/.github/workflows/cli-publish.yml@9590742a455154ac5967a67952c5758d79d476b9
     permissions:
       contents: write
     with:
-      tools-ref: 'a404cbcef2a2ccfb7a9aa1961f5d893e0c31ad42'
+      tools-ref: '9590742a455154ac5967a67952c5758d79d476b9'
       binary: komizo
       tag: ${{ needs.release.outputs.tag }}
       artifact-id: ${{ needs.promote.outputs.artifact-id }}
