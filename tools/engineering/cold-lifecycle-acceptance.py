@@ -68,9 +68,12 @@ def main():
     parser.add_argument('--release-dir', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path, help='fresh protected absolute directory')
     parser.add_argument('--candidate-cli', type=Path, help='explicit local client test; host matches baseline unless --candidate-host; acceptance is labeled provisional')
+    parser.add_argument('--deployment-only', action='store_true', help='provisional candidate setup/deploy/update/rollback only; never signed release acceptance')
     parser.add_argument('--candidate-host', action='store_true', help='explicitly allow a local candidate host too; never counts as signed-release acceptance')
     parser.add_argument('--onboarding-adapter', type=Path, help='optional public-input-only argv planner; no provider secret enters the fixture')
     args = parser.parse_args()
+    if args.deployment_only and not (args.candidate_host and args.candidate_cli):
+        raise ValueError('deployment-only requires explicit candidate client and host')
     if args.candidate_host and not args.candidate_cli:
         raise ValueError('candidate host requires an explicit local candidate client')
     if os.geteuid()!=0 or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+',args.release) or not re.fullmatch('[a-f0-9]{40}',args.source):
@@ -87,7 +90,8 @@ def main():
     prepare.protected_directory(args.output.parent);prepare.protected_directory(args.release_dir.parent)
     if not args.output.is_absolute() or args.output.exists():raise ValueError('fresh absolute output required')
     args.output.mkdir(mode=0o700)
-    prepare.verify(args.release_dir,args.source,args.release)
+    if not args.deployment_only:
+        prepare.verify(args.release_dir,args.source,args.release)
     cli=args.release_dir/'komizo';verified_box=args.release_dir/'komizo-box-linux-amd64';box=verified_box
     candidate_receipt=None
     if args.candidate_cli:
@@ -96,7 +100,7 @@ def main():
             raise ValueError('candidate CLI must be an absolute regular local executable')
         exported=args.output/'candidate-host'
         candidate_metadata=json.loads(run([str(candidate),'artifact','--arch','amd64','--output',str(exported)]))
-        if (not args.candidate_host and exported.read_bytes()!=box.read_bytes()) or candidate_metadata['version'].removeprefix('v')!=args.release.removeprefix('v'):
+        if not args.deployment_only and ((not args.candidate_host and exported.read_bytes()!=box.read_bytes()) or candidate_metadata['version'].removeprefix('v')!=args.release.removeprefix('v')):
             raise ValueError('candidate version or authenticated baseline host binding differs')
         candidate_receipt={'sha256':hashlib.sha256(candidate.read_bytes()).hexdigest(),'host_sha256':hashlib.sha256(exported.read_bytes()).hexdigest(),'candidate_host':args.candidate_host,'authenticated':False,'scope':'explicit local candidate; maintenance target artifacts remain the authenticated baseline; not signed-release acceptance'}
         if args.candidate_host:box=exported
@@ -132,6 +136,10 @@ def main():
         wrapper=keys/'ssh'
         wrapper.write_text('#!/bin/sh\nexec /usr/bin/ssh -i '+shlex.quote(str(keys/'key'))+' -o IdentitiesOnly=yes -o UserKnownHostsFile='+shlex.quote(str(keys/'known_hosts'))+' -o GlobalKnownHostsFile=/dev/null "$@"\n');wrapper.chmod(0o700)
         env={**os.environ,'PATH':str(keys)+':'+os.environ['PATH']}
+        if args.deployment_only:
+            home=args.output/'client-home';home.mkdir(mode=0o700)
+            env={'HOME':str(home),'PATH':str(keys)+':/usr/bin:/bin','LANG':'C.UTF-8'}
+
         # A private filesystem lets the synthetic postgres UID allocate space
         # even when the controller's filesystem has reserved blocks. Its sparse
         # backing file and loop device are owned only by this disposable guest.
@@ -251,6 +259,26 @@ def main():
         inspection=json.loads(run([str(cli),'--json','operation','inspect','--host',address,'--app','fixturelocal'],env=env))
         assert inspection['ok'] and inspection['data']['inspection']['operation']['operation_id']==operation and not inspection['data']['reconciliation_required']
         fixture.record('public_owner_approved_activation',{'revision':REVISION,'operation_id':operation,'authority':'owner-ssh','github_required':False,'private_docs_required':False,'sdk_runner_required':False,'ci_wrapper_refused':True,'machine_interface':1})
+        second='2'*40
+        fixture.write('/root/fixture/www/readyz',json.dumps({'revision':second}).encode())
+        second_compose={'services':{'fixturelocal-gate':{'image':prefix+'gate:'+second,'networks':['edge']}},'networks':{'edge':{'external':True,'name':'edge'}}}
+        fixture.write('/root/fixture/compose.yml',json.dumps(second_compose).encode())
+        for component,dockerfile in [('gate','Gatefile'),('config','Configfile')]:
+            fixture.command(['docker','build','-f','/root/fixture/'+dockerfile,'-t',prefix+component+':'+second,'/root/fixture'],timeout=180)
+            fixture.command(['docker','push',prefix+component+':'+second],timeout=180)
+        update_operations=[]
+        for revision,selected in [(second,approval_for(second)),(REVISION,approval)]:
+            result=json.loads(run([str(cli),'--json','deploy','--host',address,'--app','fixturelocal','--version',revision,'--approval',str(selected)],env=env,timeout=180))
+            assert result['ok'] and result['data']['completed']
+            fixture.python("import json,urllib.request\\nr=urllib.request.urlopen('https://"+address+"/readyz',timeout=5);assert r.status==200;assert json.loads(r.read())['revision']=="+repr(revision))
+            update_operations.append(result['data']['operation_id'])
+        fixture.record('public_update_and_rollback',{'serving_revision':REVISION,'updated_revision':second,'operation_ids':update_operations,'health_verified':True,'data_restore_performed':False})
+        if args.deployment_only:
+            result={'version':1,'source':args.source,'candidate_cli':candidate_receipt,'steps':fixture.steps,
+                    'accepted':True,'signed_release_acceptance':False,'private_docs_required':False,'github_credentials_present':any(k in env for k in ('GH_TOKEN','GITHUB_TOKEN')),
+                    'sdk_path_present':False,'scope':'owned disposable Alpine host setup, explicit root SSH image approval, deploy, update, health and rollback'}
+            (args.output/'candidate-deployment.json').write_text(json.dumps(result,indent=2)+'\\n')
+            return
         def identity():
             return json.loads(fixture.python("import hashlib,json\npaths=[Path('/srv/fixturelocal/.env'),Path("+repr(policy)+"),Path('/srv/fixturelocal/.komizo-image-retention')]\nmounts=json.loads(__import__('subprocess').check_output(['docker','inspect','--format','{{json .Mounts}}','komizo-proxy']))\nprint(json.dumps({'files':{str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in paths},'certificates':sorted(m['Name'] for m in mounts if m['Type']=='volume' and m['Destination'] in ('/data','/config')),'platform_pending':Path('/var/lib/komizo/upgrades/pending.json').exists(),'activation_pending':Path('/var/lib/komizo/activations/pending.json').exists()}))"))
         def probe():

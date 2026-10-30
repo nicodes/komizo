@@ -74,8 +74,7 @@ jobs:
         path: |
           ~/.cache/go-build
           ~/go/pkg/mod
-        key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', 'go.sum', 'mise.toml') }}-${{ github.sha
-          }}
+        key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', 'go.sum', 'mise.toml') }}-${{ github.sha }}
         restore-keys: |
           go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', 'go.sum', 'mise.toml') }}-
     - name: Build
@@ -86,6 +85,8 @@ jobs:
     - name: Test
       timeout-minutes: 15
       run: mise run lint test vuln
+      env:
+        VERSION: ${{ steps.release.outputs.version }}
     - name: Attest build provenance
       timeout-minutes: 5
       uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8

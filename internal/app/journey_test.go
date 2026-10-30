@@ -214,7 +214,7 @@ func TestAgentCLIRealBinaryDiscoveryAndHelp(t *testing.T) {
 		t.Fatal(err, string(out))
 	}
 	checkManagementBinary(t, cli)
-	for _, args := range [][]string{{"--json", "capabilities"}, {"--json", "version"}, {"--json", "init", "--help"}, {"--json", "add", "--help"}, {"--json", "report", "--help"}, {"--json", "deploy", "--help"}, {"--json", "setup", "--help"}, {"--json", "operation", "--help"}, {"--json", "platform", "--help"}} {
+	for _, args := range [][]string{{"--json", "capabilities"}, {"--json", "version"}, {"--json", "add", "--help"}, {"--json", "report", "--help"}, {"--json", "deploy", "--help"}, {"--json", "setup", "--help"}, {"--json", "operation", "--help"}, {"--json", "platform", "--help"}} {
 		cmd := exec.Command(cli, args...)
 		var out, stderr bytes.Buffer
 		cmd.Stdout = &out
@@ -227,7 +227,7 @@ func TestAgentCLIRealBinaryDiscoveryAndHelp(t *testing.T) {
 			t.Fatal(args, err, out.String())
 		}
 	}
-	for _, args := range [][]string{{"--json", "unknown"}, {"--json", "add", "--definitely-not-a-flag", "--help"}, {"--json", "deploy", "--host", "host", "--app", "other", "--version", "bad"}, {"--json", "operation", "recover", "--host", "host", "--app", "other"}, {"--json", "add", "--host", "host", "--app", "other", "--config", "ghcr.io/courier/other-config"}} {
+	for _, args := range [][]string{{"--json", "init", "--help"}, {"--json", "check"}, {"--json", "dev"}, {"--json", "exec"}, {"--json", "lock"}, {"--json", "operator"}, {"--json", "dependencies"}, {"--json", "unknown"}, {"--json", "add", "--definitely-not-a-flag", "--help"}, {"--json", "deploy", "--host", "host", "--app", "other", "--version", "bad"}, {"--json", "operation", "recover", "--host", "host", "--app", "other"}, {"--json", "add", "--host", "host", "--app", "other", "--config", "ghcr.io/courier/other-config"}} {
 		out, err := exec.Command(cli, args...).Output()
 		if err == nil {
 			t.Fatal("unsafe request succeeded", args)
