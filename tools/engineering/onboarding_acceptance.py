@@ -31,7 +31,7 @@ def validate_argv(argv, facts):
         command+=' '+rest[0];rest=rest[1:]
     if rest in (['--help'],['-h']):return command
     values={'--host':{facts['host'],'root@'+facts['host']},'--app':{'fixturelocal'},'--port':{'22'}}
-    for name,field in (('--definition','definition'),('--key','key'),('--version','revision'),('--stage','stage'),('--expected-manifest','manifest')):
+    for name,field in (('--definition','definition'),('--key','key'),('--version','revision'),('--stage','stage'),('--expected-manifest','manifest'),('--approval','approval')):
         if field in facts:values[name]={facts[field]}
     pairs=[];index=0
     while index<len(rest):
@@ -49,7 +49,7 @@ def validate_argv(argv, facts):
         raise ValueError('onboarding target or input differs from its owned fixture')
     if command=='setup' and 'definition' in facts and (supplied.get('--definition')!=facts['definition'] or supplied.get('--key')!=facts['key']):
         raise ValueError('app setup must use its supplied definition and owned key file')
-    if command=='deploy' and (supplied.get('--app')!='fixturelocal' or supplied.get('--version')!=facts.get('revision')):
+    if command=='deploy' and (supplied.get('--app')!='fixturelocal' or supplied.get('--version')!=facts.get('revision') or ('approval' in facts and supplied.get('--approval')!=facts['approval'])):
         raise ValueError('deployment must use the exact authorized app and revision')
     if command.startswith('platform') and ('stage' not in facts or supplied.get('--stage')!=facts['stage'] or supplied.get('--expected-manifest')!=facts['manifest']):
         raise ValueError('recovery must bind the exact reviewed stage')
@@ -72,7 +72,11 @@ class Driver:
     def command(self, goal, facts, fallback, expected, predicate=lambda data:True, timeout=360):
         facts={'host':self.host,'ssh_access_configured':True,'ssh_port':22,'ssh_host_key_pinned':True,'trust_changes_authorized':False,**facts}
         if self.adapter is None:
-            start=time.monotonic();result=subprocess.run(fallback,env=self.env,capture_output=True,timeout=timeout,check=True);self.last_seconds=time.monotonic()-start
+            start=time.monotonic();result=subprocess.run(fallback,env=self.env,capture_output=True,timeout=timeout);self.last_seconds=time.monotonic()-start
+            if result.returncode:
+                # This driver owns a synthetic guest with no application or
+                # provider credentials. Retain its bounded public CLI refusal.
+                raise RuntimeError('owned fixture CLI refused: '+result.stdout.decode(errors='replace')[-4096:]+result.stderr.decode(errors='replace')[-4096:])
             self.trace.append({'goal':goal,'argv':['komizo',*fallback[1:]],'seconds':self.last_seconds,'returncode':result.returncode,'response':json.loads(result.stdout)})
             self.save(False)
             return result.stdout

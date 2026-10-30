@@ -276,7 +276,7 @@ func (h *hostActivation) Verify(ctx context.Context, r workload.ActivationReques
 			return err
 		}
 	}
-	if h.policy.SourceRepository != "" {
+	if h.policy.HasReleaseAuthority() {
 		var accepted workload.ReleaseAcceptance
 		if err := h.readJSON(filepath.Join(h.releases, r.App, r.Candidate+".json"), &accepted); err != nil {
 			return err

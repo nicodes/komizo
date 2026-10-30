@@ -226,7 +226,11 @@ func (t target) sshArgs(extra ...string) []string {
 			"-o", "ControlPath="+p,
 			"-o", "ControlPersist=60s",
 		)
+	} else {
+		// A user SSH configuration must not restore an unusable control socket.
+		args = append(args, "-o", "ControlMaster=no", "-o", "ControlPath=none")
 	}
+
 	// Only force a port when the user asked for one. Passing -p unconditionally
 	// would override a Port set in their ~/.ssh/config for this host, which is
 	// the opposite of deferring to their existing setup.
@@ -254,6 +258,10 @@ var controlPath = sync.OnceValue(func() string {
 		return ""
 	}
 	dir := filepath.Join(home, ".ssh")
+	path := multiplexSocketPath(dir)
+	if path == "" {
+		return ""
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return ""
 	}
@@ -262,8 +270,21 @@ var controlPath = sync.OnceValue(func() string {
 	// ssh binds the socket itself at 0600, so this is depth -- but 0700 is the
 	// mode ~/.ssh is meant to have anyway, and ssh refuses a looser one.
 	_ = os.Chmod(dir, 0o700)
-	return filepath.Join(dir, "komizo-%C")
+	return path
 })
+
+// OpenSSH expands %C to 40 bytes and temporarily appends a random suffix
+// while binding its control listener. Darwin has a 104-byte Unix path limit.
+// If the protected home path cannot fit, ordinary SSH remains available.
+func multiplexSocketPath(directory string) string {
+	path := filepath.Join(directory, "komizo-%C")
+	const expansion = 40 - 2
+	const temporarySuffix = 24
+	if len(path)+expansion+temporarySuffix >= 104 {
+		return ""
+	}
+	return path
+}
 
 // resolvePort asks ssh what port it will actually use for this host, so the
 // known_hosts lines we build match. `ssh -G` prints the fully resolved

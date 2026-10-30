@@ -58,13 +58,13 @@ func RunPreview(args []string) (err error) {
 	}
 
 	projectDefault := host == ""
-	m, resolveErr := defaultProjectTarget(*directory, &host, &port, &app, fs)
+	m, resolveErr := defaultDeploymentTarget(*directory, &host, &port, &app, fs)
 	if resolveErr != nil {
 		return resolveErr
 	}
 	images := fs.Args()
 	if projectDefault && sub == "up" && len(images) == 0 {
-		revision, err := projectRevision(*directory)
+		revision, err := deploymentRevision(*directory)
 		if err != nil {
 			return err
 		}

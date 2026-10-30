@@ -29,5 +29,5 @@ fi
 
 
 if [[ ${GITHUB_ACTIONS:-} == true ]]; then
-  bash tools/engineering/cold-project.sh
+  bash tools/engineering/cold-client.sh
 fi

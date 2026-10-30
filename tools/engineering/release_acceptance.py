@@ -11,7 +11,7 @@ from performance_acceptance import evaluate
 
 REQUIRED_STEPS = {
     'host_global_kernel_controls_masked','public_setup','public_app_setup_idempotence',
-    'public_bootstrapped_activation','public_self_upgrade','public_proxy_upgrade',
+    'public_owner_approved_activation','public_update_and_rollback','public_self_upgrade','public_proxy_upgrade',
     'public_authority_interruption_recovery','cached_current_registry_stopped',
     'stop_intent_and_service_restart','fixed_budget_performance','public_onboarding',
 }

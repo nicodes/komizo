@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/nicodes/komizo/internal/workload"
 )
 
 // EVERY SITE BLOCK komizo GENERATES WRITES AN ACCESS LOG.
@@ -69,6 +71,16 @@ func caddyBlocks(t *testing.T) []namedConfig {
 		t.Fatal("no generated Caddy config found -- either the routes moved or this " +
 			"test stopped being able to find them, and either way it is asserting nothing")
 	}
+	route, _, hostnames, err := workload.DeploymentRoute("example", strings.Repeat("a", 40), []byte("example.test\n"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out = append(out, namedConfig{where: "deployment route", cfg: string(route)})
+	static, err := workload.StaticRoute(route, "example", strings.Repeat("a", 40), hostnames, workload.StaticServingOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out = append(out, namedConfig{where: "static deployment route", cfg: string(static)})
 	return out
 }
 
@@ -157,7 +169,7 @@ func TestEveryGeneratedSiteBlockWritesAnAccessLog(t *testing.T) {
 		}
 	}
 	if seen < 2 {
-		t.Errorf("found %d site blocks, want at least the catch-all and the agent's own route -- "+
+		t.Errorf("found %d site blocks, want at least the catch-all and current deployment routes -- "+
 			"a parser that finds nothing passes this whole file", seen)
 	}
 }

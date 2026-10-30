@@ -31,14 +31,6 @@ var ProxyPrepare string
 //go:embed controls_prepare.py
 var ControlsPrepare string
 
-// PublicationPrepare produces finite image artifacts without registry access.
-//
-//go:embed publication_prepare.py
-var PublicationPrepare string
-
-//go:embed workspace_storage.py
-var WorkspaceStorage string
-
 //go:embed workload_acceptance.py
 var WorkloadAcceptance string
 
@@ -147,15 +139,6 @@ var AlpineProxyScript string
 
 //go:embed agent-install.sh
 var agentInstall string
-
-// agent-enrol.sh and agent-unenrol.sh point a box at a komizo service, and
-// stop it reporting. Both run as root; both are optional, permanently.
-
-//go:embed agent-enrol.sh
-var agentEnrol string
-
-//go:embed agent-unenrol.sh
-var agentUnenrol string
 
 // leftover matches a placeholder that nothing replaced.
 var leftover = regexp.MustCompile(`__[A-Z][A-Z0-9_]*__`)

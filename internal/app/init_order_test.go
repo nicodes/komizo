@@ -1,40 +1,14 @@
 package app
 
 import (
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"strings"
 	"testing"
-
-	"github.com/nicodes/komizo/scripts"
 )
 
-// The proxy is installed, and the box is NOT enrolled. The order of those two
-// used to be the property under test here; the enrolment half is gone with the
-// service (decommissioned, board decision), so what remains to pin is that the
-// proxy install survived the removal and that no registration statement came
-// back.
-//
-// The original property, kept for the record: the proxy was installed BEFORE
-// the box enrolled, and swapping them had to fail here.
-//
-// It was the other way round, and the consequence was not a rare race: on every
-// fresh box, every time, `komizo init` published no route for the box's own
-// name. agent-enrol.sh writes that route only when /srv/_proxy/routes exists,
-// and the proxy script is what creates it -- so the guard was false on every
-// first run, the route was skipped in silence, and the box came up enrolled,
-// reporting, and unreachable at its own hostname.
-//
-// NOTHING COULD HAVE CAUGHT THAT. The two steps are in different languages: the
-// dependency lives in a shell guard on the box and the ordering lives in a Go
-// function on the laptop, and neither file mentions the other. Every test of
-// enrolment ran against a fixture, where the directory either exists or is
-// irrelevant, so all of them passed against the broken order.
-//
-// So this reads the ORDER OF THE STATEMENTS, from the source as it ships, which
-// is the one place the fact actually lives. Parsed rather than grepped, so a
-// comment naming either step cannot satisfy it -- this whole comment names both.
+// SSH bootstrap must retain the proxy and make no hosted registration call.
 func TestInitInstallsTheProxyAndDoesNotRegister(t *testing.T) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "init.go", nil, 0)
@@ -87,22 +61,10 @@ func TestInitInstallsTheProxyAndDoesNotRegister(t *testing.T) {
 	}
 }
 
-// And the skip is audible.
-//
-// The ordering above is the fix; this is what would have found it. A guard that
-// declines to do something and says nothing is indistinguishable from a guard
-// that did it -- which is how this survived a release, an app screen, and two
-// rounds of blaming DNS.
-func TestEnrolmentSaysSoWhenItCannotPublishTheRoute(t *testing.T) {
-	// The rendered script, as the box receives it, so a placeholder that swallowed
-	// the guard would show up here rather than in production.
-	s := scripts.AgentEnrol("https://api.example.com", "kmz_enr_x", "box.example.com", nil, false)
-	// The guard and the warning are a pair. Asserting only the text would pass
-	// on a script that warns and then writes nothing either way.
-	if !strings.Contains(s, "[ ! -d /srv/_proxy/routes ]") {
-		t.Error("agent-enrol.sh no longer notices that the proxy is missing")
-	}
-	if !strings.Contains(s, "was not published") {
-		t.Error("agent-enrol.sh skips the route without saying so, which is how this was missed")
+func TestInitRefusesRetiredRegistrationFlags(t *testing.T) {
+	for _, args := range [][]string{{"--name", "unused"}, {"--api-host", "example.invalid"}, {"--device-key", "unused"}, {"--forget-devices"}} {
+		if err := RunInit(args); !errors.Is(err, ErrSilent) {
+			t.Fatalf("retired registration flag %s was not refused before connection: %v", args[0], err)
+		}
 	}
 }

@@ -1,8 +1,6 @@
 package scripts
 
 import (
-	"strings"
-
 	"github.com/nicodes/komizo/box"
 )
 
@@ -24,50 +22,6 @@ const StagedAgent = "/tmp/.komizo-box.staged"
 // is what design/appify.md §3 already accepted as the price of the reporting
 // account having no privileges.
 const AgentInterval = "60s"
-
-// AgentEnrol exchanges an enrolment token for this box's credential.
-//
-// Every value is SHELL-QUOTED: they come from a caller rather than from a
-// constant in this file, and the token in particular is an opaque string from
-// a service. The app package validates the URL too, which is the same
-// belt-and-braces argument ShQuote carries everywhere else here.
-// deviceKeys are the devices the box will take orders from, and they are the
-// one input here the SERVICE did not produce -- see box/operator.go. Rendered
-// as repeated flags rather than one delimited value so the box parses exactly
-// what was passed, with no separator to disagree about.
-func AgentEnrol(api, token, apiHost string, deviceKeys []string, forget bool) string {
-	var keys strings.Builder
-	for _, k := range deviceKeys {
-		if keys.Len() > 0 {
-			keys.WriteByte(' ')
-		}
-		// Quoted like everything else here. These come from a caller, and the
-		// argument ShQuote carries everywhere in this file does not stop
-		// applying because a value looks like base64.
-		keys.WriteString("--device-key " + ShQuote(k))
-	}
-	if forget {
-		// Rendered into the same placeholder, because it is the same decision:
-		// which devices this box takes orders from after this command.
-		if keys.Len() > 0 {
-			keys.WriteByte(' ')
-		}
-		keys.WriteString("--forget-devices")
-	}
-	return render(agentEnrol,
-		"__API__", ShQuote(api),
-		"__API_HOST__", ShQuote(apiHost),
-		"__API_SOCKET__", box.APISocketPath,
-		"__TOKEN__", ShQuote(token),
-		"__DEVICE_KEYS__", keys.String(),
-		"__CONF__", box.AgentConfPath,
-	)
-}
-
-// AgentUnenrol stops the agent and removes the credential.
-func AgentUnenrol() string {
-	return render(agentUnenrol, "__CONF__", ShQuote(box.AgentConfPath))
-}
 
 // AgentInstall installs komizo-box and starts it under OpenRC.
 //

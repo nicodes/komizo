@@ -358,7 +358,7 @@ log "Installing the daily image reclaim"
 mkdir -p /etc/periodic/daily
 cat > "$RECLAIM_BIN.tmp" <<'KOMIZO_RECLAIM_EOF'
 #!/bin/sh
-# /etc/periodic/daily/komizo-reclaim - installed by `komizo init`.
+# /etc/periodic/daily/komizo-reclaim - installed by `komizo setup`.
 #
 # Runs app-scoped retention after preview GC. No host-wide image prune:
 # unreferenced current and rollback images must remain available locally.

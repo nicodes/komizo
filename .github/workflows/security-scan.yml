@@ -18,13 +18,13 @@ jobs:
       with:
         persist-credentials: false
       timeout-minutes: 5
-    - name: Set up locked komizo
-      uses: nicodes/komizo/setup@2ca94e2fd4bb05f41bb228e9c366e5cc733c75e6
+    - name: Set up development tools
+      uses: nicodes/tools/setup@87da2fe9d430c67d15f62f603b07ba1ed40b5603
       env:
         GH_TOKEN: ${{ github.token }}
       timeout-minutes: 5
     - name: Security Scan
-      run: komizo run --timeout 7200s security-scan
+      run: mise run security-scan
       timeout-minutes: 90
     permissions:
       contents: read

@@ -27,6 +27,7 @@ type Policy struct {
 	ImagePrefix                  string            `json:"image_prefix"`
 	SharedNetwork                string            `json:"shared_network"`
 	SourceRepository             string            `json:"source_repository,omitempty"`
+	OwnerApproval                bool              `json:"owner_approval,omitempty"`
 	RepositoryID                 string            `json:"repository_id,omitempty"`
 	Resources                    *ResourcePolicy   `json:"resources,omitempty"`
 	Readiness                    *ReadinessPolicy  `json:"readiness,omitempty"`
@@ -43,7 +44,14 @@ var imageRepository = regexp.MustCompile(`^[a-z0-9][a-z0-9./_-]+$`)
 var revision = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
 var digest = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 
+// HasReleaseAuthority distinguishes an installed trust choice from base registration.
+func (p Policy) HasReleaseAuthority() bool { return p.SourceRepository != "" || p.OwnerApproval }
+
 func (p Policy) Check() error {
+	if p.OwnerApproval && (p.SourceRepository != "" || p.RepositoryID != "" || p.RequireDeliveryAuthorization || p.RoutineBackup != nil) {
+		return errors.New("owner approval and GitHub source/delivery/backup authority are mutually exclusive")
+	}
+
 	if p.RoutineBackup != nil {
 		if p.SourceRepository == "" {
 			return errors.New("routine backup requires authenticated source authority")
@@ -53,22 +61,22 @@ func (p Policy) Check() error {
 		}
 	}
 	if p.Static != nil {
-		if p.SourceRepository == "" || p.RequireStatefulContract || p.Readiness == nil {
-			return errors.New("static profiles require authenticated gate-only releases and explicit readiness")
+		if !p.HasReleaseAuthority() || p.RequireStatefulContract || p.Readiness == nil {
+			return errors.New("static serving requires authenticated gate-only releases and explicit readiness")
 		}
 		if err := p.Static.Check(); err != nil {
 			return err
 		}
 	}
 	if p.Deployment != nil {
-		if p.SourceRepository == "" {
+		if !p.HasReleaseAuthority() {
 			return errors.New("typed deployment requires authenticated source authority")
 		}
 		if err := p.Deployment.Check(p.App); err != nil {
 			return err
 		}
 	}
-	if (p.RequireStatefulContract || p.RequireDeliveryAuthorization) && p.SourceRepository == "" {
+	if p.RequireStatefulContract && !p.HasReleaseAuthority() || p.RequireDeliveryAuthorization && p.SourceRepository == "" {
 		return errors.New("stateful contracts require authenticated release source authority")
 	}
 	if p.IngressNetwork != "" && p.IngressNetwork != IsolatedIngress(p.App) {
@@ -108,7 +116,11 @@ func NewPolicy(app, dir, configImage, network string) (Policy, error) {
 
 func ReadPolicy(r io.Reader) (Policy, error) {
 	var p Policy
-	dec := json.NewDecoder(io.LimitReader(r, MaxBytes+1))
+	body, err := io.ReadAll(io.LimitReader(r, MaxBytes+1))
+	if err != nil || len(body) > MaxBytes || rejectDuplicateJSON(body) != nil {
+		return p, errors.New("invalid bounded host workload policy document")
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&p); err != nil {
 		return p, errors.New("invalid host workload policy document")

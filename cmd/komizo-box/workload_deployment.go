@@ -60,6 +60,7 @@ func runWorkloadDeployment(args []string) error {
 	registry := fs.String("registry", "", "registry")
 	user := fs.String("registry-user", "", "registry username")
 	generation := fs.String("generation", "", "scoped generation")
+	ownerApproval := fs.Bool("owner-approval", false, "root SSH selection of exact artifacts; never enabled by CI wrappers")
 	localOnly := fs.Bool("local-only", false, "root owner reconfiguration of the retained current local release; no registry access")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
@@ -113,6 +114,12 @@ func runWorkloadDeployment(args []string) error {
 		}
 		return workload.WritePrivateJSON(*policyPath, next)
 	}
+	if args[0] == "deployment-submit" && !*localOnly && *ownerApproval != p.OwnerApproval {
+		return errors.New("owner approval requires an explicit root SSH submission and matching protected policy")
+	}
+	if *ownerApproval && args[0] != "deployment-submit" {
+		return errors.New("owner approval applies only to deployment submission")
+	}
 	if p.Deployment == nil {
 		return errors.New("typed deployment is not enabled in the installed root policy")
 	}
@@ -157,7 +164,7 @@ func runWorkloadDeployment(args []string) error {
 	if *localOnly && len(bytesTrim(proof)) != 0 {
 		return errors.New("local owner reconfiguration accepts no CI proof")
 	}
-	if len(bytesTrim(proof)) != 0 {
+	if len(bytesTrim(proof)) != 0 && !p.OwnerApproval {
 		if err := verifyTaskRelease(ctx, p, proof); err != nil {
 			return err
 		}
@@ -258,7 +265,7 @@ func runWorkloadDeployment(args []string) error {
 // Fresh installations and migrated policies enter the same executor. No
 // repository image can select source authority, readiness or resource limits.
 func enabledDeploymentPolicy(p workload.Policy) (workload.Policy, error) {
-	if p.SourceRepository == "" || p.Readiness == nil || p.Resources == nil {
+	if !p.HasReleaseAuthority() || p.Readiness == nil || p.Resources == nil {
 		return p, errors.New("configure trusted source, resource budgets and readiness before enabling deployment")
 	}
 	expected := workload.DeploymentPolicy{RoutePath: "/srv/_proxy/routes/" + p.App + ".caddy", Proxy: "komizo-proxy", ProxyDir: "/srv/_proxy"}

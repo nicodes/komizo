@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 export KOMIZO_REQUIRE_SHELLCHECK=1
-python3 -m unittest discover -s internal/operator -p "test_*.py" -v
 mapfile -t packages < <(go list ./... | sed '\|/internal/workflows$|d;\|/internal/workload$|d;\|/internal/servicehealth$|d;\|/scripts$|d')
 go test -race -count=1 -timeout 5m "${packages[@]}"
 set -euo pipefail
@@ -23,6 +22,3 @@ if grep -q -- '--- SKIP' <<<"$out"; then
   echo "::error::a shell check skipped itself -- the tool it needs is missing from this image"
   exit 1
 fi
-
-
-CICD_TEST_POSTGRES=1 python3 -m unittest discover -s internal/project/runtime/tests -p test_postgres_recovery.py -v

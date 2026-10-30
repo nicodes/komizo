@@ -1,0 +1,87 @@
+[tools]
+"python" = "3.13.11"
+"go" = "1.27.3"
+"go:golang.org/x/vuln/cmd/govulncheck" = "1.7.0"
+"caddy" = "2.11.6"
+"shellcheck" = "0.11.0"
+"node" = "26.7.0"
+"bun" = "1.4.1"
+"actionlint" = "1.7.12"
+
+[env]
+TOOLS_ROOT = "{{ get_env(name='TOOLS_ROOT', default=config_root ~ '/.ci-tools') }}"
+GOTOOLCHAIN = "local"
+PYTHONDONTWRITEBYTECODE = "1"
+"VERSION" = "{{ get_env(name='VERSION', default='dev') }}"
+
+[tasks."install"]
+run = ["bash -euo pipefail -c 'python3 \"$TOOLS_ROOT/helpers/workspace-storage.py\" check --path ui/node_modules --reserve-bytes 1073741824'", "go mod download", "npm ci --prefix ui --no-audit --no-fund"]
+
+[tasks."lint"]
+run = ["bash tools/engineering/lint.sh", "bash tools/engineering/check-ui.sh"]
+
+[tasks."unit"]
+run = "python3 \"$TOOLS_ROOT/helpers/verification.py\" test --name unit --artifact dist --artifact internal/agent/bin --environment VERSION -- mise run _unit"
+depends = ["install"]
+
+[tasks."build"]
+run = "python3 \"$TOOLS_ROOT/helpers/verification.py\" build --name build --artifact dist --artifact internal/agent/bin --environment VERSION -- mise run _build"
+depends = ["install"]
+
+[tasks."artifact-check"]
+run = ["bash tools/engineering/artifact-check.sh"]
+depends = ["build"]
+
+[tasks."vuln"]
+run = ["govulncheck ./..."]
+
+[tasks."clean"]
+run = ["python3 -c 'import shutil;from pathlib import Path\nfor name in [\"bin\",\"dist\"]:\n p=Path(name);assert not p.is_symlink();shutil.rmtree(p,ignore_errors=True)\nfor p in Path(\"internal/agent/bin\").glob(\"komizo-box-*\"): p.unlink()'"]
+
+[tasks."integration"]
+run = "python3 \"$TOOLS_ROOT/helpers/verification.py\" test --name integration --artifact dist --artifact internal/agent/bin --environment VERSION -- mise run _integration"
+depends = ["install"]
+
+[tasks."agents"]
+run = ["bash tools/engineering/build-agents.sh"]
+
+[tasks."ui"]
+run = ["npm ci --prefix ui", "npm run --prefix ui build"]
+
+[tasks."ui-check"]
+run = ["bash tools/engineering/check-ui.sh"]
+
+[tasks."portability"]
+run = ["mise run agents", "bash tools/engineering/portability.sh"]
+
+[tasks."dependency-maintenance"]
+run = ["python3 \"$TOOLS_ROOT/helpers/watch-tools.py\""]
+
+[tasks."security-scan"]
+run = ["mise run install && mise run vuln", "npm audit --prefix ui --package-lock-only --audit-level=high"]
+
+[tasks."_build"]
+run = ["mise run agents", "bash tools/engineering/build-release.sh"]
+hide = true
+
+[tasks."_unit"]
+run = ["bash tools/engineering/unit.sh"]
+hide = true
+
+[tasks."_integration"]
+run = ["mise run agents", "bash tools/engineering/integration.sh"]
+hide = true
+
+[tasks."_test-stages"]
+run = [{"task" = "unit"}, {"task" = "integration"}]
+hide = true
+
+[tasks."test"]
+run = "python3 \"$TOOLS_ROOT/helpers/verification.py\" session --test unit --test integration -- mise run _test-stages"
+
+[tasks."_check-stages"]
+run = [{"task" = "install"}, {"task" = "lint"}, {"task" = "unit"}, {"task" = "integration"}, {"task" = "build"}, {"task" = "artifact-check"}, {"task" = "vuln"}]
+hide = true
+
+[tasks."check"]
+run = "python3 \"$TOOLS_ROOT/helpers/verification.py\" session --test unit --test integration -- mise run _check-stages"

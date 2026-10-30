@@ -111,6 +111,7 @@ func runWorkload(args []string) error {
 			authority := old
 			authority.SourceRepository = ""
 			authority.RepositoryID = ""
+			authority.OwnerApproval = false
 			authority.Resources = nil // provisioning retains the operator's envelope
 			authority.Readiness = nil
 			authority.IngressNetwork = ""

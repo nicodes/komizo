@@ -883,7 +883,7 @@ func RemovePreviewRoute(ctx context.Context, run previewRun, proxy, routesDir, f
 // general: nothing of the app's is inspected, named or connected to, and a
 // gate-only product needs no database to be previewable.
 //
-// Provisioning is komizo init's job (see scripts/alpine-init.sh). Here we
+// Provisioning is komizo setup's job (see scripts/alpine-init.sh). Here we
 // only check, because a preview that creates infrastructure on demand is a
 // preview that can leave a half-built host behind when it fails.
 func ensurePreviewDBReady(ctx context.Context, run previewRun, allowStart bool) error {

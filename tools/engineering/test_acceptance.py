@@ -110,3 +110,25 @@ class AcceptanceGuards(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class CandidateExport(unittest.TestCase):
+    def test_export_retains_only_validated_nonsecret_deployment_and_cleanup(self):
+        from candidate_evidence import export
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);observations=root/'private';observations.mkdir()
+            source='a'*40
+            result={'source':source,'accepted':True,'signed_release_acceptance':False,'candidate_cli':{'authenticated':False},
+                    'github_credentials_present':False,'steps':[{'step':name,'accepted':True} for name in
+                    ('public_setup','public_app_setup_idempotence','public_owner_approved_activation','public_update_and_rollback')]}
+            (observations/'candidate-deployment.json').write_text(json.dumps(result))
+            (observations/'cleanup.json').write_text(json.dumps({'owned_container_removed':True,'shared_images_removed':False}))
+            (observations/'private-key').write_text('must stay private')
+            output=root/'export'
+            export(observations,output,source)
+            self.assertEqual({p.name for p in output.iterdir()},{'candidate-deployment.json','cleanup.json'})
+            self.assertEqual(json.loads((output/'candidate-deployment.json').read_bytes())['source'],source)
+            with self.assertRaises(ValueError):export(observations,root/'foreign','b'*40)
+            result['signed_release_acceptance']=True
+            (observations/'candidate-deployment.json').write_text(json.dumps(result))
+            with self.assertRaises(ValueError):export(observations,root/'false-claim',source)

@@ -1,0 +1,73 @@
+{
+  "image_directory": "/srv/public",
+  "limits": {
+    "max_bytes": 1073741824,
+    "max_file_bytes": 134217728
+  },
+  "serving": {
+    "deny_paths": [
+      "/index.js*",
+      "/index.wasm*",
+      "/index.pck*",
+      "/index.audio*",
+      "/index.service.worker*",
+      "/index.offline*"
+    ],
+    "headers": {
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Cross-Origin-Embedder-Policy": "require-corp",
+      "X-Content-Type-Options": "nosniff",
+      "Referrer-Policy": "strict-origin-when-cross-origin",
+      "Content-Security-Policy": "default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    },
+    "header_rules": [
+      {
+        "paths": [
+          "*.br"
+        ],
+        "headers": {
+          "Content-Type": "application/octet-stream"
+        },
+        "methods": [
+          "GET"
+        ],
+        "existing_file": true,
+        "except_paths": [
+          "/index.js*",
+          "/index.wasm*",
+          "/index.pck*",
+          "/index.audio*",
+          "/index.service.worker*",
+          "/index.offline*"
+        ]
+      },
+      {
+        "except_paths": [
+          "/releases/*"
+        ],
+        "headers": {
+          "Cache-Control": "no-cache, no-store, must-revalidate"
+        }
+      },
+      {
+        "paths": [
+          "/releases/*"
+        ],
+        "headers": {
+          "Cache-Control": "public, max-age=31536000, immutable"
+        }
+      },
+      {
+        "paths": [
+          "*.pck"
+        ],
+        "headers": {
+          "Content-Type": "application/octet-stream"
+        }
+      }
+    ],
+    "precompressed": [
+      "gzip"
+    ]
+  }
+}

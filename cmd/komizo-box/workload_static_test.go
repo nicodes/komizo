@@ -50,7 +50,7 @@ func staticActivationFixture(t *testing.T) (*hostActivation, workload.Activation
 	p.RepositoryID = "123"
 	config := []byte(":80 {\n root * /srv/public/app\n try_files {path} {path}.html {path}/index.html /index.html\n file_server\n}\n")
 	sum := sha256.Sum256(config)
-	p.Static = &workload.StaticPolicy{Profile: "spa-v1", GateConfigSHA: hex.EncodeToString(sum[:]), Proxy: "komizo-proxy", Hostnames: []string{"example.test"}}
+	p.Static = &workload.StaticPolicy{ImageDirectory: "/srv/public/app", Serving: staticServingFixture(t, "html_fallback").Serving, GateConfigSHA: hex.EncodeToString(sum[:]), Proxy: "komizo-proxy", Hostnames: []string{"example.test"}}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Komizo-Revision", rev)
 		_, _ = w.Write([]byte("ready"))
@@ -259,7 +259,7 @@ func TestStaticPreparationFailureRestoresPreviouslyAcceptedStaticRoute(t *testin
 			previous := strings.Repeat("c", 40)
 			current, _ := os.ReadFile(r.RoutePath)
 			disabled := bytes.ReplaceAll(current, []byte(r.Candidate), []byte(previous))
-			oldRoute, err := workload.StaticRouteForProfile(disabled, r.App, previous, h.policy.Static.Hostnames, h.policy.Static.Profile)
+			oldRoute, err := workload.StaticRoute(disabled, r.App, previous, h.policy.Static.Hostnames, h.policy.Static.Serving)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -339,7 +339,7 @@ func TestStaticRetentionKeepsAcceptedPairAndRefusesLinkedTree(t *testing.T) {
 		_ = archive.WriteHeader(&tar.Header{Name: "index.html", Typeflag: tar.TypeReg, Size: 3})
 		_, _ = archive.Write([]byte("old"))
 		_ = archive.Close()
-		if _, err := workload.StaticTree(&body, filepath.Join(dir, rev)); err != nil {
+		if _, err := workload.StaticTree(&body, filepath.Join(dir, rev), workload.StaticLimits{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -512,4 +512,17 @@ func TestStaticOwnerStartPreservesNewerStop(t *testing.T) {
 	if err != nil || strings.Contains(string(route), "file_server") {
 		t.Fatal("stop left static route active")
 	}
+}
+
+func staticServingFixture(t *testing.T, name string) workload.StaticPolicy {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("..", "..", "internal", "workload", "testdata", "static", name+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings workload.StaticPolicy
+	if err := json.Unmarshal(body, &settings); err != nil {
+		t.Fatal(err)
+	}
+	return settings
 }

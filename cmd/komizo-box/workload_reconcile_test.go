@@ -104,7 +104,7 @@ func TestStaticReconciliationUsesProxyAndExactServingRevisionWithoutRetiredGate(
 			f, r, before := reconciliationFixture(t)
 			f.h.reconciliationReady = nil
 			p := f.h.policy
-			p.Static = &workload.StaticPolicy{Profile: "spa-v1", GateConfigSHA: strings.Repeat("1", 64), Proxy: p.Deployment.Proxy, Hostnames: []string{"example.test"}}
+			p.Static = &workload.StaticPolicy{ImageDirectory: "/srv/public/app", Serving: staticServingFixture(t, "html_fallback").Serving, GateConfigSHA: strings.Repeat("1", 64), Proxy: p.Deployment.Proxy, Hostnames: []string{"example.test"}}
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				revision := r.Serving
 				if condition == "wrong revision" {
@@ -325,7 +325,7 @@ func TestReconciliationWithoutSnapshotRejectsLaterOrChangedServing(t *testing.T)
 				if err := f.h.readJSON(policyPath, &policy); err != nil {
 					t.Fatal(err)
 				}
-				policy.Static = &workload.StaticPolicy{Profile: "spa-v1", GateConfigSHA: strings.Repeat("a", 64), Proxy: "komizo-proxy", Hostnames: []string{"example.test"}}
+				policy.Static = &workload.StaticPolicy{ImageDirectory: "/srv/public/app", Serving: staticServingFixture(t, "html_fallback").Serving, GateConfigSHA: strings.Repeat("a", 64), Proxy: "komizo-proxy", Hostnames: []string{"example.test"}}
 				policy.Readiness = &workload.ReadinessPolicy{Probes: []workload.ReadinessProbe{{URL: "https://example.test/"}}}
 				if err := policy.Check(); err != nil {
 					t.Fatal(err)

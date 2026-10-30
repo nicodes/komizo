@@ -8,8 +8,8 @@ import (
 	"syscall"
 )
 
-func staticSpace(public string, profile string) error {
-	maxBytes, _, err := workload.StaticBounds(profile)
+func staticSpace(public string, limits workload.StaticLimits) error {
+	maxBytes, _, err := workload.StaticBounds(limits)
 	if err != nil {
 		return err
 	}

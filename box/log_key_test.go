@@ -24,7 +24,7 @@ func TestTheRegistryKeyReadsReportsButCannotCommandOrReadLogs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The box `komizo init` produces once the account has a log key: enrolled,
+	// The box `komizo setup` produces once the account has a log key: enrolled,
 	// no operator devices at all.
 	conf := AgentConf{ServerID: "srv_mine", API: "https://api.example.com", Token: "kmz_agt_x",
 		RegistryKey: base64.RawURLEncoding.EncodeToString(regPub),
