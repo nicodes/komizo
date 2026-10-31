@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 1857629641ea4a9633cbe2f641d112660fdb007d6e0bb9e7fb050efe41315d54 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 4663da29c03645fbddf22107ba127bc3a4bde5d65291a711c34470e8c1bb7413 -->
 
 # komizo
 
@@ -62,7 +62,7 @@ mise use --global github:nicodes/komizo@latest
 
 The shell installer requires the GitHub CLI and an authenticated GitHub.com session (`gh auth login --hostname github.com`, or an existing `GH_TOKEN`) for release provenance verification. Authentication is checked before any release download. It verifies the archive checksum and GitHub attestation, then atomically installs to `~/.local/bin` without starting services. Mise manages its own installation directory and PATH through its shell activation.
 
-Release archives embed both host architectures. The workstation needs SSH; platform maintenance also uses Python 3. The application server uses Alpine Linux with OpenRC, amd64 or arm64, and root SSH access. Use only hosts you own or administer.
+Release archives embed both host architectures and the workstation-native Rust API. The local UI, signed Unix-socket monitor and preview certificate listener run in Rust/Axum under `api/`. The Go CLI and privileged host executor retain their own finite command and deployment authority. No Go HTTP API is launched. The workstation needs SSH; platform maintenance also uses Python 3. The application server uses Alpine Linux with OpenRC, amd64 or arm64, and root SSH access. Use only hosts you own or administer.
 
 ## Agent journey
 
@@ -151,4 +151,8 @@ mise install
 mise run check
 ```
 
-The gate retains Go race tests, shell and workflow checks, committed UI verification, embedded host builds, archive checks and vulnerability scanning. mise run agents builds embedded host executables; mise run ui updates the committed web export. CI uses the same product-owned tasks and the pinned tools setup action.
+The gate retains Go race tests, shell and workflow checks, committed UI verification, embedded host builds, archive checks and vulnerability scanning, and adds Rust formatting, Clippy, tests and dependency scanning. `mise run ui` updates the committed web export; `api/build.rs` embeds that export into the native API.
+
+Four native Actions builders produce Rust payloads for Linux and macOS on x86_64 and arm64. Linux payloads use static musl linking and run on Alpine. Each payload carries its source revision and SHA256 receipt; `mise run agents` and the release builder verify both before embedding it. A complete archive build needs all four payloads under `.artifacts/native-api/`; `bash tools/engineering/build-api.sh` produces the current platform's payload. CI downloads all four before running the complete product gate.
+
+For a quick source UI build, run `cargo build --locked --manifest-path api/Cargo.toml`, then select the absolute built executable with `KOMIZO_API_BINARY` when running the Go CLI. Release users need no Rust or Go toolchain. A Go source install that needs to construct an unembedded host agent compiles both the agent and Rust API from the same checksum-verified module version, using its committed Cargo.lock. That path requires Rust 1.94.0 through rustup and a musl C compiler for the host architecture (`musl-gcc` for native Linux, or `CC_x86_64_unknown_linux_musl` / `CC_aarch64_unknown_linux_musl` for a cross compiler). It works in a private source copy and never modifies the module cache. CI also compiles and launches this source-built agent. The pinned tools setup action supplies contributor tools.

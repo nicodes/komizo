@@ -13,7 +13,12 @@ name: Release
 permissions: {}
 concurrency: release-${{ github.repository }}
 jobs:
+  native-api:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/native-api.yml
   release:
+    needs: native-api
     name: Build release
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -67,6 +72,12 @@ jobs:
         fi
         echo "version=$version" >> "$GITHUB_OUTPUT"
         echo "tag=$tag" >> "$GITHUB_OUTPUT"
+    - name: Download native Rust APIs
+      uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+      with:
+        pattern: native-api-*
+        merge-multiple: true
+        path: .artifacts/native-api
     - name: Cache Go build
       timeout-minutes: 10
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
