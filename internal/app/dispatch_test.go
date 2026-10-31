@@ -117,12 +117,11 @@ func TestEveryRoutedCommandDispatches(t *testing.T) {
 	}
 }
 
-// The bug itself, stated as behaviour: `komizo ui` reaches RunUI, which
-// answers its own validation error -- never the router's refusal. A bad port
-// is the probe because the good one starts a server.
+// The command reaches the native API launcher instead of the unknown-command
+// branch. Flag validation itself is exercised by the Rust API contract suite.
 func TestUIIsDispatchable(t *testing.T) {
 	err := Main([]string{"ui", "--port", "0"})
-	if err == nil || !strings.Contains(err.Error(), "--port must be") {
-		t.Errorf("komizo ui --port 0 = %v, want RunUI's own port validation", err)
+	if err == nil || strings.Contains(err.Error(), "is not a command") {
+		t.Errorf("komizo ui --port 0 = %v, want native API dispatch", err)
 	}
 }

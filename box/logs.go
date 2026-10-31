@@ -4,12 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"io"
-	"io/fs"
-	"net/http"
+
 	"os"
 	"path/filepath"
-	"strconv"
+
 	"strings"
 )
 
@@ -188,147 +186,6 @@ func (l LogsResponse) Schema() int { return l.V }
 // The same reasoning as the box's own log command: this is a tail, and an
 // unbounded one is a different product.
 const logTailMax = 2000
-
-// serveLog hands over what rootd collected, to a device this box takes orders
-// from.
-//
-// A POST, and not because it changes anything -- it changes nothing. It carries
-// a SIGNED ENVELOPE, which is what app-only.md §5 requires of logs and what a
-// GET has nowhere to put. The token that came with it still gates the door;
-// this gates who may look.
-//
-// THE ID IS NOT CONSUMED, and that is a decision rather than an omission. §4's
-// replay record exists so a command is not APPLIED twice; reading a log twice is
-// reading a log twice. Spending an envelope here would also mean a read could
-// deny a later one by using up its id, and would put a write on the path of
-// every log view. What bounds a captured envelope instead is its expiry, which
-// is minutes -- and a caller who has one also needs the read token that came
-// with it.
-func serveLog(cfg APIConfig, w http.ResponseWriter, r *http.Request) {
-	if cfg.LogsDir == "" {
-		http.Error(w, "this box is not collecting logs", http.StatusServiceUnavailable)
-		return
-	}
-	// LogKeys, NOT OperatorKeys -- komizo-be#187, and this one line is the
-	// whole of what the epic buys. OperatorKeys carries the registry key, so
-	// verifying against it here would let whoever holds komizo's signing key
-	// read every log on every enrolled box. See APIConfig.LogKeys.
-	if len(cfg.LogKeys) == 0 {
-		// Nobody may read these, because nobody has been given the means to ask.
-		// Said plainly rather than answered with an empty log: "this box has no
-		// logs" and "you may not read them" are different sentences and send
-		// somebody to different places.
-		http.Error(w, "this box takes orders from nobody", http.StatusConflict)
-		return
-	}
-
-	raw, err := io.ReadAll(io.LimitReader(r.Body, MaxCommandBytes+1))
-	if err != nil {
-		http.Error(w, "could not read that request", http.StatusBadRequest)
-		return
-	}
-	if len(raw) > MaxCommandBytes {
-		http.Error(w, "that request is too large", http.StatusRequestEntityTooLarge)
-		return
-	}
-	c, _, err := VerifyCommand(cfg.LogKeys, raw, cfg.ServerID, cfg.Now())
-	switch {
-	case err != nil && !errors.Is(err, ErrCommandRefused):
-		// A version this box does not speak. The signature already verified, so
-		// the caller is a device this box trusts and §4 says it is entitled to a
-		// sentence rather than a silence -- the same split the command route
-		// makes.
-		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-		return
-	case err != nil || c.Op != OpLogsRead:
-		// One answer for every reason, the same as everywhere else here: which
-		// of them it was is not this caller's business.
-		http.Error(w, "this box will not answer that", http.StatusForbidden)
-		return
-	}
-
-	// ONE RULE for an app name. This read c.Args["app"] directly, so "-x", "a b"
-	// and "wéb" were answered as ordinary apps here while AppOf refused all
-	// three for every other op -- two rules for one signed field, which is one
-	// rule that stops matching.
-	name, err := c.AppOf()
-	if err != nil {
-		http.Error(w, "that is not an app", http.StatusBadRequest)
-		return
-	}
-	tail := 200
-	if v := c.Args["tail"]; v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 1 || n > logTailMax {
-			http.Error(w, "tail must be a number between 1 and 2000", http.StatusBadRequest)
-			return
-		}
-		tail = n
-	}
-
-	// THE SERVICE, if one was named.
-	//
-	// nicodes/komizo-be#165. Filtered HERE rather than by the caller, because
-	// the alternative is sending an app's whole tail over the wire so a phone
-	// can drop nine tenths of it -- and because the box is the only thing that
-	// knows the service names are the ones compose reported rather than ones
-	// somebody guessed from a container name.
-	//
-	// Validated as a compose service name: no separator, no whitespace, and
-	// bounded. A value carrying the line separator would let a caller ask for
-	// something no line can be, which is a filter that always answers nothing.
-	service := c.Args["service"]
-	if !validService(service) {
-		http.Error(w, "that is not a service name", http.StatusBadRequest)
-		return
-	}
-
-	// READ WIDER WHEN FILTERING. `tail` is what the caller wants to SEE, and
-	// filtering after reading N lines returns only the ones that happened to be
-	// this service's within the last N of the whole app -- so a chatty sidecar
-	// can push a quiet service off the end entirely and the answer is an empty
-	// log for a service that is talking. Read the maximum and cut after.
-	read := tail
-	if service != "" {
-		read = logTailMax
-	}
-	lines, err := ReadLog(cfg.LogsDir, name, read)
-	switch {
-	case errors.Is(err, errNotAnApp):
-		// A name this box will not file. A bad request rather than a missing
-		// thing, and telling them apart is the point -- see below.
-		http.Error(w, "that is not an app", http.StatusBadRequest)
-		return
-	case errors.Is(err, fs.ErrNotExist):
-		// Absent is not an error about the caller: an app that has never started
-		// has nothing to say, and one collected a moment from now will.
-		http.Error(w, "nothing collected for that app yet", http.StatusNotFound)
-		return
-	case err != nil:
-		// UNREADABLE IS NOT ABSENT. Collapsing the two is the bug paths.go
-		// records as having shipped: ReadSamples treated an unreadable file as
-		// an empty one, so /v1/history said "no readings" on every box forever
-		// and nothing anywhere mentioned permission.
-		fmt.Fprintf(os.Stderr, "komizo-box: could not read %s's log: %v\n", name, err)
-		http.Error(w, "this box could not read that log", http.StatusServiceUnavailable)
-		return
-	}
-	parsed := ParseLog(lines)
-	services := LogServices(parsed)
-	if service != "" {
-		parsed = FilterLog(parsed, service)
-		if len(parsed) > tail {
-			parsed = parsed[len(parsed)-tail:]
-		}
-	}
-	// TRIMMED, because that is what this route has always sent. FormatLog ends
-	// every line -- right for the file on disk, and a change to the wire that
-	// no reader asked for.
-	writeJSON(w, LogsResponse{
-		V: APIVersion, App: name, Lines: strings.TrimSuffix(FormatLog(parsed), "\n"),
-		Service: service, Services: services,
-	})
-}
 
 // validService is what may be asked for.
 //

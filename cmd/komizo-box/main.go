@@ -35,8 +35,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -48,6 +46,7 @@ import (
 	"time"
 
 	"github.com/nicodes/komizo/box"
+	"github.com/nicodes/komizo/internal/nativeapi"
 )
 
 // version is stamped at build time by the release, and reported so the
@@ -457,7 +456,7 @@ func runRootdAt(root string, args []string) error {
 	// reachable from the proxy container and from nothing else. The guard
 	// from #132 is untouched; what is served here is WHO may cause a
 	// certificate, and the answer is pr-<N> under the preview domain alone
-	// (box/preview_ask.go, pinned over the wire).
+	// (api/src/preview.rs, embedded in the native API).
 	go func() {
 		knob, _ := box.ReadPreviewKnob(box.PreviewKnobPath)
 		gw, err := run(ctx, "", "network", "inspect", *network,
@@ -467,13 +466,10 @@ func runRootdAt(root string, args []string) error {
 			fmt.Fprintf(os.Stderr, "komizo-box: the preview ask is not being served -- no gateway on %s: %v\n", *network, err)
 			return
 		}
-		ln, err := net.Listen("tcp", net.JoinHostPort(gw, strconv.Itoa(knob.AskPort)))
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "komizo-box: the preview ask could not bind %s:%d: %v\n", gw, knob.AskPort, err)
-			return
+		err = nativeapi.Run(ctx, []string{"preview-ask", "--bind", gw, "--port", strconv.Itoa(knob.AskPort), "--preview-knob", box.PreviewKnobPath}, nil, os.Stdout, os.Stderr)
+		if err != nil && ctx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "komizo-box: preview ask stopped: %v\n", err)
 		}
-		fmt.Fprintf(os.Stderr, "komizo-box: serving the preview ask on http://%s/ask (scope: %s)\n", ln.Addr(), strings.Join(knob.Domains(), ", "))
-		_ = (&http.Server{Handler: box.PreviewAskHandler(knob), ReadHeaderTimeout: 10 * time.Second}).Serve(ln)
 	}()
 
 	// The preview reaper: TTL and the max-N ceiling, hourly, acting only on

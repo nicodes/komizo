@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -22,7 +23,8 @@ import (
 // how somebody tries this for the first time, and "download an archive first"
 // is a barrier at exactly the wrong moment.
 //
-// SO IT IS BUILT, NOT FETCHED, AND THAT IS THE SECURITY DECISION.
+// The agent and its Rust API are compiled from that verified module. Cargo
+// uses the committed lockfile and registry checksums; no prebuilt API is fetched.
 //
 // The agent is compiled from THE SAME MODULE AT THE SAME VERSION as the komizo
 // that is running. Not a release asset, not a URL, not a hash pinned in a file
@@ -36,8 +38,9 @@ import (
 // download to `komizo setup`.
 //
 // design/appify.md rejected FETCHING the agent, and this is not that. Nothing
-// new is reached over the network that was not already reached to get here, and
-// on a machine whose module cache is warm nothing is reached at all.
+// source revision is chosen. Rust source builds additionally need Rust 1.94.0,
+// Cargo dependencies and a musl C compiler for the box architecture. Release
+// archives carry the complete executables and need none of these toolchains.
 
 // buildTimeout bounds the compile.
 //
@@ -45,7 +48,7 @@ import (
 // compiling it, on whatever the operator's machine is. Bounded at all because
 // this runs inside `komizo setup`, and a build that hangs would hang the setup
 // with no way to tell it from a slow one.
-const buildTimeout = 5 * time.Minute
+const buildTimeout = 15 * time.Minute
 
 // goBuildEnv is the environment the agent is compiled in.
 //
@@ -116,23 +119,42 @@ func build(ctx context.Context, modulePath, version, arch string) ([]byte, error
 	// letting the build resolve would still verify -- but doing it as its own
 	// step is what makes the failure say "this module did not verify" rather
 	// than burying it in a compile error.
-	dl := exec.CommandContext(ctx, goBin, "mod", "download", modulePath)
+	dl := exec.CommandContext(ctx, goBin, "mod", "download", "-json", modulePath)
 	dl.Dir = dir
 	dl.Env = goBuildEnv(arch)
-	if out, err := dl.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("could not fetch %s@%s:\n%s", modulePath, version, indent(string(out)))
+	download, err := dl.Output()
+	if err != nil {
+		return nil, fmt.Errorf("could not fetch %s@%s: %w", modulePath, version, err)
+	}
+	var module struct{ Dir string }
+	if err := json.Unmarshal(download, &module); err != nil || module.Dir == "" {
+		return nil, fmt.Errorf("the verified module has no source directory")
+	}
+	// A migrated version must carry its Rust API into the built agent. Older
+	// pinned versions retain their original build path; no source from another
+	// version or release asset is substituted.
+	buildDir := dir
+	packagePath := modulePath + "/cmd/komizo-box"
+	tags := []string{}
+	if _, err := os.Stat(filepath.Join(module.Dir, "api", "Cargo.toml")); err == nil {
+		buildDir = filepath.Join(dir, "source")
+		if err := prepareNativeSource(ctx, module.Dir, buildDir, arch); err != nil {
+			return nil, err
+		}
+		packagePath = "./cmd/komizo-box"
+		tags = []string{"-tags", "rustapi"}
+	} else if !os.IsNotExist(err) {
+		return nil, err
 	}
 
 	// THE SAME FLAGS THE Makefile USES, so a komizo built either way installs
 	// the same bytes wherever the toolchain matches. -trimpath removes the build
 	// machine's paths, which is what makes that possible at all.
 	out := filepath.Join(dir, "komizo-box")
-	cmd := exec.CommandContext(ctx, goBin, "build",
-		"-trimpath",
-		"-ldflags", "-s -w -X main.version="+strings.TrimPrefix(version, "v"),
-		"-o", out,
-		modulePath+"/cmd/komizo-box")
-	cmd.Dir = dir
+	args := append([]string{"build"}, tags...)
+	args = append(args, "-trimpath", "-ldflags", "-s -w -X main.version="+strings.TrimPrefix(version, "v"), "-o", out, packagePath)
+	cmd := exec.CommandContext(ctx, goBin, args...)
+	cmd.Dir = buildDir
 	cmd.Env = goBuildEnv(arch)
 
 	if b, err := cmd.CombinedOutput(); err != nil {

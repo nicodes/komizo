@@ -1,0 +1,59 @@
+name: Native Rust APIs
+'on':
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  native:
+    name: API (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - runner: ubuntu-24.04
+          platform: Linux_x86_64
+        - runner: ubuntu-24.04-arm
+          platform: Linux_arm64
+        - runner: macos-15-intel
+          platform: Darwin_x86_64
+        - runner: macos-15
+          platform: Darwin_arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+    - name: Check out source
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Set up development tools
+      uses: nicodes/tools/setup@87da2fe9d430c67d15f62f603b07ba1ed40b5603
+      env:
+        GH_TOKEN: ${{ github.token }}
+    - name: Install static Linux linker
+      if: runner.os == 'Linux'
+      run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+    - name: Verify native Rust API
+      run: |-
+        set -euo pipefail
+        rustup component add --toolchain 1.94.0 rustfmt clippy
+        cargo fmt --manifest-path api/Cargo.toml --check
+        cargo clippy --locked --manifest-path api/Cargo.toml --all-targets -- -D warnings
+        cargo test --locked --manifest-path api/Cargo.toml
+        bash tools/engineering/build-api.sh
+        python3 tools/engineering/api-payload.py ".artifacts/native-api/komizo-api_${{ matrix.platform }}"
+        go build -tags rustapi -trimpath -o .artifacts/komizo .
+        python3 tools/engineering/api-smoke.py .artifacts/komizo
+    - name: Verify source-installed host packaging
+      if: matrix.platform == 'Linux_x86_64'
+      timeout-minutes: 15
+      run: go test -tags native_source_test -count=1 -timeout 14m ./internal/agent -run '^TestVerifiedSourceBuildCarriesTheRustAPI$'
+    - name: Upload native API and source receipt
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: native-api-${{ matrix.platform }}
+        path: .artifacts/native-api/*
+        if-no-files-found: error
+        include-hidden-files: true
+        retention-days: 7

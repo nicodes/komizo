@@ -3,109 +3,23 @@ package box
 import (
 	"crypto/ed25519"
 	"encoding/base64"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"os"
-	"path/filepath"
+
 	"strings"
 	"testing"
-	"time"
 )
 
 // Registry observations, root commands and account logs have distinct authority.
-func TestTheRegistryKeyReadsReportsButCannotCommandOrReadLogs(t *testing.T) {
-	regPub, regPriv, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	acctPub, acctPriv, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
 
-	// The box `komizo setup` produces once the account has a log key: enrolled,
-	// no operator devices at all.
-	conf := AgentConf{ServerID: "srv_mine", API: "https://api.example.com", Token: "kmz_agt_x",
-		RegistryKey: base64.RawURLEncoding.EncodeToString(regPub),
-		LogKeys:     []string{FormatLogKey(acctPub)}}
+// The box `komizo setup` produces once the account has a log key: enrolled,
+// no operator devices at all.
 
-	cmdKeys, err := conf.TrustedKeys()
-	if err != nil {
-		t.Fatal(err)
-	}
-	logKeys, err := conf.LogTrustedKeys()
-	if err != nil {
-		t.Fatal(err)
-	}
+// THE HALF THAT PROVES THE BOX IS ANSWERING AT ALL. Without it, everything
+// below passes against a box that is simply broken.
 
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "web.log"), []byte("hello\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	rep := Report{V: Version, At: time.Now().UTC()}
-	rep.Server.State = "ready"
-	raw, err := json.Marshal(rep)
-	if err != nil {
-		t.Fatal(err)
-	}
-	report := filepath.Join(t.TempDir(), "report.json")
-	if err := os.WriteFile(report, raw, 0o644); err != nil {
-		t.Fatal(err)
-	}
+// AND THE HALF THIS EPIC EXISTS FOR.
 
-	cfg := APIConfig{ServerID: "srv_mine", RegistryKey: regPub,
-		OperatorKeys: cmdKeys, LogKeys: logKeys,
-		LogsDir: dir, ReportPath: report}
-	tok, err := SignReadToken(regPriv, cfg.ServerID, time.Now().Add(5*time.Minute))
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := Handler(cfg)
-
-	post := func(path string, priv ed25519.PrivateKey, op string, args map[string]string) int {
-		t.Helper()
-		env, err := SignCommand(priv, Command{Srv: cfg.ServerID,
-			Exp: time.Now().Add(time.Minute).Unix(), Op: op, Args: args})
-		if err != nil {
-			t.Fatal(err)
-		}
-		body, err := json.Marshal(env)
-		if err != nil {
-			t.Fatal(err)
-		}
-		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(body)))
-		r.Header.Set("Authorization", "Bearer "+tok)
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, r)
-		return w.Code
-	}
-
-	// THE HALF THAT PROVES THE BOX IS ANSWERING AT ALL. Without it, everything
-	// below passes against a box that is simply broken.
-	if code := post("/v1/report", regPriv, OpReportRead, nil); code != http.StatusOK {
-		t.Fatalf("the registry key could not read the report (%d)", code)
-	}
-	if code := post("/v1/commands", regPriv, OpAppStop, map[string]string{"app": "web"}); code != http.StatusConflict && code != http.StatusForbidden {
-		t.Fatal("registry read authority commanded this box")
-	}
-
-	// AND THE HALF THIS EPIC EXISTS FOR.
-	if code := post("/v1/logs", regPriv, OpLogsRead, map[string]string{"app": "web"}); code == http.StatusOK {
-		t.Error("the registry key read a log -- whoever holds komizo's signing key " +
-			"can read every log on every enrolled box, which is what #187 exists to stop")
-	}
-
-	// And the account's own key does the opposite: reads the log, commands
-	// nothing. Neither key is simply more powerful than the other.
-	if code := post("/v1/logs", acctPriv, OpLogsRead, map[string]string{"app": "web"}); code != http.StatusOK {
-		t.Errorf("the account's log key could not read a log (%d) -- "+
-			"logs would be unreadable by anybody, which is not the goal", code)
-	}
-	if code := post("/v1/report", acctPriv, OpReportRead, nil); code == http.StatusOK {
-		t.Error("a log key read the report -- it is scoped to logs and nothing else")
-	}
-}
+// And the account's own key does the opposite: reads the log, commands
+// nothing. Neither key is simply more powerful than the other.
 
 // A log key is not a device key is not a registry key.
 //
@@ -179,39 +93,9 @@ func TestNoSignedCommandCanPlantALogKey(t *testing.T) {
 // a log passphrase, and it will be the state of the user's own box the moment
 // this ships. Reporting it as a fault would send somebody to the machine to fix
 // something that is working exactly as designed.
-func TestEnrollmentAloneCannotCommandOrReadLogs(t *testing.T) {
-	pub, _, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	conf := AgentConf{ServerID: "srv_mine", API: "https://api.example.com", Token: "kmz_agt_x",
-		RegistryKey: base64.RawURLEncoding.EncodeToString(pub)}
 
-	if conf.CanCommand() {
-		t.Error("read enrollment granted command authority")
-	}
-	if conf.CanReadLogs() {
-		t.Error("a box with no log keys claims its logs are readable")
-	}
-	keys, err := conf.LogTrustedKeys()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(keys) != 0 {
-		t.Errorf("log keys = %d, want none -- the registry key must not leak into this set", len(keys))
-	}
-
-	// And an operator's device is enough on its own, without an account key.
-	// That was §5's original answer and the CLI's path still uses it.
-	devPub, _, err := ed25519.GenerateKey(nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	conf.OperatorKeys = []string{FormatDeviceKey(devPub)}
-	if !conf.CanReadLogs() {
-		t.Error("a planted device cannot read logs, which was §5's original answer")
-	}
-}
+// And an operator's device is enough on its own, without an account key.
+// That was §5's original answer and the CLI's path still uses it.
 
 // An unreadable log key fails the set rather than being skipped.
 //

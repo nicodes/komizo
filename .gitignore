@@ -7,7 +7,7 @@ bin/
 .claude/settings.local.json
 
 # Release artefacts, built by mise run build. Anchored at the root:
-# internal/ui/dist is a COMMITTED export (see internal/ui/embed.go), and an
+# internal/ui/dist is a COMMITTED export (see api/build.rs), and an
 # unanchored "dist/" would ignore it.
 /dist/
 
@@ -27,3 +27,5 @@ bin/
 __pycache__/
 
 /.ci-tools/
+/api/target/
+/internal/nativeapi/payload.gz
