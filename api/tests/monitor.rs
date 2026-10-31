@@ -247,7 +247,7 @@ async fn native_monitor_uses_a_private_unix_socket_and_preserves_signed_reads() 
     use std::os::unix::fs::PermissionsExt;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let directory =
-        std::env::temp_dir().join(format!("komizo-native-monitor-{}", uuid::Uuid::new_v4()));
+        std::path::PathBuf::from("/tmp").join(format!("kmz-monitor-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&directory).unwrap();
     let socket = directory.join("api.sock");
     let config = directory.join("agent.json");
