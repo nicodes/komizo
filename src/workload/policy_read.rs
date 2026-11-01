@@ -184,3 +184,15 @@ pub fn read_policy(body: &[u8]) -> Result<Policy> {
     policy.check()?;
     Ok(policy)
 }
+pub fn read_resources(body: &[u8]) -> Result<super::resources::ResourcePolicy> {
+    let value = normalized(crate::strict::value(body, MAX_BYTES)?, Shape::Resource)?;
+    let resources: super::resources::ResourcePolicy = serde_json::from_value(value)?;
+    resources.check()?;
+    Ok(resources)
+}
+pub fn read_readiness(body: &[u8]) -> Result<super::policy::ReadinessPolicy> {
+    let value = normalized(crate::strict::value(body, MAX_BYTES)?, Shape::Readiness)?;
+    let readiness: super::policy::ReadinessPolicy = serde_json::from_value(value)?;
+    readiness.check()?;
+    Ok(readiness)
+}
