@@ -1,3 +1,5 @@
+pub mod activation;
+pub mod archive;
 pub mod backup;
 pub mod compose;
 pub mod delivery;
@@ -6,10 +8,13 @@ pub(crate) mod json;
 pub mod operation;
 pub mod policy;
 pub mod policy_read;
+pub mod readiness;
 pub mod release;
 pub mod release_bind;
 pub mod resources;
+pub mod routes;
 pub mod stateful;
+pub mod static_tree;
 pub mod yaml;
 use std::sync::OnceLock;
 fn matches(pattern: &str, value: &str, compiled: &'static OnceLock<regex::Regex>) -> bool {
