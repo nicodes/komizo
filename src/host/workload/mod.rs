@@ -1,6 +1,7 @@
 //! Privileged workload adapters retain host-owned authority and durable operation fences.
 pub mod activation;
 pub mod admission;
+pub mod commands;
 mod deployment;
 pub mod effects;
 pub mod files;
