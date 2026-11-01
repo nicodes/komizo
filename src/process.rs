@@ -82,6 +82,147 @@ pub fn capture(
 ) -> Result<Captured> {
     capture_with_streams(command, input, maximum, deadline, cancelled, None)
 }
+/// Feed bounded stdout directly to an archive reader while draining stderr.
+/// The child leader stays unreaped until both pipes close, so descendants are
+/// still owned by this process group on every error and deadline.
+pub fn consume<T>(
+    command: &mut Command,
+    maximum: u64,
+    deadline: Instant,
+    cancelled: impl Fn() -> bool,
+    consumer: impl FnOnce(&mut dyn Read) -> Result<T>,
+) -> Result<T> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    let child = command.spawn().context("start archive process")?;
+    let mut owned = Owned(Some(child));
+    let child = owned.0.as_mut().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    nonblocking(stdout.as_raw_fd())?;
+    nonblocking(stderr.as_raw_fd())?;
+    struct Reader<'a, S, E, C> {
+        stdout: &'a mut S,
+        stderr: &'a mut E,
+        cancelled: C,
+        deadline: Instant,
+        remaining: u64,
+        errors: Vec<u8>,
+        stdout_closed: bool,
+        stderr_closed: bool,
+    }
+    impl<S: Read + AsRawFd, E: Read + AsRawFd, C: Fn() -> bool> Reader<'_, S, E, C> {
+        fn check(&mut self) -> io::Result<()> {
+            if (self.cancelled)() {
+                return Err(io::Error::other("context canceled"));
+            }
+            if Instant::now() >= self.deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "process deadline exceeded",
+                ));
+            }
+            if !self.stderr_closed {
+                self.stderr_closed = drain(self.stderr, &mut self.errors, 8192, true, None)
+                    .map_err(io::Error::other)?
+            }
+            Ok(())
+        }
+        fn poll(&self) -> io::Result<()> {
+            let mut descriptors = [
+                libc::pollfd {
+                    fd: if self.stdout_closed {
+                        -1
+                    } else {
+                        self.stdout.as_raw_fd()
+                    },
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: if self.stderr_closed {
+                        -1
+                    } else {
+                        self.stderr.as_raw_fd()
+                    },
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            let wait = self
+                .deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(20))
+                .as_millis() as i32;
+            let result = unsafe { libc::poll(descriptors.as_mut_ptr(), 2, wait) };
+            if result < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+    }
+    impl<S: Read + AsRawFd, E: Read + AsRawFd, C: Fn() -> bool> Read for Reader<'_, S, E, C> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if buffer.is_empty() {
+                return Ok(0);
+            }
+            loop {
+                self.check()?;
+                if self.stdout_closed {
+                    return Ok(0);
+                }
+                let limit = buffer.len().min(
+                    self.remaining
+                        .saturating_add(1)
+                        .try_into()
+                        .unwrap_or(usize::MAX),
+                );
+                match self.stdout.read(&mut buffer[..limit]) {
+                    Ok(0) => {
+                        self.stdout_closed = true;
+                        return Ok(0);
+                    }
+                    Ok(count) => {
+                        if count as u64 > self.remaining {
+                            return Err(io::Error::other("process output exceeded its bound"));
+                        }
+                        self.remaining -= count as u64;
+                        return Ok(count);
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => self.poll()?,
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+    }
+    let mut reader = Reader {
+        stdout: &mut stdout,
+        stderr: &mut stderr,
+        cancelled,
+        deadline,
+        remaining: maximum,
+        errors: vec![],
+        stdout_closed: false,
+        stderr_closed: false,
+    };
+    let value = consumer(&mut reader)?;
+    io::copy(&mut reader, &mut io::sink())?;
+    loop {
+        reader.check()?;
+        if reader.stderr_closed
+            && let Some(status) = owned.0.as_mut().unwrap().try_wait()?
+        {
+            owned.0.take();
+            ensure!(status.success(), "bounded archive process failed");
+            return Ok(value);
+        }
+        reader.poll()?;
+    }
+}
 struct Streams<'a> {
     stdout: &'a mut dyn Write,
     stderr: &'a mut dyn Write,

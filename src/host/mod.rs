@@ -20,6 +20,7 @@ pub mod stopped;
 pub mod store;
 pub mod system;
 pub mod types;
+pub mod workload;
 pub use system::Probe;
 pub use types::*;
 pub const REPORT_VERSION: i64 = 1;

@@ -124,6 +124,77 @@ impl Empty for u64 {
 #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub struct Secret(String);
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Bytes(pub Option<Vec<u8>>);
+impl std::fmt::Debug for Bytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "[{} bytes]", self.len())
+    }
+}
+impl Deref for Bytes {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        self.0.as_deref().unwrap_or_default()
+    }
+}
+impl From<Vec<u8>> for Bytes {
+    fn from(value: Vec<u8>) -> Self {
+        Self(Some(value))
+    }
+}
+impl Bytes {
+    pub fn into_vec(self) -> Vec<u8> {
+        self.0.unwrap_or_default()
+    }
+}
+impl Serialize for Bytes {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use base64::Engine as _;
+        self.0
+            .as_ref()
+            .map(|bytes| base64::engine::general_purpose::STANDARD.encode(bytes))
+            .serialize(serializer)
+    }
+}
+impl<'de> Deserialize<'de> for Bytes {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use base64::Engine as _;
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Encoded {
+            Text(String),
+            Array(Vec<Option<u8>>),
+        }
+        let Some(value) = Option::<Encoded>::deserialize(deserializer)? else {
+            return Ok(Self::default());
+        };
+        let bytes = match value {
+            Encoded::Array(bytes) => bytes
+                .into_iter()
+                .map(|value| value.unwrap_or_default())
+                .collect(),
+            Encoded::Text(value) => {
+                let value: Vec<_> = value
+                    .bytes()
+                    .filter(|b| !matches!(b, b'\r' | b'\n'))
+                    .collect();
+                base64::engine::general_purpose::GeneralPurpose::new(
+                    &base64::alphabet::STANDARD,
+                    base64::engine::general_purpose::GeneralPurposeConfig::new()
+                        .with_decode_allow_trailing_bits(true),
+                )
+                .decode(value)
+                .map_err(serde::de::Error::custom)?
+            }
+        };
+        Ok(bytes.into())
+    }
+}
+impl Empty for Bytes {
+    fn empty(&self) -> bool {
+        self.is_empty()
+    }
+}
 impl Secret {
     pub fn new(value: String) -> Self {
         Self(value)
