@@ -14,6 +14,7 @@ pub mod logs;
 pub mod observer;
 pub mod paths;
 pub mod preview;
+pub mod resource_authority;
 pub mod results;
 pub mod scoped;
 pub mod stopped;
