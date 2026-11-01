@@ -85,3 +85,42 @@ pub fn validate_api(raw: &str) -> Result<String> {
     }
     Ok(url.as_str().trim_end_matches('/').into())
 }
+
+pub fn is_ip_address(host: &str) -> bool {
+    host.trim_matches(['[', ']'])
+        .parse::<std::net::IpAddr>()
+        .is_ok()
+}
+pub fn validate_api_host(host: &str) -> Result<()> {
+    ensure!(!host.is_empty(), "an endpoint cannot be empty");
+    ensure!(
+        !is_ip_address(host),
+        "{} is an IP address; use a public DNS name or leave the endpoint unset",
+        quote(host)
+    );
+    ensure!(
+        host.trim_matches('.').contains('.'),
+        "{} is not a fully qualified name, so no certificate authority will issue for it",
+        quote(host)
+    );
+    ensure!(
+        !host.starts_with('-')
+            && host
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-'),
+        "{} is not a hostname",
+        quote(host)
+    );
+    Ok(())
+}
+pub fn api_host_for(ssh_host: &str, override_host: &str) -> Result<String> {
+    if !override_host.is_empty() {
+        validate_api_host(override_host)?;
+        return Ok(override_host.into());
+    }
+    if validate_api_host(ssh_host).is_ok() {
+        Ok(ssh_host.into())
+    } else {
+        Ok(String::new())
+    }
+}

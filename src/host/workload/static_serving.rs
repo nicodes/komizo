@@ -20,11 +20,12 @@ use crate::{
 };
 use anyhow::{Result, anyhow, ensure};
 use serde::{Deserialize, Serialize};
+#[cfg(target_os = "linux")]
+use std::os::unix::ffi::OsStrExt;
 use std::{
     collections::BTreeMap,
     fs::{self, File},
     io::Read,
-    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };

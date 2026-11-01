@@ -17,6 +17,7 @@ aws-lc-rs = "1.19"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 getrandom = "0.4"
+flate2 = "1"
 gtmpl = "0.7"
 libc = "0.2"
 regex = "1"

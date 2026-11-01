@@ -7,12 +7,19 @@ pub enum Value {
     Bool(bool),
     Int(i64),
     Duration(i64),
+    List(Vec<String>),
 }
 pub struct Flag {
     pub name: &'static str,
     pub default: Value,
 }
 impl Flag {
+    pub fn list(name: &'static str) -> Self {
+        Self {
+            name,
+            default: Value::List(vec![]),
+        }
+    }
     pub fn text(name: &'static str, value: impl Into<String>) -> Self {
         Self {
             name,
@@ -53,6 +60,12 @@ impl std::fmt::Display for Help {
 }
 impl std::error::Error for Help {}
 impl Flags {
+    pub fn list(&self, name: &str) -> &[String] {
+        match &self.values[name] {
+            Value::List(values) => values,
+            _ => panic!("flag specification mismatch"),
+        }
+    }
     pub fn parse(spec: &[Flag], args: &[String]) -> Result<Self> {
         let mut parsed = Self::default();
         for flag in spec {
@@ -110,6 +123,11 @@ impl Flags {
                     }
                 };
                 match default {
+                    Value::List(previous) => {
+                        let mut values = previous.clone();
+                        values.push(value.into());
+                        Value::List(values)
+                    }
                     Value::Text(_) => Value::Text(value.into()),
                     Value::Int(_) => Value::Int(
                         integer(value).map_err(|_| anyhow!("invalid integer value for -{name}"))?,
