@@ -1,0 +1,1998 @@
+[
+  {
+    "expected": {
+      "containers": [],
+      "failure": "",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "current"
+    },
+    "fail": "",
+    "inspect": "",
+    "list": ""
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "unavailable"
+    },
+    "fail": "list",
+    "inspect": "",
+    "list": ""
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "current"
+    },
+    "fail": "inspect",
+    "inspect": "",
+    "list": ""
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "current"
+    },
+    "fail": "",
+    "inspect": "id1\t2026-11-01T10:00:00.123Z\t0001-01-01T00:00:00Z\t0\t42\tedge=web,web, secondary=other, \tvol=/host/data \thealthy\n",
+    "list": ""
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "unavailable"
+    },
+    "fail": "list",
+    "inspect": "id1\t2026-11-01T10:00:00.123Z\t0001-01-01T00:00:00Z\t0\t42\tedge=web,web, secondary=other, \tvol=/host/data \thealthy\n",
+    "list": ""
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "current"
+    },
+    "fail": "inspect",
+    "inspect": "id1\t2026-11-01T10:00:00.123Z\t0001-01-01T00:00:00Z\t0\t42\tedge=web,web, secondary=other, \tvol=/host/data \thealthy\n",
+    "list": ""
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "current"
+    },
+    "fail": "",
+    "inspect": "id2\t2026-10-01T00:00:00Z\t2026-10-02T00:00:00Z\t137\t0\tedge=db, \tdb=/var/data \tunhealthy\nid1\tbad\tbad\tbad\tbad\t=invalid a=b,c, \tbad a= b=/x\n",
+    "list": ""
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "unavailable"
+    },
+    "fail": "list",
+    "inspect": "id2\t2026-10-01T00:00:00Z\t2026-10-02T00:00:00Z\t137\t0\tedge=db, \tdb=/var/data \tunhealthy\nid1\tbad\tbad\tbad\tbad\t=invalid a=b,c, \tbad a= b=/x\n",
+    "list": ""
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "current"
+    },
+    "fail": "inspect",
+    "inspect": "id2\t2026-10-01T00:00:00Z\t2026-10-02T00:00:00Z\t137\t0\tedge=db, \tdb=/var/data \tunhealthy\nid1\tbad\tbad\tbad\tbad\t=invalid a=b,c, \tbad a= b=/x\n",
+    "list": ""
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_invalid",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "partial"
+    },
+    "fail": "",
+    "inspect": "",
+    "list": "bad\n"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "unavailable"
+    },
+    "fail": "list",
+    "inspect": "",
+    "list": "bad\n"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_invalid",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "partial"
+    },
+    "fail": "inspect",
+    "inspect": "",
+    "list": "bad\n"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_invalid",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "partial"
+    },
+    "fail": "",
+    "inspect": "id1\t2026-11-01T10:00:00.123Z\t0001-01-01T00:00:00Z\t0\t42\tedge=web,web, secondary=other, \tvol=/host/data \thealthy\n",
+    "list": "bad\n"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "unavailable"
+    },
+    "fail": "list",
+    "inspect": "id1\t2026-11-01T10:00:00.123Z\t0001-01-01T00:00:00Z\t0\t42\tedge=web,web, secondary=other, \tvol=/host/data \thealthy\n",
+    "list": "bad\n"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_invalid",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "partial"
+    },
+    "fail": "inspect",
+    "inspect": "id1\t2026-11-01T10:00:00.123Z\t0001-01-01T00:00:00Z\t0\t42\tedge=web,web, secondary=other, \tvol=/host/data \thealthy\n",
+    "list": "bad\n"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_invalid",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "partial"
+    },
+    "fail": "",
+    "inspect": "id2\t2026-10-01T00:00:00Z\t2026-10-02T00:00:00Z\t137\t0\tedge=db, \tdb=/var/data \tunhealthy\nid1\tbad\tbad\tbad\tbad\t=invalid a=b,c, \tbad a= b=/x\n",
+    "list": "bad\n"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "unavailable"
+    },
+    "fail": "list",
+    "inspect": "id2\t2026-10-01T00:00:00Z\t2026-10-02T00:00:00Z\t137\t0\tedge=db, \tdb=/var/data \tunhealthy\nid1\tbad\tbad\tbad\tbad\t=invalid a=b,c, \tbad a= b=/x\n",
+    "list": "bad\n"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_invalid",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "partial"
+    },
+    "fail": "inspect",
+    "inspect": "id2\t2026-10-01T00:00:00Z\t2026-10-02T00:00:00Z\t137\t0\tedge=db, \tdb=/var/data \tunhealthy\nid1\tbad\tbad\tbad\tbad\t=invalid a=b,c, \tbad a= b=/x\n",
+    "list": "bad\n"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_invalid",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "partial"
+    },
+    "fail": "",
+    "inspect": "",
+    "list": "\tname\trunning\tUp\tweb\timage\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "unavailable"
+    },
+    "fail": "list",
+    "inspect": "",
+    "list": "\tname\trunning\tUp\tweb\timage\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_invalid",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "partial"
+    },
+    "fail": "inspect",
+    "inspect": "",
+    "list": "\tname\trunning\tUp\tweb\timage\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_invalid",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "partial"
+    },
+    "fail": "",
+    "inspect": "id1\t2026-11-01T10:00:00.123Z\t0001-01-01T00:00:00Z\t0\t42\tedge=web,web, secondary=other, \tvol=/host/data \thealthy\n",
+    "list": "\tname\trunning\tUp\tweb\timage\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "unavailable"
+    },
+    "fail": "list",
+    "inspect": "id1\t2026-11-01T10:00:00.123Z\t0001-01-01T00:00:00Z\t0\t42\tedge=web,web, secondary=other, \tvol=/host/data \thealthy\n",
+    "list": "\tname\trunning\tUp\tweb\timage\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_invalid",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "partial"
+    },
+    "fail": "inspect",
+    "inspect": "id1\t2026-11-01T10:00:00.123Z\t0001-01-01T00:00:00Z\t0\t42\tedge=web,web, secondary=other, \tvol=/host/data \thealthy\n",
+    "list": "\tname\trunning\tUp\tweb\timage\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_invalid",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "partial"
+    },
+    "fail": "",
+    "inspect": "id2\t2026-10-01T00:00:00Z\t2026-10-02T00:00:00Z\t137\t0\tedge=db, \tdb=/var/data \tunhealthy\nid1\tbad\tbad\tbad\tbad\t=invalid a=b,c, \tbad a= b=/x\n",
+    "list": "\tname\trunning\tUp\tweb\timage\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "unavailable"
+    },
+    "fail": "list",
+    "inspect": "id2\t2026-10-01T00:00:00Z\t2026-10-02T00:00:00Z\t137\t0\tedge=db, \tdb=/var/data \tunhealthy\nid1\tbad\tbad\tbad\tbad\t=invalid a=b,c, \tbad a= b=/x\n",
+    "list": "\tname\trunning\tUp\tweb\timage\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_invalid",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "partial"
+    },
+    "fail": "inspect",
+    "inspect": "id2\t2026-10-01T00:00:00Z\t2026-10-02T00:00:00Z\t137\t0\tedge=db, \tdb=/var/data \tunhealthy\nid1\tbad\tbad\tbad\tbad\t=invalid a=b,c, \tbad a= b=/x\n",
+    "list": "\tname\trunning\tUp\tweb\timage\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [
+        {
+          "inspection": "unavailable",
+          "service": "web",
+          "name": "app-web",
+          "state": "running",
+          "status": "Up",
+          "image": "image"
+        }
+      ],
+      "failure": "inspection_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id1",
+          "inspection_unavailable": true,
+          "name": "app-web",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "status": "partial"
+    },
+    "fail": "",
+    "inspect": "",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app\n"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "unavailable"
+    },
+    "fail": "list",
+    "inspect": "",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app\n"
+  },
+  {
+    "expected": {
+      "containers": [
+        {
+          "inspection": "unavailable",
+          "service": "web",
+          "name": "app-web",
+          "state": "running",
+          "status": "Up",
+          "image": "image"
+        }
+      ],
+      "failure": "inspection_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id1",
+          "inspection_unavailable": true,
+          "name": "app-web",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "status": "partial"
+    },
+    "fail": "inspect",
+    "inspect": "",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app\n"
+  },
+  {
+    "expected": {
+      "containers": [
+        {
+          "inspection": "current",
+          "service": "web",
+          "name": "app-web",
+          "state": "running",
+          "health": "healthy",
+          "status": "Up",
+          "image": "image",
+          "started_at": "2026-11-01T10:00:00.123Z"
+        }
+      ],
+      "failure": "",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16",
+        "members": [
+          {
+            "container": "app-web",
+            "aliases": [
+              "web",
+              "web"
+            ]
+          }
+        ]
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id1",
+          "inspection_unavailable": false,
+          "name": "app-web",
+          "pid": 42,
+          "tty": false
+        }
+      ],
+      "status": "current"
+    },
+    "fail": "",
+    "inspect": "id1\t2026-11-01T10:00:00.123Z\t0001-01-01T00:00:00Z\t0\t42\tedge=web,web, secondary=other, \tvol=/host/data \thealthy\n",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app\n"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "unavailable"
+    },
+    "fail": "list",
+    "inspect": "id1\t2026-11-01T10:00:00.123Z\t0001-01-01T00:00:00Z\t0\t42\tedge=web,web, secondary=other, \tvol=/host/data \thealthy\n",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app\n"
+  },
+  {
+    "expected": {
+      "containers": [
+        {
+          "inspection": "unavailable",
+          "service": "web",
+          "name": "app-web",
+          "state": "running",
+          "status": "Up",
+          "image": "image"
+        }
+      ],
+      "failure": "inspection_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id1",
+          "inspection_unavailable": true,
+          "name": "app-web",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "status": "partial"
+    },
+    "fail": "inspect",
+    "inspect": "id1\t2026-11-01T10:00:00.123Z\t0001-01-01T00:00:00Z\t0\t42\tedge=web,web, secondary=other, \tvol=/host/data \thealthy\n",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app\n"
+  },
+  {
+    "expected": {
+      "containers": [
+        {
+          "inspection": "current",
+          "service": "web",
+          "name": "app-web",
+          "state": "running",
+          "status": "Up",
+          "image": "image"
+        }
+      ],
+      "failure": "",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id1",
+          "inspection_unavailable": false,
+          "name": "app-web",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "status": "current"
+    },
+    "fail": "",
+    "inspect": "id2\t2026-10-01T00:00:00Z\t2026-10-02T00:00:00Z\t137\t0\tedge=db, \tdb=/var/data \tunhealthy\nid1\tbad\tbad\tbad\tbad\t=invalid a=b,c, \tbad a= b=/x\n",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app\n"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "unavailable"
+    },
+    "fail": "list",
+    "inspect": "id2\t2026-10-01T00:00:00Z\t2026-10-02T00:00:00Z\t137\t0\tedge=db, \tdb=/var/data \tunhealthy\nid1\tbad\tbad\tbad\tbad\t=invalid a=b,c, \tbad a= b=/x\n",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app\n"
+  },
+  {
+    "expected": {
+      "containers": [
+        {
+          "inspection": "unavailable",
+          "service": "web",
+          "name": "app-web",
+          "state": "running",
+          "status": "Up",
+          "image": "image"
+        }
+      ],
+      "failure": "inspection_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id1",
+          "inspection_unavailable": true,
+          "name": "app-web",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "status": "partial"
+    },
+    "fail": "inspect",
+    "inspect": "id2\t2026-10-01T00:00:00Z\t2026-10-02T00:00:00Z\t137\t0\tedge=db, \tdb=/var/data \tunhealthy\nid1\tbad\tbad\tbad\tbad\t=invalid a=b,c, \tbad a= b=/x\n",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app\n"
+  },
+  {
+    "expected": {
+      "containers": [
+        {
+          "inspection": "unavailable",
+          "service": "web",
+          "name": "app-web",
+          "state": "running",
+          "status": "Up",
+          "image": "image"
+        },
+        {
+          "inspection": "unavailable",
+          "service": "db",
+          "name": "app-db",
+          "state": "exited",
+          "status": "Exited",
+          "image": "pg"
+        }
+      ],
+      "failure": "inspection_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id2",
+          "inspection_unavailable": true,
+          "name": "app-db",
+          "pid": 0,
+          "tty": false
+        },
+        {
+          "id": "id1",
+          "inspection_unavailable": true,
+          "name": "app-web",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "status": "partial"
+    },
+    "fail": "",
+    "inspect": "",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app/../app\r\ninvalid\nid2\tapp-db\texited\tExited\tdb\tpg\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "unavailable"
+    },
+    "fail": "list",
+    "inspect": "",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app/../app\r\ninvalid\nid2\tapp-db\texited\tExited\tdb\tpg\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [
+        {
+          "inspection": "unavailable",
+          "service": "web",
+          "name": "app-web",
+          "state": "running",
+          "status": "Up",
+          "image": "image"
+        },
+        {
+          "inspection": "unavailable",
+          "service": "db",
+          "name": "app-db",
+          "state": "exited",
+          "status": "Exited",
+          "image": "pg"
+        }
+      ],
+      "failure": "inspection_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id2",
+          "inspection_unavailable": true,
+          "name": "app-db",
+          "pid": 0,
+          "tty": false
+        },
+        {
+          "id": "id1",
+          "inspection_unavailable": true,
+          "name": "app-web",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "status": "partial"
+    },
+    "fail": "inspect",
+    "inspect": "",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app/../app\r\ninvalid\nid2\tapp-db\texited\tExited\tdb\tpg\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [
+        {
+          "inspection": "current",
+          "service": "web",
+          "name": "app-web",
+          "state": "running",
+          "health": "healthy",
+          "status": "Up",
+          "image": "image",
+          "started_at": "2026-11-01T10:00:00.123Z"
+        },
+        {
+          "inspection": "unavailable",
+          "service": "db",
+          "name": "app-db",
+          "state": "exited",
+          "status": "Exited",
+          "image": "pg"
+        }
+      ],
+      "failure": "inspection_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16",
+        "members": [
+          {
+            "container": "app-web",
+            "aliases": [
+              "web",
+              "web"
+            ]
+          }
+        ]
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id2",
+          "inspection_unavailable": true,
+          "name": "app-db",
+          "pid": 0,
+          "tty": false
+        },
+        {
+          "id": "id1",
+          "inspection_unavailable": false,
+          "name": "app-web",
+          "pid": 42,
+          "tty": false
+        }
+      ],
+      "status": "partial"
+    },
+    "fail": "",
+    "inspect": "id1\t2026-11-01T10:00:00.123Z\t0001-01-01T00:00:00Z\t0\t42\tedge=web,web, secondary=other, \tvol=/host/data \thealthy\n",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app/../app\r\ninvalid\nid2\tapp-db\texited\tExited\tdb\tpg\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "unavailable"
+    },
+    "fail": "list",
+    "inspect": "id1\t2026-11-01T10:00:00.123Z\t0001-01-01T00:00:00Z\t0\t42\tedge=web,web, secondary=other, \tvol=/host/data \thealthy\n",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app/../app\r\ninvalid\nid2\tapp-db\texited\tExited\tdb\tpg\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [
+        {
+          "inspection": "unavailable",
+          "service": "web",
+          "name": "app-web",
+          "state": "running",
+          "status": "Up",
+          "image": "image"
+        },
+        {
+          "inspection": "unavailable",
+          "service": "db",
+          "name": "app-db",
+          "state": "exited",
+          "status": "Exited",
+          "image": "pg"
+        }
+      ],
+      "failure": "inspection_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id2",
+          "inspection_unavailable": true,
+          "name": "app-db",
+          "pid": 0,
+          "tty": false
+        },
+        {
+          "id": "id1",
+          "inspection_unavailable": true,
+          "name": "app-web",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "status": "partial"
+    },
+    "fail": "inspect",
+    "inspect": "id1\t2026-11-01T10:00:00.123Z\t0001-01-01T00:00:00Z\t0\t42\tedge=web,web, secondary=other, \tvol=/host/data \thealthy\n",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app/../app\r\ninvalid\nid2\tapp-db\texited\tExited\tdb\tpg\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [
+        {
+          "inspection": "current",
+          "service": "web",
+          "name": "app-web",
+          "state": "running",
+          "status": "Up",
+          "image": "image"
+        },
+        {
+          "inspection": "current",
+          "service": "db",
+          "name": "app-db",
+          "state": "exited",
+          "health": "unhealthy",
+          "status": "Exited",
+          "image": "pg",
+          "started_at": "2026-10-01T00:00:00Z",
+          "finished_at": "2026-10-02T00:00:00Z",
+          "exit_code": 137
+        }
+      ],
+      "failure": "list_invalid",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16",
+        "members": [
+          {
+            "container": "app-db",
+            "aliases": [
+              "db"
+            ]
+          }
+        ]
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id2",
+          "inspection_unavailable": false,
+          "name": "app-db",
+          "pid": 0,
+          "tty": false
+        },
+        {
+          "id": "id1",
+          "inspection_unavailable": false,
+          "name": "app-web",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "status": "partial"
+    },
+    "fail": "",
+    "inspect": "id2\t2026-10-01T00:00:00Z\t2026-10-02T00:00:00Z\t137\t0\tedge=db, \tdb=/var/data \tunhealthy\nid1\tbad\tbad\tbad\tbad\t=invalid a=b,c, \tbad a= b=/x\n",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app/../app\r\ninvalid\nid2\tapp-db\texited\tExited\tdb\tpg\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "unavailable"
+    },
+    "fail": "list",
+    "inspect": "id2\t2026-10-01T00:00:00Z\t2026-10-02T00:00:00Z\t137\t0\tedge=db, \tdb=/var/data \tunhealthy\nid1\tbad\tbad\tbad\tbad\t=invalid a=b,c, \tbad a= b=/x\n",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app/../app\r\ninvalid\nid2\tapp-db\texited\tExited\tdb\tpg\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [
+        {
+          "inspection": "unavailable",
+          "service": "web",
+          "name": "app-web",
+          "state": "running",
+          "status": "Up",
+          "image": "image"
+        },
+        {
+          "inspection": "unavailable",
+          "service": "db",
+          "name": "app-db",
+          "state": "exited",
+          "status": "Exited",
+          "image": "pg"
+        }
+      ],
+      "failure": "inspection_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id2",
+          "inspection_unavailable": true,
+          "name": "app-db",
+          "pid": 0,
+          "tty": false
+        },
+        {
+          "id": "id1",
+          "inspection_unavailable": true,
+          "name": "app-web",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "status": "partial"
+    },
+    "fail": "inspect",
+    "inspect": "id2\t2026-10-01T00:00:00Z\t2026-10-02T00:00:00Z\t137\t0\tedge=db, \tdb=/var/data \tunhealthy\nid1\tbad\tbad\tbad\tbad\t=invalid a=b,c, \tbad a= b=/x\n",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app/../app\r\ninvalid\nid2\tapp-db\texited\tExited\tdb\tpg\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [
+        {
+          "inspection": "unavailable",
+          "service": "web",
+          "name": "app-web",
+          "state": "running",
+          "status": "Up",
+          "image": "image"
+        },
+        {
+          "inspection": "unavailable",
+          "service": "worker",
+          "name": "duplicate",
+          "state": "exited",
+          "status": "Exited",
+          "image": "image"
+        }
+      ],
+      "failure": "inspection_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id1",
+          "inspection_unavailable": true,
+          "name": "duplicate",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "status": "partial"
+    },
+    "fail": "",
+    "inspect": "",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app\nid1\tduplicate\texited\tExited\tworker\timage\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "unavailable"
+    },
+    "fail": "list",
+    "inspect": "",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app\nid1\tduplicate\texited\tExited\tworker\timage\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [
+        {
+          "inspection": "unavailable",
+          "service": "web",
+          "name": "app-web",
+          "state": "running",
+          "status": "Up",
+          "image": "image"
+        },
+        {
+          "inspection": "unavailable",
+          "service": "worker",
+          "name": "duplicate",
+          "state": "exited",
+          "status": "Exited",
+          "image": "image"
+        }
+      ],
+      "failure": "inspection_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id1",
+          "inspection_unavailable": true,
+          "name": "duplicate",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "status": "partial"
+    },
+    "fail": "inspect",
+    "inspect": "",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app\nid1\tduplicate\texited\tExited\tworker\timage\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [
+        {
+          "inspection": "unavailable",
+          "service": "web",
+          "name": "app-web",
+          "state": "running",
+          "status": "Up",
+          "image": "image"
+        },
+        {
+          "inspection": "current",
+          "service": "worker",
+          "name": "duplicate",
+          "state": "exited",
+          "health": "healthy",
+          "status": "Exited",
+          "image": "image",
+          "started_at": "2026-11-01T10:00:00.123Z"
+        }
+      ],
+      "failure": "",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16",
+        "members": [
+          {
+            "container": "duplicate",
+            "aliases": [
+              "web",
+              "web"
+            ]
+          }
+        ]
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id1",
+          "inspection_unavailable": false,
+          "name": "duplicate",
+          "pid": 42,
+          "tty": false
+        }
+      ],
+      "status": "current"
+    },
+    "fail": "",
+    "inspect": "id1\t2026-11-01T10:00:00.123Z\t0001-01-01T00:00:00Z\t0\t42\tedge=web,web, secondary=other, \tvol=/host/data \thealthy\n",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app\nid1\tduplicate\texited\tExited\tworker\timage\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "unavailable"
+    },
+    "fail": "list",
+    "inspect": "id1\t2026-11-01T10:00:00.123Z\t0001-01-01T00:00:00Z\t0\t42\tedge=web,web, secondary=other, \tvol=/host/data \thealthy\n",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app\nid1\tduplicate\texited\tExited\tworker\timage\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [
+        {
+          "inspection": "unavailable",
+          "service": "web",
+          "name": "app-web",
+          "state": "running",
+          "status": "Up",
+          "image": "image"
+        },
+        {
+          "inspection": "unavailable",
+          "service": "worker",
+          "name": "duplicate",
+          "state": "exited",
+          "status": "Exited",
+          "image": "image"
+        }
+      ],
+      "failure": "inspection_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id1",
+          "inspection_unavailable": true,
+          "name": "duplicate",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "status": "partial"
+    },
+    "fail": "inspect",
+    "inspect": "id1\t2026-11-01T10:00:00.123Z\t0001-01-01T00:00:00Z\t0\t42\tedge=web,web, secondary=other, \tvol=/host/data \thealthy\n",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app\nid1\tduplicate\texited\tExited\tworker\timage\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [
+        {
+          "inspection": "unavailable",
+          "service": "web",
+          "name": "app-web",
+          "state": "running",
+          "status": "Up",
+          "image": "image"
+        },
+        {
+          "inspection": "current",
+          "service": "worker",
+          "name": "duplicate",
+          "state": "exited",
+          "status": "Exited",
+          "image": "image"
+        }
+      ],
+      "failure": "",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id1",
+          "inspection_unavailable": false,
+          "name": "duplicate",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "status": "current"
+    },
+    "fail": "",
+    "inspect": "id2\t2026-10-01T00:00:00Z\t2026-10-02T00:00:00Z\t137\t0\tedge=db, \tdb=/var/data \tunhealthy\nid1\tbad\tbad\tbad\tbad\t=invalid a=b,c, \tbad a= b=/x\n",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app\nid1\tduplicate\texited\tExited\tworker\timage\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "unavailable"
+    },
+    "fail": "list",
+    "inspect": "id2\t2026-10-01T00:00:00Z\t2026-10-02T00:00:00Z\t137\t0\tedge=db, \tdb=/var/data \tunhealthy\nid1\tbad\tbad\tbad\tbad\t=invalid a=b,c, \tbad a= b=/x\n",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app\nid1\tduplicate\texited\tExited\tworker\timage\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [
+        {
+          "inspection": "unavailable",
+          "service": "web",
+          "name": "app-web",
+          "state": "running",
+          "status": "Up",
+          "image": "image"
+        },
+        {
+          "inspection": "unavailable",
+          "service": "worker",
+          "name": "duplicate",
+          "state": "exited",
+          "status": "Exited",
+          "image": "image"
+        }
+      ],
+      "failure": "inspection_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id1",
+          "inspection_unavailable": true,
+          "name": "duplicate",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "status": "partial"
+    },
+    "fail": "inspect",
+    "inspect": "id2\t2026-10-01T00:00:00Z\t2026-10-02T00:00:00Z\t137\t0\tedge=db, \tdb=/var/data \tunhealthy\nid1\tbad\tbad\tbad\tbad\t=invalid a=b,c, \tbad a= b=/x\n",
+    "list": "id1\tapp-web\trunning\tUp\tweb\timage\t/srv/app\nid1\tduplicate\texited\tExited\tworker\timage\t/srv/app"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "inspection_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "running",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "Up",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id1",
+          "inspection_unavailable": true,
+          "name": "komizo-proxy",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "status": "partial"
+    },
+    "fail": "",
+    "inspect": "",
+    "list": "id1\tkomizo-proxy\trunning\tUp\tkomizo-proxy\tcaddy\t/srv/_proxy"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "unavailable"
+    },
+    "fail": "list",
+    "inspect": "",
+    "list": "id1\tkomizo-proxy\trunning\tUp\tkomizo-proxy\tcaddy\t/srv/_proxy"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "inspection_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "running",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "Up",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id1",
+          "inspection_unavailable": true,
+          "name": "komizo-proxy",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "status": "partial"
+    },
+    "fail": "inspect",
+    "inspect": "",
+    "list": "id1\tkomizo-proxy\trunning\tUp\tkomizo-proxy\tcaddy\t/srv/_proxy"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16",
+        "members": [
+          {
+            "container": "komizo-proxy",
+            "aliases": [
+              "web",
+              "web"
+            ]
+          }
+        ]
+      },
+      "proxy": {
+        "state": "running",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "Up",
+        "tls_ask": "http://127.0.0.1:8481",
+        "started_at": "2026-11-01T10:00:00.123Z"
+      },
+      "rows": [
+        {
+          "id": "id1",
+          "inspection_unavailable": false,
+          "name": "komizo-proxy",
+          "pid": 42,
+          "tty": false
+        }
+      ],
+      "status": "current"
+    },
+    "fail": "",
+    "inspect": "id1\t2026-11-01T10:00:00.123Z\t0001-01-01T00:00:00Z\t0\t42\tedge=web,web, secondary=other, \tvol=/host/data \thealthy\n",
+    "list": "id1\tkomizo-proxy\trunning\tUp\tkomizo-proxy\tcaddy\t/srv/_proxy"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "unavailable"
+    },
+    "fail": "list",
+    "inspect": "id1\t2026-11-01T10:00:00.123Z\t0001-01-01T00:00:00Z\t0\t42\tedge=web,web, secondary=other, \tvol=/host/data \thealthy\n",
+    "list": "id1\tkomizo-proxy\trunning\tUp\tkomizo-proxy\tcaddy\t/srv/_proxy"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "inspection_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "running",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "Up",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id1",
+          "inspection_unavailable": true,
+          "name": "komizo-proxy",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "status": "partial"
+    },
+    "fail": "inspect",
+    "inspect": "id1\t2026-11-01T10:00:00.123Z\t0001-01-01T00:00:00Z\t0\t42\tedge=web,web, secondary=other, \tvol=/host/data \thealthy\n",
+    "list": "id1\tkomizo-proxy\trunning\tUp\tkomizo-proxy\tcaddy\t/srv/_proxy"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "running",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "Up",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id1",
+          "inspection_unavailable": false,
+          "name": "komizo-proxy",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "status": "current"
+    },
+    "fail": "",
+    "inspect": "id2\t2026-10-01T00:00:00Z\t2026-10-02T00:00:00Z\t137\t0\tedge=db, \tdb=/var/data \tunhealthy\nid1\tbad\tbad\tbad\tbad\t=invalid a=b,c, \tbad a= b=/x\n",
+    "list": "id1\tkomizo-proxy\trunning\tUp\tkomizo-proxy\tcaddy\t/srv/_proxy"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "list_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "stopped",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "not created",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [],
+      "status": "unavailable"
+    },
+    "fail": "list",
+    "inspect": "id2\t2026-10-01T00:00:00Z\t2026-10-02T00:00:00Z\t137\t0\tedge=db, \tdb=/var/data \tunhealthy\nid1\tbad\tbad\tbad\tbad\t=invalid a=b,c, \tbad a= b=/x\n",
+    "list": "id1\tkomizo-proxy\trunning\tUp\tkomizo-proxy\tcaddy\t/srv/_proxy"
+  },
+  {
+    "expected": {
+      "containers": [],
+      "failure": "inspection_unavailable",
+      "network": {
+        "name": "edge",
+        "driver": "bridge",
+        "subnet": "172.22.0.0/16"
+      },
+      "proxy": {
+        "state": "running",
+        "network": "edge",
+        "image": "ghcr.io/example/proxy",
+        "status": "Up",
+        "tls_ask": "http://127.0.0.1:8481"
+      },
+      "rows": [
+        {
+          "id": "id1",
+          "inspection_unavailable": true,
+          "name": "komizo-proxy",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "status": "partial"
+    },
+    "fail": "inspect",
+    "inspect": "id2\t2026-10-01T00:00:00Z\t2026-10-02T00:00:00Z\t137\t0\tedge=db, \tdb=/var/data \tunhealthy\nid1\tbad\tbad\tbad\tbad\t=invalid a=b,c, \tbad a= b=/x\n",
+    "list": "id1\tkomizo-proxy\trunning\tUp\tkomizo-proxy\tcaddy\t/srv/_proxy"
+  }
+]
