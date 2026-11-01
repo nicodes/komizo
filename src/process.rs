@@ -32,12 +32,22 @@ fn nonblocking(fd: i32) -> Result<()> {
     );
     Ok(())
 }
-fn drain(reader: &mut impl Read, output: &mut Vec<u8>, maximum: usize, tail: bool) -> Result<bool> {
+fn drain(
+    reader: &mut impl Read,
+    output: &mut Vec<u8>,
+    maximum: usize,
+    tail: bool,
+    mut sink: Option<&mut dyn Write>,
+) -> Result<bool> {
     let mut buffer = [0u8; 65536];
     for _ in 0..64 {
         match reader.read(&mut buffer) {
             Ok(0) => return Ok(true),
             Ok(count) => {
+                if let Some(sink) = sink.as_mut() {
+                    sink.write_all(&buffer[..count])?;
+                    sink.flush()?;
+                }
                 if tail {
                     if count >= maximum {
                         output.clear();
@@ -70,6 +80,38 @@ pub fn capture(
     deadline: Instant,
     cancelled: impl Fn() -> bool,
 ) -> Result<Captured> {
+    capture_with_streams(command, input, maximum, deadline, cancelled, None)
+}
+struct Streams<'a> {
+    stdout: &'a mut dyn Write,
+    stderr: &'a mut dyn Write,
+}
+pub fn stream(
+    command: &mut Command,
+    input: Option<&[u8]>,
+    maximum_tail: usize,
+    deadline: Instant,
+    cancelled: impl Fn() -> bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<Captured> {
+    capture_with_streams(
+        command,
+        input,
+        maximum_tail,
+        deadline,
+        cancelled,
+        Some(Streams { stdout, stderr }),
+    )
+}
+fn capture_with_streams(
+    command: &mut Command,
+    input: Option<&[u8]>,
+    maximum: usize,
+    deadline: Instant,
+    cancelled: impl Fn() -> bool,
+    mut streams: Option<Streams<'_>>,
+) -> Result<Captured> {
     let mut input_file: Option<File> = None;
     if let Some(bytes) = input {
         let mut file = tempfile::tempfile()?;
@@ -95,10 +137,17 @@ pub fn capture(
         ensure!(!cancelled(), "context canceled");
         ensure!(Instant::now() < deadline, "process deadline exceeded");
         if !stdout_closed {
-            stdout_closed = drain(&mut stdout, &mut output, maximum, false)?;
+            let tail = streams.is_some();
+            let sink = streams
+                .as_mut()
+                .map(|streams| &mut *streams.stdout as &mut dyn Write);
+            stdout_closed = drain(&mut stdout, &mut output, maximum, tail, sink)?;
         }
         if !stderr_closed {
-            stderr_closed = drain(&mut stderr, &mut errors, 8192, true)?;
+            let sink = streams
+                .as_mut()
+                .map(|streams| &mut *streams.stderr as &mut dyn Write);
+            stderr_closed = drain(&mut stderr, &mut errors, 8192, true, sink)?;
         }
         if stdout_closed
             && stderr_closed

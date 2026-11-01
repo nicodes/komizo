@@ -30,6 +30,14 @@ pub fn write_result(directory: &Path, mut result: CommandResult) -> Result<()> {
     body.push(b'\n');
     write_atomic(&path, &mut body.as_slice(), 0o640, store::agent_group()?)
 }
+pub fn claim_result(directory: &Path, mut result: CommandResult) -> Result<bool> {
+    result.v = RESULT_VERSION;
+    result.detail = trim_detail(&result.detail);
+    let path = result_path(directory, &result.id)?;
+    let mut body = go_json(&result)?;
+    body.push(b'\n');
+    store::claim_atomic(&path, &mut body.as_slice(), 0o640, store::agent_group()?)
+}
 pub fn read_result(directory: &Path, id: &str) -> Result<Option<CommandResult>> {
     let path = result_path(directory, id)?;
     let Some(bytes) = crate::statefile::read(&path, 64 << 10)? else {

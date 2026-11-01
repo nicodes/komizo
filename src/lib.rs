@@ -2,6 +2,7 @@
 mod cgroupfs;
 pub mod host;
 pub mod process;
+pub mod scripts;
 pub mod statefile;
 pub mod strict;
 pub mod template;

@@ -1,0 +1,680 @@
+[
+  {
+    "after": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+    "app": "example",
+    "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\nSTOPPED=1\nSTOPPED_BY=cli\nSTOPPED_AT=2026-11-01T18:00:00Z\n",
+    "calls": [
+      {
+        "args": [
+          "docker",
+          "compose",
+          "-f",
+          "$ROOT/srv/example/compose.yml",
+          "--project-directory",
+          "$ROOT/srv/example",
+          "up",
+          "-d"
+        ],
+        "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\nSTOPPED=1\nSTOPPED_BY=cli\nSTOPPED_AT=2026-11-01T18:00:00Z\n",
+        "output": "",
+        "error": ""
+      }
+    ],
+    "dir": "$ROOT/srv/example",
+    "error": "",
+    "kind": "lifecycle",
+    "now": "2026-11-01T18:00:00Z",
+    "project": "",
+    "proxy": false,
+    "scenario": "start",
+    "service": "",
+    "verb": "start"
+  },
+  {
+    "after": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\nSTOPPED=1\nSTOPPED_AT=2026-11-01T18:00:00Z\nSTOPPED_BY=account fixture\n",
+    "app": "example",
+    "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+    "calls": [
+      {
+        "args": [
+          "docker",
+          "compose",
+          "-f",
+          "$ROOT/srv/example/compose.yml",
+          "--project-directory",
+          "$ROOT/srv/example",
+          "stop"
+        ],
+        "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\nSTOPPED=1\nSTOPPED_AT=2026-11-01T18:00:00Z\nSTOPPED_BY=account fixture\n",
+        "output": "",
+        "error": ""
+      }
+    ],
+    "dir": "$ROOT/srv/example",
+    "error": "",
+    "kind": "lifecycle",
+    "now": "2026-11-01T18:00:00Z",
+    "project": "",
+    "proxy": false,
+    "scenario": "stop",
+    "service": "",
+    "verb": "stop"
+  },
+  {
+    "after": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+    "app": "example",
+    "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+    "calls": [
+      {
+        "args": [
+          "docker",
+          "compose",
+          "-f",
+          "$ROOT/srv/example/compose.yml",
+          "--project-directory",
+          "$ROOT/srv/example",
+          "ps",
+          "-q"
+        ],
+        "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+        "output": "container-fixture\n",
+        "error": ""
+      },
+      {
+        "args": [
+          "docker",
+          "compose",
+          "-f",
+          "$ROOT/srv/example/compose.yml",
+          "--project-directory",
+          "$ROOT/srv/example",
+          "restart"
+        ],
+        "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+        "output": "",
+        "error": ""
+      }
+    ],
+    "dir": "$ROOT/srv/example",
+    "error": "",
+    "kind": "lifecycle",
+    "now": "2026-11-01T18:00:00Z",
+    "project": "",
+    "proxy": false,
+    "scenario": "restart",
+    "service": "",
+    "verb": "restart"
+  },
+  {
+    "after": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+    "app": "example",
+    "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+    "calls": [
+      {
+        "args": [
+          "docker",
+          "compose",
+          "-f",
+          "$ROOT/srv/example/compose.yml",
+          "--project-directory",
+          "$ROOT/srv/example",
+          "ps",
+          "-q"
+        ],
+        "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+        "output": "",
+        "error": ""
+      }
+    ],
+    "dir": "$ROOT/srv/example",
+    "error": "nothing is running here -- start it instead",
+    "kind": "lifecycle",
+    "now": "2026-11-01T18:00:00Z",
+    "project": "",
+    "proxy": false,
+    "scenario": "restart-empty",
+    "service": "",
+    "verb": "restart"
+  },
+  {
+    "after": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+    "app": "example",
+    "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+    "calls": [
+      {
+        "args": [
+          "docker",
+          "compose",
+          "-f",
+          "$ROOT/srv/example/compose.yml",
+          "--project-directory",
+          "$ROOT/srv/example",
+          "ps",
+          "-q"
+        ],
+        "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+        "output": "",
+        "error": "exit status 1: fixture inventory unavailable"
+      }
+    ],
+    "dir": "$ROOT/srv/example",
+    "error": "could not tell what is running here, so nothing was restarted -- start it instead if it is down: exit status 1: fixture inventory unavailable",
+    "kind": "lifecycle",
+    "now": "2026-11-01T18:00:00Z",
+    "project": "",
+    "proxy": false,
+    "scenario": "restart-failed",
+    "service": "",
+    "verb": "restart"
+  },
+  {
+    "after": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\nSTOPPED=1\nSTOPPED_BY=cli\nSTOPPED_AT=2026-11-01T18:00:00Z\n",
+    "app": "example",
+    "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\nSTOPPED=1\nSTOPPED_BY=cli\nSTOPPED_AT=2026-11-01T18:00:00Z\n",
+    "calls": [],
+    "dir": "$ROOT/srv/example",
+    "error": "example is recorded as stopped, so starting one service would leave it marked stopped while it runs -- and an app in that state never pages again. Start the whole app first: komizo start --app example",
+    "kind": "lifecycle",
+    "now": "2026-11-01T18:00:00Z",
+    "project": "",
+    "proxy": false,
+    "scenario": "start-service-stopped",
+    "service": "api",
+    "verb": "start"
+  },
+  {
+    "after": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+    "app": "example",
+    "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+    "calls": [
+      {
+        "args": [
+          "docker",
+          "compose",
+          "-f",
+          "$ROOT/srv/example/compose.yml",
+          "--project-directory",
+          "$ROOT/srv/example",
+          "up",
+          "-d",
+          "--",
+          "api"
+        ],
+        "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+        "output": "",
+        "error": ""
+      }
+    ],
+    "dir": "$ROOT/srv/example",
+    "error": "",
+    "kind": "lifecycle",
+    "now": "2026-11-01T18:00:00Z",
+    "project": "",
+    "proxy": false,
+    "scenario": "start-service",
+    "service": "api",
+    "verb": "start"
+  },
+  {
+    "after": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+    "app": "example",
+    "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+    "calls": [
+      {
+        "args": [
+          "docker",
+          "compose",
+          "-f",
+          "$ROOT/srv/example/compose.yml",
+          "--project-directory",
+          "$ROOT/srv/example",
+          "stop",
+          "--",
+          "api"
+        ],
+        "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+        "output": "",
+        "error": ""
+      }
+    ],
+    "dir": "$ROOT/srv/example",
+    "error": "",
+    "kind": "lifecycle",
+    "now": "2026-11-01T18:00:00Z",
+    "project": "",
+    "proxy": false,
+    "scenario": "stop-service",
+    "service": "api",
+    "verb": "stop"
+  },
+  {
+    "after": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\nSTOPPED=1\nSTOPPED_BY=cli\nSTOPPED_AT=2026-11-01T18:00:00Z\n",
+    "app": "example",
+    "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\nSTOPPED=1\nSTOPPED_BY=cli\nSTOPPED_AT=2026-11-01T18:00:00Z\n",
+    "calls": [
+      {
+        "args": [
+          "docker",
+          "compose",
+          "-f",
+          "$ROOT/srv/example/compose.yml",
+          "--project-directory",
+          "$ROOT/srv/example",
+          "up",
+          "-d"
+        ],
+        "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\nSTOPPED=1\nSTOPPED_BY=cli\nSTOPPED_AT=2026-11-01T18:00:00Z\n",
+        "output": "",
+        "error": "docker compose up: exit status 1"
+      }
+    ],
+    "dir": "$ROOT/srv/example",
+    "error": "docker compose up: exit status 1",
+    "kind": "lifecycle",
+    "now": "2026-11-01T18:00:00Z",
+    "project": "",
+    "proxy": false,
+    "scenario": "start-failed",
+    "service": "",
+    "verb": "start"
+  },
+  {
+    "after": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+    "app": "example",
+    "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+    "calls": [
+      {
+        "args": [
+          "docker",
+          "compose",
+          "-f",
+          "$ROOT/srv/example/compose.yml",
+          "--project-directory",
+          "$ROOT/srv/example",
+          "stop"
+        ],
+        "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\nSTOPPED=1\nSTOPPED_AT=2026-11-01T18:00:00Z\nSTOPPED_BY=account fixture\n",
+        "output": "",
+        "error": "docker compose stop: exit status 1"
+      }
+    ],
+    "dir": "$ROOT/srv/example",
+    "error": "docker compose stop: exit status 1",
+    "kind": "lifecycle",
+    "now": "2026-11-01T18:00:00Z",
+    "project": "",
+    "proxy": false,
+    "scenario": "stop-failed",
+    "service": "",
+    "verb": "stop"
+  },
+  {
+    "after": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+    "app": "example",
+    "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+    "calls": [
+      {
+        "args": [
+          "docker",
+          "compose",
+          "-f",
+          "$ROOT/srv/example/compose.yml",
+          "--project-directory",
+          "$ROOT/srv/example",
+          "logs",
+          "--tail",
+          "40",
+          "--no-color"
+        ],
+        "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+        "output": "",
+        "error": ""
+      }
+    ],
+    "dir": "$ROOT/srv/example",
+    "error": "",
+    "kind": "lifecycle",
+    "now": "2026-11-01T18:00:00Z",
+    "project": "",
+    "proxy": false,
+    "scenario": "logs",
+    "service": "",
+    "verb": "logs"
+  },
+  {
+    "after": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\nSCOPED_ENV=fixture-credentials\nSCOPED_SCHEMA=1\nSCOPED_FILES=worker.env\n",
+    "app": "example",
+    "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\nSCOPED_ENV=fixture-credentials\nSCOPED_SCHEMA=1\nSCOPED_FILES=worker.env\n",
+    "calls": [],
+    "dir": "$ROOT/srv/example",
+    "error": "scoped env is not ready, so nothing was started",
+    "kind": "lifecycle",
+    "now": "2026-11-01T18:00:00Z",
+    "project": "",
+    "proxy": false,
+    "scenario": "scoped-missing",
+    "service": "",
+    "verb": "start"
+  },
+  {
+    "after": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+    "app": "example",
+    "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+    "calls": [
+      {
+        "args": [
+          "docker",
+          "compose",
+          "-f",
+          "$ROOT/srv/example/compose.yml",
+          "--project-directory",
+          "$ROOT/srv/example",
+          "ps",
+          "-q"
+        ],
+        "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+        "output": "",
+        "error": "context canceled"
+      }
+    ],
+    "dir": "$ROOT/srv/example",
+    "error": "cancelled -- nothing was restarted",
+    "kind": "lifecycle",
+    "now": "2026-11-01T18:00:00Z",
+    "project": "",
+    "proxy": false,
+    "scenario": "restart-cancelled",
+    "service": "",
+    "verb": "restart"
+  },
+  {
+    "after": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+    "app": "",
+    "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+    "calls": [
+      {
+        "args": [
+          "docker",
+          "compose",
+          "-f",
+          "/srv/_proxy/compose.yml",
+          "--project-directory",
+          "/srv/_proxy",
+          "-p",
+          "komizo-proxy",
+          "up",
+          "-d"
+        ],
+        "before": "APP_NAME=example\nAPP_DIR=$ROOT/srv/example\nCUSTOM=preserved\n",
+        "output": "",
+        "error": ""
+      }
+    ],
+    "dir": "/srv/_proxy",
+    "error": "",
+    "kind": "lifecycle",
+    "now": "2026-11-01T18:00:00Z",
+    "project": "komizo-proxy",
+    "proxy": true,
+    "scenario": "proxy",
+    "service": "",
+    "verb": "start"
+  },
+  {
+    "error": "",
+    "kind": "service",
+    "value": ""
+  },
+  {
+    "error": "",
+    "kind": "service",
+    "value": "api"
+  },
+  {
+    "error": "",
+    "kind": "service",
+    "value": "API_1.web"
+  },
+  {
+    "error": "\"-f\" is not a service name -- it is a flag",
+    "kind": "service",
+    "value": "-f"
+  },
+  {
+    "error": "\"bad space\" is not a service name",
+    "kind": "service",
+    "value": "bad space"
+  },
+  {
+    "error": "\"a/b\" is not a service name",
+    "kind": "service",
+    "value": "a/b"
+  },
+  {
+    "error": "\"a;b\" is not a service name",
+    "kind": "service",
+    "value": "a;b"
+  },
+  {
+    "error": "\"Ω\" is not a service name",
+    "kind": "service",
+    "value": "Ω"
+  },
+  {
+    "kind": "args",
+    "output": [
+      "up",
+      "-d"
+    ],
+    "service": "",
+    "tail": 40,
+    "verb": "start"
+  },
+  {
+    "kind": "args",
+    "output": [
+      "up",
+      "-d",
+      "--",
+      "api"
+    ],
+    "service": "api",
+    "tail": 40,
+    "verb": "start"
+  },
+  {
+    "kind": "args",
+    "output": [
+      "stop"
+    ],
+    "service": "",
+    "tail": 40,
+    "verb": "stop"
+  },
+  {
+    "kind": "args",
+    "output": [
+      "stop",
+      "--",
+      "api"
+    ],
+    "service": "api",
+    "tail": 40,
+    "verb": "stop"
+  },
+  {
+    "kind": "args",
+    "output": [
+      "restart"
+    ],
+    "service": "",
+    "tail": 40,
+    "verb": "restart"
+  },
+  {
+    "kind": "args",
+    "output": [
+      "restart",
+      "--",
+      "api"
+    ],
+    "service": "api",
+    "tail": 40,
+    "verb": "restart"
+  },
+  {
+    "kind": "args",
+    "output": [
+      "logs",
+      "--tail",
+      "40",
+      "--no-color"
+    ],
+    "service": "",
+    "tail": 40,
+    "verb": "logs"
+  },
+  {
+    "kind": "args",
+    "output": [
+      "logs",
+      "--tail",
+      "40",
+      "--no-color",
+      "--",
+      "api"
+    ],
+    "service": "api",
+    "tail": 40,
+    "verb": "logs"
+  },
+  {
+    "kind": "args",
+    "output": null,
+    "service": "",
+    "tail": 40,
+    "verb": "unknown"
+  },
+  {
+    "kind": "args",
+    "output": [
+      "--",
+      "api"
+    ],
+    "service": "api",
+    "tail": 40,
+    "verb": "unknown"
+  },
+  {
+    "command": {
+      "v": 0,
+      "id": "",
+      "srv": "",
+      "exp": 0,
+      "op": "app.add",
+      "args": {
+        "app": "example",
+        "app_dir": "/srv/example",
+        "config": "ghcr.io/example/config",
+        "harden_ssh": "1",
+        "known_as": "example.test",
+        "pubkey": "ssh-ed25519 AAAA fixture",
+        "user": "example-ci"
+      }
+    },
+    "environment": {
+      "APP_DIR": "/srv/example",
+      "APP_NAME": "example",
+      "CI_PUBKEY": "ssh-ed25519 AAAA fixture",
+      "CI_USER": "example-ci",
+      "CONFIG_IMAGE": "ghcr.io/example/config",
+      "HARDEN_SSH": "1",
+      "KNOWN_AS": "example.test"
+    },
+    "error": "",
+    "invocation": [
+      "/bin/sh",
+      "-s"
+    ],
+    "kind": "provision",
+    "scenario": "add",
+    "script_sha256": "a7c28f5aee418dff228a1acb282e2f169734ecb4bb6a48a46706dbce1c8a7661",
+    "state": "CI_USER=example-ci\nCONFIG_IMAGE=ghcr.io/example/config\nAPP_DIR=/srv/example\nKNOWN_AS=example.test\nHARDEN_SSH=1\n"
+  },
+  {
+    "command": {
+      "v": 0,
+      "id": "",
+      "srv": "",
+      "exp": 0,
+      "op": "app.rotate",
+      "args": {
+        "app": "example",
+        "pubkey": "ssh-ed25519 AAAA rotated"
+      }
+    },
+    "environment": {
+      "APP_DIR": "/srv/example",
+      "APP_NAME": "example",
+      "CI_PUBKEY": "ssh-ed25519 AAAA rotated",
+      "CI_USER": "example-ci",
+      "CONFIG_IMAGE": "ghcr.io/example/config",
+      "HARDEN_SSH": "0",
+      "KNOWN_AS": "example.test"
+    },
+    "error": "",
+    "invocation": [
+      "/bin/sh",
+      "-s"
+    ],
+    "kind": "provision",
+    "scenario": "rotate",
+    "script_sha256": "a7c28f5aee418dff228a1acb282e2f169734ecb4bb6a48a46706dbce1c8a7661",
+    "state": "CI_USER=example-ci\nCONFIG_IMAGE=ghcr.io/example/config\nAPP_DIR=/srv/example\nKNOWN_AS=example.test\nHARDEN_SSH=1\n"
+  },
+  {
+    "command": {
+      "v": 0,
+      "id": "",
+      "srv": "",
+      "exp": 0,
+      "op": "app.rotate",
+      "args": {
+        "app": "example",
+        "pubkey": "ssh-ed25519 AAAA rotated"
+      }
+    },
+    "environment": {},
+    "error": "this box's record of \"example\" has no CONFIG_IMAGE, so komizo cannot rotate its key without guessing the rest",
+    "invocation": null,
+    "kind": "provision",
+    "scenario": "rotate-incomplete",
+    "script_sha256": "",
+    "state": "CI_USER=example-ci\n"
+  },
+  {
+    "command": {
+      "v": 0,
+      "id": "",
+      "srv": "",
+      "exp": 0,
+      "op": "app.add",
+      "args": {
+        "app": "example",
+        "app_dir": "/srv/example",
+        "config": "ghcr.io/example/config",
+        "harden_ssh": "1",
+        "known_as": "example.test",
+        "pubkey": "",
+        "user": "example-ci"
+      }
+    },
+    "environment": {},
+    "error": "app.add needs the public half of a deploy key",
+    "invocation": null,
+    "kind": "provision",
+    "scenario": "add-invalid",
+    "script_sha256": "",
+    "state": "CI_USER=example-ci\nCONFIG_IMAGE=ghcr.io/example/config\nAPP_DIR=/srv/example\nKNOWN_AS=example.test\nHARDEN_SSH=1\n"
+  }
+]
