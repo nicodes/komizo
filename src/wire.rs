@@ -116,6 +116,32 @@ impl<'de, T: Deserialize<'de> + Default> Deserialize<'de> for Slice<T> {
 pub trait Empty {
     fn empty(&self) -> bool;
 }
+impl Empty for u64 {
+    fn empty(&self) -> bool {
+        *self == 0
+    }
+}
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct Secret(String);
+impl Secret {
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[redacted]")
+    }
+}
+impl Empty for Secret {
+    fn empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
 impl Empty for String {
     fn empty(&self) -> bool {
         self.is_empty()

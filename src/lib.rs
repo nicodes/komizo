@@ -1,5 +1,6 @@
 //! Native Komizo host and caller implementation; the existing API remains in api/.
 mod cgroupfs;
+pub mod host;
 pub mod statefile;
 pub mod strict;
 pub mod wire;

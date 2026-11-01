@@ -2,7 +2,7 @@ use crate::wire_struct;
 use anyhow::{Result, anyhow, ensure};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
-fn parse_cpu(raw: &str) -> Option<f64> {
+pub(crate) fn parse_cpu(raw: &str) -> Option<f64> {
     if !raw.contains('_') && !raw.to_ascii_lowercase().contains("0x") {
         return raw.parse().ok();
     }
