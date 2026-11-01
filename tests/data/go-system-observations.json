@@ -1,0 +1,519 @@
+[
+  {
+    "expected": null,
+    "input": "",
+    "kind": "cpu"
+  },
+  {
+    "expected": {
+      "idle": 820,
+      "total": 970
+    },
+    "input": "cpu 100 0 50 800 20 0 0 0 0 0\n",
+    "kind": "cpu"
+  },
+  {
+    "expected": {
+      "idle": 9,
+      "total": 15
+    },
+    "input": "cpu0 1 2 3 4 5\ncpu 1 2 3 4 5\n",
+    "kind": "cpu"
+  },
+  {
+    "expected": null,
+    "input": "cpu 1 2 3 bad 5\n",
+    "kind": "cpu"
+  },
+  {
+    "expected": {
+      "idle": 0,
+      "total": 0
+    },
+    "input": "cpu 18446744073709551615 1 0 0 0\n",
+    "kind": "cpu"
+  },
+  {
+    "expected": null,
+    "input": "cpu 1 2 3 4\n",
+    "kind": "cpu"
+  },
+  {
+    "expected": null,
+    "input": "cpu 1 2 3 +4 5\n",
+    "kind": "cpu"
+  },
+  {
+    "expected": {
+      "idle": 9,
+      "total": 15
+    },
+    "input": "cpu 1 2 3 4 5\r\n",
+    "kind": "cpu"
+  },
+  {
+    "expected": null,
+    "input": "",
+    "kind": "mem"
+  },
+  {
+    "expected": {
+      "available": 409600,
+      "total": 1024000,
+      "used": 614400
+    },
+    "input": "MemTotal: 1000 kB\nMemFree: 10 kB\nMemAvailable: 400 kB\n",
+    "kind": "mem"
+  },
+  {
+    "expected": null,
+    "input": "MemTotal: 1000 kB\n",
+    "kind": "mem"
+  },
+  {
+    "expected": {
+      "available": 0,
+      "swap": {
+        "total": 204800,
+        "used": 153600
+      },
+      "total": 1024000,
+      "used": 1024000
+    },
+    "input": "MemTotal: 1000 kB\nMemAvailable: 0 kB\nSwapTotal: 200 kB\nSwapFree: 50 kB\n",
+    "kind": "mem"
+  },
+  {
+    "expected": {
+      "available": 409600,
+      "swap": {
+        "total": 2048,
+        "used": 0
+      },
+      "total": 1024000,
+      "used": 614400
+    },
+    "input": "MemTotal: 1000\nMemAvailable: 400\nSwapTotal: 2\nSwapFree: 3\n",
+    "kind": "mem"
+  },
+  {
+    "expected": {
+      "available": 2048,
+      "total": 1024,
+      "used": 18446744073709552000
+    },
+    "input": "MemTotal: 1\nMemAvailable: 2\n",
+    "kind": "mem"
+  },
+  {
+    "expected": {
+      "available": 3072,
+      "total": 10240,
+      "used": 7168
+    },
+    "input": "MemTotal: 9\nMemTotal: 10\nMemAvailable: 3\n",
+    "kind": "mem"
+  },
+  {
+    "expected": null,
+    "input": "MemTotal: bad\nMemAvailable: 4\n",
+    "kind": "mem"
+  },
+  {
+    "expected": 0,
+    "input": "",
+    "kind": "uptime"
+  },
+  {
+    "expected": 123,
+    "input": "123.4 500\n",
+    "kind": "uptime"
+  },
+  {
+    "expected": 0,
+    "input": "-0.5 3\n",
+    "kind": "uptime"
+  },
+  {
+    "expected": 1000,
+    "input": "1e3 4\n",
+    "kind": "uptime"
+  },
+  {
+    "expected": 0,
+    "input": "bad",
+    "kind": "uptime"
+  },
+  {
+    "expected": 12,
+    "input": "0x1.8p3 4",
+    "kind": "uptime"
+  },
+  {
+    "expected": null,
+    "input": "",
+    "kind": "pressure"
+  },
+  {
+    "expected": {
+      "some": {
+        "avg10": 1.5,
+        "avg300": 0.1,
+        "avg60": 0.2,
+        "total_usec": 123
+      }
+    },
+    "input": "some avg10=1.5 avg60=0.2 avg300=0.1 total=123\n",
+    "kind": "pressure"
+  },
+  {
+    "expected": {
+      "full": {
+        "avg10": 2,
+        "avg300": 4,
+        "avg60": 3,
+        "total_usec": 9
+      },
+      "some": {
+        "avg10": 0,
+        "avg300": 0,
+        "avg60": 0,
+        "total_usec": 0
+      }
+    },
+    "input": "some avg10=0 avg60=0 avg300=0 total=0\nfull avg10=2 avg60=3 avg300=4 total=9\n",
+    "kind": "pressure"
+  },
+  {
+    "expected": null,
+    "input": "other avg10=1 avg60=2 avg300=3 total=4\n",
+    "kind": "pressure"
+  },
+  {
+    "expected": null,
+    "input": "some avg10=1 avg60=2 avg300=3 total=-1\n",
+    "kind": "pressure"
+  },
+  {
+    "expected": {
+      "some": {
+        "avg10": 1,
+        "avg300": 3,
+        "avg60": 2,
+        "total_usec": 18446744073709552000
+      }
+    },
+    "input": "some avg10=1 avg60=2 avg300=3 total=18446744073709551615\n",
+    "kind": "pressure"
+  },
+  {
+    "expected": null,
+    "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "kind": "pressure"
+  },
+  {
+    "expected": null,
+    "input": "some avg10=NaN avg60=0 avg300=0 total=1\n",
+    "kind": "pressure"
+  },
+  {
+    "expected": null,
+    "input": "some avg10=+Inf avg60=0 avg300=0 total=1\n",
+    "kind": "pressure"
+  },
+  {
+    "expected": null,
+    "input": "some avg10=-1 avg60=0 avg300=0 total=1\n",
+    "kind": "pressure"
+  },
+  {
+    "expected": null,
+    "input": "some avg10=101 avg60=0 avg300=0 total=1\n",
+    "kind": "pressure"
+  },
+  {
+    "expected": {
+      "some": {
+        "avg10": 10,
+        "avg300": 0,
+        "avg60": 0,
+        "total_usec": 1
+      }
+    },
+    "input": "some avg10=1_0 avg60=0 avg300=0 total=1\n",
+    "kind": "pressure"
+  },
+  {
+    "expected": {
+      "some": {
+        "avg10": 6,
+        "avg300": 0,
+        "avg60": 0,
+        "total_usec": 1
+      }
+    },
+    "input": "some avg10=0x1.8p2 avg60=0 avg300=0 total=1\n",
+    "kind": "pressure"
+  },
+  {
+    "expected": {
+      "some": {
+        "avg10": 100,
+        "avg300": 0,
+        "avg60": 0,
+        "total_usec": 1
+      }
+    },
+    "input": "some avg10=1e2 avg60=0 avg300=0 total=1\n",
+    "kind": "pressure"
+  },
+  {
+    "expected": null,
+    "input": "some avg10=100.00001 avg60=0 avg300=0 total=1\n",
+    "kind": "pressure"
+  },
+  {
+    "expected": {
+      "some": {
+        "avg10": 0,
+        "avg300": 0,
+        "avg60": 0,
+        "total_usec": 1
+      }
+    },
+    "input": "some avg10=+0 avg60=0 avg300=0 total=1\n",
+    "kind": "pressure"
+  },
+  {
+    "expected": {
+      "some": {
+        "avg10": 0.1,
+        "avg300": 0,
+        "avg60": 0,
+        "total_usec": 1
+      }
+    },
+    "input": "some avg10=.1 avg60=0 avg300=0 total=1\n",
+    "kind": "pressure"
+  },
+  {
+    "expected": {
+      "some": {
+        "avg10": 1,
+        "avg300": 0,
+        "avg60": 0,
+        "total_usec": 1
+      }
+    },
+    "input": "some avg10=1. avg60=0 avg300=0 total=1\n",
+    "kind": "pressure"
+  },
+  {
+    "expected": null,
+    "input": "some avg10=1e999 avg60=0 avg300=0 total=1\n",
+    "kind": "pressure"
+  },
+  {
+    "expected": [
+      327680,
+      368640,
+      40960
+    ],
+    "input": [
+      4096,
+      100,
+      20,
+      10
+    ],
+    "kind": "disk"
+  },
+  {
+    "expected": [
+      0,
+      0,
+      0
+    ],
+    "input": [
+      0,
+      100,
+      20,
+      10
+    ],
+    "kind": "disk"
+  },
+  {
+    "expected": [
+      18446744073709552000,
+      2,
+      3
+    ],
+    "input": [
+      1,
+      1,
+      2,
+      3
+    ],
+    "kind": "disk"
+  },
+  {
+    "expected": [
+      18446744073709548000,
+      77824,
+      81920
+    ],
+    "input": [
+      4096,
+      18446744073709551615,
+      0,
+      20
+    ],
+    "kind": "disk"
+  },
+  {
+    "expected": null,
+    "input": [
+      0,
+      0
+    ],
+    "kind": "inode"
+  },
+  {
+    "expected": {
+      "free": 20,
+      "used": 80
+    },
+    "input": [
+      100,
+      20
+    ],
+    "kind": "inode"
+  },
+  {
+    "expected": {
+      "free": 100,
+      "used": 0
+    },
+    "input": [
+      20,
+      100
+    ],
+    "kind": "inode"
+  },
+  {
+    "expected": {
+      "free": 0,
+      "used": 18446744073709552000
+    },
+    "input": [
+      18446744073709551615,
+      0
+    ],
+    "kind": "inode"
+  },
+  {
+    "expected": {
+      "app": "",
+      "service": ""
+    },
+    "input": {},
+    "kind": "cgroup"
+  },
+  {
+    "expected": {
+      "app": "",
+      "cpu_periods": 10,
+      "cpu_throttled_periods": 3,
+      "cpu_throttled_usec": 17,
+      "cpu_usec": 123,
+      "mem": 80,
+      "memory_anon": 40,
+      "memory_current": 100,
+      "memory_inactive_file": 20,
+      "memory_kernel": 5,
+      "memory_max_events": 0,
+      "oom_kills": 0,
+      "pressure": {
+        "cpu": {
+          "some": {
+            "avg10": 1,
+            "avg300": 3,
+            "avg60": 2,
+            "total_usec": 4
+          }
+        }
+      },
+      "service": "",
+      "swap": 0
+    },
+    "input": {
+      "/proc/42/cgroup": "0::/docker/x\n",
+      "/sys/fs/cgroup/docker/x/cpu.pressure": "some avg10=1 avg60=2 avg300=3 total=4\n",
+      "/sys/fs/cgroup/docker/x/cpu.stat": "usage_usec 123\nnr_periods 10\nnr_throttled 3\nthrottled_usec 17\n",
+      "/sys/fs/cgroup/docker/x/memory.current": "100",
+      "/sys/fs/cgroup/docker/x/memory.events": "max 0\noom_kill 0\n",
+      "/sys/fs/cgroup/docker/x/memory.max": "max",
+      "/sys/fs/cgroup/docker/x/memory.stat": "inactive_file 20\nanon 40\nkernel 5\n",
+      "/sys/fs/cgroup/docker/x/memory.swap.current": "0"
+    },
+    "kind": "cgroup"
+  },
+  {
+    "expected": {
+      "app": "",
+      "limit": 200,
+      "mem": 0,
+      "memory_current": 10,
+      "memory_inactive_file": 20,
+      "service": ""
+    },
+    "input": {
+      "/proc/42/cgroup": "0::/x\n",
+      "/sys/fs/cgroup/x/memory.current": "10",
+      "/sys/fs/cgroup/x/memory.max": "200",
+      "/sys/fs/cgroup/x/memory.stat": "inactive_file 20\n"
+    },
+    "kind": "cgroup"
+  },
+  {
+    "expected": {
+      "app": "",
+      "cpu_usec": 1234,
+      "limit": 200,
+      "mem": 70,
+      "service": ""
+    },
+    "input": {
+      "/proc/42/cgroup": "2:cpu,cpuacct:/x\n3:memory:/x\n",
+      "/sys/fs/cgroup/cpuacct/x/cpuacct.usage": "1234567",
+      "/sys/fs/cgroup/memory/x/memory.limit_in_bytes": "200",
+      "/sys/fs/cgroup/memory/x/memory.stat": "total_inactive_file 30\n",
+      "/sys/fs/cgroup/memory/x/memory.usage_in_bytes": "100"
+    },
+    "kind": "cgroup"
+  },
+  {
+    "expected": {
+      "app": "",
+      "cpu_usec": 1,
+      "service": ""
+    },
+    "input": {
+      "/proc/42/cgroup": "0::/missing\n2:cpuacct:/x\n",
+      "/sys/fs/cgroup/cpuacct/x/cpuacct.usage": "1000"
+    },
+    "kind": "cgroup"
+  },
+  {
+    "expected": [
+      80,
+      443,
+      8080,
+      65535
+    ],
+    "input": {
+      "/proc/42/net/tcp": " 0: 00000000:0050 00000000:0000 0A\n 1: 00000000:1F90 00000000:0000 0A\n 2: 00000000:8000 00000000:0000 0A\n 3: 00000000:FFFF 00000000:0000 0A\n 4: 00000000:1234 00000000:0000 01\n",
+      "/proc/42/net/tcp6": " 0: 0000:0050 0000:0000 0A\n 1: 0000:01BB 0000:0000 0A\n"
+    },
+    "kind": "ports"
+  }
+]
