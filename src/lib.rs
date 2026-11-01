@@ -1,4 +1,5 @@
 //! Native Komizo host and caller implementation; the existing API remains in api/.
+pub mod caller;
 mod cgroupfs;
 pub mod flags;
 pub mod host;
