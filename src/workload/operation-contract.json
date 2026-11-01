@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "phases": {
+    "admitted": {"decision": "pending", "reconciliation_required": false},
+    "staging": {"decision": "pending", "reconciliation_required": true},
+    "staging_failed": {"decision": "refused", "reconciliation_required": true},
+    "configured": {"decision": "pending", "reconciliation_required": true},
+    "activating": {"decision": "pending", "reconciliation_required": true},
+    "activated": {"decision": "pending", "reconciliation_required": false},
+    "ready": {"decision": "accepted", "reconciliation_required": false},
+    "readiness_failed": {"decision": "refused", "reconciliation_required": true},
+    "prepared_stopped": {"decision": "owner_stopped", "reconciliation_required": false},
+    "failed": {"decision": "refused", "reconciliation_required": true},
+    "activation_failed": {"decision": "refused", "reconciliation_required": true},
+    "reconciled": {"decision": "reconciled", "reconciliation_required": false}
+  }
+}

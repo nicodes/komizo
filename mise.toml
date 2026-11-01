@@ -20,7 +20,7 @@ PYTHONDONTWRITEBYTECODE = "1"
 run = ["bash -euo pipefail -c 'python3 \"$TOOLS_ROOT/helpers/workspace-storage.py\" check --path ui/node_modules --reserve-bytes 1073741824'", "rustup component add --toolchain 1.94.0 rustfmt clippy", "go mod download", "npm ci --prefix ui --no-audit --no-fund"]
 
 [tasks."lint"]
-run = ["cargo fmt --manifest-path api/Cargo.toml --check", "cargo clippy --locked --manifest-path api/Cargo.toml --all-targets -- -D warnings", "bash tools/engineering/lint.sh", "bash tools/engineering/check-ui.sh"]
+run = ["cargo fmt --all --check", "cargo clippy --locked --all-targets -- -D warnings", "cargo fmt --manifest-path api/Cargo.toml --check", "cargo clippy --locked --manifest-path api/Cargo.toml --all-targets -- -D warnings", "bash tools/engineering/lint.sh", "bash tools/engineering/check-ui.sh"]
 
 [tasks."unit"]
 run = "python3 \"$TOOLS_ROOT/helpers/verification.py\" test --name unit --artifact dist --artifact internal/agent/bin --environment VERSION -- mise run _unit"
@@ -35,7 +35,7 @@ run = ["bash tools/engineering/artifact-check.sh"]
 depends = ["build"]
 
 [tasks."vuln"]
-run = ["govulncheck ./...", "trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 api/Cargo.lock"]
+run = ["govulncheck ./...", "trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 api/Cargo.lock", "trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 Cargo.lock"]
 
 [tasks."clean"]
 run = ["python3 -c 'import shutil;from pathlib import Path\nfor name in [\"bin\",\"dist\"]:\n p=Path(name);assert not p.is_symlink();shutil.rmtree(p,ignore_errors=True)\nfor p in Path(\"internal/agent/bin\").glob(\"komizo-box-*\"): p.unlink()'"]
