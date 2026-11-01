@@ -189,9 +189,11 @@ fn concurrent_writers_bound_only_metadata_and_lookup_never_exports_or_mutates() 
                 };
                 for n in (worker..270).step_by(4) {
                     cache
-                        .config_digest(&context(), &format!("sha256:{n:064x}"), &mut |_, _| {
-                            Ok(id('b'))
-                        })
+                        .config_digest(
+                            &Context::new(Instant::now() + Duration::from_secs(60)),
+                            &format!("sha256:{n:064x}"),
+                            &mut |_, _| Ok(id('b')),
+                        )
                         .unwrap();
                 }
             });

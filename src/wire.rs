@@ -160,6 +160,12 @@ pub fn decode_base64(value: &str) -> Result<Vec<u8>, base64::DecodeError> {
     )
     .decode(value)
 }
+pub fn trim_space(body: &[u8]) -> &[u8] {
+    std::str::from_utf8(body)
+        .map(str::trim)
+        .map(str::as_bytes)
+        .unwrap_or_else(|_| body.trim_ascii())
+}
 impl Serialize for Bytes {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use base64::Engine as _;

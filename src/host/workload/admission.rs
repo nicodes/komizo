@@ -120,7 +120,7 @@ impl<E: Effects> Host<E> {
             Err(e) => return Err(e),
         };
         ensure!(wire.len() <= 128 << 10, "release proof exceeds wire limit");
-        if wire.trim_ascii().is_empty() {
+        if crate::wire::trim_space(wire).is_empty() {
             ensure!(
                 !p.require_delivery_authorization,
                 "protected CI admission requires current authenticated proof; use the root owner recovery route"

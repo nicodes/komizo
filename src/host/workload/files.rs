@@ -164,7 +164,7 @@ pub fn protected_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 pub fn write_atomic(path: &Path, body: &[u8], mode: u32) -> Result<()> {
-    let parent = path.parent().unwrap_or(Path::new("."));
+    let parent = parent(path);
     let mut temporary = tempfile::Builder::new()
         .prefix(".komizo-retain-")
         .tempfile_in(parent)?;
@@ -189,13 +189,16 @@ pub fn json_bytes(value: &impl Serialize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 pub fn write_json(path: &Path, value: &impl Serialize) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(parent)?;
-    }
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(parent(path))?;
     write_atomic(path, &json_bytes(value)?, 0o600)
+}
+pub fn parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."))
 }
 pub fn create_private(path: &Path, body: &[u8]) -> Result<()> {
     let mut file = OpenOptions::new()
