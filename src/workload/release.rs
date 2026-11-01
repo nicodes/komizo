@@ -420,8 +420,12 @@ pub fn approve_owner_release(
     Ok(accepted)
 }
 pub fn github_release_key(kid: &str) -> Result<RsaKey> {
+    github_release_key_with_timeout(kid, StdDuration::from_secs(10))
+}
+pub fn github_release_key_with_timeout(kid: &str, timeout: StdDuration) -> Result<RsaKey> {
+    ensure!(!timeout.is_zero(), "Actions signing key deadline exceeded");
     let client = reqwest::blocking::Client::builder()
-        .timeout(StdDuration::from_secs(10))
+        .timeout(timeout.min(StdDuration::from_secs(10)))
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
     let response = client

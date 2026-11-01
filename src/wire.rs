@@ -147,6 +147,19 @@ impl Bytes {
         self.0.unwrap_or_default()
     }
 }
+pub fn decode_base64(value: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    use base64::Engine as _;
+    let value: Vec<_> = value
+        .bytes()
+        .filter(|b| !matches!(b, b'\r' | b'\n'))
+        .collect();
+    base64::engine::general_purpose::GeneralPurpose::new(
+        &base64::alphabet::STANDARD,
+        base64::engine::general_purpose::GeneralPurposeConfig::new()
+            .with_decode_allow_trailing_bits(true),
+    )
+    .decode(value)
+}
 impl Serialize for Bytes {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use base64::Engine as _;
@@ -158,7 +171,6 @@ impl Serialize for Bytes {
 }
 impl<'de> Deserialize<'de> for Bytes {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use base64::Engine as _;
         #[derive(Deserialize)]
         #[serde(untagged)]
         enum Encoded {
@@ -173,19 +185,7 @@ impl<'de> Deserialize<'de> for Bytes {
                 .into_iter()
                 .map(|value| value.unwrap_or_default())
                 .collect(),
-            Encoded::Text(value) => {
-                let value: Vec<_> = value
-                    .bytes()
-                    .filter(|b| !matches!(b, b'\r' | b'\n'))
-                    .collect();
-                base64::engine::general_purpose::GeneralPurpose::new(
-                    &base64::alphabet::STANDARD,
-                    base64::engine::general_purpose::GeneralPurposeConfig::new()
-                        .with_decode_allow_trailing_bits(true),
-                )
-                .decode(value)
-                .map_err(serde::de::Error::custom)?
-            }
+            Encoded::Text(value) => decode_base64(&value).map_err(serde::de::Error::custom)?,
         };
         Ok(bytes.into())
     }

@@ -80,7 +80,7 @@ pub fn capture(
     deadline: Instant,
     cancelled: impl Fn() -> bool,
 ) -> Result<Captured> {
-    capture_with_streams(command, input, maximum, deadline, cancelled, None)
+    capture_with_streams(command, input, maximum, deadline, cancelled, None, None)
 }
 /// Feed bounded stdout directly to an archive reader while draining stderr.
 /// The child leader stays unreaped until both pipes close, so descendants are
@@ -243,6 +243,26 @@ pub fn stream(
         deadline,
         cancelled,
         Some(Streams { stdout, stderr }),
+        None,
+    )
+}
+pub fn stream_input(
+    command: &mut Command,
+    input: Stdio,
+    maximum_tail: usize,
+    deadline: Instant,
+    cancelled: impl Fn() -> bool,
+    stdout: &mut dyn Write,
+    stderr: &mut dyn Write,
+) -> Result<Captured> {
+    capture_with_streams(
+        command,
+        None,
+        maximum_tail,
+        deadline,
+        cancelled,
+        Some(Streams { stdout, stderr }),
+        Some(input),
     )
 }
 fn capture_with_streams(
@@ -252,6 +272,7 @@ fn capture_with_streams(
     deadline: Instant,
     cancelled: impl Fn() -> bool,
     mut streams: Option<Streams<'_>>,
+    stdin: Option<Stdio>,
 ) -> Result<Captured> {
     let mut input_file: Option<File> = None;
     if let Some(bytes) = input {
@@ -261,7 +282,7 @@ fn capture_with_streams(
         input_file = Some(file);
     }
     command
-        .stdin(input_file.map_or_else(Stdio::null, Stdio::from))
+        .stdin(stdin.unwrap_or_else(|| input_file.map_or_else(Stdio::null, Stdio::from)))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);

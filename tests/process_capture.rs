@@ -100,3 +100,29 @@ fn streaming_progress_reaches_the_caller_before_child_completion_and_retains_onl
     assert_eq!(errors, b"stream-error");
     assert_eq!(captured.stderr, errors);
 }
+#[test]
+fn streaming_an_inherited_input_starts_after_the_consumed_proof_and_keeps_finite_output() {
+    use std::io::{Read, Seek, Write};
+    let mut input = tempfile::tempfile().unwrap();
+    input.write_all(b"proof-line\npayload\0bytes\n").unwrap();
+    input.rewind().unwrap();
+    let mut proof = [0; 11];
+    input.read_exact(&mut proof).unwrap();
+    assert_eq!(&proof, b"proof-line\n");
+    let mut output = vec![];
+    let mut errors = vec![];
+    let result = komizo::process::stream_input(
+        Command::new("sh").args(["-c", "cat; printf complete >&2"]),
+        std::process::Stdio::from(input),
+        4,
+        Instant::now() + Duration::from_secs(2),
+        || false,
+        &mut output,
+        &mut errors,
+    )
+    .unwrap();
+    assert!(result.status.success());
+    assert_eq!(output, b"payload\0bytes\n");
+    assert_eq!(errors, b"complete");
+    assert_eq!(result.stdout, b"tes\n");
+}
