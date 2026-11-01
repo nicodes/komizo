@@ -45,6 +45,15 @@ jobs:
         python3 tools/engineering/api-payload.py ".artifacts/native-api/komizo-api_${{ matrix.platform }}"
         go build -tags rustapi -trimpath -o .artifacts/komizo .
         python3 tools/engineering/api-smoke.py .artifacts/komizo
+    - name: Verify native host modes and embedded Axum API
+      run: |-
+        set -euo pipefail
+        cargo fmt --all --check
+        cargo clippy --locked --all-targets -- -D warnings
+        cargo test --locked --test host_modes --test flags --test host_application
+        KOMIZO_API_PAYLOAD="$PWD/internal/nativeapi/payload.gz" cargo clippy --locked --lib --bin komizo-box -- -D warnings
+        KOMIZO_API_PAYLOAD="$PWD/internal/nativeapi/payload.gz" cargo test --locked --test host_modes
+        bash tools/engineering/build-native-host.sh
     - name: Verify source-installed host packaging
       if: matrix.platform == 'Linux_x86_64'
       timeout-minutes: 15
@@ -56,4 +65,11 @@ jobs:
         path: .artifacts/native-api/*
         if-no-files-found: error
         include-hidden-files: true
+        retention-days: 7
+    - name: Upload native host executable
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      with:
+        name: native-host-${{ matrix.platform }}
+        path: .artifacts/native-host/*
+        if-no-files-found: error
         retention-days: 7
