@@ -38,12 +38,14 @@ impl std::error::Error for ActivationError {}
 pub struct Context {
     pub deadline: Instant,
     pub cancelled: Arc<AtomicBool>,
+    docker_config: Option<Arc<std::path::PathBuf>>,
 }
 impl Context {
     pub fn new(deadline: Instant) -> Self {
         Self {
             deadline,
             cancelled: Arc::new(AtomicBool::new(false)),
+            docker_config: None,
         }
     }
     pub fn check(&self) -> Result<()> {
@@ -61,7 +63,18 @@ impl Context {
                 .deadline
                 .min(Instant::now() + (deadline - now).to_std().unwrap_or_default()),
             cancelled: self.cancelled.clone(),
+            docker_config: self.docker_config.clone(),
         }
+    }
+    pub(crate) fn with_docker_config(&self, path: std::path::PathBuf) -> Self {
+        let mut context = self.clone();
+        context.docker_config = Some(Arc::new(path));
+        context
+    }
+    pub(crate) fn docker_config(&self) -> Option<&std::path::Path> {
+        self.docker_config
+            .as_deref()
+            .map(std::path::PathBuf::as_path)
     }
 }
 impl ActivationRequest {
