@@ -170,7 +170,7 @@ fn static_headers(headers: &BTreeMap<String, String>) -> bool {
                 )
         })
 }
-fn go_regex(pattern: &str) -> bool {
+pub(crate) fn go_regex(pattern: &str) -> bool {
     use regex_syntax::ast::{Ast, RepetitionKind, RepetitionRange};
     fn children(ast: &Ast) -> Vec<&Ast> {
         match ast {
