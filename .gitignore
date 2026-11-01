@@ -29,3 +29,6 @@ __pycache__/
 /.ci-tools/
 /api/target/
 /internal/nativeapi/payload.gz
+
+# Native Rust host and CLI runtime.
+/target/
