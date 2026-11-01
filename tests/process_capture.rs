@@ -56,3 +56,47 @@ fn deadlines_and_cancellation_cover_inherited_pipes_and_continuous_stderr() {
     );
     assert!(result.is_err());
 }
+#[test]
+fn streaming_progress_reaches_the_caller_before_child_completion_and_retains_only_a_tail() {
+    use std::io::Write;
+    struct Progress {
+        bytes: usize,
+        ack: std::path::PathBuf,
+    }
+    impl Write for Progress {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if self.bytes == 0 {
+                std::fs::write(&self.ack, b"observed")?;
+            }
+            self.bytes += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let root = tempfile::tempdir().unwrap();
+    let mut progress = Progress {
+        bytes: 0,
+        ack: root.path().join("ack"),
+    };
+    let mut errors = vec![];
+    let mut command = std::process::Command::new("/bin/sh");
+    command.args(["-c","printf ready; while [ ! -f \"$ACK_PATH\" ]; do sleep 0.01; done; head -c 1048576 /dev/zero; printf done; printf stream-error >&2"]).env("ACK_PATH",&progress.ack);
+    let captured = komizo::process::stream(
+        &mut command,
+        None,
+        8192,
+        std::time::Instant::now() + std::time::Duration::from_secs(5),
+        || false,
+        &mut progress,
+        &mut errors,
+    )
+    .unwrap();
+    assert!(captured.status.success());
+    assert_eq!(progress.bytes, 1048576 + 9);
+    assert_eq!(captured.stdout.len(), 8192);
+    assert!(captured.stdout.ends_with(b"done"));
+    assert_eq!(errors, b"stream-error");
+    assert_eq!(captured.stderr, errors);
+}

@@ -126,6 +126,31 @@ pub fn write_atomic(
 ) -> Result<()> {
     write_atomic_with(path, reader, mode, |file| give_to_group(file, gid))
 }
+pub fn claim_atomic(
+    path: &Path,
+    reader: &mut impl Read,
+    mode: u32,
+    gid: Option<libc::gid_t>,
+) -> Result<bool> {
+    make_parent(path)?;
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".tmp-")
+        .tempfile_in(parent(path))?;
+    io::copy(reader, &mut temporary)?;
+    temporary
+        .as_file()
+        .set_permissions(fs::Permissions::from_mode(mode))?;
+    give_to_group(temporary.as_file(), gid)?;
+    temporary.as_file().sync_all()?;
+    match temporary.persist_noclobber(path) {
+        Ok(_) => {
+            File::open(parent(path))?.sync_all()?;
+            Ok(true)
+        }
+        Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
 pub fn write_atomic_with(
     path: &Path,
     reader: &mut impl Read,
