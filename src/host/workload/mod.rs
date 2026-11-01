@@ -1,6 +1,11 @@
 //! Privileged workload adapters retain host-owned authority and durable operation fences.
+pub mod activation;
+mod deployment;
+pub mod effects;
 pub mod files;
 pub mod image_cache;
+mod owner;
+mod static_serving;
 pub mod transaction;
 pub const ACTIVATIONS: &str = "/var/lib/komizo/activations";
 pub const RELEASES: &str = "/var/lib/komizo/releases";
