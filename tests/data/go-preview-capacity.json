@@ -1,0 +1,1815 @@
+[
+  {
+    "body": "",
+    "error": "",
+    "kind": "parse-floors",
+    "output": {
+      "DiskBytes": 0,
+      "MemBytes": 0
+    },
+    "present": false
+  },
+  {
+    "body": "DISK_AVAILABLE_FLOOR_BYTES=100\nMEM_AVAILABLE_FLOOR_BYTES=200",
+    "error": "",
+    "kind": "parse-floors",
+    "output": {
+      "DiskBytes": 100,
+      "MemBytes": 200
+    },
+    "present": true
+  },
+  {
+    "body": "DISK_AVAILABLE_FLOOR_BYTES=-1\nMEM_AVAILABLE_FLOOR_BYTES=0",
+    "error": "",
+    "kind": "parse-floors",
+    "output": {
+      "DiskBytes": -1,
+      "MemBytes": 0
+    },
+    "present": true
+  },
+  {
+    "body": "DISK_AVAILABLE_FLOOR_BYTES=x",
+    "error": "deploy-floors has a non-numeric DISK_AVAILABLE_FLOOR_BYTES",
+    "kind": "parse-floors",
+    "output": {
+      "DiskBytes": 0,
+      "MemBytes": 0
+    },
+    "present": false
+  },
+  {
+    "body": "MEM_AVAILABLE_FLOOR_BYTES=x",
+    "error": "deploy-floors has a non-numeric MEM_AVAILABLE_FLOOR_BYTES",
+    "kind": "parse-floors",
+    "output": {
+      "DiskBytes": 0,
+      "MemBytes": 0
+    },
+    "present": false
+  },
+  {
+    "body": "MEM_AVAILABLE_FLOOR_BYTES=200\nMEM_AVAILABLE_FLOOR_BYTES=999",
+    "error": "",
+    "kind": "parse-floors",
+    "output": {
+      "DiskBytes": 0,
+      "MemBytes": 200
+    },
+    "present": true
+  },
+  {
+    "body": "DISK_AVAILABLE_FLOOR_BYTES=+100",
+    "error": "",
+    "kind": "parse-floors",
+    "output": {
+      "DiskBytes": 100,
+      "MemBytes": 0
+    },
+    "present": true
+  },
+  {
+    "body": "",
+    "error": "floors are set but report.json is missing or unreadable",
+    "floors": {
+      "DiskBytes": 0,
+      "MemBytes": 0
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "",
+    "warns": null
+  },
+  {
+    "body": "{}",
+    "error": "",
+    "floors": {
+      "DiskBytes": 0,
+      "MemBytes": 0
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "",
+    "warns": null
+  },
+  {
+    "body": "{\"system\":{\"mem\":{\"available\":199},\"disks\":[{\"available\":99}]}}",
+    "error": "",
+    "floors": {
+      "DiskBytes": 0,
+      "MemBytes": 0
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "",
+    "warns": null
+  },
+  {
+    "body": "{\"system\":{\"mem\":{\"available\":200},\"disks\":[{\"available\":100}]}}",
+    "error": "",
+    "floors": {
+      "DiskBytes": 0,
+      "MemBytes": 0
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "",
+    "warns": null
+  },
+  {
+    "body": "{\"system\":{\"mem\":{\"available\":400},\"disks\":[{\"available\":200},{\"available\":300}]}}",
+    "error": "",
+    "floors": {
+      "DiskBytes": 0,
+      "MemBytes": 0
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "",
+    "warns": null
+  },
+  {
+    "body": "{\"system\":{\"mem\":{\"available\":300},\"disks\":[{\"available\":150}]}}",
+    "error": "",
+    "floors": {
+      "DiskBytes": 0,
+      "MemBytes": 0
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "",
+    "warns": null
+  },
+  {
+    "body": "",
+    "error": "floors are set but report.json is missing or unreadable",
+    "floors": {
+      "DiskBytes": 0,
+      "MemBytes": 200
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "",
+    "warns": null
+  },
+  {
+    "body": "{}",
+    "error": "floors are set but report.json lacks available fields",
+    "floors": {
+      "DiskBytes": 0,
+      "MemBytes": 200
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "",
+    "warns": null
+  },
+  {
+    "body": "{\"system\":{\"mem\":{\"available\":199},\"disks\":[{\"available\":99}]}}",
+    "error": "",
+    "floors": {
+      "DiskBytes": 0,
+      "MemBytes": 200
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "mem available 199 bytes is below floor 200 bytes",
+    "warns": null
+  },
+  {
+    "body": "{\"system\":{\"mem\":{\"available\":200},\"disks\":[{\"available\":100}]}}",
+    "error": "",
+    "floors": {
+      "DiskBytes": 0,
+      "MemBytes": 200
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "",
+    "warns": [
+      "mem available 200 bytes is below twice the floor 200 bytes"
+    ]
+  },
+  {
+    "body": "{\"system\":{\"mem\":{\"available\":400},\"disks\":[{\"available\":200},{\"available\":300}]}}",
+    "error": "",
+    "floors": {
+      "DiskBytes": 0,
+      "MemBytes": 200
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "",
+    "warns": null
+  },
+  {
+    "body": "{\"system\":{\"mem\":{\"available\":300},\"disks\":[{\"available\":150}]}}",
+    "error": "",
+    "floors": {
+      "DiskBytes": 0,
+      "MemBytes": 200
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "",
+    "warns": [
+      "mem available 300 bytes is below twice the floor 200 bytes"
+    ]
+  },
+  {
+    "body": "",
+    "error": "floors are set but report.json is missing or unreadable",
+    "floors": {
+      "DiskBytes": 100,
+      "MemBytes": 0
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "",
+    "warns": null
+  },
+  {
+    "body": "{}",
+    "error": "floors are set but report.json lacks available fields",
+    "floors": {
+      "DiskBytes": 100,
+      "MemBytes": 0
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "",
+    "warns": null
+  },
+  {
+    "body": "{\"system\":{\"mem\":{\"available\":199},\"disks\":[{\"available\":99}]}}",
+    "error": "",
+    "floors": {
+      "DiskBytes": 100,
+      "MemBytes": 0
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "disk available 99 bytes is below floor 100 bytes",
+    "warns": null
+  },
+  {
+    "body": "{\"system\":{\"mem\":{\"available\":200},\"disks\":[{\"available\":100}]}}",
+    "error": "",
+    "floors": {
+      "DiskBytes": 100,
+      "MemBytes": 0
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "",
+    "warns": [
+      "disk available 100 bytes is below twice the floor 100 bytes"
+    ]
+  },
+  {
+    "body": "{\"system\":{\"mem\":{\"available\":400},\"disks\":[{\"available\":200},{\"available\":300}]}}",
+    "error": "",
+    "floors": {
+      "DiskBytes": 100,
+      "MemBytes": 0
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "",
+    "warns": null
+  },
+  {
+    "body": "{\"system\":{\"mem\":{\"available\":300},\"disks\":[{\"available\":150}]}}",
+    "error": "",
+    "floors": {
+      "DiskBytes": 100,
+      "MemBytes": 0
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "",
+    "warns": [
+      "disk available 150 bytes is below twice the floor 100 bytes"
+    ]
+  },
+  {
+    "body": "",
+    "error": "floors are set but report.json is missing or unreadable",
+    "floors": {
+      "DiskBytes": 100,
+      "MemBytes": 200
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "",
+    "warns": null
+  },
+  {
+    "body": "{}",
+    "error": "floors are set but report.json lacks available fields",
+    "floors": {
+      "DiskBytes": 100,
+      "MemBytes": 200
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "",
+    "warns": null
+  },
+  {
+    "body": "{\"system\":{\"mem\":{\"available\":199},\"disks\":[{\"available\":99}]}}",
+    "error": "",
+    "floors": {
+      "DiskBytes": 100,
+      "MemBytes": 200
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "mem available 199 bytes is below floor 200 bytes",
+    "warns": null
+  },
+  {
+    "body": "{\"system\":{\"mem\":{\"available\":200},\"disks\":[{\"available\":100}]}}",
+    "error": "",
+    "floors": {
+      "DiskBytes": 100,
+      "MemBytes": 200
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "",
+    "warns": [
+      "mem available 200 bytes is below twice the floor 200 bytes",
+      "disk available 100 bytes is below twice the floor 100 bytes"
+    ]
+  },
+  {
+    "body": "{\"system\":{\"mem\":{\"available\":400},\"disks\":[{\"available\":200},{\"available\":300}]}}",
+    "error": "",
+    "floors": {
+      "DiskBytes": 100,
+      "MemBytes": 200
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "",
+    "warns": null
+  },
+  {
+    "body": "{\"system\":{\"mem\":{\"available\":300},\"disks\":[{\"available\":150}]}}",
+    "error": "",
+    "floors": {
+      "DiskBytes": 100,
+      "MemBytes": 200
+    },
+    "kind": "floors",
+    "present": true,
+    "refuse": "",
+    "warns": [
+      "mem available 300 bytes is below twice the floor 200 bytes",
+      "disk available 150 bytes is below twice the floor 100 bytes"
+    ]
+  },
+  {
+    "cgroup_parent": "/komizo-previews",
+    "error": "",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.1",
+      "ProductionReserve": 771751936,
+      "DatabaseReserve": 134217728,
+      "MemoryBudget": 67108864,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: CPU_LIMIT exceeds the protected preview envelope",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.2",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.2",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: CPU_LIMIT exceeds the protected preview envelope",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "NaN",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "NaN",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: CPU_LIMIT exceeds the protected preview envelope",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "-1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "-1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 0,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.2",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.2",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 0,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "NaN",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "NaN",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 0,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "-1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "-1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 0,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 0,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.2",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.2",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 0,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "NaN",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "NaN",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 0,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "-1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "-1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 0,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 64001,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.2",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.2",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 64001,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "NaN",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "NaN",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 64001,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "-1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "-1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 64001,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 0,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.2",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.2",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 0,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "NaN",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "NaN",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 0,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "-1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "-1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 0,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 0,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.2",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.2",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 0,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "NaN",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "NaN",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 0,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "-1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "-1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 0,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 0
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.2",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.2",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 0
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "NaN",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "NaN",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 0
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "-1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "-1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 67108864,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 0
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 536870912,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.2",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.2",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 536870912,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "NaN",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "NaN",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 536870912,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "cgroup_parent": "",
+    "error": "preview up refused: invalid protected host resources",
+    "kind": "envelope",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "-1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "output": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "-1",
+      "ProductionReserve": 0,
+      "DatabaseReserve": 0,
+      "MemoryBudget": 1073741824,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    },
+    "resources": {
+      "MemoryBytes": 536870912,
+      "MilliCPUs": 100,
+      "ProductionReserveBytes": 771751936,
+      "DatabaseReserveBytes": 134217728,
+      "PhysicalMemoryBytes": 1073741824
+    }
+  },
+  {
+    "body": "",
+    "error": "preview up requires measured physical RAM for PRODUCTION_RESERVE",
+    "kind": "reserve",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.1",
+      "ProductionReserve": 771751936,
+      "DatabaseReserve": 134217728,
+      "MemoryBudget": 67108864,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    }
+  },
+  {
+    "body": "{}",
+    "error": "preview up requires measured physical RAM for PRODUCTION_RESERVE",
+    "kind": "reserve",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.1",
+      "ProductionReserve": 771751936,
+      "DatabaseReserve": 134217728,
+      "MemoryBudget": 67108864,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    }
+  },
+  {
+    "body": "{\"system\":{\"mem\":{\"total\":0}}}",
+    "error": "preview up requires measured physical RAM for PRODUCTION_RESERVE",
+    "kind": "reserve",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.1",
+      "ProductionReserve": 771751936,
+      "DatabaseReserve": 134217728,
+      "MemoryBudget": 67108864,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    }
+  },
+  {
+    "body": "{\"system\":{\"mem\":{\"total\":1073741824}}}",
+    "error": "",
+    "kind": "reserve",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.1",
+      "ProductionReserve": 771751936,
+      "DatabaseReserve": 134217728,
+      "MemoryBudget": 67108864,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    }
+  },
+  {
+    "body": "{\"system\":{\"mem\":{\"total\":536870912}}}",
+    "error": "preview up refused: preview/database budgets would consume the production reserve",
+    "kind": "reserve",
+    "knob": {
+      "SharedDomain": "",
+      "Domain": "preview.example.test",
+      "TTL": 259200000000000,
+      "Max": 5,
+      "MemLimit": "64m",
+      "CPULimit": "0.1",
+      "ProductionReserve": 771751936,
+      "DatabaseReserve": 134217728,
+      "MemoryBudget": 67108864,
+      "InvalidBudget": false,
+      "AskPort": 8487,
+      "PortRange": "20000-21000"
+    }
+  },
+  {
+    "body": "{\"at\":\"2026-11-01T17:57:59Z\"}",
+    "error": "preview up requires a capacity report observed within two minutes",
+    "kind": "fresh",
+    "now": "2026-11-01T18:00:00Z"
+  },
+  {
+    "body": "{\"at\":\"2026-11-01T17:58:00Z\"}",
+    "error": "",
+    "kind": "fresh",
+    "now": "2026-11-01T18:00:00Z"
+  },
+  {
+    "body": "{\"at\":\"2026-11-01T17:59:59Z\"}",
+    "error": "",
+    "kind": "fresh",
+    "now": "2026-11-01T18:00:00Z"
+  },
+  {
+    "body": "{\"at\":\"2026-11-01T18:00:00Z\"}",
+    "error": "",
+    "kind": "fresh",
+    "now": "2026-11-01T18:00:00Z"
+  },
+  {
+    "body": "{\"at\":\"2026-11-01T18:00:05Z\"}",
+    "error": "",
+    "kind": "fresh",
+    "now": "2026-11-01T18:00:00Z"
+  },
+  {
+    "body": "{\"at\":\"2026-11-01T18:00:05.000000001Z\"}",
+    "error": "preview up requires a capacity report observed within two minutes",
+    "kind": "fresh",
+    "now": "2026-11-01T18:00:00Z"
+  },
+  {
+    "body": "{\"at\":\"2026-11-01T18:00:06Z\"}",
+    "error": "preview up requires a capacity report observed within two minutes",
+    "kind": "fresh",
+    "now": "2026-11-01T18:00:00Z"
+  },
+  {
+    "body": "",
+    "error": "preview up requires a capacity report observed within two minutes",
+    "kind": "fresh",
+    "now": "2026-11-01T18:00:00Z"
+  },
+  {
+    "body": "{}",
+    "error": "preview up requires a capacity report observed within two minutes",
+    "kind": "fresh",
+    "now": "2026-11-01T18:00:00Z"
+  },
+  {
+    "body": "{\"at\":null}",
+    "error": "preview up requires a capacity report observed within two minutes",
+    "kind": "fresh",
+    "now": "2026-11-01T18:00:00Z"
+  },
+  {
+    "body": "{\"at\":\"invalid\"}",
+    "error": "preview up requires a capacity report observed within two minutes",
+    "kind": "fresh",
+    "now": "2026-11-01T18:00:00Z"
+  }
+]

@@ -1,5 +1,12 @@
 //! Preview identities and reservations are independent of product-specific topology.
+pub mod capacity;
+pub mod compose;
+pub mod effects;
 pub mod knob;
+pub mod profile;
+mod profile_yaml;
+pub mod runtime;
+pub mod store;
 use crate::{
     wire::{Secret, Slice, Time},
     wire_struct,

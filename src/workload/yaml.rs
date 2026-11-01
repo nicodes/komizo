@@ -111,7 +111,7 @@ fn infer(value: &str, dates: bool) -> Result<(Kind, Value)> {
     }
     Ok((Kind::String, value.into()))
 }
-fn scalar(value: &str, style: TScalarStyle, tag: Option<&Tag>) -> Result<Value> {
+pub(crate) fn scalar(value: &str, style: TScalarStyle, tag: Option<&Tag>) -> Result<Value> {
     if let Some(tag) = tag {
         ensure!(
             tag.handle == "tag:yaml.org,2002:"

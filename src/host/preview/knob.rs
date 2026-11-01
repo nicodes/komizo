@@ -15,6 +15,8 @@ pub struct Knob {
     pub body: String,
     #[serde(skip)]
     pub cgroup_parent: String,
+    #[serde(skip)]
+    pub profiles: Option<std::collections::BTreeMap<String, Option<super::profile::Profile>>>,
 }
 impl Deref for Knob {
     type Target = KnobValues;
@@ -41,6 +43,7 @@ impl Default for Knob {
             },
             body: String::new(),
             cgroup_parent: String::new(),
+            profiles: None,
         }
     }
 }
