@@ -1,0 +1,302 @@
+[
+  {
+    "after": true,
+    "before": false,
+    "changed": null,
+    "error": "",
+    "input": "# keep\nAPP_DIR=/srv/fixture\nCI_USER=deploy\n",
+    "op": "mark",
+    "output": "# keep\nAPP_DIR=/srv/fixture\nCI_USER=deploy\nSTOPPED=1\nSTOPPED_AT=2026-11-01T11:34:56.123456789Z\nSTOPPED_BY=cli\n",
+    "revision": "60853a7f914013d56ff59c63d31e22272e5060c7ba8b84e467ea249c5b10deb2"
+  },
+  {
+    "after": false,
+    "before": false,
+    "changed": null,
+    "error": "",
+    "input": "# keep\nAPP_DIR=/srv/fixture\nCI_USER=deploy\n",
+    "op": "clear",
+    "output": "# keep\nAPP_DIR=/srv/fixture\nCI_USER=deploy\n",
+    "revision": "60853a7f914013d56ff59c63d31e22272e5060c7ba8b84e467ea249c5b10deb2"
+  },
+  {
+    "after": false,
+    "before": false,
+    "changed": true,
+    "error": "",
+    "input": "# keep\nAPP_DIR=/srv/fixture\nCI_USER=deploy\n",
+    "op": "unchanged",
+    "output": "# keep\nAPP_DIR=/srv/fixture\nCI_USER=deploy\n",
+    "revision": "60853a7f914013d56ff59c63d31e22272e5060c7ba8b84e467ea249c5b10deb2"
+  },
+  {
+    "after": false,
+    "before": false,
+    "changed": false,
+    "error": "",
+    "input": "# keep\nAPP_DIR=/srv/fixture\nCI_USER=deploy\n",
+    "op": "changed",
+    "output": "# keep\nAPP_DIR=/srv/fixture\nCI_USER=deploy\n",
+    "revision": "60853a7f914013d56ff59c63d31e22272e5060c7ba8b84e467ea249c5b10deb2"
+  },
+  {
+    "after": false,
+    "before": false,
+    "changed": null,
+    "error": "STOPPED_BY cannot contain a newline",
+    "input": "# keep\nAPP_DIR=/srv/fixture\nCI_USER=deploy\n",
+    "op": "newline",
+    "output": "# keep\nAPP_DIR=/srv/fixture\nCI_USER=deploy\n",
+    "revision": "60853a7f914013d56ff59c63d31e22272e5060c7ba8b84e467ea249c5b10deb2"
+  },
+  {
+    "after": false,
+    "before": false,
+    "changed": null,
+    "error": "STOPPED_BY is longer than 128 bytes",
+    "input": "# keep\nAPP_DIR=/srv/fixture\nCI_USER=deploy\n",
+    "op": "long",
+    "output": "# keep\nAPP_DIR=/srv/fixture\nCI_USER=deploy\n",
+    "revision": "60853a7f914013d56ff59c63d31e22272e5060c7ba8b84e467ea249c5b10deb2"
+  },
+  {
+    "after": true,
+    "before": true,
+    "changed": null,
+    "error": "",
+    "input": "APP_DIR=/srv/fixture\nSTOPPED=1\nSTOPPED_BY=old\nSTOPPED_AT=old\n",
+    "op": "mark",
+    "output": "APP_DIR=/srv/fixture\nSTOPPED=1\nSTOPPED_AT=2026-11-01T11:34:56.123456789Z\nSTOPPED_BY=cli\n",
+    "revision": "c62aa3318858ac9a0e6b4d75841d88b001aec260c4a1854ded4963ec9b4a3b92"
+  },
+  {
+    "after": false,
+    "before": true,
+    "changed": null,
+    "error": "",
+    "input": "APP_DIR=/srv/fixture\nSTOPPED=1\nSTOPPED_BY=old\nSTOPPED_AT=old\n",
+    "op": "clear",
+    "output": "APP_DIR=/srv/fixture\n",
+    "revision": "c62aa3318858ac9a0e6b4d75841d88b001aec260c4a1854ded4963ec9b4a3b92"
+  },
+  {
+    "after": false,
+    "before": true,
+    "changed": true,
+    "error": "",
+    "input": "APP_DIR=/srv/fixture\nSTOPPED=1\nSTOPPED_BY=old\nSTOPPED_AT=old\n",
+    "op": "unchanged",
+    "output": "APP_DIR=/srv/fixture\n",
+    "revision": "c62aa3318858ac9a0e6b4d75841d88b001aec260c4a1854ded4963ec9b4a3b92"
+  },
+  {
+    "after": true,
+    "before": true,
+    "changed": false,
+    "error": "",
+    "input": "APP_DIR=/srv/fixture\nSTOPPED=1\nSTOPPED_BY=old\nSTOPPED_AT=old\n",
+    "op": "changed",
+    "output": "APP_DIR=/srv/fixture\nSTOPPED=1\nSTOPPED_BY=old\nSTOPPED_AT=old\n",
+    "revision": "c62aa3318858ac9a0e6b4d75841d88b001aec260c4a1854ded4963ec9b4a3b92"
+  },
+  {
+    "after": true,
+    "before": true,
+    "changed": null,
+    "error": "STOPPED_BY cannot contain a newline",
+    "input": "APP_DIR=/srv/fixture\nSTOPPED=1\nSTOPPED_BY=old\nSTOPPED_AT=old\n",
+    "op": "newline",
+    "output": "APP_DIR=/srv/fixture\nSTOPPED=1\nSTOPPED_BY=old\nSTOPPED_AT=old\n",
+    "revision": "c62aa3318858ac9a0e6b4d75841d88b001aec260c4a1854ded4963ec9b4a3b92"
+  },
+  {
+    "after": true,
+    "before": true,
+    "changed": null,
+    "error": "STOPPED_BY is longer than 128 bytes",
+    "input": "APP_DIR=/srv/fixture\nSTOPPED=1\nSTOPPED_BY=old\nSTOPPED_AT=old\n",
+    "op": "long",
+    "output": "APP_DIR=/srv/fixture\nSTOPPED=1\nSTOPPED_BY=old\nSTOPPED_AT=old\n",
+    "revision": "c62aa3318858ac9a0e6b4d75841d88b001aec260c4a1854ded4963ec9b4a3b92"
+  },
+  {
+    "after": true,
+    "before": true,
+    "changed": null,
+    "error": "",
+    "input": "APP_DIR=/srv/fixture\r\nSTOPPED=1\r\nSTOPPED=0\r\nFUTURE=x\r\n\r\n",
+    "op": "mark",
+    "output": "APP_DIR=/srv/fixture\nFUTURE=x\nSTOPPED=1\nSTOPPED_AT=2026-11-01T11:34:56.123456789Z\nSTOPPED_BY=cli\n",
+    "revision": "1acfc46530fb3380d77207c016c83c05a7bc6a48cd97625ded4b978b2d6cebec"
+  },
+  {
+    "after": false,
+    "before": true,
+    "changed": null,
+    "error": "",
+    "input": "APP_DIR=/srv/fixture\r\nSTOPPED=1\r\nSTOPPED=0\r\nFUTURE=x\r\n\r\n",
+    "op": "clear",
+    "output": "APP_DIR=/srv/fixture\nFUTURE=x\n",
+    "revision": "1acfc46530fb3380d77207c016c83c05a7bc6a48cd97625ded4b978b2d6cebec"
+  },
+  {
+    "after": false,
+    "before": true,
+    "changed": true,
+    "error": "",
+    "input": "APP_DIR=/srv/fixture\r\nSTOPPED=1\r\nSTOPPED=0\r\nFUTURE=x\r\n\r\n",
+    "op": "unchanged",
+    "output": "APP_DIR=/srv/fixture\nFUTURE=x\n",
+    "revision": "1acfc46530fb3380d77207c016c83c05a7bc6a48cd97625ded4b978b2d6cebec"
+  },
+  {
+    "after": true,
+    "before": true,
+    "changed": false,
+    "error": "",
+    "input": "APP_DIR=/srv/fixture\r\nSTOPPED=1\r\nSTOPPED=0\r\nFUTURE=x\r\n\r\n",
+    "op": "changed",
+    "output": "APP_DIR=/srv/fixture\r\nSTOPPED=1\r\nSTOPPED=0\r\nFUTURE=x\r\n\r\n",
+    "revision": "1acfc46530fb3380d77207c016c83c05a7bc6a48cd97625ded4b978b2d6cebec"
+  },
+  {
+    "after": true,
+    "before": true,
+    "changed": null,
+    "error": "STOPPED_BY cannot contain a newline",
+    "input": "APP_DIR=/srv/fixture\r\nSTOPPED=1\r\nSTOPPED=0\r\nFUTURE=x\r\n\r\n",
+    "op": "newline",
+    "output": "APP_DIR=/srv/fixture\r\nSTOPPED=1\r\nSTOPPED=0\r\nFUTURE=x\r\n\r\n",
+    "revision": "1acfc46530fb3380d77207c016c83c05a7bc6a48cd97625ded4b978b2d6cebec"
+  },
+  {
+    "after": true,
+    "before": true,
+    "changed": null,
+    "error": "STOPPED_BY is longer than 128 bytes",
+    "input": "APP_DIR=/srv/fixture\r\nSTOPPED=1\r\nSTOPPED=0\r\nFUTURE=x\r\n\r\n",
+    "op": "long",
+    "output": "APP_DIR=/srv/fixture\r\nSTOPPED=1\r\nSTOPPED=0\r\nFUTURE=x\r\n\r\n",
+    "revision": "1acfc46530fb3380d77207c016c83c05a7bc6a48cd97625ded4b978b2d6cebec"
+  },
+  {
+    "after": true,
+    "before": false,
+    "changed": null,
+    "error": "",
+    "input": "APP_DIR=/srv/fixture\nSTOPPED=true\n\n",
+    "op": "mark",
+    "output": "APP_DIR=/srv/fixture\nSTOPPED=1\nSTOPPED_AT=2026-11-01T11:34:56.123456789Z\nSTOPPED_BY=cli\n",
+    "revision": "bdf83019eb0d047e4e7384d350ce38bac9a2626cf25d330f9dd3dbde73173d81"
+  },
+  {
+    "after": false,
+    "before": false,
+    "changed": null,
+    "error": "",
+    "input": "APP_DIR=/srv/fixture\nSTOPPED=true\n\n",
+    "op": "clear",
+    "output": "APP_DIR=/srv/fixture\n",
+    "revision": "bdf83019eb0d047e4e7384d350ce38bac9a2626cf25d330f9dd3dbde73173d81"
+  },
+  {
+    "after": false,
+    "before": false,
+    "changed": true,
+    "error": "",
+    "input": "APP_DIR=/srv/fixture\nSTOPPED=true\n\n",
+    "op": "unchanged",
+    "output": "APP_DIR=/srv/fixture\n",
+    "revision": "bdf83019eb0d047e4e7384d350ce38bac9a2626cf25d330f9dd3dbde73173d81"
+  },
+  {
+    "after": false,
+    "before": false,
+    "changed": false,
+    "error": "",
+    "input": "APP_DIR=/srv/fixture\nSTOPPED=true\n\n",
+    "op": "changed",
+    "output": "APP_DIR=/srv/fixture\nSTOPPED=true\n\n",
+    "revision": "bdf83019eb0d047e4e7384d350ce38bac9a2626cf25d330f9dd3dbde73173d81"
+  },
+  {
+    "after": false,
+    "before": false,
+    "changed": null,
+    "error": "STOPPED_BY cannot contain a newline",
+    "input": "APP_DIR=/srv/fixture\nSTOPPED=true\n\n",
+    "op": "newline",
+    "output": "APP_DIR=/srv/fixture\nSTOPPED=true\n\n",
+    "revision": "bdf83019eb0d047e4e7384d350ce38bac9a2626cf25d330f9dd3dbde73173d81"
+  },
+  {
+    "after": false,
+    "before": false,
+    "changed": null,
+    "error": "STOPPED_BY is longer than 128 bytes",
+    "input": "APP_DIR=/srv/fixture\nSTOPPED=true\n\n",
+    "op": "long",
+    "output": "APP_DIR=/srv/fixture\nSTOPPED=true\n\n",
+    "revision": "bdf83019eb0d047e4e7384d350ce38bac9a2626cf25d330f9dd3dbde73173d81"
+  },
+  {
+    "after": true,
+    "before": false,
+    "changed": null,
+    "error": "",
+    "input": "APP_DIR=/srv/fixture",
+    "op": "mark",
+    "output": "APP_DIR=/srv/fixture\nSTOPPED=1\nSTOPPED_AT=2026-11-01T11:34:56.123456789Z\nSTOPPED_BY=cli\n",
+    "revision": "e27305c716f5eebce5d878f261c5734c2f8a5eda2ad04b8f147ccbf1a6cd8818"
+  },
+  {
+    "after": false,
+    "before": false,
+    "changed": null,
+    "error": "",
+    "input": "APP_DIR=/srv/fixture",
+    "op": "clear",
+    "output": "APP_DIR=/srv/fixture\n",
+    "revision": "e27305c716f5eebce5d878f261c5734c2f8a5eda2ad04b8f147ccbf1a6cd8818"
+  },
+  {
+    "after": false,
+    "before": false,
+    "changed": true,
+    "error": "",
+    "input": "APP_DIR=/srv/fixture",
+    "op": "unchanged",
+    "output": "APP_DIR=/srv/fixture\n",
+    "revision": "e27305c716f5eebce5d878f261c5734c2f8a5eda2ad04b8f147ccbf1a6cd8818"
+  },
+  {
+    "after": false,
+    "before": false,
+    "changed": false,
+    "error": "",
+    "input": "APP_DIR=/srv/fixture",
+    "op": "changed",
+    "output": "APP_DIR=/srv/fixture",
+    "revision": "e27305c716f5eebce5d878f261c5734c2f8a5eda2ad04b8f147ccbf1a6cd8818"
+  },
+  {
+    "after": false,
+    "before": false,
+    "changed": null,
+    "error": "STOPPED_BY cannot contain a newline",
+    "input": "APP_DIR=/srv/fixture",
+    "op": "newline",
+    "output": "APP_DIR=/srv/fixture",
+    "revision": "e27305c716f5eebce5d878f261c5734c2f8a5eda2ad04b8f147ccbf1a6cd8818"
+  },
+  {
+    "after": false,
+    "before": false,
+    "changed": null,
+    "error": "STOPPED_BY is longer than 128 bytes",
+    "input": "APP_DIR=/srv/fixture",
+    "op": "long",
+    "output": "APP_DIR=/srv/fixture",
+    "revision": "e27305c716f5eebce5d878f261c5734c2f8a5eda2ad04b8f147ccbf1a6cd8818"
+  }
+]

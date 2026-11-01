@@ -2,8 +2,10 @@
 pub mod access;
 pub mod diagnose;
 pub mod health;
+pub mod locking;
 pub mod logs;
 pub mod paths;
+pub mod stopped;
 pub mod store;
 pub mod system;
 pub mod types;
