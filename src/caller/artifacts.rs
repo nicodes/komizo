@@ -68,18 +68,36 @@ pub fn write_new(path: &Path, body: &[u8]) -> Result<()> {
     }
     result
 }
-pub fn install(cli: &mut super::client::Cli<'_>, remote: &super::transport::Remote) -> Result<()> {
+pub struct Prepared {
+    body: std::borrow::Cow<'static, [u8]>,
+    stamp: String,
+}
+pub fn prepare(
+    cli: &mut super::client::Cli<'_>,
+    remote: &super::transport::Remote,
+) -> Result<Prepared> {
     let uname = remote.quiet(&cli.context, "uname -m")?;
-    let arch = arch(uname.trim()).ok_or_else(|| {
-        anyhow::anyhow!(
-            "{} reports unsupported architecture; komizo ships linux/amd64 and linux/arm64",
-            remote.target.host
-        )
-    })?;
-    let body = embedded(arch)?;
+    let arch =
+        arch(uname.trim()).ok_or_else(|| anyhow::anyhow!("unsupported host architecture"))?;
+    let body = match embedded(arch) {
+        Ok(body) => std::borrow::Cow::Borrowed(body),
+        Err(_) => std::borrow::Cow::Owned(super::source::build(&cli.context, arch, cli.progress)?),
+    };
+    let stamp = if stamp().is_empty() {
+        format!("v:{}", crate::runtime::VERSION)
+    } else {
+        stamp()
+    };
+    Ok(Prepared { body, stamp })
+}
+pub fn install(
+    cli: &mut super::client::Cli<'_>,
+    remote: &super::transport::Remote,
+    prepared: &Prepared,
+) -> Result<()> {
     let command = format!("cat > {}", scripts::sh_quote(scripts::STAGED_AGENT));
-    remote.capture(&cli.context, &command, Some(body), 4096)?;
-    let installer = scripts::agent_install(&stamp(), crate::runtime::VERSION)?;
+    remote.capture(&cli.context, &command, Some(&prepared.body), 4096)?;
+    let installer = scripts::agent_install(&prepared.stamp, crate::runtime::VERSION)?;
     cli.script(remote, &installer, &Default::default())
 }
 pub fn run(cli: &mut super::client::Cli<'_>, args: &[String]) -> Result<()> {

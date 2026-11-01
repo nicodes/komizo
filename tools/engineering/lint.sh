@@ -14,15 +14,4 @@ echo "shellcheck $got, as pinned"
 
 shellcheck -s sh scripts/*.sh
 shellcheck -s bash tools/engineering/*.sh
-# Check authored source, including new files, without traversing ignored build
-# scratch. Native fixtures can compile into an isolated worktree concurrently.
-unformatted="$(git ls-files --cached --others --exclude-standard -z -- '*.go' | xargs -0 -r gofmt -l)"
-if [ -n "$unformatted" ]; then
-  echo "::error::gofmt would change these files:"
-  echo "$unformatted"
-  exit 1
-fi
-
-go vet ./...
-
 actionlint

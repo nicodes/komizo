@@ -13,6 +13,7 @@ pub mod reach;
 pub mod read;
 pub mod reconcile;
 pub mod secrets;
+pub mod source;
 pub mod state;
 pub mod transport;
 pub mod validate;

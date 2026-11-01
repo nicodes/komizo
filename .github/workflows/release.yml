@@ -13,36 +13,23 @@ name: Release
 permissions: {}
 concurrency: release-${{ github.repository }}
 jobs:
-  native-api:
+  version:
+    name: Select release version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     permissions:
       contents: read
-    uses: ./.github/workflows/native-api.yml
-  release:
-    needs: native-api
-    name: Build release
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
     outputs:
-      tag: ${{ steps.release.outputs.tag }}
-      candidate-artifact: ${{ steps.candidates.outputs.artifact-id }}
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
     - name: Check out source
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      timeout-minutes: 5
       with:
         fetch-depth: 0
-    - name: Set up development tools
-      uses: nicodes/tools/setup@87da2fe9d430c67d15f62f603b07ba1ed40b5603
-      env:
-        GH_TOKEN: ${{ github.token }}
-      timeout-minutes: 5
     - name: Determine release version
       timeout-minutes: 5
-      id: release
+      id: version
       env:
         BUMP: ${{ inputs.bump }}
       run: |-
@@ -72,32 +59,58 @@ jobs:
         fi
         echo "version=$version" >> "$GITHUB_OUTPUT"
         echo "tag=$tag" >> "$GITHUB_OUTPUT"
-    - name: Download native Rust APIs
+  native-api:
+    needs: version
+    permissions:
+      contents: read
+    uses: ./.github/workflows/native-api.yml
+    with:
+      version: ${{ needs.version.outputs.version }}
+  release:
+    needs: [version, native-api]
+    name: Build release
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      tag: ${{ needs.version.outputs.tag }}
+      candidate-artifact: ${{ steps.candidates.outputs.artifact-id }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+    - name: Check out source
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      timeout-minutes: 5
+      with:
+        fetch-depth: 0
+    - name: Set up development tools
+      uses: nicodes/tools/setup@f412061a7a3f0914db9e09d1159e69504aee8706
+      env:
+        GH_TOKEN: ${{ github.token }}
+      timeout-minutes: 5
+    - name: Download native Rust CLIs
       uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
       with:
-        pattern: native-api-*
+        pattern: native-cli-*
         merge-multiple: true
-        path: .artifacts/native-api
-    - name: Cache Go build
-      timeout-minutes: 10
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        path: .artifacts/native-cli
+    - name: Download native Rust hosts
+      uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
       with:
-        path: |
-          ~/.cache/go-build
-          ~/go/pkg/mod
-        key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', 'go.sum', 'mise.toml') }}-${{ github.sha }}
-        restore-keys: |
-          go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', 'go.sum', 'mise.toml') }}-
+        pattern: native-host-Linux_*
+        merge-multiple: true
+        path: .artifacts/native-host
     - name: Build
       timeout-minutes: 15
       run: mise run install && mise run build && mise run artifact-check
       env:
-        VERSION: ${{ steps.release.outputs.version }}
+        VERSION: ${{ needs.version.outputs.version }}
     - name: Test
       timeout-minutes: 15
       run: mise run lint && mise run test && mise run vuln
       env:
-        VERSION: ${{ steps.release.outputs.version }}
+        VERSION: ${{ needs.version.outputs.version }}
     - name: Attest build provenance
       timeout-minutes: 5
       uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
@@ -247,11 +260,11 @@ jobs:
     needs:
     - release
     - promote
-    uses: nicodes/tools/.github/workflows/cli-publish.yml@87da2fe9d430c67d15f62f603b07ba1ed40b5603
+    uses: nicodes/tools/.github/workflows/cli-publish.yml@f412061a7a3f0914db9e09d1159e69504aee8706
     permissions:
       contents: write
     with:
-      tools-ref: 87da2fe9d430c67d15f62f603b07ba1ed40b5603
+      tools-ref: f412061a7a3f0914db9e09d1159e69504aee8706
       binary: komizo
       tag: ${{ needs.release.outputs.tag }}
       artifact-id: ${{ needs.promote.outputs.artifact-id }}

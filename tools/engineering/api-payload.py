@@ -14,4 +14,5 @@ if meta.get('schema') != 1 or meta.get('source') != source:
 raw = path.read_bytes()
 if not raw or hashlib.sha256(raw).hexdigest() != meta.get('sha256'):
     raise SystemExit('native API digest mismatch')
-Path('internal/nativeapi/payload.gz').write_bytes(gzip.compress(raw, mtime=0))
+Path('.artifacts/native-api').mkdir(parents=True,exist_ok=True)
+Path('.artifacts/native-api/payload.gz').write_bytes(gzip.compress(raw, mtime=0))

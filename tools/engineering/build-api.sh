@@ -19,10 +19,4 @@ fi
 cargo build --locked --manifest-path api/Cargo.toml --release --target "$rust_target"
 mkdir -p .artifacts/native-api
 cp "${CARGO_TARGET_DIR:-api/target}/$rust_target/release/komizo-api" ".artifacts/native-api/komizo-api_${os_label}_${arch_label}"
-python3 - "$os_label" "$arch_label" <<'RECEIPT'
-import hashlib,json,pathlib,subprocess,sys
-root=pathlib.Path('.artifacts/native-api')
-name='komizo-api_'+'_'.join(sys.argv[1:])
-source=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
-(root/(name+'.json')).write_text(json.dumps({'schema':1,'source':source,'sha256':hashlib.sha256((root/name).read_bytes()).hexdigest()},sort_keys=True)+'\n')
-RECEIPT
+python3 tools/engineering/write-native-receipt.py ".artifacts/native-api/komizo-api_${os_label}_${arch_label}"

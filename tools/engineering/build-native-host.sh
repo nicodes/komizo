@@ -16,7 +16,9 @@ if [ "$os_label" = Linux ]; then
   export CC_x86_64_unknown_linux_musl=musl-gcc
   export CC_aarch64_unknown_linux_musl=musl-gcc
 fi
-export KOMIZO_API_PAYLOAD="$PWD/internal/nativeapi/payload.gz"
+export KOMIZO_API_PAYLOAD="$PWD/.artifacts/native-api/payload.gz"
+export KOMIZO_VERSION="${VERSION:-dev}"
 cargo build --locked --release --bin komizo-box --target "$rust_target"
 mkdir -p .artifacts/native-host
 cp "${CARGO_TARGET_DIR:-target}/$rust_target/release/komizo-box" ".artifacts/native-host/komizo-box_${os_label}_${arch_label}"
+python3 tools/engineering/write-native-receipt.py ".artifacts/native-host/komizo-box_${os_label}_${arch_label}"
