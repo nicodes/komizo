@@ -1,3 +1,4 @@
+pub mod host_resources;
 pub mod operation;
 pub mod resources;
 use std::sync::OnceLock;
