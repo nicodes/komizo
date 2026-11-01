@@ -91,7 +91,7 @@ impl ResourcePolicy {
         Ok(())
     }
 }
-fn scalar(value: &Value) -> String {
+pub(crate) fn scalar(value: &Value) -> String {
     match value {
         Value::String(value) => value.clone(),
         Value::Number(value) if value.is_f64() => {
