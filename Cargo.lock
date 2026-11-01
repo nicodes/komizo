@@ -709,6 +709,7 @@ dependencies = [
  "getrandom 0.4.3",
  "libc",
  "regex",
+ "regex-syntax",
  "reqwest",
  "serde",
  "serde_json",
