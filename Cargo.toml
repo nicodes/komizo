@@ -10,6 +10,8 @@ exclude = ["api"]
 
 [dependencies]
 anyhow = "1"
+aws-lc-rs = "1.19"
+base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 getrandom = "0.4"
 libc = "0.2"

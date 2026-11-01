@@ -1,0 +1,3866 @@
+{
+  "arguments": [
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "app.add needs the image its compose file comes from",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "image:tag",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "a config image carries no tag",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "reg.example:5000/a/config",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "",
+      "expected": {
+        "App": "fixture",
+        "AppDir": "",
+        "Config": "reg.example:5000/a/config",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "ssh-ed25519 test-fixture",
+        "User": "komizo-fixture"
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/a/config/",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "a config image does not end in \"/\"",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/a/config:1/",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "a config image does not end in \"/\"",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "bad path",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"bad path\" is not a registry path",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/a/x?y",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"ghcr.io/a/x?y\" is not a registry path",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "pubkey": ""
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "app.add needs the public half of a deploy key",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-rsa fake"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "app.add a deploy key is ssh-ed25519",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 "
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "",
+      "expected": {
+        "App": "fixture",
+        "AppDir": "",
+        "Config": "ghcr.io/example/config",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "ssh-ed25519 ",
+        "User": "komizo-fixture"
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 key\nsecond"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "app.add a deploy key is one line",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "app_dir": "relative",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "app_dir must be absolute",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "app_dir": "/srv/app",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "",
+      "expected": {
+        "App": "fixture",
+        "AppDir": "/srv/app",
+        "Config": "ghcr.io/example/config",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "ssh-ed25519 test-fixture",
+        "User": "komizo-fixture"
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "app_dir": "/srv/../etc",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "app_dir must not contain a \"..\" component",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "app_dir": "/srv/..foo",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "",
+      "expected": {
+        "App": "fixture",
+        "AppDir": "/srv/..foo",
+        "Config": "ghcr.io/example/config",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "ssh-ed25519 test-fixture",
+        "User": "komizo-fixture"
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "app_dir": "/srv/a b",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"/srv/a b\" is not a path",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "app_dir": "/",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "",
+      "expected": {
+        "App": "fixture",
+        "AppDir": "/",
+        "Config": "ghcr.io/example/config",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "ssh-ed25519 test-fixture",
+        "User": "komizo-fixture"
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "known_as": "",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "",
+      "expected": {
+        "App": "fixture",
+        "AppDir": "",
+        "Config": "ghcr.io/example/config",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "ssh-ed25519 test-fixture",
+        "User": "komizo-fixture"
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "known_as": "box, 10.0.0.5, my_host.example.com",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "",
+      "expected": {
+        "App": "fixture",
+        "AppDir": "",
+        "Config": "ghcr.io/example/config",
+        "HardenSSH": false,
+        "KnownAs": [
+          "box",
+          "10.0.0.5",
+          "my_host.example.com"
+        ],
+        "PubKey": "ssh-ed25519 test-fixture",
+        "User": "komizo-fixture"
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "known_as": "*.example.com",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "known_as: \"*.example.com\" is not a hostname",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "known_as": "-bad",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "known_as: \"-bad\" is not a hostname",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "known_as": "a..b",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "",
+      "expected": {
+        "App": "fixture",
+        "AppDir": "",
+        "Config": "ghcr.io/example/config",
+        "HardenSSH": false,
+        "KnownAs": [
+          "a..b"
+        ],
+        "PubKey": "ssh-ed25519 test-fixture",
+        "User": "komizo-fixture"
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "known_as": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "known_as: \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" is not a hostname",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture",
+          "user": ""
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "",
+      "expected": {
+        "App": "fixture",
+        "AppDir": "",
+        "Config": "ghcr.io/example/config",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "ssh-ed25519 test-fixture",
+        "User": "komizo-fixture"
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture",
+          "user": "root"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "the deploy account must not be root",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture",
+          "user": "Web"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "",
+      "expected": {
+        "App": "fixture",
+        "AppDir": "",
+        "Config": "ghcr.io/example/config",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "ssh-ed25519 test-fixture",
+        "User": "Web"
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture",
+          "user": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "",
+      "expected": {
+        "App": "fixture",
+        "AppDir": "",
+        "Config": "ghcr.io/example/config",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "ssh-ed25519 test-fixture",
+        "User": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture",
+          "user": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" is not an account name",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture",
+          "user": "-bad"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"-bad\" is not an account name",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture",
+          "user": "bad.user"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"bad.user\" is not an account name",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "harden_ssh": "",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "",
+      "expected": {
+        "App": "fixture",
+        "AppDir": "",
+        "Config": "ghcr.io/example/config",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "ssh-ed25519 test-fixture",
+        "User": "komizo-fixture"
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "harden_ssh": "0",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "",
+      "expected": {
+        "App": "fixture",
+        "AppDir": "",
+        "Config": "ghcr.io/example/config",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "ssh-ed25519 test-fixture",
+        "User": "komizo-fixture"
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "harden_ssh": "1",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "",
+      "expected": {
+        "App": "fixture",
+        "AppDir": "",
+        "Config": "ghcr.io/example/config",
+        "HardenSSH": true,
+        "KnownAs": null,
+        "PubKey": "ssh-ed25519 test-fixture",
+        "User": "komizo-fixture"
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "harden_ssh": "true",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "",
+      "expected": {
+        "App": "fixture",
+        "AppDir": "",
+        "Config": "ghcr.io/example/config",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "ssh-ed25519 test-fixture",
+        "User": "komizo-fixture"
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "app.add needs an app",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "",
+      "expected": {
+        "App": "fixture",
+        "AppDir": "",
+        "Config": "ghcr.io/example/config",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "ssh-ed25519 test-fixture",
+        "User": "komizo-fixture"
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "_proxy",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"_proxy\" is reserved",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "-flag",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"-flag\" is not an app name",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "a.b",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"a.b\" is not an app name",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "a/b",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"a/b\" is not an app name",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "niño",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"niño\" is not an app name",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "UPPER",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "",
+      "expected": {
+        "App": "UPPER",
+        "AppDir": "",
+        "Config": "ghcr.io/example/config",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "ssh-ed25519 test-fixture",
+        "User": "komizo-UPPER"
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"komizo-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" is not an account name",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "a\u0000b",
+          "config": "ghcr.io/example/config",
+          "pubkey": "ssh-ed25519 test-fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.add",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"a\\x00b\" is not an app name",
+      "expected": {
+        "App": "",
+        "AppDir": "",
+        "Config": "",
+        "HardenSSH": false,
+        "KnownAs": null,
+        "PubKey": "",
+        "User": ""
+      },
+      "kind": "add"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "",
+          "pubkey": ""
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "app.rotate needs an app",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "",
+          "config": "ignored",
+          "pubkey": ""
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "app.rotate needs an app",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "",
+          "pubkey": "ssh-ed25519 fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "app.rotate needs an app",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "",
+          "config": "ignored",
+          "pubkey": "ssh-ed25519 fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "app.rotate needs an app",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "",
+          "pubkey": "ssh-rsa fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "app.rotate needs an app",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "",
+          "config": "ignored",
+          "pubkey": "ssh-rsa fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "app.rotate needs an app",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "pubkey": ""
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "needs the public half of a deploy key",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ignored",
+          "pubkey": ""
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "needs the public half of a deploy key",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "pubkey": "ssh-ed25519 fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "",
+      "expected": [
+        "fixture",
+        "ssh-ed25519 fixture"
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ignored",
+          "pubkey": "ssh-ed25519 fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "app.rotate does not take \"config\" -- it changes the deploy key and nothing else",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "pubkey": "ssh-rsa fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "a deploy key is ssh-ed25519",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "fixture",
+          "config": "ignored",
+          "pubkey": "ssh-rsa fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "a deploy key is ssh-ed25519",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "_proxy",
+          "pubkey": ""
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"_proxy\" is reserved",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "_proxy",
+          "config": "ignored",
+          "pubkey": ""
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"_proxy\" is reserved",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "_proxy",
+          "pubkey": "ssh-ed25519 fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"_proxy\" is reserved",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "_proxy",
+          "config": "ignored",
+          "pubkey": "ssh-ed25519 fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"_proxy\" is reserved",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "_proxy",
+          "pubkey": "ssh-rsa fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"_proxy\" is reserved",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "_proxy",
+          "config": "ignored",
+          "pubkey": "ssh-rsa fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"_proxy\" is reserved",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "-flag",
+          "pubkey": ""
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"-flag\" is not an app name",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "-flag",
+          "config": "ignored",
+          "pubkey": ""
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"-flag\" is not an app name",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "-flag",
+          "pubkey": "ssh-ed25519 fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"-flag\" is not an app name",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "-flag",
+          "config": "ignored",
+          "pubkey": "ssh-ed25519 fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"-flag\" is not an app name",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "-flag",
+          "pubkey": "ssh-rsa fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"-flag\" is not an app name",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "-flag",
+          "config": "ignored",
+          "pubkey": "ssh-rsa fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"-flag\" is not an app name",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "a.b",
+          "pubkey": ""
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"a.b\" is not an app name",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "a.b",
+          "config": "ignored",
+          "pubkey": ""
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"a.b\" is not an app name",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "a.b",
+          "pubkey": "ssh-ed25519 fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"a.b\" is not an app name",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "a.b",
+          "config": "ignored",
+          "pubkey": "ssh-ed25519 fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"a.b\" is not an app name",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "a.b",
+          "pubkey": "ssh-rsa fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"a.b\" is not an app name",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    },
+    {
+      "command": {
+        "args": {
+          "app": "a.b",
+          "config": "ignored",
+          "pubkey": "ssh-rsa fixture"
+        },
+        "exp": 0,
+        "id": "",
+        "op": "app.rotate",
+        "srv": "",
+        "v": 0
+      },
+      "error": "\"a.b\" is not an app name",
+      "expected": [
+        "",
+        ""
+      ],
+      "kind": "rotate"
+    }
+  ],
+  "public": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg",
+  "seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  "signatures": [
+    {
+      "command": {
+        "args": {
+          "a": "first",
+          "app": "fixture",
+          "note": "fixture"
+        },
+        "exp": 1793534460,
+        "id": "fixture_123",
+        "op": "app.stop",
+        "srv": "srv_mine",
+        "v": 1
+      },
+      "expected": {
+        "payload": "eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImEiOiJmaXJzdCIsImFwcCI6ImZpeHR1cmUiLCJub3RlIjoiZml4dHVyZSJ9fQ",
+        "sig": "cIKeAbEgtFtG6izEZto2LT5-jhYKG7C4PaEQ-B9TDp8rUsUU9bRm4DBCZjo2vxmMaROtRLR44HsF6VeQv4fZDA"
+      }
+    },
+    {
+      "command": {
+        "args": {
+          "a": "first",
+          "app": "fixture",
+          "note": "\u003c\u003e\u0026\u2028\u2029"
+        },
+        "exp": 1793534460,
+        "id": "fixture_123",
+        "op": "app.stop",
+        "srv": "srv_mine",
+        "v": 1
+      },
+      "expected": {
+        "payload": "eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImEiOiJmaXJzdCIsImFwcCI6ImZpeHR1cmUiLCJub3RlIjoiXHUwMDNjXHUwMDNlXHUwMDI2XHUyMDI4XHUyMDI5In19",
+        "sig": "0z6bI9H_wXgkgJymyoDE27ByWdo8ocZ64xYLnmHAlAJbbO4Qhd0S-sisAM5EfBhQCISxwh3Ty8SxEVED7-ZVCw"
+      }
+    },
+    {
+      "command": {
+        "args": {
+          "a": "first",
+          "app": "fixture",
+          "note": "line\nwith\ttab"
+        },
+        "exp": 1793534460,
+        "id": "fixture_123",
+        "op": "app.stop",
+        "srv": "srv_mine",
+        "v": 1
+      },
+      "expected": {
+        "payload": "eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImEiOiJmaXJzdCIsImFwcCI6ImZpeHR1cmUiLCJub3RlIjoibGluZVxud2l0aFx0dGFiIn19",
+        "sig": "w1Rc--ukW14sdm3_weahzt7Ne5qe-XTulO-nfthCAP_L3t-qDxsuy7E8UvH1VodixLIesJB8L0NmqFrfgXEiBw"
+      }
+    },
+    {
+      "command": {
+        "args": {
+          "a": "first",
+          "app": "fixture",
+          "note": "éclair"
+        },
+        "exp": 1793534460,
+        "id": "fixture_123",
+        "op": "app.stop",
+        "srv": "srv_mine",
+        "v": 1
+      },
+      "expected": {
+        "payload": "eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImEiOiJmaXJzdCIsImFwcCI6ImZpeHR1cmUiLCJub3RlIjoiw6ljbGFpciJ9fQ",
+        "sig": "EwJitgrBD7raY4GvkcpblDwuy1MUjdSdXx88Ae6TfqmgC4nYkfNaQ4R4acKHifjsNn7tkpv9YBB0dWwyOgYfAg"
+      }
+    }
+  ],
+  "tokens": [
+    {
+      "expires": "2026-11-01T11:59:29Z",
+      "now": "2026-11-01T12:00:00Z",
+      "server": "",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDM2OX0.PYPdMIlvl4u9d4YAknAiSmnN19o04ob_cfxnqo3tAplhVcszxrVMe6_Thauuq8h9KTGftKCpGeDSl3wKrfL2CQ",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T11:59:29Z",
+      "now": "2026-11-01T12:00:00.000000001Z",
+      "server": "",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDM2OX0.PYPdMIlvl4u9d4YAknAiSmnN19o04ob_cfxnqo3tAplhVcszxrVMe6_Thauuq8h9KTGftKCpGeDSl3wKrfL2CQ",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T11:59:29Z",
+      "now": "2026-11-01T12:00:00Z",
+      "server": "srv_mine",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDM2OX0.PYPdMIlvl4u9d4YAknAiSmnN19o04ob_cfxnqo3tAplhVcszxrVMe6_Thauuq8h9KTGftKCpGeDSl3wKrfL2CQ",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T11:59:29Z",
+      "now": "2026-11-01T12:00:00.000000001Z",
+      "server": "srv_mine",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDM2OX0.PYPdMIlvl4u9d4YAknAiSmnN19o04ob_cfxnqo3tAplhVcszxrVMe6_Thauuq8h9KTGftKCpGeDSl3wKrfL2CQ",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T11:59:29Z",
+      "now": "2026-11-01T12:00:00Z",
+      "server": "srv_other",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDM2OX0.PYPdMIlvl4u9d4YAknAiSmnN19o04ob_cfxnqo3tAplhVcszxrVMe6_Thauuq8h9KTGftKCpGeDSl3wKrfL2CQ",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T11:59:29Z",
+      "now": "2026-11-01T12:00:00.000000001Z",
+      "server": "srv_other",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDM2OX0.PYPdMIlvl4u9d4YAknAiSmnN19o04ob_cfxnqo3tAplhVcszxrVMe6_Thauuq8h9KTGftKCpGeDSl3wKrfL2CQ",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T11:59:30Z",
+      "now": "2026-11-01T12:00:00Z",
+      "server": "",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDM3MH0.k_mEaHsYB2SH8r_shWvGb-kfSAbKNyhTpxg3SADVJW2Nm0m4ZI2OLl2U9TXdS-IcRVJc62Gwt7mHvXvWmGgPDw",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T11:59:30Z",
+      "now": "2026-11-01T12:00:00.000000001Z",
+      "server": "",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDM3MH0.k_mEaHsYB2SH8r_shWvGb-kfSAbKNyhTpxg3SADVJW2Nm0m4ZI2OLl2U9TXdS-IcRVJc62Gwt7mHvXvWmGgPDw",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T11:59:30Z",
+      "now": "2026-11-01T12:00:00Z",
+      "server": "srv_mine",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDM3MH0.k_mEaHsYB2SH8r_shWvGb-kfSAbKNyhTpxg3SADVJW2Nm0m4ZI2OLl2U9TXdS-IcRVJc62Gwt7mHvXvWmGgPDw",
+      "valid": true
+    },
+    {
+      "expires": "2026-11-01T11:59:30Z",
+      "now": "2026-11-01T12:00:00.000000001Z",
+      "server": "srv_mine",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDM3MH0.k_mEaHsYB2SH8r_shWvGb-kfSAbKNyhTpxg3SADVJW2Nm0m4ZI2OLl2U9TXdS-IcRVJc62Gwt7mHvXvWmGgPDw",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T11:59:30Z",
+      "now": "2026-11-01T12:00:00Z",
+      "server": "srv_other",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDM3MH0.k_mEaHsYB2SH8r_shWvGb-kfSAbKNyhTpxg3SADVJW2Nm0m4ZI2OLl2U9TXdS-IcRVJc62Gwt7mHvXvWmGgPDw",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T11:59:30Z",
+      "now": "2026-11-01T12:00:00.000000001Z",
+      "server": "srv_other",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDM3MH0.k_mEaHsYB2SH8r_shWvGb-kfSAbKNyhTpxg3SADVJW2Nm0m4ZI2OLl2U9TXdS-IcRVJc62Gwt7mHvXvWmGgPDw",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T11:59:31Z",
+      "now": "2026-11-01T12:00:00Z",
+      "server": "",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDM3MX0.EqC9bRad4Jsz0sM15L8cijDDjnA4EfxGyvT-k8za2xZr12gEFAgXwenlorZp4H9VCDj3NSLzZZnMDxPMUjfRCg",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T11:59:31Z",
+      "now": "2026-11-01T12:00:00.000000001Z",
+      "server": "",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDM3MX0.EqC9bRad4Jsz0sM15L8cijDDjnA4EfxGyvT-k8za2xZr12gEFAgXwenlorZp4H9VCDj3NSLzZZnMDxPMUjfRCg",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T11:59:31Z",
+      "now": "2026-11-01T12:00:00Z",
+      "server": "srv_mine",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDM3MX0.EqC9bRad4Jsz0sM15L8cijDDjnA4EfxGyvT-k8za2xZr12gEFAgXwenlorZp4H9VCDj3NSLzZZnMDxPMUjfRCg",
+      "valid": true
+    },
+    {
+      "expires": "2026-11-01T11:59:31Z",
+      "now": "2026-11-01T12:00:00.000000001Z",
+      "server": "srv_mine",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDM3MX0.EqC9bRad4Jsz0sM15L8cijDDjnA4EfxGyvT-k8za2xZr12gEFAgXwenlorZp4H9VCDj3NSLzZZnMDxPMUjfRCg",
+      "valid": true
+    },
+    {
+      "expires": "2026-11-01T11:59:31Z",
+      "now": "2026-11-01T12:00:00Z",
+      "server": "srv_other",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDM3MX0.EqC9bRad4Jsz0sM15L8cijDDjnA4EfxGyvT-k8za2xZr12gEFAgXwenlorZp4H9VCDj3NSLzZZnMDxPMUjfRCg",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T11:59:31Z",
+      "now": "2026-11-01T12:00:00.000000001Z",
+      "server": "srv_other",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDM3MX0.EqC9bRad4Jsz0sM15L8cijDDjnA4EfxGyvT-k8za2xZr12gEFAgXwenlorZp4H9VCDj3NSLzZZnMDxPMUjfRCg",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T12:00:00Z",
+      "now": "2026-11-01T12:00:00Z",
+      "server": "",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDQwMH0.3TOmakybfvlo0hTF31iqLg52VXzQdTMc6qnitSOcBgNAT2cGebkvi8eTN6oIngnhUl-En46LXL25s3StG79ZDg",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T12:00:00Z",
+      "now": "2026-11-01T12:00:00.000000001Z",
+      "server": "",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDQwMH0.3TOmakybfvlo0hTF31iqLg52VXzQdTMc6qnitSOcBgNAT2cGebkvi8eTN6oIngnhUl-En46LXL25s3StG79ZDg",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T12:00:00Z",
+      "now": "2026-11-01T12:00:00Z",
+      "server": "srv_mine",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDQwMH0.3TOmakybfvlo0hTF31iqLg52VXzQdTMc6qnitSOcBgNAT2cGebkvi8eTN6oIngnhUl-En46LXL25s3StG79ZDg",
+      "valid": true
+    },
+    {
+      "expires": "2026-11-01T12:00:00Z",
+      "now": "2026-11-01T12:00:00.000000001Z",
+      "server": "srv_mine",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDQwMH0.3TOmakybfvlo0hTF31iqLg52VXzQdTMc6qnitSOcBgNAT2cGebkvi8eTN6oIngnhUl-En46LXL25s3StG79ZDg",
+      "valid": true
+    },
+    {
+      "expires": "2026-11-01T12:00:00Z",
+      "now": "2026-11-01T12:00:00Z",
+      "server": "srv_other",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDQwMH0.3TOmakybfvlo0hTF31iqLg52VXzQdTMc6qnitSOcBgNAT2cGebkvi8eTN6oIngnhUl-En46LXL25s3StG79ZDg",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T12:00:00Z",
+      "now": "2026-11-01T12:00:00.000000001Z",
+      "server": "srv_other",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDQwMH0.3TOmakybfvlo0hTF31iqLg52VXzQdTMc6qnitSOcBgNAT2cGebkvi8eTN6oIngnhUl-En46LXL25s3StG79ZDg",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T12:01:00Z",
+      "now": "2026-11-01T12:00:00Z",
+      "server": "",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDQ2MH0.Qw33-fOS1fOfeJPZA-foyX9kjCyO1_Vo5VLbvn6JZV8_htE0PWx8xcqZnpsk0sg52Nn29sSHFZma5ld5rOgAAw",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T12:01:00Z",
+      "now": "2026-11-01T12:00:00.000000001Z",
+      "server": "",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDQ2MH0.Qw33-fOS1fOfeJPZA-foyX9kjCyO1_Vo5VLbvn6JZV8_htE0PWx8xcqZnpsk0sg52Nn29sSHFZma5ld5rOgAAw",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T12:01:00Z",
+      "now": "2026-11-01T12:00:00Z",
+      "server": "srv_mine",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDQ2MH0.Qw33-fOS1fOfeJPZA-foyX9kjCyO1_Vo5VLbvn6JZV8_htE0PWx8xcqZnpsk0sg52Nn29sSHFZma5ld5rOgAAw",
+      "valid": true
+    },
+    {
+      "expires": "2026-11-01T12:01:00Z",
+      "now": "2026-11-01T12:00:00.000000001Z",
+      "server": "srv_mine",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDQ2MH0.Qw33-fOS1fOfeJPZA-foyX9kjCyO1_Vo5VLbvn6JZV8_htE0PWx8xcqZnpsk0sg52Nn29sSHFZma5ld5rOgAAw",
+      "valid": true
+    },
+    {
+      "expires": "2026-11-01T12:01:00Z",
+      "now": "2026-11-01T12:00:00Z",
+      "server": "srv_other",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDQ2MH0.Qw33-fOS1fOfeJPZA-foyX9kjCyO1_Vo5VLbvn6JZV8_htE0PWx8xcqZnpsk0sg52Nn29sSHFZma5ld5rOgAAw",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-01T12:01:00Z",
+      "now": "2026-11-01T12:00:00.000000001Z",
+      "server": "srv_other",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDQ2MH0.Qw33-fOS1fOfeJPZA-foyX9kjCyO1_Vo5VLbvn6JZV8_htE0PWx8xcqZnpsk0sg52Nn29sSHFZma5ld5rOgAAw",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-02T15:46:39Z",
+      "now": "2026-11-01T12:00:00Z",
+      "server": "",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzYzNDM5OX0.EJRGmDTvwOlJ2aBd-ge1ADRuIk5QdbRdSZPLJLVeHtyMelK9nnzLTuwlbBKd1neaEhBLYxr1K40MiCuEvAEdCg",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-02T15:46:39Z",
+      "now": "2026-11-01T12:00:00.000000001Z",
+      "server": "",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzYzNDM5OX0.EJRGmDTvwOlJ2aBd-ge1ADRuIk5QdbRdSZPLJLVeHtyMelK9nnzLTuwlbBKd1neaEhBLYxr1K40MiCuEvAEdCg",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-02T15:46:39Z",
+      "now": "2026-11-01T12:00:00Z",
+      "server": "srv_mine",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzYzNDM5OX0.EJRGmDTvwOlJ2aBd-ge1ADRuIk5QdbRdSZPLJLVeHtyMelK9nnzLTuwlbBKd1neaEhBLYxr1K40MiCuEvAEdCg",
+      "valid": true
+    },
+    {
+      "expires": "2026-11-02T15:46:39Z",
+      "now": "2026-11-01T12:00:00.000000001Z",
+      "server": "srv_mine",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzYzNDM5OX0.EJRGmDTvwOlJ2aBd-ge1ADRuIk5QdbRdSZPLJLVeHtyMelK9nnzLTuwlbBKd1neaEhBLYxr1K40MiCuEvAEdCg",
+      "valid": true
+    },
+    {
+      "expires": "2026-11-02T15:46:39Z",
+      "now": "2026-11-01T12:00:00Z",
+      "server": "srv_other",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzYzNDM5OX0.EJRGmDTvwOlJ2aBd-ge1ADRuIk5QdbRdSZPLJLVeHtyMelK9nnzLTuwlbBKd1neaEhBLYxr1K40MiCuEvAEdCg",
+      "valid": false
+    },
+    {
+      "expires": "2026-11-02T15:46:39Z",
+      "now": "2026-11-01T12:00:00.000000001Z",
+      "server": "srv_other",
+      "token": "kmz_rd_eyJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzYzNDM5OX0.EJRGmDTvwOlJ2aBd-ge1ADRuIk5QdbRdSZPLJLVeHtyMelK9nnzLTuwlbBKd1neaEhBLYxr1K40MiCuEvAEdCg",
+      "valid": false
+    }
+  ],
+  "verifications": [
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.start",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "op:app.start",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0YXJ0IiwiYXJncyI6eyJhcHAiOiJmaXh0dXJlIn19\",\"sig\":\"LYhTcYDpZk14_LKP1MlBz89iehJ8MB3fvB2lZgNS1FOaVNaAhuCj6fzlf3zsuf93jJdbCnTDPysMXgozXnp_Ag\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "op:app.stop",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"OqS1WvWq81LsQY-7om6unUz5aRSwLTNvdRrDG647x4fHyebXUsBXq6O1fG59DDHhJ6OvaZBrsHBgTY_inLsKAQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.restart",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "op:app.restart",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnJlc3RhcnQiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"8wCW_k1xAIzgpfzMzLPuOjpWhQo7kl6bTqEkc6PvtxbQnetamIMw9-RBf8nrbPI_xNOV0ItCDHhWhhPxk2e9AQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.add",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "op:app.add",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLmFkZCIsImFyZ3MiOnsiYXBwIjoiZml4dHVyZSJ9fQ\",\"sig\":\"mRmPx5kvF9M41vnDsVdJivqWknReW2xZ009zJ9GntZ-mwGbwjHbs0qWocRt4l3GD8tEelsmBwlSR6dJ1NctTBA\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.rotate",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "op:app.rotate",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnJvdGF0ZSIsImFyZ3MiOnsiYXBwIjoiZml4dHVyZSJ9fQ\",\"sig\":\"55LQAoXIFIWaGfqosp62qsbRK96cswQpd-Rcwmt-iu3beKNaRpDzUBXseJSfm1TjR0lTy_MCyIWTzEGsTdlOCQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "logs.read",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "op:logs.read",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoibG9ncy5yZWFkIiwiYXJncyI6eyJhcHAiOiJmaXh0dXJlIn19\",\"sig\":\"FWIPNpWQs3WCDY5x1prtIjLpCeb0Cat5aOzxfZtDpyO6HWU4Aegmzi_9WFMqrG7U34uodTsqaU0gmER4pqZZAg\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "report.read",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "op:report.read",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoicmVwb3J0LnJlYWQiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"rBeN5Z6Qvg9Wpoq2eE7Q2VZWUE7E5bFly653aLkzwu0yofZNqg8ThpwITT6Dy5b32Po2p4xp6qlrNYZCxS7-Cw\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "history.read",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "op:history.read",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiaGlzdG9yeS5yZWFkIiwiYXJncyI6eyJhcHAiOiJmaXh0dXJlIn19\",\"sig\":\"7CKW72eSJEmQo-hgNK3z8K1a07l6CLJZvP4LdGmNKrT7L57qQoRcO1yKL3WNs8ODD0JYIETczQzYZFYQo5zDAA\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "metrics.read",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "op:metrics.read",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoibWV0cmljcy5yZWFkIiwiYXJncyI6eyJhcHAiOiJmaXh0dXJlIn19\",\"sig\":\"QCzTdPwxOSj-AiXFhk9qEIBeYa-i3OTWBZX99yyBUQzPPsqtbsThvIfqmG9AcampYJM3vDOE76JJ5kda-Cq7CQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "unknown",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "this box does not know how to \"unknown\"",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "op:unknown",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoidW5rbm93biIsImFyZ3MiOnsiYXBwIjoiZml4dHVyZSJ9fQ\",\"sig\":\"XxeCLs99kC_7UTnJD_LbLdmITUS4PYQv00JbrFFLL5hN1J5ddzda-H-ewchlDWBNMQtOnKY8LH3COydybQ9oBA\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": " ",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "this box does not know how to \" \"",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "op: ",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiICIsImFyZ3MiOnsiYXBwIjoiZml4dHVyZSJ9fQ\",\"sig\":\"B3HRnbIxECsowmAZE-U232U86Tb8A9TJVifUmnXadKBHJZ7L0278JEireBQaeNhfdz8KM3J5i92JFUG8edX2Cw\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "this box does not know how to \"\"",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "op:",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiIiwiYXJncyI6eyJhcHAiOiJmaXh0dXJlIn19\",\"sig\":\"EYyZ4dZ2iftGHjdnS_its5qWrB_B-Dm8Ne0O5fh9OqVSEYjS233kSzCNd2E66J9UVtl3Y0koixjFaYcsC4SGAw\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": -1
+        },
+        "error": "this command is v-1 and this box speaks v1",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "version",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjotMSwiaWQiOiJmaXh0dXJlXzEyMyIsInNydiI6InNydl9taW5lIiwiZXhwIjoxNzkzNTM0NDYwLCJvcCI6ImFwcC5zdG9wIiwiYXJncyI6eyJhcHAiOiJmaXh0dXJlIn19\",\"sig\":\"S50e2e3tkld-ChtoqpBGvarCtl-naB5hlKIZGGn-2wR426h2F5gd_dqih0LV9xRLRkOJkNbauCQ-2Ktwc1iZCw\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 0
+        },
+        "error": "this command is v0 and this box speaks v1",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "version",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjowLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"g7EBulferV7-hjS51Tq8322sE-JaCJQ_sfoH4Emu5ClmJTjweaWqQtK1BHWvfFYOGW-DOu9laufaBApjlyymAA\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "version",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"OqS1WvWq81LsQY-7om6unUz5aRSwLTNvdRrDG647x4fHyebXUsBXq6O1fG59DDHhJ6OvaZBrsHBgTY_inLsKAQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 2
+        },
+        "error": "this command is v2 and this box speaks v1",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "version",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoyLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"WjGl1IZSxiOd-RQpu8P2a9obf5c2EFmjzWFoXMsKsICQLNrJObg1bMtvsnc-uc1cqbkioxgE2Cl9EgPIjBIgBA\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 999
+        },
+        "error": "this command is v999 and this box speaks v1",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "version",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2Ijo5OTksImlkIjoiZml4dHVyZV8xMjMiLCJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDQ2MCwib3AiOiJhcHAuc3RvcCIsImFyZ3MiOnsiYXBwIjoiZml4dHVyZSJ9fQ\",\"sig\":\"Uv0xPyQyXrsjJV80_s6GKp23ak5oK5BNM1hmTAVSuhpcYQ8uD8wEtxyx1zf6FSx_ZvVA1CemfHUqEoXN2_H5BQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "id",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6IiIsInNydiI6InNydl9taW5lIiwiZXhwIjoxNzkzNTM0NDYwLCJvcCI6ImFwcC5zdG9wIiwiYXJncyI6eyJhcHAiOiJmaXh0dXJlIn19\",\"sig\":\"XSqIhiKxVqEwgImxYveZq4F-D4mCLpKq9gncxrMmCX5fVyl56NxpAcBTG4cxlat2ID5aWFLJd5yDaQ_YHIz2AQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "abc123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "id",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImFiYzEyMyIsInNydiI6InNydl9taW5lIiwiZXhwIjoxNzkzNTM0NDYwLCJvcCI6ImFwcC5zdG9wIiwiYXJncyI6eyJhcHAiOiJmaXh0dXJlIn19\",\"sig\":\"Mcf7UBaDi3nE-pdXjS44FN1AIPJ1OSK8A0_4qzo_WhTezQrlKYJXAGi7xghIXo8tS7OOucGbkut_A7lQwTaqDw\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "id",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImEuYiIsInNydiI6InNydl9taW5lIiwiZXhwIjoxNzkzNTM0NDYwLCJvcCI6ImFwcC5zdG9wIiwiYXJncyI6eyJhcHAiOiJmaXh0dXJlIn19\",\"sig\":\"JcAFa31ee-tlXnUB2ioSccjrUN-v8drfQY7218f-6M4k0szLFhegsrO3Y-Eew1H0stxV8zoDsFLPGqbc5WxaCQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "id",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6Ii4uL2VzY2FwZSIsInNydiI6InNydl9taW5lIiwiZXhwIjoxNzkzNTM0NDYwLCJvcCI6ImFwcC5zdG9wIiwiYXJncyI6eyJhcHAiOiJmaXh0dXJlIn19\",\"sig\":\"0nieEx_rSuTFLumFMxV2jPhftGzlN3u1x7DFP8z-fc6YvPEngq31z_CPWFhF1eTkwERlVCJEFxDlltm5f5bICw\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "id",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6InNwYWNlIG5hbWUiLCJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDQ2MCwib3AiOiJhcHAuc3RvcCIsImFyZ3MiOnsiYXBwIjoiZml4dHVyZSJ9fQ\",\"sig\":\"BReTHPJtCgqunUcRTpZowKJ7KnXpl-D8v7ga7f7_40vezMOdj9cDszguaZ79Jg82iyC8LqfpnPVHvHOYT5VuBw\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "-",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "id",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6Ii0iLCJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDQ2MCwib3AiOiJhcHAuc3RvcCIsImFyZ3MiOnsiYXBwIjoiZml4dHVyZSJ9fQ\",\"sig\":\"t7Xh7hbUBqUBomgHUDLo41WaVUxUc6pQ2ykdpgtFrTFoxr5jR3QBAdsycP9e75FlivWFaCLxBVK9H_FP0GHmCw\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "_",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "id",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6Il8iLCJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDQ2MCwib3AiOiJhcHAuc3RvcCIsImFyZ3MiOnsiYXBwIjoiZml4dHVyZSJ9fQ\",\"sig\":\"UhQ2PudG3oHLgxCOD6cCYKFZmHTwcRM-kSa1CThJiSUXlDAEmDF4Zndg0pLQBjnlOQe44U_sVLkOcM_bdemwBA\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "id",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWEiLCJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDQ2MCwib3AiOiJhcHAuc3RvcCIsImFyZ3MiOnsiYXBwIjoiZml4dHVyZSJ9fQ\",\"sig\":\"zD5J-BYbyF7dcb9mEAXH9JvAoo6lk-mxEuG4Bk6ADTCXAeu5bbCNpExmA5HnHl385Vb62QO9wPl0YwNCDCMfCw\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "id",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"gP_Nm7qdJTIGnvJbFW9S4MttaDMSHnFuU6F14GPApawpJo7HJJ9UumCsJHAvabZL08Hx-XYlA-H2k057SIJKBQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "id",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6IsOxIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"IdQdQLAqU-WlNjuaBNM_yq4gR6iyELrcE3o97Mjl0JOvWQP6y66XYSvuuOTeIZnXxzgffOzdx4kYiWvmBQuhBg\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "id",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImxpbmVcbngiLCJzcnYiOiJzcnZfbWluZSIsImV4cCI6MTc5MzUzNDQ2MCwib3AiOiJhcHAuc3RvcCIsImFyZ3MiOnsiYXBwIjoiZml4dHVyZSJ9fQ\",\"sig\":\"ysXaDVZz5duir_t7G6PQBNfyLNs5mhm4oHHWcvyRslzzIS6RjNA_8nhtX18oT9cpe6Q2m9LKzBa0gEWi7Ar7Aw\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "audience",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2IjoiIiwiZXhwIjoxNzkzNTM0NDYwLCJvcCI6ImFwcC5zdG9wIiwiYXJncyI6eyJhcHAiOiJmaXh0dXJlIn19\",\"sig\":\"v-1kn0KrIIhOT_qFktTkOTjvP_YjZIUNYGDGyC7YMzDnEdP34ZlhNXK8GaPifYoxAKbWNl2ds58Xn8ockrnECA\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "audience",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"OqS1WvWq81LsQY-7om6unUz5aRSwLTNvdRrDG647x4fHyebXUsBXq6O1fG59DDHhJ6OvaZBrsHBgTY_inLsKAQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "audience",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X290aGVyIiwiZXhwIjoxNzkzNTM0NDYwLCJvcCI6ImFwcC5zdG9wIiwiYXJncyI6eyJhcHAiOiJmaXh0dXJlIn19\",\"sig\":\"0x6qTRp6WYX1xMC6Ddmh5YxC-ATYte_YpiJ_m2TU9xi3Pk_nG1LJEBs_ZivD0RidklCKUCp1uDJTGy-_o4LmAQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "expiry",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQzNDAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"lX6kJwXwmq9CDvnaTxbmIHyS71PsW5cMy-P-jLVRGCi5e0rQc4_lc-tdYqVVt6cWHfBscu_a5gbLxRkQjaQpAQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "expiry",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQzNjksIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"HfAHqEBYRzKkJqijIP7rDtXxp_5fm3xQyPFf5qgk6xyYAGQ0NLdtB0ILSzBFZG5gWpKS5WtzS4RonAme2TF2CQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534370,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "expiry",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQzNzAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"8SEoKrSxDTYCvywLVRjZPOZ55Jt1We5FBLjdZgv8LPXxwnqoNkpr3zNMfDNqS0CRmkZiDC-PGis32GzShH30AA\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534371,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "expiry",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQzNzEsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"46T4B9QdnEdHowerSWQi5fZmizf3l2h6L9AwLgg8PxDOhG2stRxY5rPOJrwkomUFfnaZgW27f6f1J4C88JwRCQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534400,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "expiry",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0MDAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"pmWqDYaG44BeDGFkB99QIk14w7Rmama9aekOWNp-Um8pRsEjWe8HOneyQ94y0rI4tB1V5P8EIjLBBkuStORyCw\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "expiry",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"OqS1WvWq81LsQY-7om6unUz5aRSwLTNvdRrDG647x4fHyebXUsBXq6O1fG59DDHhJ6OvaZBrsHBgTY_inLsKAQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534700,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "expiry",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ3MDAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"pZeAjmK48qWqzOmWuhctJopKb02FtJRbfI_-VeNxBe0aN_l3fmJtfFf74DsAXWskKCdkz9xn2edopG2Gq_PJCg\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534730,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "expiry",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ3MzAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"wYA1EgmT5Mw1f4x1upD5TvhVPQhp7lhIZlc8PIthVaM6jRTQZ2F9Jz790GER3XAUyzGi1l-15YdAcuywXrFSDA\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "expiry",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ3MzEsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"nalqZXxg0kpTeWXyElqRROxndTsSk-2onm2iQZY64sqQSKymGWReEs6mieJvjfPiCugx-1Q4Korwf1RXZFd1BQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "expiry",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1NDQ0MDAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"XDxjQvIVe-9P_Xvwhw5xyosCs6-Y8JAjNJR9X1ibTHj6f8LcTwEL3fw0jdd7Iu7zqXKRXV4GabNKeM7ipQKlAg\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "subject",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"OqS1WvWq81LsQY-7om6unUz5aRSwLTNvdRrDG647x4fHyebXUsBXq6O1fG59DDHhJ6OvaZBrsHBgTY_inLsKAQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "sub": "acct_123",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "subject",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJzdWIiOiJhY2N0XzEyMyIsImFyZ3MiOnsiYXBwIjoiZml4dHVyZSJ9fQ\",\"sig\":\"pqVl4BgJDDoPXvMkwGGPV5AWK5_Ye0vZp4LQZphIW36qOKQA1LyXxWdbD9DFIPt3o4myBfEzfl6iCKAQPFZjDw\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "sub": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "subject",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJzdWIiOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhIiwiYXJncyI6eyJhcHAiOiJmaXh0dXJlIn19\",\"sig\":\"jMvizS1hMm0X35cweUe01_UavHugeCFdUL7ykQOTVB_5_iOVmqsI6K6oIATwoi-jXfLhkf35rsjeAq_pAkAiCA\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "subject",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJzdWIiOiJhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYSIsImFyZ3MiOnsiYXBwIjoiZml4dHVyZSJ9fQ\",\"sig\":\"75ev04AI79_CB5hF9U97rn5pATXkp5XynN56EcAXVMHFfADN1dluCqw_5qQiez6AtdeVJWAcCKr18vwSptYdAQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "sub": "a-b",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "subject",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJzdWIiOiJhLWIiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"PnGBOcv3PIKBdmPqmJzrWF8VIPpXoOCdYRSz44mGkLZEFuXxrU9z1SjC8u9WuBMNBNykjCFnUGLZiDyrOcTgAQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "subject",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJzdWIiOiJhIGIiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"xUNBhwePQTaGZ0mX4msjA1JqfnnZalHbpv47B67Y7l2gkH2ebZtXdTy9YwmZUNSmIJFByW1TzNRd9jgXrib9Bw\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "subject",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJzdWIiOiJcbiIsImFyZ3MiOnsiYXBwIjoiZml4dHVyZSJ9fQ\",\"sig\":\"oAz-YoqRD5zFSb3uK8n1xvNBWW8Lo6LEaEtrk22KrYZqUM6oRxgenTVj9rMb5-twJD9SOMfl-dMlF6l-VHZUDw\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "subject",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJzdWIiOiLDvCIsImFyZ3MiOnsiYXBwIjoiZml4dHVyZSJ9fQ\",\"sig\":\"amXfhbhfuCXFjiEAHlhtSY4i0N2szZ76V1Y4XePTLvo2VGZE060IGk_7ryspgtxmLbe1ksnZqiC3cqfeD5GvAw\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "sub": "root",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "subject",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJzdWIiOiJyb290IiwiYXJncyI6eyJhcHAiOiJmaXh0dXJlIn19\",\"sig\":\"fK6HQ_LtN7cb3QR69I7iT3vbgNRQKOCJxm898Ff_8jzCQB76CpjQcf-YO61H1J51kJKq4PGUdWrVR12voM_OAg\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "": "v",
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "arg-name",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7IiI6InYiLCJhcHAiOiJmaXh0dXJlIn19\",\"sig\":\"Zz3C2XDtjFrzPMGO8SndKhLqW10GfHRep6II1KD281eWz9VW6QOmXZH1DOoS5Pm06BPFvNhmg_seij8fxoEnAw\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture",
+            "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk": "v"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "arg-name",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUiLCJra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2trIjoidiJ9fQ\",\"sig\":\"3AXDxoCS_qqYsSC7ICy3ByZzGr3KzAM4QftxtqARvvbIGPxu2yeeE7CVCB4RtiwwKaFt3l6BOls67THOi3dcAg\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "arg-name",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUiLCJra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2tra2trayI6InYifX0\",\"sig\":\"2i1R7yEJgwZCuH13qhkNB1WFgOhOwcycftpNB11Ni8Cl5-Lw8mjka9AkRvLkrxTrEf7cBduCNtLHK-ropax8Dw\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture",
+            "extra": ""
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "arg-value",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUiLCJleHRyYSI6IiJ9fQ\",\"sig\":\"DEej9ndPayaz_kta1rWEdPqVSRze_xSLqOi7PSTIOZPTtniapGEmn6alfUlwvG6hjgiZzgVa-oL9mfAQiNIWAg\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture",
+            "extra": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "arg-value",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUiLCJleHRyYSI6InZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnYifX0\",\"sig\":\"NrCIth0BhgZ4D8H5sVGilagn2nTcP5OaGf16awsLTEuZ1W8uoZDtJCi8gApxGiezpXpk13YOLboKrtn4A_XUAg\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "arg-value",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUiLCJleHRyYSI6InZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2dnZ2In19\",\"sig\":\"ziSm3WjXR8qvRKBFYZcYSyltRmyTfOi5rDdUOc3xd6fcyLNJ0M0LTAoJO1DNdEGdUoOhW0u1qMqWmKvymOShBA\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534370,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "nanosecond-boundary",
+      "now": "2026-11-01T11:59:59.999999999Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQzNzAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"8SEoKrSxDTYCvywLVRjZPOZ55Jt1We5FBLjdZgv8LPXxwnqoNkpr3zNMfDNqS0CRmkZiDC-PGis32GzShH30AA\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534370,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "nanosecond-boundary",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQzNzAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"8SEoKrSxDTYCvywLVRjZPOZ55Jt1We5FBLjdZgv8LPXxwnqoNkpr3zNMfDNqS0CRmkZiDC-PGis32GzShH30AA\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "nanosecond-boundary",
+      "now": "2026-11-01T12:00:00.000000001Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQzNzAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"8SEoKrSxDTYCvywLVRjZPOZ55Jt1We5FBLjdZgv8LPXxwnqoNkpr3zNMfDNqS0CRmkZiDC-PGis32GzShH30AA\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "nanosecond-boundary",
+      "now": "2026-11-01T11:59:59.999999999Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ3MzAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"wYA1EgmT5Mw1f4x1upD5TvhVPQhp7lhIZlc8PIthVaM6jRTQZ2F9Jz790GER3XAUyzGi1l-15YdAcuywXrFSDA\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534730,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "nanosecond-boundary",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ3MzAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"wYA1EgmT5Mw1f4x1upD5TvhVPQhp7lhIZlc8PIthVaM6jRTQZ2F9Jz790GER3XAUyzGi1l-15YdAcuywXrFSDA\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534730,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "nanosecond-boundary",
+      "now": "2026-11-01T12:00:00.000000001Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ3MzAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"wYA1EgmT5Mw1f4x1upD5TvhVPQhp7lhIZlc8PIthVaM6jRTQZ2F9Jz790GER3XAUyzGi1l-15YdAcuywXrFSDA\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "wrong-audience",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"OqS1WvWq81LsQY-7om6unUz5aRSwLTNvdRrDG647x4fHyebXUsBXq6O1fG59DDHhJ6OvaZBrsHBgTY_inLsKAQ\"}",
+      "server": "srv_other"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "no-audience",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"OqS1WvWq81LsQY-7om6unUz5aRSwLTNvdRrDG647x4fHyebXUsBXq6O1fG59DDHhJ6OvaZBrsHBgTY_inLsKAQ\"}",
+      "server": ""
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [],
+      "name": "empty-key-set",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"OqS1WvWq81LsQY-7om6unUz5aRSwLTNvdRrDG647x4fHyebXUsBXq6O1fG59DDHhJ6OvaZBrsHBgTY_inLsKAQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "ukJFjoO6eSa6i48-mrnKrw8cSRjdqMVRCE966xBlt0s"
+      ],
+      "name": "untrusted-key",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"OqS1WvWq81LsQY-7om6unUz5aRSwLTNvdRrDG647x4fHyebXUsBXq6O1fG59DDHhJ6OvaZBrsHBgTY_inLsKAQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": "fixture"
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "ukJFjoO6eSa6i48-mrnKrw8cSRjdqMVRCE966xBlt0s",
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "second-key",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImZpeHR1cmUifX0\",\"sig\":\"OqS1WvWq81LsQY-7om6unUz5aRSwLTNvdRrDG647x4fHyebXUsBXq6O1fG59DDHhJ6OvaZBrsHBgTY_inLsKAQ\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this command is v0 and this box speaks v1",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "raw-payload",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"bnVsbA\",\"sig\":\"7Szjzg8TFaoB2yvc1KSOva-QubMrb4k4fkOykU6eK5JugZFCILJZALg6iCj2ybdew1n0gZB8QfRRLs6nmOS6Dw\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "raw-payload",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"W10\",\"sig\":\"EIPnYuFyUP4F_eD9l4QZTJduZIE6MFhV4iI1LRX6kNKWJu2MdItwgI0xEHvKrFI2eGa34kOCTu9AumNeFQn-BA\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "raw-payload",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X290aGVyIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AifQ\",\"sig\":\"P_fJkVWorCR00u_FkPu5BZZkVom9AFUo6snYwl42LFU9cKhTElux8o4ZYj9A50T2sMvRCuHgrkTUi4Se4qlEBg\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "raw-payload",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6ImEiLCJhcHAiOiJiIn19\",\"sig\":\"TYdJUbn-OkPO0ySS5t7i2JB98OWp6eC5CbAO7sWJHzgJWxsxZ8dVU8oyw1WQ6iFSORAxNYdsOqpLoK8Xw8tMBw\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "raw-payload",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjpudWxsfQ\",\"sig\":\"_vdJSWIX-ItzaamkQ3GV2_Ab59fa872r7EB38rcrpMDCS38YPKQ1YYF83zyXGHy-pGM3nVEJ35nu-1ZyDxqSAw\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "args": {
+            "app": ""
+          },
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "raw-payload",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6bnVsbH19\",\"sig\":\"R_WKvXwNSzLCxtjSE0BN2wsSn7iTct6lw6YbiIBMhF1eiQ3cbGAgpV7Lmj34D17Rr1BzLQt1Y30tW9c8LzDBBA\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "raw-payload",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJhcmdzIjp7ImFwcCI6NDJ9fQ\",\"sig\":\"VolQ57edByJ3w_fihjh6C_fAQrx525Hwv-1Is5tq3poKWXyP_eVziSdmuqa7uCnrVD9-f9yA4G8gH6jZKf6kCA\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "raw-payload",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJleHRlbnNpb24iOnsiZHVwIjoxLCJkdXAiOjJ9fQ\",\"sig\":\"he6crHeH0cHhxfouL6hPj-CYw6lRVD7NBjyqcHiODDefPj_CQQgZ0f5Y2Kfqzic5LbUo4hobvK4tP6DxQB7SAA\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 1793534460,
+          "id": "fixture_123",
+          "op": "app.stop",
+          "srv": "srv_mine",
+          "v": 1
+        },
+        "error": "",
+        "refused": false,
+        "signer": "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "raw-payload",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"eyJ2IjoxLCJpZCI6ImZpeHR1cmVfMTIzIiwic3J2Ijoic3J2X21pbmUiLCJleHAiOjE3OTM1MzQ0NjAsIm9wIjoiYXBwLnN0b3AiLCJleHRlbnNpb24iOnsib2siOlsxLDIsM119fQ\",\"sig\":\"rpX7MDEiMkpaUNVK3W2M6Xket3t7fT9u8Flu6ZpJVjJCrMO7wd1wIhZ0N0uDFpLKOuIEPyRDq9icUlqX_nDXBg\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "bad-envelope",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "bad-envelope",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "bad-envelope",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "{\"payload\":\"!!!!\",\"sig\":\"!\"}",
+      "server": "srv_mine"
+    },
+    {
+      "expected": {
+        "command": {
+          "exp": 0,
+          "id": "",
+          "op": "",
+          "srv": "",
+          "v": 0
+        },
+        "error": "this box will not act on that",
+        "refused": true,
+        "signer": ""
+      },
+      "keys": [
+        "A6EHv_POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+      ],
+      "name": "bad-envelope",
+      "now": "2026-11-01T12:00:00Z",
+      "raw": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "server": "srv_mine"
+    }
+  ]
+}

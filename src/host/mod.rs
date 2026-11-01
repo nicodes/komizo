@@ -1,6 +1,8 @@
 //! Additive v1 host observation schemas are shared by the native caller and host processes.
 pub mod access;
 pub mod assembly;
+pub mod authority;
+pub mod credential;
 pub mod diagnose;
 pub mod engine;
 pub mod health;
@@ -9,6 +11,7 @@ pub mod locking;
 pub mod logs;
 pub mod observer;
 pub mod paths;
+pub mod results;
 pub mod stopped;
 pub mod store;
 pub mod system;
