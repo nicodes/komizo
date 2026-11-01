@@ -21,6 +21,41 @@ use std::{
 };
 pub type ArchiveConsumer<'a> = dyn FnMut(&mut dyn Read) -> Result<()> + 'a;
 pub trait Effects {
+    fn program(
+        &mut self,
+        ctx: &Context,
+        path: &Path,
+        directory: &Path,
+        args: &[String],
+        input: std::process::Stdio,
+    ) -> Result<()> {
+        let mut command = Command::new(path);
+        command
+            .args(args)
+            .current_dir(directory)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .env("HOME", "/root")
+            .env("LC_ALL", "C");
+        let captured = process::stream_input(
+            &mut command,
+            input,
+            8192,
+            ctx.deadline,
+            || ctx.cancelled.load(Ordering::Acquire),
+            &mut std::io::stdout().lock(),
+            &mut std::io::stderr().lock(),
+        )?;
+        ensure!(captured.status.success(), "bounded operator program failed");
+        Ok(())
+    }
+    fn release_key(
+        &mut self,
+        ctx: &Context,
+        kid: &str,
+    ) -> Result<crate::workload::release::RsaKey> {
+        crate::workload::release::github_release_key_with_timeout(kid, ctx.remaining()?)
+    }
     fn reconciliation_readiness(
         &mut self,
         _ctx: &Context,
