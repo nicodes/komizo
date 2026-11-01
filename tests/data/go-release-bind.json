@@ -1,0 +1,2744 @@
+[
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "pull",
+        "-q",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "",
+    "kind": "bind",
+    "name": "none",
+    "output": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api@sha256:9999999999999999999999999999999999999999999999999999999999999999\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": ""
+      },
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"RepoDigests\":[\"ghcr.io/owner/demo-api@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "pull",
+        "-q",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "release image pull failed",
+    "kind": "bind",
+    "name": "pull",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "failed",
+        "output": ""
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "pull",
+        "-q",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "release image inspection failed",
+    "kind": "bind",
+    "name": "missing",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": ""
+      },
+      {
+        "error": "missing",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"RepoDigests\":[\"ghcr.io/owner/demo-api@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "pull",
+        "-q",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "pulled image differs from authenticated Build evidence",
+    "kind": "bind",
+    "name": "changed",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": ""
+      },
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"RepoDigests\":[\"ghcr.io/owner/demo-api@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "pull",
+        "-q",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "config-digest",
+        "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "",
+    "kind": "bind",
+    "name": "containerd",
+    "output": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api@sha256:9999999999999999999999999999999999999999999999999999999999999999\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": ""
+      },
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"sha256:8888888888888888888888888888888888888888888888888888888888888888\"},\"Id\":\"sha256:8888888888888888888888888888888888888888888888888888888888888888\",\"RepoDigests\":[\"ghcr.io/owner/demo-api@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "pull",
+        "-q",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "config-digest",
+        "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "pulled image differs from authenticated Build evidence",
+    "kind": "bind",
+    "name": "config-mismatch",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": ""
+      },
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"sha256:8888888888888888888888888888888888888888888888888888888888888888\"},\"Id\":\"sha256:8888888888888888888888888888888888888888888888888888888888888888\",\"RepoDigests\":[\"ghcr.io/owner/demo-api@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "pull",
+        "-q",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "authenticated image has no registry digest: ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "bind",
+    "name": "no-digest",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": ""
+      },
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"RepoDigests\":null}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "pull",
+        "-q",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "authenticated image has no registry digest: ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "bind",
+    "name": "wrong-repository",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": ""
+      },
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"RepoDigests\":[\"attacker/repo@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "pull",
+        "-q",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "authenticated image has no registry digest: ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "bind",
+    "name": "bad-digest",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": ""
+      },
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"RepoDigests\":[\"ghcr.io/owner/demo-api@sha256:bad\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "pulled image differs from authenticated Build evidence",
+    "kind": "bind",
+    "name": "invalid-json",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "bad"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "pulled image differs from authenticated Build evidence",
+    "kind": "bind",
+    "name": "empty-inspect",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "pulled image differs from authenticated Build evidence",
+    "kind": "bind",
+    "name": "recovery-good",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "pulled image differs from authenticated Build evidence",
+    "kind": "bind",
+    "name": "recovery-absent",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "pulled image differs from authenticated Build evidence",
+    "kind": "bind",
+    "name": "recovery-unsafe",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "pulled image differs from authenticated Build evidence",
+    "kind": "bind",
+    "name": "recovery-substitution",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "",
+    "kind": "bind",
+    "name": "none",
+    "output": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api@sha256:9999999999999999999999999999999999999999999999999999999999999999\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"RepoDigests\":[\"ghcr.io/owner/demo-api@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "",
+    "kind": "bind",
+    "name": "pull",
+    "output": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api@sha256:9999999999999999999999999999999999999999999999999999999999999999\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"RepoDigests\":[\"ghcr.io/owner/demo-api@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "release image inspection failed",
+    "kind": "bind",
+    "name": "missing",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "missing",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"RepoDigests\":[\"ghcr.io/owner/demo-api@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "pulled image differs from authenticated Build evidence",
+    "kind": "bind",
+    "name": "changed",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"RepoDigests\":[\"ghcr.io/owner/demo-api@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "config-digest",
+        "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "",
+    "kind": "bind",
+    "name": "containerd",
+    "output": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api@sha256:9999999999999999999999999999999999999999999999999999999999999999\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"sha256:8888888888888888888888888888888888888888888888888888888888888888\"},\"Id\":\"sha256:8888888888888888888888888888888888888888888888888888888888888888\",\"RepoDigests\":[\"ghcr.io/owner/demo-api@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "config-digest",
+        "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "pulled image differs from authenticated Build evidence",
+    "kind": "bind",
+    "name": "config-mismatch",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"sha256:8888888888888888888888888888888888888888888888888888888888888888\"},\"Id\":\"sha256:8888888888888888888888888888888888888888888888888888888888888888\",\"RepoDigests\":[\"ghcr.io/owner/demo-api@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "authenticated image has no registry digest: ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "bind",
+    "name": "no-digest",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"RepoDigests\":null}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "authenticated image has no registry digest: ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "bind",
+    "name": "wrong-repository",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"RepoDigests\":[\"attacker/repo@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "authenticated image has no registry digest: ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "kind": "bind",
+    "name": "bad-digest",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"RepoDigests\":[\"ghcr.io/owner/demo-api@sha256:bad\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "local-config-image",
+        "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      ],
+      [
+        "image",
+        "inspect",
+        "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "pulled image differs from authenticated Build evidence",
+    "kind": "bind",
+    "name": "invalid-json",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": [
+      {
+        "error": "",
+        "output": "bad"
+      },
+      {
+        "error": "",
+        "output": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      },
+      {
+        "error": "",
+        "output": "bad"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "local-config-image",
+        "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      ],
+      [
+        "image",
+        "inspect",
+        "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "pulled image differs from authenticated Build evidence",
+    "kind": "bind",
+    "name": "empty-inspect",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": [
+      {
+        "error": "",
+        "output": "[]"
+      },
+      {
+        "error": "",
+        "output": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      },
+      {
+        "error": "",
+        "output": "[]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "local-config-image",
+        "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      ],
+      [
+        "image",
+        "inspect",
+        "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      ],
+      [
+        "config-digest",
+        "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      ],
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "",
+    "kind": "bind",
+    "name": "recovery-good",
+    "output": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api@sha256:9999999999999999999999999999999999999999999999999999999999999999\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      },
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"sha256:7777777777777777777777777777777777777777777777777777777777777777\"},\"Id\":\"sha256:7777777777777777777777777777777777777777777777777777777777777777\",\"RepoDigests\":null}]"
+      },
+      {
+        "error": "",
+        "output": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"RepoDigests\":[\"ghcr.io/owner/demo-api@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "local-config-image",
+        "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "pulled image differs from authenticated Build evidence",
+    "kind": "bind",
+    "name": "recovery-absent",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "absent",
+        "output": ""
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "local-config-image",
+        "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "pulled image differs from authenticated Build evidence",
+    "kind": "bind",
+    "name": "recovery-unsafe",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": "other:latest"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "local-config-image",
+        "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      ],
+      [
+        "image",
+        "inspect",
+        "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      ],
+      [
+        "config-digest",
+        "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "pulled image differs from authenticated Build evidence",
+    "kind": "bind",
+    "name": "recovery-substitution",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      },
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"sha256:7777777777777777777777777777777777777777777777777777777777777777\"},\"Id\":\"sha256:7777777777777777777777777777777777777777777777777777777777777777\",\"RepoDigests\":null}]"
+      },
+      {
+        "error": "",
+        "output": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "approved workload has no services",
+    "kind": "bind",
+    "name": "document",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "null",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "approved workload has no services",
+    "kind": "bind",
+    "name": "document",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":[]}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "approved workload has no services",
+    "kind": "bind",
+    "name": "document",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":true}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "invalid approved service",
+    "kind": "bind",
+    "name": "document",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "approved service has no image",
+    "kind": "bind",
+    "name": "document",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":3}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "approved service has no image",
+    "kind": "bind",
+    "name": "document",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ],
+      [
+        "pull",
+        "-q",
+        "ghcr.io/owner/demo-api@sha256:8888888888888888888888888888888888888888888888888888888888888888"
+      ],
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-api@sha256:8888888888888888888888888888888888888888888888888888888888888888"
+      ]
+    ],
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api@sha256:8888888888888888888888888888888888888888888888888888888888888888\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "pulled image differs from authenticated Build evidence",
+    "kind": "bind",
+    "name": "document",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      },
+      {
+        "error": "",
+        "output": ""
+      },
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"\",\"RepoDigests\":[\"ghcr.io/owner/demo-api@sha256:8888888888888888888888888888888888888888888888888888888888888888@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{\"a\":{\"image\":\"upstream@sha256:abc\"}},\"one\":1e20,\"small\":1e-7,\"minus\":-0.0,\"html\":\"\u003c\u0026\u003e\"}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "",
+    "kind": "bind",
+    "name": "document",
+    "output": "{\"html\":\"\\u003c\\u0026\\u003e\",\"minus\":-0,\"one\":100000000000000000000,\"services\":{\"a\":{\"image\":\"upstream@sha256:abc\"}},\"small\":1e-7}",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": [
+      [
+        "image",
+        "inspect",
+        "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      ]
+    ],
+    "compose": "{\"services\":{},\"x\":1,\"x\":2}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "duplicate release JSON key",
+    "kind": "bind",
+    "name": "document",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": [
+      {
+        "error": "",
+        "output": "[{\"Descriptor\":{\"digest\":\"\"},\"Id\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"RepoDigests\":[\"ghcr.io/owner/demo-config@sha256:9999999999999999999999999999999999999999999999999999999999999999\"]}]"
+      }
+    ],
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "unknown"
+    },
+    "calls": null,
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "unknown host release authority",
+    "kind": "bind",
+    "name": "no-authority",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": true,
+    "responses": null,
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": null,
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "release binding requires explicit protected admission authority",
+    "kind": "bind",
+    "name": "no-policy",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge"
+    },
+    "pull": true,
+    "responses": null,
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": null,
+    "compose": "{\"services\":{\"api\":{\"image\":\"ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},\"postgres\":{\"image\":\"postgres@sha256:3333333333333333333333333333333333333333333333333333333333333333\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "local binding requires an authenticated source policy",
+    "kind": "bind",
+    "name": "no-local-policy",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge"
+    },
+    "pull": false,
+    "responses": null,
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": null,
+    "compose": "{}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "image discovery requires bounded services",
+    "kind": "refs",
+    "name": "document",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": null,
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": null,
+    "compose": "null",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "image discovery requires bounded services",
+    "kind": "refs",
+    "name": "document",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": null,
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": null,
+    "compose": "[]",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "json: cannot unmarshal array into Go value of type map[string]interface {}",
+    "kind": "refs",
+    "name": "document",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": null,
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": null,
+    "compose": "{\"services\":{}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "image discovery requires bounded services",
+    "kind": "refs",
+    "name": "document",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": null,
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": null,
+    "compose": "{\"services\":{\"a\":{\"image\":\"example/a:v1\"},\"b\":{\"image\":\"postgres@sha256:abc\"},\"c\":{\"image\":\"example/a:v1\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "",
+    "kind": "refs",
+    "name": "document",
+    "output": "[\"example/a:v1\",\"example/a:v1\",\"postgres@sha256:abc\"]",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": null,
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": null,
+    "compose": "{\"services\":{\"a\":null}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "invalid service for image discovery",
+    "kind": "refs",
+    "name": "document",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": null,
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": null,
+    "compose": "{\"services\":{\"a\":{\"image\":\"${EVIL}\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "image discovery requires explicit references",
+    "kind": "refs",
+    "name": "document",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": null,
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": null,
+    "compose": "{\"services\":{\"a\":{\"image\":\"bad space\"}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "image discovery requires explicit references",
+    "kind": "refs",
+    "name": "document",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": null,
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": null,
+    "compose": "{\"services\":{\"a\":{\"image\":1}}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "image discovery requires explicit references",
+    "kind": "refs",
+    "name": "document",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": null,
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "accepted": {
+      "manifest": {
+        "version": 1,
+        "repository": "owner/source",
+        "repository_id": "1234",
+        "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "tested_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "run_id": "12345",
+        "images": {
+          "ghcr.io/owner/demo-api:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      },
+      "verified_at": "0001-01-01T00:00:00Z",
+      "authority": "https://token.actions.githubusercontent.com"
+    },
+    "calls": null,
+    "compose": "{\"services\":{\"a\":{\"image\":\"example/a\"}},\"services\":{}}",
+    "config": "ghcr.io/owner/demo-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "error": "duplicate release JSON key",
+    "kind": "refs",
+    "name": "document",
+    "output": "",
+    "policy": {
+      "version": 1,
+      "app": "demo",
+      "app_dir": "/srv/demo",
+      "image_prefix": "ghcr.io/owner/demo-",
+      "shared_network": "edge",
+      "source_repository": "owner/source",
+      "repository_id": "1234"
+    },
+    "pull": false,
+    "responses": null,
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  }
+]

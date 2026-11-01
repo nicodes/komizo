@@ -72,3 +72,26 @@ pub fn pretty(value: &Value) -> Result<Vec<u8>> {
     write(value, 0, &mut output)?;
     Ok(output.into_bytes())
 }
+pub fn compact(value: &Value) -> Result<Vec<u8>> {
+    let mut output = Vec::new();
+    let mut quoted = false;
+    let mut escaped = false;
+    for byte in pretty(value)? {
+        if quoted {
+            output.push(byte);
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                quoted = false;
+            }
+        } else if byte == b'"' {
+            quoted = true;
+            output.push(byte);
+        } else if !byte.is_ascii_whitespace() {
+            output.push(byte);
+        }
+    }
+    Ok(output)
+}
