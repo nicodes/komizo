@@ -86,13 +86,35 @@ impl Directory {
         Ok(Some(body))
     }
     pub fn write(&self, name: &str, value: &str) -> io::Result<()> {
+        self.write_inner(name, value, true)
+    }
+    pub fn write_existing(&self, name: &str, value: &str) -> io::Result<()> {
+        self.write_inner(name, value, false)
+    }
+    pub fn regular(&self, name: &str) -> io::Result<bool> {
+        let name = leaf(name)?;
+        let mut status = std::mem::MaybeUninit::<libc::stat>::uninit();
+        if unsafe {
+            libc::fstatat(
+                self.0.as_raw_fd(),
+                name.as_ptr(),
+                status.as_mut_ptr(),
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        } < 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(unsafe { status.assume_init() }.st_mode & libc::S_IFMT == libc::S_IFREG)
+    }
+    fn write_inner(&self, name: &str, value: &str, create: bool) -> io::Result<()> {
         let name = leaf(name)?;
         let descriptor = unsafe {
             libc::openat(
                 self.0.as_raw_fd(),
                 name.as_ptr(),
                 libc::O_WRONLY
-                    | libc::O_CREAT
+                    | if create { libc::O_CREAT } else { 0 }
                     | libc::O_TRUNC
                     | libc::O_NOFOLLOW
                     | libc::O_CLOEXEC

@@ -1,4 +1,6 @@
 //! Operator-owned aggregate capacity and admission preserve every serving allocation.
+mod control_cache;
+pub use control_cache::ControlReclaim;
 mod controllers;
 use super::resources::ResourcePolicy;
 use crate::{
@@ -161,7 +163,7 @@ impl HostResources {
         }
         Ok(())
     }
-    fn check_controls(&self) -> Result<()> {
+    pub(super) fn check_controls(&self) -> Result<()> {
         if self.controls.is_empty() {
             return Ok(());
         }

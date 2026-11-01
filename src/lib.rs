@@ -4,5 +4,6 @@ pub mod host;
 pub mod process;
 pub mod statefile;
 pub mod strict;
+pub mod template;
 pub mod wire;
 pub mod workload;
