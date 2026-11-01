@@ -21,6 +21,33 @@ use std::{
 };
 pub type ArchiveConsumer<'a> = dyn FnMut(&mut dyn Read) -> Result<()> + 'a;
 pub trait Effects {
+    fn reconciliation_readiness(
+        &mut self,
+        _ctx: &Context,
+        _candidate: &str,
+        _compose: &[u8],
+    ) -> Option<Result<()>> {
+        None
+    }
+    fn snapshot(&self, path: &Path) -> Result<super::transaction::Snapshot> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)?;
+        let info = file.metadata()?;
+        ensure!(
+            info.is_file()
+                && self.owned(&info)
+                && info.mode() & 0o077 == 0
+                && info.len() <= 4 << 20,
+            "snapshot must be a bounded private root file"
+        );
+        let mut body = vec![];
+        file.take((4 << 20) + 1).read_to_end(&mut body)?;
+        ensure!(body.len() <= 4 << 20, "snapshot exceeds its byte bound");
+        files::decode(&body, 4 << 20)
+    }
     fn owned(&self, info: &fs::Metadata) -> bool {
         files::owned(info)
     }
