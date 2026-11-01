@@ -1,0 +1,741 @@
+[
+  {
+    "expected": {
+      "available": true,
+      "containers": [
+        {
+          "health": "healthy",
+          "image": "fixture-image",
+          "inspection": "current",
+          "name": "fixture-web",
+          "service": "web",
+          "started_at": "2026-11-01T12:00:00Z",
+          "state": "running",
+          "status": "Up"
+        }
+      ],
+      "failure": "",
+      "network_text": "bridge\t172.22.0.0/16",
+      "rows": [
+        {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "inspection_unavailable": false,
+          "mount_count": 1,
+          "name": "fixture-web",
+          "pid": 42,
+          "tty": false
+        }
+      ],
+      "selected": true,
+      "status": "current"
+    },
+    "kind": "ready",
+    "responses": {
+      "/v1.45/containers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/json": {
+        "body": "{\"Config\":{\"Env\":[\"PRIVATE=never-export-this\"],\"Tty\":false},\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Mounts\":[{\"Name\":\"fixture-data\",\"Source\":\"/var/lib/docker/volumes/fixture-data/_data\",\"Type\":\"volume\"},{\"Source\":\"/private\",\"Type\":\"bind\"}],\"NetworkSettings\":{\"Networks\":{\"edge\":{\"Aliases\":[\"web\",\"fixture-web\"]}}},\"State\":{\"ExitCode\":0,\"FinishedAt\":\"0001-01-01T00:00:00Z\",\"Health\":{\"Status\":\"healthy\"},\"Pid\":42,\"StartedAt\":\"2026-11-01T12:00:00Z\",\"Status\":\"running\"}}",
+        "status": 200
+      },
+      "/v1.45/containers/json?all=1": {
+        "body": "[{\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Image\":\"fixture-image\",\"Labels\":{\"com.docker.compose.project.working_dir\":\"/srv/fixture\",\"com.docker.compose.service\":\"web\"},\"Names\":[\"/fixture-web\"],\"State\":\"running\",\"Status\":\"Up\"}]",
+        "status": 200
+      },
+      "/v1.45/networks/edge": {
+        "body": "{\"Driver\":\"bridge\",\"IPAM\":{\"Config\":[{\"Subnet\":\"172.22.0.0/16\"}]}}",
+        "status": 200
+      },
+      "/version": {
+        "body": "{\"ApiVersion\":\"1.53\",\"GitCommit\":\"abc123\",\"MinAPIVersion\":\"1.44\",\"Version\":\"29.1.3\"}",
+        "status": 200
+      }
+    }
+  },
+  {
+    "expected": {
+      "available": true,
+      "containers": [
+        {
+          "health": "unhealthy",
+          "image": "fixture-image",
+          "inspection": "current",
+          "name": "fixture-web",
+          "service": "web",
+          "started_at": "2026-11-01T12:00:00Z",
+          "state": "running",
+          "status": "Up"
+        }
+      ],
+      "failure": "",
+      "network_text": "bridge\t172.22.0.0/16",
+      "rows": [
+        {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "inspection_unavailable": false,
+          "mount_count": 1,
+          "name": "fixture-web",
+          "pid": 42,
+          "tty": false
+        }
+      ],
+      "selected": true,
+      "status": "current"
+    },
+    "kind": "unhealthy",
+    "responses": {
+      "/v1.45/containers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/json": {
+        "body": "{\"Config\":{\"Env\":[\"PRIVATE=never-export-this\"],\"Tty\":false},\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Mounts\":[{\"Name\":\"fixture-data\",\"Source\":\"/var/lib/docker/volumes/fixture-data/_data\",\"Type\":\"volume\"},{\"Source\":\"/private\",\"Type\":\"bind\"}],\"NetworkSettings\":{\"Networks\":{\"edge\":{\"Aliases\":[\"web\",\"fixture-web\"]}}},\"State\":{\"ExitCode\":0,\"FinishedAt\":\"0001-01-01T00:00:00Z\",\"Health\":{\"Status\":\"unhealthy\"},\"Pid\":42,\"StartedAt\":\"2026-11-01T12:00:00Z\",\"Status\":\"running\"}}",
+        "status": 200
+      },
+      "/v1.45/containers/json?all=1": {
+        "body": "[{\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Image\":\"fixture-image\",\"Labels\":{\"com.docker.compose.project.working_dir\":\"/srv/fixture\",\"com.docker.compose.service\":\"web\"},\"Names\":[\"/fixture-web\"],\"State\":\"running\",\"Status\":\"Up\"}]",
+        "status": 200
+      },
+      "/v1.45/networks/edge": {
+        "body": "{\"Driver\":\"bridge\",\"IPAM\":{\"Config\":[{\"Subnet\":\"172.22.0.0/16\"}]}}",
+        "status": 200
+      },
+      "/version": {
+        "body": "{\"ApiVersion\":\"1.53\",\"GitCommit\":\"abc123\",\"MinAPIVersion\":\"1.44\",\"Version\":\"29.1.3\"}",
+        "status": 200
+      }
+    }
+  },
+  {
+    "expected": {
+      "available": true,
+      "containers": [
+        {
+          "exit_code": 137,
+          "health": "healthy",
+          "image": "fixture-image",
+          "inspection": "current",
+          "name": "fixture-web",
+          "service": "web",
+          "started_at": "2026-11-01T12:00:00Z",
+          "state": "exited",
+          "status": "Up"
+        }
+      ],
+      "failure": "",
+      "network_text": "bridge\t172.22.0.0/16",
+      "rows": [
+        {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "inspection_unavailable": false,
+          "mount_count": 1,
+          "name": "fixture-web",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "selected": true,
+      "status": "current"
+    },
+    "kind": "stopped",
+    "responses": {
+      "/v1.45/containers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/json": {
+        "body": "{\"Config\":{\"Env\":[\"PRIVATE=never-export-this\"],\"Tty\":false},\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Mounts\":[{\"Name\":\"fixture-data\",\"Source\":\"/var/lib/docker/volumes/fixture-data/_data\",\"Type\":\"volume\"},{\"Source\":\"/private\",\"Type\":\"bind\"}],\"NetworkSettings\":{\"Networks\":{\"edge\":{\"Aliases\":[\"web\",\"fixture-web\"]}}},\"State\":{\"ExitCode\":137,\"FinishedAt\":\"0001-01-01T00:00:00Z\",\"Health\":{\"Status\":\"healthy\"},\"Pid\":0,\"StartedAt\":\"2026-11-01T12:00:00Z\",\"Status\":\"exited\"}}",
+        "status": 200
+      },
+      "/v1.45/containers/json?all=1": {
+        "body": "[{\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Image\":\"fixture-image\",\"Labels\":{\"com.docker.compose.project.working_dir\":\"/srv/fixture\",\"com.docker.compose.service\":\"web\"},\"Names\":[\"/fixture-web\"],\"State\":\"running\",\"Status\":\"Up\"}]",
+        "status": 200
+      },
+      "/v1.45/networks/edge": {
+        "body": "{\"Driver\":\"bridge\",\"IPAM\":{\"Config\":[{\"Subnet\":\"172.22.0.0/16\"}]}}",
+        "status": 200
+      },
+      "/version": {
+        "body": "{\"ApiVersion\":\"1.53\",\"GitCommit\":\"abc123\",\"MinAPIVersion\":\"1.44\",\"Version\":\"29.1.3\"}",
+        "status": 200
+      }
+    }
+  },
+  {
+    "expected": {
+      "available": true,
+      "containers": [
+        {
+          "health": "healthy",
+          "image": "fixture-image",
+          "inspection": "current",
+          "name": "fixture-web",
+          "service": "web",
+          "started_at": "2026-11-01T12:00:00Z",
+          "state": "running",
+          "status": "Up"
+        }
+      ],
+      "failure": "",
+      "network_text": "bridge\t172.22.0.0/16",
+      "rows": [
+        {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "inspection_unavailable": false,
+          "mount_count": 1,
+          "name": "fixture-web",
+          "pid": 42,
+          "tty": true
+        }
+      ],
+      "selected": true,
+      "status": "current"
+    },
+    "kind": "tty",
+    "responses": {
+      "/v1.45/containers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/json": {
+        "body": "{\"Config\":{\"Env\":[\"PRIVATE=never-export-this\"],\"Tty\":true},\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Mounts\":[{\"Name\":\"fixture-data\",\"Source\":\"/var/lib/docker/volumes/fixture-data/_data\",\"Type\":\"volume\"},{\"Source\":\"/private\",\"Type\":\"bind\"}],\"NetworkSettings\":{\"Networks\":{\"edge\":{\"Aliases\":[\"web\",\"fixture-web\"]}}},\"State\":{\"ExitCode\":0,\"FinishedAt\":\"0001-01-01T00:00:00Z\",\"Health\":{\"Status\":\"healthy\"},\"Pid\":42,\"StartedAt\":\"2026-11-01T12:00:00Z\",\"Status\":\"running\"}}",
+        "status": 200
+      },
+      "/v1.45/containers/json?all=1": {
+        "body": "[{\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Image\":\"fixture-image\",\"Labels\":{\"com.docker.compose.project.working_dir\":\"/srv/fixture\",\"com.docker.compose.service\":\"web\"},\"Names\":[\"/fixture-web\"],\"State\":\"running\",\"Status\":\"Up\"}]",
+        "status": 200
+      },
+      "/v1.45/networks/edge": {
+        "body": "{\"Driver\":\"bridge\",\"IPAM\":{\"Config\":[{\"Subnet\":\"172.22.0.0/16\"}]}}",
+        "status": 200
+      },
+      "/version": {
+        "body": "{\"ApiVersion\":\"1.53\",\"GitCommit\":\"abc123\",\"MinAPIVersion\":\"1.44\",\"Version\":\"29.1.3\"}",
+        "status": 200
+      }
+    }
+  },
+  {
+    "expected": {
+      "available": true,
+      "containers": [],
+      "failure": "list_unavailable",
+      "network_text": "bridge\t172.22.0.0/16",
+      "rows": [],
+      "selected": true,
+      "status": "unavailable"
+    },
+    "kind": "list_failed",
+    "responses": {
+      "/v1.45/containers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/json": {
+        "body": "{\"Config\":{\"Env\":[\"PRIVATE=never-export-this\"],\"Tty\":false},\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Mounts\":[{\"Name\":\"fixture-data\",\"Source\":\"/var/lib/docker/volumes/fixture-data/_data\",\"Type\":\"volume\"},{\"Source\":\"/private\",\"Type\":\"bind\"}],\"NetworkSettings\":{\"Networks\":{\"edge\":{\"Aliases\":[\"web\",\"fixture-web\"]}}},\"State\":{\"ExitCode\":0,\"FinishedAt\":\"0001-01-01T00:00:00Z\",\"Health\":{\"Status\":\"healthy\"},\"Pid\":42,\"StartedAt\":\"2026-11-01T12:00:00Z\",\"Status\":\"running\"}}",
+        "status": 200
+      },
+      "/v1.45/containers/json?all=1": {
+        "body": "[{\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Image\":\"fixture-image\",\"Labels\":{\"com.docker.compose.project.working_dir\":\"/srv/fixture\",\"com.docker.compose.service\":\"web\"},\"Names\":[\"/fixture-web\"],\"State\":\"running\",\"Status\":\"Up\"}]",
+        "status": 503
+      },
+      "/v1.45/networks/edge": {
+        "body": "{\"Driver\":\"bridge\",\"IPAM\":{\"Config\":[{\"Subnet\":\"172.22.0.0/16\"}]}}",
+        "status": 200
+      },
+      "/version": {
+        "body": "{\"ApiVersion\":\"1.53\",\"GitCommit\":\"abc123\",\"MinAPIVersion\":\"1.44\",\"Version\":\"29.1.3\"}",
+        "status": 200
+      }
+    }
+  },
+  {
+    "expected": {
+      "available": true,
+      "containers": [],
+      "failure": "list_invalid",
+      "network_text": "bridge\t172.22.0.0/16",
+      "rows": [],
+      "selected": true,
+      "status": "unavailable"
+    },
+    "kind": "list_invalid",
+    "responses": {
+      "/v1.45/containers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/json": {
+        "body": "{\"Config\":{\"Env\":[\"PRIVATE=never-export-this\"],\"Tty\":false},\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Mounts\":[{\"Name\":\"fixture-data\",\"Source\":\"/var/lib/docker/volumes/fixture-data/_data\",\"Type\":\"volume\"},{\"Source\":\"/private\",\"Type\":\"bind\"}],\"NetworkSettings\":{\"Networks\":{\"edge\":{\"Aliases\":[\"web\",\"fixture-web\"]}}},\"State\":{\"ExitCode\":0,\"FinishedAt\":\"0001-01-01T00:00:00Z\",\"Health\":{\"Status\":\"healthy\"},\"Pid\":42,\"StartedAt\":\"2026-11-01T12:00:00Z\",\"Status\":\"running\"}}",
+        "status": 200
+      },
+      "/v1.45/containers/json?all=1": {
+        "body": "[{\"Id\":\"bad\",\"Names\":[\"x\"]}]",
+        "status": 200
+      },
+      "/v1.45/networks/edge": {
+        "body": "{\"Driver\":\"bridge\",\"IPAM\":{\"Config\":[{\"Subnet\":\"172.22.0.0/16\"}]}}",
+        "status": 200
+      },
+      "/version": {
+        "body": "{\"ApiVersion\":\"1.53\",\"GitCommit\":\"abc123\",\"MinAPIVersion\":\"1.44\",\"Version\":\"29.1.3\"}",
+        "status": 200
+      }
+    }
+  },
+  {
+    "expected": {
+      "available": true,
+      "containers": [],
+      "failure": "",
+      "network_text": "bridge\t172.22.0.0/16",
+      "rows": [],
+      "selected": true,
+      "status": "current"
+    },
+    "kind": "list_null",
+    "responses": {
+      "/v1.45/containers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/json": {
+        "body": "{\"Config\":{\"Env\":[\"PRIVATE=never-export-this\"],\"Tty\":false},\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Mounts\":[{\"Name\":\"fixture-data\",\"Source\":\"/var/lib/docker/volumes/fixture-data/_data\",\"Type\":\"volume\"},{\"Source\":\"/private\",\"Type\":\"bind\"}],\"NetworkSettings\":{\"Networks\":{\"edge\":{\"Aliases\":[\"web\",\"fixture-web\"]}}},\"State\":{\"ExitCode\":0,\"FinishedAt\":\"0001-01-01T00:00:00Z\",\"Health\":{\"Status\":\"healthy\"},\"Pid\":42,\"StartedAt\":\"2026-11-01T12:00:00Z\",\"Status\":\"running\"}}",
+        "status": 200
+      },
+      "/v1.45/containers/json?all=1": {
+        "body": "null",
+        "status": 200
+      },
+      "/v1.45/networks/edge": {
+        "body": "{\"Driver\":\"bridge\",\"IPAM\":{\"Config\":[{\"Subnet\":\"172.22.0.0/16\"}]}}",
+        "status": 200
+      },
+      "/version": {
+        "body": "{\"ApiVersion\":\"1.53\",\"GitCommit\":\"abc123\",\"MinAPIVersion\":\"1.44\",\"Version\":\"29.1.3\"}",
+        "status": 200
+      }
+    }
+  },
+  {
+    "expected": {
+      "available": true,
+      "containers": [],
+      "failure": "list_invalid",
+      "network_text": "bridge\t172.22.0.0/16",
+      "rows": [],
+      "selected": true,
+      "status": "unavailable"
+    },
+    "kind": "list_duplicate",
+    "responses": {
+      "/v1.45/containers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/json": {
+        "body": "{\"Config\":{\"Env\":[\"PRIVATE=never-export-this\"],\"Tty\":false},\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Mounts\":[{\"Name\":\"fixture-data\",\"Source\":\"/var/lib/docker/volumes/fixture-data/_data\",\"Type\":\"volume\"},{\"Source\":\"/private\",\"Type\":\"bind\"}],\"NetworkSettings\":{\"Networks\":{\"edge\":{\"Aliases\":[\"web\",\"fixture-web\"]}}},\"State\":{\"ExitCode\":0,\"FinishedAt\":\"0001-01-01T00:00:00Z\",\"Health\":{\"Status\":\"healthy\"},\"Pid\":42,\"StartedAt\":\"2026-11-01T12:00:00Z\",\"Status\":\"running\"}}",
+        "status": 200
+      },
+      "/v1.45/containers/json?all=1": {
+        "body": "[{\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Image\":\"fixture-image\",\"Labels\":{\"com.docker.compose.project.working_dir\":\"/srv/fixture\",\"com.docker.compose.service\":\"web\"},\"Names\":[\"/fixture-web\"],\"State\":\"running\",\"Status\":\"Up\"},{\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Image\":\"fixture-image\",\"Labels\":{\"com.docker.compose.project.working_dir\":\"/srv/fixture\",\"com.docker.compose.service\":\"web\"},\"Names\":[\"/fixture-web\"],\"State\":\"running\",\"Status\":\"Up\"}]",
+        "status": 200
+      },
+      "/v1.45/networks/edge": {
+        "body": "{\"Driver\":\"bridge\",\"IPAM\":{\"Config\":[{\"Subnet\":\"172.22.0.0/16\"}]}}",
+        "status": 200
+      },
+      "/version": {
+        "body": "{\"ApiVersion\":\"1.53\",\"GitCommit\":\"abc123\",\"MinAPIVersion\":\"1.44\",\"Version\":\"29.1.3\"}",
+        "status": 200
+      }
+    }
+  },
+  {
+    "expected": {
+      "available": true,
+      "containers": [],
+      "failure": "list_invalid",
+      "network_text": "bridge\t172.22.0.0/16",
+      "rows": [],
+      "selected": true,
+      "status": "unavailable"
+    },
+    "kind": "list_names_missing",
+    "responses": {
+      "/v1.45/containers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/json": {
+        "body": "{\"Config\":{\"Env\":[\"PRIVATE=never-export-this\"],\"Tty\":false},\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Mounts\":[{\"Name\":\"fixture-data\",\"Source\":\"/var/lib/docker/volumes/fixture-data/_data\",\"Type\":\"volume\"},{\"Source\":\"/private\",\"Type\":\"bind\"}],\"NetworkSettings\":{\"Networks\":{\"edge\":{\"Aliases\":[\"web\",\"fixture-web\"]}}},\"State\":{\"ExitCode\":0,\"FinishedAt\":\"0001-01-01T00:00:00Z\",\"Health\":{\"Status\":\"healthy\"},\"Pid\":42,\"StartedAt\":\"2026-11-01T12:00:00Z\",\"Status\":\"running\"}}",
+        "status": 200
+      },
+      "/v1.45/containers/json?all=1": {
+        "body": "[{\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}]",
+        "status": 200
+      },
+      "/v1.45/networks/edge": {
+        "body": "{\"Driver\":\"bridge\",\"IPAM\":{\"Config\":[{\"Subnet\":\"172.22.0.0/16\"}]}}",
+        "status": 200
+      },
+      "/version": {
+        "body": "{\"ApiVersion\":\"1.53\",\"GitCommit\":\"abc123\",\"MinAPIVersion\":\"1.44\",\"Version\":\"29.1.3\"}",
+        "status": 200
+      }
+    }
+  },
+  {
+    "expected": {
+      "available": true,
+      "containers": [
+        {
+          "image": "fixture-image",
+          "inspection": "unavailable",
+          "name": "fixture-web",
+          "service": "web",
+          "state": "running",
+          "status": "Up"
+        }
+      ],
+      "failure": "inspection_unavailable",
+      "network_text": "bridge\t172.22.0.0/16",
+      "rows": [
+        {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "inspection_unavailable": true,
+          "mount_count": 0,
+          "name": "fixture-web",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "selected": true,
+      "status": "partial"
+    },
+    "kind": "inspect_failed",
+    "responses": {
+      "/v1.45/containers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/json": {
+        "body": "{\"Config\":{\"Env\":[\"PRIVATE=never-export-this\"],\"Tty\":false},\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Mounts\":[{\"Name\":\"fixture-data\",\"Source\":\"/var/lib/docker/volumes/fixture-data/_data\",\"Type\":\"volume\"},{\"Source\":\"/private\",\"Type\":\"bind\"}],\"NetworkSettings\":{\"Networks\":{\"edge\":{\"Aliases\":[\"web\",\"fixture-web\"]}}},\"State\":{\"ExitCode\":0,\"FinishedAt\":\"0001-01-01T00:00:00Z\",\"Health\":{\"Status\":\"healthy\"},\"Pid\":42,\"StartedAt\":\"2026-11-01T12:00:00Z\",\"Status\":\"running\"}}",
+        "status": 503
+      },
+      "/v1.45/containers/json?all=1": {
+        "body": "[{\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Image\":\"fixture-image\",\"Labels\":{\"com.docker.compose.project.working_dir\":\"/srv/fixture\",\"com.docker.compose.service\":\"web\"},\"Names\":[\"/fixture-web\"],\"State\":\"running\",\"Status\":\"Up\"}]",
+        "status": 200
+      },
+      "/v1.45/networks/edge": {
+        "body": "{\"Driver\":\"bridge\",\"IPAM\":{\"Config\":[{\"Subnet\":\"172.22.0.0/16\"}]}}",
+        "status": 200
+      },
+      "/version": {
+        "body": "{\"ApiVersion\":\"1.53\",\"GitCommit\":\"abc123\",\"MinAPIVersion\":\"1.44\",\"Version\":\"29.1.3\"}",
+        "status": 200
+      }
+    }
+  },
+  {
+    "expected": {
+      "available": true,
+      "containers": [
+        {
+          "image": "fixture-image",
+          "inspection": "unavailable",
+          "name": "fixture-web",
+          "service": "web",
+          "state": "running",
+          "status": "Up"
+        }
+      ],
+      "failure": "inspection_unavailable",
+      "network_text": "bridge\t172.22.0.0/16",
+      "rows": [
+        {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "inspection_unavailable": true,
+          "mount_count": 0,
+          "name": "fixture-web",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "selected": true,
+      "status": "partial"
+    },
+    "kind": "inspect_incomplete",
+    "responses": {
+      "/v1.45/containers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/json": {
+        "body": "{\"Config\":{\"Env\":[\"PRIVATE=never-export-this\"],\"Tty\":false},\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Mounts\":[{\"Name\":\"fixture-data\",\"Source\":\"/var/lib/docker/volumes/fixture-data/_data\",\"Type\":\"volume\"},{\"Source\":\"/private\",\"Type\":\"bind\"}],\"NetworkSettings\":{\"Networks\":{\"edge\":{\"Aliases\":[\"web\",\"fixture-web\"]}}}}",
+        "status": 200
+      },
+      "/v1.45/containers/json?all=1": {
+        "body": "[{\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Image\":\"fixture-image\",\"Labels\":{\"com.docker.compose.project.working_dir\":\"/srv/fixture\",\"com.docker.compose.service\":\"web\"},\"Names\":[\"/fixture-web\"],\"State\":\"running\",\"Status\":\"Up\"}]",
+        "status": 200
+      },
+      "/v1.45/networks/edge": {
+        "body": "{\"Driver\":\"bridge\",\"IPAM\":{\"Config\":[{\"Subnet\":\"172.22.0.0/16\"}]}}",
+        "status": 200
+      },
+      "/version": {
+        "body": "{\"ApiVersion\":\"1.53\",\"GitCommit\":\"abc123\",\"MinAPIVersion\":\"1.44\",\"Version\":\"29.1.3\"}",
+        "status": 200
+      }
+    }
+  },
+  {
+    "expected": {
+      "available": true,
+      "containers": [
+        {
+          "image": "fixture-image",
+          "inspection": "unavailable",
+          "name": "fixture-web",
+          "service": "web",
+          "state": "running",
+          "status": "Up"
+        }
+      ],
+      "failure": "inspection_unavailable",
+      "network_text": "bridge\t172.22.0.0/16",
+      "rows": [
+        {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "inspection_unavailable": true,
+          "mount_count": 0,
+          "name": "fixture-web",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "selected": true,
+      "status": "partial"
+    },
+    "kind": "inspect_wrong_id",
+    "responses": {
+      "/v1.45/containers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/json": {
+        "body": "{\"Config\":{\"Env\":[\"PRIVATE=never-export-this\"],\"Tty\":false},\"Id\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"Mounts\":[{\"Name\":\"fixture-data\",\"Source\":\"/var/lib/docker/volumes/fixture-data/_data\",\"Type\":\"volume\"},{\"Source\":\"/private\",\"Type\":\"bind\"}],\"NetworkSettings\":{\"Networks\":{\"edge\":{\"Aliases\":[\"web\",\"fixture-web\"]}}},\"State\":{\"ExitCode\":0,\"FinishedAt\":\"0001-01-01T00:00:00Z\",\"Health\":{\"Status\":\"healthy\"},\"Pid\":42,\"StartedAt\":\"2026-11-01T12:00:00Z\",\"Status\":\"running\"}}",
+        "status": 200
+      },
+      "/v1.45/containers/json?all=1": {
+        "body": "[{\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Image\":\"fixture-image\",\"Labels\":{\"com.docker.compose.project.working_dir\":\"/srv/fixture\",\"com.docker.compose.service\":\"web\"},\"Names\":[\"/fixture-web\"],\"State\":\"running\",\"Status\":\"Up\"}]",
+        "status": 200
+      },
+      "/v1.45/networks/edge": {
+        "body": "{\"Driver\":\"bridge\",\"IPAM\":{\"Config\":[{\"Subnet\":\"172.22.0.0/16\"}]}}",
+        "status": 200
+      },
+      "/version": {
+        "body": "{\"ApiVersion\":\"1.53\",\"GitCommit\":\"abc123\",\"MinAPIVersion\":\"1.44\",\"Version\":\"29.1.3\"}",
+        "status": 200
+      }
+    }
+  },
+  {
+    "expected": {
+      "available": true,
+      "containers": [
+        {
+          "image": "fixture-image",
+          "inspection": "unavailable",
+          "name": "fixture-web",
+          "service": "web",
+          "state": "running",
+          "status": "Up"
+        }
+      ],
+      "failure": "inspection_unavailable",
+      "network_text": "bridge\t172.22.0.0/16",
+      "rows": [
+        {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "inspection_unavailable": true,
+          "mount_count": 0,
+          "name": "fixture-web",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "selected": true,
+      "status": "partial"
+    },
+    "kind": "inspect_no_pid",
+    "responses": {
+      "/v1.45/containers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/json": {
+        "body": "{\"Config\":{\"Env\":[\"PRIVATE=never-export-this\"],\"Tty\":false},\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Mounts\":[{\"Name\":\"fixture-data\",\"Source\":\"/var/lib/docker/volumes/fixture-data/_data\",\"Type\":\"volume\"},{\"Source\":\"/private\",\"Type\":\"bind\"}],\"NetworkSettings\":{\"Networks\":{\"edge\":{\"Aliases\":[\"web\",\"fixture-web\"]}}},\"State\":{\"ExitCode\":0,\"FinishedAt\":\"0001-01-01T00:00:00Z\",\"Health\":{\"Status\":\"healthy\"},\"StartedAt\":\"2026-11-01T12:00:00Z\",\"Status\":\"running\"}}",
+        "status": 200
+      },
+      "/v1.45/containers/json?all=1": {
+        "body": "[{\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Image\":\"fixture-image\",\"Labels\":{\"com.docker.compose.project.working_dir\":\"/srv/fixture\",\"com.docker.compose.service\":\"web\"},\"Names\":[\"/fixture-web\"],\"State\":\"running\",\"Status\":\"Up\"}]",
+        "status": 200
+      },
+      "/v1.45/networks/edge": {
+        "body": "{\"Driver\":\"bridge\",\"IPAM\":{\"Config\":[{\"Subnet\":\"172.22.0.0/16\"}]}}",
+        "status": 200
+      },
+      "/version": {
+        "body": "{\"ApiVersion\":\"1.53\",\"GitCommit\":\"abc123\",\"MinAPIVersion\":\"1.44\",\"Version\":\"29.1.3\"}",
+        "status": 200
+      }
+    }
+  },
+  {
+    "expected": {
+      "available": true,
+      "containers": [
+        {
+          "image": "fixture-image",
+          "inspection": "unavailable",
+          "name": "fixture-web",
+          "service": "web",
+          "state": "running",
+          "status": "Up"
+        }
+      ],
+      "failure": "inspection_unavailable",
+      "network_text": "bridge\t172.22.0.0/16",
+      "rows": [
+        {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "inspection_unavailable": true,
+          "mount_count": 0,
+          "name": "fixture-web",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "selected": true,
+      "status": "partial"
+    },
+    "kind": "inspect_null_exit",
+    "responses": {
+      "/v1.45/containers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/json": {
+        "body": "{\"Config\":{\"Env\":[\"PRIVATE=never-export-this\"],\"Tty\":false},\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Mounts\":[{\"Name\":\"fixture-data\",\"Source\":\"/var/lib/docker/volumes/fixture-data/_data\",\"Type\":\"volume\"},{\"Source\":\"/private\",\"Type\":\"bind\"}],\"NetworkSettings\":{\"Networks\":{\"edge\":{\"Aliases\":[\"web\",\"fixture-web\"]}}},\"State\":{\"ExitCode\":null,\"FinishedAt\":\"0001-01-01T00:00:00Z\",\"Health\":{\"Status\":\"healthy\"},\"Pid\":42,\"StartedAt\":\"2026-11-01T12:00:00Z\",\"Status\":\"running\"}}",
+        "status": 200
+      },
+      "/v1.45/containers/json?all=1": {
+        "body": "[{\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Image\":\"fixture-image\",\"Labels\":{\"com.docker.compose.project.working_dir\":\"/srv/fixture\",\"com.docker.compose.service\":\"web\"},\"Names\":[\"/fixture-web\"],\"State\":\"running\",\"Status\":\"Up\"}]",
+        "status": 200
+      },
+      "/v1.45/networks/edge": {
+        "body": "{\"Driver\":\"bridge\",\"IPAM\":{\"Config\":[{\"Subnet\":\"172.22.0.0/16\"}]}}",
+        "status": 200
+      },
+      "/version": {
+        "body": "{\"ApiVersion\":\"1.53\",\"GitCommit\":\"abc123\",\"MinAPIVersion\":\"1.44\",\"Version\":\"29.1.3\"}",
+        "status": 200
+      }
+    }
+  },
+  {
+    "expected": {
+      "available": true,
+      "containers": [
+        {
+          "image": "fixture-image",
+          "inspection": "unavailable",
+          "name": "fixture-web",
+          "service": "web",
+          "state": "running",
+          "status": "Up"
+        }
+      ],
+      "failure": "inspection_unavailable",
+      "network_text": "bridge\t172.22.0.0/16",
+      "rows": [
+        {
+          "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "inspection_unavailable": true,
+          "mount_count": 0,
+          "name": "fixture-web",
+          "pid": 0,
+          "tty": false
+        }
+      ],
+      "selected": true,
+      "status": "partial"
+    },
+    "kind": "inspect_empty_state",
+    "responses": {
+      "/v1.45/containers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/json": {
+        "body": "{\"Config\":{\"Env\":[\"PRIVATE=never-export-this\"],\"Tty\":false},\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Mounts\":[{\"Name\":\"fixture-data\",\"Source\":\"/var/lib/docker/volumes/fixture-data/_data\",\"Type\":\"volume\"},{\"Source\":\"/private\",\"Type\":\"bind\"}],\"NetworkSettings\":{\"Networks\":{\"edge\":{\"Aliases\":[\"web\",\"fixture-web\"]}}},\"State\":{\"ExitCode\":0,\"FinishedAt\":\"0001-01-01T00:00:00Z\",\"Health\":{\"Status\":\"healthy\"},\"Pid\":42,\"StartedAt\":\"2026-11-01T12:00:00Z\",\"Status\":\"\"}}",
+        "status": 200
+      },
+      "/v1.45/containers/json?all=1": {
+        "body": "[{\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Image\":\"fixture-image\",\"Labels\":{\"com.docker.compose.project.working_dir\":\"/srv/fixture\",\"com.docker.compose.service\":\"web\"},\"Names\":[\"/fixture-web\"],\"State\":\"running\",\"Status\":\"Up\"}]",
+        "status": 200
+      },
+      "/v1.45/networks/edge": {
+        "body": "{\"Driver\":\"bridge\",\"IPAM\":{\"Config\":[{\"Subnet\":\"172.22.0.0/16\"}]}}",
+        "status": 200
+      },
+      "/version": {
+        "body": "{\"ApiVersion\":\"1.53\",\"GitCommit\":\"abc123\",\"MinAPIVersion\":\"1.44\",\"Version\":\"29.1.3\"}",
+        "status": 200
+      }
+    }
+  },
+  {
+    "expected": {
+      "available": false,
+      "selected": true
+    },
+    "kind": "version_failed",
+    "responses": {
+      "/v1.45/containers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/json": {
+        "body": "{\"Config\":{\"Env\":[\"PRIVATE=never-export-this\"],\"Tty\":false},\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Mounts\":[{\"Name\":\"fixture-data\",\"Source\":\"/var/lib/docker/volumes/fixture-data/_data\",\"Type\":\"volume\"},{\"Source\":\"/private\",\"Type\":\"bind\"}],\"NetworkSettings\":{\"Networks\":{\"edge\":{\"Aliases\":[\"web\",\"fixture-web\"]}}},\"State\":{\"ExitCode\":0,\"FinishedAt\":\"0001-01-01T00:00:00Z\",\"Health\":{\"Status\":\"healthy\"},\"Pid\":42,\"StartedAt\":\"2026-11-01T12:00:00Z\",\"Status\":\"running\"}}",
+        "status": 200
+      },
+      "/v1.45/containers/json?all=1": {
+        "body": "[{\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Image\":\"fixture-image\",\"Labels\":{\"com.docker.compose.project.working_dir\":\"/srv/fixture\",\"com.docker.compose.service\":\"web\"},\"Names\":[\"/fixture-web\"],\"State\":\"running\",\"Status\":\"Up\"}]",
+        "status": 200
+      },
+      "/v1.45/networks/edge": {
+        "body": "{\"Driver\":\"bridge\",\"IPAM\":{\"Config\":[{\"Subnet\":\"172.22.0.0/16\"}]}}",
+        "status": 200
+      },
+      "/version": {
+        "body": "{\"ApiVersion\":\"1.53\",\"GitCommit\":\"abc123\",\"MinAPIVersion\":\"1.44\",\"Version\":\"29.1.3\"}",
+        "status": 503
+      }
+    }
+  },
+  {
+    "expected": {
+      "available": false,
+      "selected": false
+    },
+    "kind": "version_unsupported",
+    "responses": {
+      "/v1.45/containers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/json": {
+        "body": "{\"Config\":{\"Env\":[\"PRIVATE=never-export-this\"],\"Tty\":false},\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Mounts\":[{\"Name\":\"fixture-data\",\"Source\":\"/var/lib/docker/volumes/fixture-data/_data\",\"Type\":\"volume\"},{\"Source\":\"/private\",\"Type\":\"bind\"}],\"NetworkSettings\":{\"Networks\":{\"edge\":{\"Aliases\":[\"web\",\"fixture-web\"]}}},\"State\":{\"ExitCode\":0,\"FinishedAt\":\"0001-01-01T00:00:00Z\",\"Health\":{\"Status\":\"healthy\"},\"Pid\":42,\"StartedAt\":\"2026-11-01T12:00:00Z\",\"Status\":\"running\"}}",
+        "status": 200
+      },
+      "/v1.45/containers/json?all=1": {
+        "body": "[{\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Image\":\"fixture-image\",\"Labels\":{\"com.docker.compose.project.working_dir\":\"/srv/fixture\",\"com.docker.compose.service\":\"web\"},\"Names\":[\"/fixture-web\"],\"State\":\"running\",\"Status\":\"Up\"}]",
+        "status": 200
+      },
+      "/v1.45/networks/edge": {
+        "body": "{\"Driver\":\"bridge\",\"IPAM\":{\"Config\":[{\"Subnet\":\"172.22.0.0/16\"}]}}",
+        "status": 200
+      },
+      "/version": {
+        "body": "{\"ApiVersion\":\"1.53\",\"GitCommit\":\"abc123\",\"MinAPIVersion\":\"1.46\",\"Version\":\"29.1.3\"}",
+        "status": 200
+      }
+    }
+  },
+  {
+    "expected": {
+      "available": false,
+      "selected": true
+    },
+    "kind": "version_empty",
+    "responses": {
+      "/v1.45/containers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/json": {
+        "body": "{\"Config\":{\"Env\":[\"PRIVATE=never-export-this\"],\"Tty\":false},\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Mounts\":[{\"Name\":\"fixture-data\",\"Source\":\"/var/lib/docker/volumes/fixture-data/_data\",\"Type\":\"volume\"},{\"Source\":\"/private\",\"Type\":\"bind\"}],\"NetworkSettings\":{\"Networks\":{\"edge\":{\"Aliases\":[\"web\",\"fixture-web\"]}}},\"State\":{\"ExitCode\":0,\"FinishedAt\":\"0001-01-01T00:00:00Z\",\"Health\":{\"Status\":\"healthy\"},\"Pid\":42,\"StartedAt\":\"2026-11-01T12:00:00Z\",\"Status\":\"running\"}}",
+        "status": 200
+      },
+      "/v1.45/containers/json?all=1": {
+        "body": "[{\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Image\":\"fixture-image\",\"Labels\":{\"com.docker.compose.project.working_dir\":\"/srv/fixture\",\"com.docker.compose.service\":\"web\"},\"Names\":[\"/fixture-web\"],\"State\":\"running\",\"Status\":\"Up\"}]",
+        "status": 200
+      },
+      "/v1.45/networks/edge": {
+        "body": "{\"Driver\":\"bridge\",\"IPAM\":{\"Config\":[{\"Subnet\":\"172.22.0.0/16\"}]}}",
+        "status": 200
+      },
+      "/version": {
+        "body": "{\"ApiVersion\":\"1.53\",\"GitCommit\":\"abc123\",\"MinAPIVersion\":\"1.44\",\"Version\":\"\"}",
+        "status": 200
+      }
+    }
+  },
+  {
+    "expected": {
+      "available": false,
+      "selected": true
+    },
+    "kind": "version_newline",
+    "responses": {
+      "/v1.45/containers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/json": {
+        "body": "{\"Config\":{\"Env\":[\"PRIVATE=never-export-this\"],\"Tty\":false},\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Mounts\":[{\"Name\":\"fixture-data\",\"Source\":\"/var/lib/docker/volumes/fixture-data/_data\",\"Type\":\"volume\"},{\"Source\":\"/private\",\"Type\":\"bind\"}],\"NetworkSettings\":{\"Networks\":{\"edge\":{\"Aliases\":[\"web\",\"fixture-web\"]}}},\"State\":{\"ExitCode\":0,\"FinishedAt\":\"0001-01-01T00:00:00Z\",\"Health\":{\"Status\":\"healthy\"},\"Pid\":42,\"StartedAt\":\"2026-11-01T12:00:00Z\",\"Status\":\"running\"}}",
+        "status": 200
+      },
+      "/v1.45/containers/json?all=1": {
+        "body": "[{\"Id\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"Image\":\"fixture-image\",\"Labels\":{\"com.docker.compose.project.working_dir\":\"/srv/fixture\",\"com.docker.compose.service\":\"web\"},\"Names\":[\"/fixture-web\"],\"State\":\"running\",\"Status\":\"Up\"}]",
+        "status": 200
+      },
+      "/v1.45/networks/edge": {
+        "body": "{\"Driver\":\"bridge\",\"IPAM\":{\"Config\":[{\"Subnet\":\"172.22.0.0/16\"}]}}",
+        "status": 200
+      },
+      "/version": {
+        "body": "{\"ApiVersion\":\"1.53\",\"GitCommit\":\"bad\\ncommit\",\"MinAPIVersion\":\"1.44\",\"Version\":\"29.1.3\"}",
+        "status": 200
+      }
+    }
+  }
+]
