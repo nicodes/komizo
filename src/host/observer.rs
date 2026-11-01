@@ -17,9 +17,27 @@ pub trait Docker {
         deadline: Instant,
         cancelled: &dyn Fn() -> bool,
     ) -> Result<String>;
+    fn logs(&mut self, args: &[String], deadline: Instant, cancelled: &dyn Fn() -> bool) -> String {
+        let mut body = self.run(args, deadline, cancelled).unwrap_or_default();
+        let mut end = body.len().min(super::logs::LOGS_MAX);
+        while !body.is_char_boundary(end) {
+            end -= 1;
+        }
+        body.truncate(end);
+        body
+    }
 }
 pub struct NativeDocker;
 impl Docker for NativeDocker {
+    fn logs(&mut self, args: &[String], deadline: Instant, cancelled: &dyn Fn() -> bool) -> String {
+        String::from_utf8_lossy(&super::collect::capture_prefix(
+            Command::new("docker").args(args),
+            super::logs::LOGS_MAX,
+            deadline,
+            cancelled,
+        ))
+        .into_owned()
+    }
     fn run(
         &mut self,
         args: &[String],
@@ -80,6 +98,19 @@ impl<'a> Observer<'a> {
             cancelled: Box::new(cancelled),
         }
     }
+    pub fn with_engine(
+        probe: &'a Probe,
+        engine: Engine,
+        deadline: Instant,
+        cancelled: impl Fn() -> bool + 'a,
+    ) -> Self {
+        Self {
+            probe,
+            backend: Backend::Engine(Box::new(engine)),
+            deadline,
+            cancelled: Box::new(cancelled),
+        }
+    }
     fn cli(&mut self, args: &[&str]) -> Result<String> {
         let Backend::Cli(runner) = &mut self.backend else {
             anyhow::bail!("CLI metadata is not selected");
@@ -102,6 +133,118 @@ impl<'a> Observer<'a> {
             };
             runner.run(&args, self.deadline, &self.cancelled)
         })
+    }
+    pub fn volumes(&mut self, only: &str) -> Vec<Volume> {
+        let inventory = self.inventory();
+        self.probe.volumes_from_inventory(&inventory, only)
+    }
+    pub fn collect_logs(&mut self, dir: &Path) {
+        use super::logs::{LOGS_MAX, format_log, log_path, prune_logs, write_log};
+        if matches!(self.backend, Backend::Unavailable) {
+            return;
+        }
+        if matches!(self.backend, Backend::Engine(_)) {
+            let inventory = self.inventory();
+            if inventory.status != "current" {
+                return;
+            }
+            let Ok(states) = self.probe.app_states_available() else {
+                return;
+            };
+            let mut names = vec![];
+            for app in states {
+                if log_path(dir, &app.name).is_err() {
+                    continue;
+                }
+                names.push(app.name.clone());
+                if app.get("STOPPED") == "1" {
+                    continue;
+                }
+                let mut containers = inventory.for_dir(app.dir());
+                containers.sort_by(|a, b| a.name.cmp(&b.name));
+                let mut collected = vec![];
+                let mut failed = false;
+                for container in containers {
+                    if container.name == "komizo-proxy" || container.state != "running" {
+                        continue;
+                    }
+                    let Backend::Engine(engine) = &mut self.backend else {
+                        unreachable!()
+                    };
+                    let Ok(body) = engine.logs(container) else {
+                        failed = true;
+                        break;
+                    };
+                    let body = String::from_utf8_lossy(&body);
+                    let lines: Vec<_> = body
+                        .strip_suffix('\n')
+                        .unwrap_or(&body)
+                        .split('\n')
+                        .filter(|line| !line.is_empty())
+                        .map(|line| LogLine {
+                            service: container.service.clone(),
+                            text: line.into(),
+                        })
+                        .collect();
+                    collected.extend_from_slice(format_log(&lines).as_bytes());
+                    if collected.len() > LOGS_MAX {
+                        collected.drain(..collected.len() - LOGS_MAX);
+                        if let Some(index) = collected.iter().position(|b| *b == b'\n') {
+                            collected.drain(..=index);
+                        }
+                    }
+                }
+                if !failed && !crate::wire::trim_space(&collected).is_empty() {
+                    let _ = write_log(dir, &app.name, &collected);
+                }
+            }
+            let _ = prune_logs(dir, &names);
+            return;
+        }
+        // A failed registry scan must never delete retained diagnostic tails.
+        let Ok(entries) = std::fs::read_dir(self.probe.path(super::paths::APPS_DIR)) else {
+            return;
+        };
+        let mut names = vec![];
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if let Some(name) = name.strip_suffix(".env")
+                && log_path(dir, name).is_ok()
+            {
+                names.push(name.to_string());
+            }
+        }
+        names.sort();
+        for name in &names {
+            let Ok(subject) = super::application::resolve_subject(&self.probe.root, name, false)
+            else {
+                continue;
+            };
+            let mut args = super::application::compose_base(&subject.dir, &subject.project);
+            args.extend(["logs", "--tail", "500", "--no-color"].map(String::from));
+            let Backend::Cli(runner) = &mut self.backend else {
+                unreachable!()
+            };
+            let body = runner.logs(&args, self.deadline, &self.cancelled);
+            if body.trim().is_empty() {
+                continue;
+            }
+            let mut args = super::application::compose_base(&subject.dir, &subject.project);
+            args.extend(["ps", "--all", "--format", "json"].map(String::from));
+            let metadata = runner
+                .run(&args, self.deadline, &self.cancelled)
+                .unwrap_or_default();
+            let _ = write_log(
+                dir,
+                name,
+                super::collect::with_services(&body, &super::collect::service_map(&metadata))
+                    .as_bytes(),
+            );
+        }
+        let _ = prune_logs(dir, &names);
     }
     fn server(&mut self, agent: &str) -> Server {
         let (state, docker) = match &self.backend {
