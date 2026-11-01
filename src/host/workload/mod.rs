@@ -5,6 +5,7 @@ pub mod effects;
 pub mod files;
 pub mod image_cache;
 mod owner;
+pub mod reconciliation;
 mod static_serving;
 pub mod transaction;
 pub const ACTIVATIONS: &str = "/var/lib/komizo/activations";

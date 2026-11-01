@@ -90,7 +90,10 @@ impl Tape<'_> {
     fn inject_stop(&self, args: &[&str]) {
         let scenario = self.case["scenario"].as_str().unwrap();
         let call = args.join(" ");
-        if scenario == "stop-during-up" && call.contains(" up -d ")
+        if scenario == "new-stop" && args.first() == Some(&"exec") {
+            komizo::host::stopped::mark_stopped(self.root, "example", "fixture-owner", Time::now())
+                .unwrap();
+        } else if scenario == "stop-during-up" && call.contains(" up -d ")
             || scenario == "stop-during-reload"
                 && args.first() == Some(&"exec")
                 && args.get(3) == Some(&"reload")
@@ -101,6 +104,22 @@ impl Tape<'_> {
     }
 }
 impl Effects for Tape<'_> {
+    fn reconciliation_readiness(
+        &mut self,
+        _: &Context,
+        revision: &str,
+        compose: &[u8],
+    ) -> Option<Result<()>> {
+        let body = normalize(std::str::from_utf8(compose).unwrap(), self.root);
+        let call = self.next("reconciliation_ready");
+        assert_eq!(revision, call["revision"]);
+        assert_eq!(body, call["body"]);
+        Some(if call["ok"] == true {
+            Ok(())
+        } else {
+            Err(anyhow::anyhow!("{}", call["error"].as_str().unwrap()))
+        })
+    }
     fn owned(&self, _: &fs::Metadata) -> bool {
         true
     }
@@ -215,7 +234,7 @@ fn tree(root: &Path) -> Value {
     walk(root, root, &mut rows);
     json!(rows)
 }
-fn install_fixture(case: &Value, root: &Path) -> (ActivationRequest, PathBuf, PathBuf, PathBuf) {
+fn install_files(case: &Value, root: &Path) {
     let expand = |text: &str| text.replace("$ROOT", root.to_str().unwrap());
     for file in case["input"].as_array().unwrap() {
         let path = root.join(file["path"].as_str().unwrap());
@@ -235,6 +254,10 @@ fn install_fixture(case: &Value, root: &Path) -> (ActivationRequest, PathBuf, Pa
             fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap()
         }
     }
+}
+fn install_fixture(case: &Value, root: &Path) -> (ActivationRequest, PathBuf, PathBuf, PathBuf) {
+    install_files(case, root);
+    let expand = |text: &str| text.replace("$ROOT", root.to_str().unwrap());
     let mut request: ActivationRequest =
         serde_json::from_str(&expand(&case["request"].to_string())).unwrap();
     request.deadline = Time((chrono::Utc::now() + chrono::Duration::minutes(10)).fixed_offset());
@@ -562,5 +585,112 @@ fn malformed_queue_identities_refuse_before_constructing_lock_or_result_paths() 
         assert_eq!(host.effects.cursor, 0);
         assert_eq!(tree(root), before, "{mutation}");
         assert!(!root.join("run").exists(), "{mutation}");
+    }
+}
+#[test]
+fn go_reconciliation_restores_only_reviewed_configuration_and_retains_uncertain_fences() {
+    use komizo::host::workload::reconciliation::Request;
+    let cases: Vec<Value> =
+        serde_json::from_str(include_str!("data/go-host-reconciliation.json")).unwrap();
+    assert_eq!(cases.len(), 17);
+    for case in &cases {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path();
+        let expand = |text: &str| text.replace("$ROOT", root.to_str().unwrap());
+        install_files(case, root);
+        let input = &case["request"];
+        let mut request = Request {
+            id: input["ID"].as_str().unwrap().into(),
+            candidate: input["Candidate"].as_str().unwrap().into(),
+            policy_sha256: input["PolicySHA256"].as_str().unwrap().into(),
+            phase: input["Phase"].as_str().unwrap().into(),
+            serving: input["Serving"].as_str().unwrap().into(),
+            outcome: input["Outcome"].as_str().unwrap().into(),
+        };
+        if case["policy_matches"] == true {
+            request.policy_sha256 = hash(expand(case["policy"].as_str().unwrap()).as_bytes())
+        }
+        let tape = Tape {
+            case,
+            root,
+            cursor: 0,
+            boundaries: vec![],
+            crash: None,
+        };
+        let mut host = Host::new(root.into(), tape).unwrap();
+        host.policies = PathBuf::from(expand(case["policies"].as_str().unwrap()));
+        host.releases = PathBuf::from(expand(case["releases"].as_str().unwrap()));
+        host.policy = serde_json::from_str(&expand(case["policy"].as_str().unwrap())).unwrap();
+        let result = host.reconcile(
+            &Context::new(Instant::now() + Duration::from_secs(8)),
+            &request,
+            Path::new(&expand(case["queue"].as_str().unwrap())),
+        );
+        assert_eq!(
+            result.is_ok(),
+            case["ok"].as_bool().unwrap(),
+            "{}: {result:?}",
+            case["scenario"]
+        );
+        let mut actual = result.unwrap_or(Value::Null);
+        normalize_json(&mut actual);
+        let mut expected = case["result"].clone();
+        normalize_json(&mut expected);
+        assert_eq!(actual, expected, "{} result", case["scenario"]);
+        assert_eq!(
+            host.effects.cursor,
+            case["calls"].as_array().unwrap().len(),
+            "{} calls",
+            case["scenario"]
+        );
+        assert_eq!(
+            json!(host.effects.boundaries),
+            case["boundaries"],
+            "{} boundaries",
+            case["scenario"]
+        );
+        let mut expected = case["output"].clone();
+        for file in expected.as_array_mut().unwrap() {
+            if let Some(body) = file["body"].as_str() {
+                file["body"] = normalized_body(body)
+            }
+        }
+        assert_eq!(tree(root), expected, "{} files", case["scenario"]);
+    }
+}
+#[test]
+fn snapshots_require_private_regular_files_and_reject_links_unknown_fields_and_oversize() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path();
+    let case = json!({});
+    let tape = Tape {
+        case: &case,
+        root,
+        cursor: 0,
+        boundaries: vec![],
+        crash: None,
+    };
+    let path = root.join("snapshot");
+    files::write_json(
+        &path,
+        &json!({"version":1,"operation_id":"a".repeat(32),"files":[]}),
+    )
+    .unwrap();
+    assert_eq!(tape.snapshot(&path).unwrap().version, 1);
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(tape.snapshot(&path).is_err());
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let alias = root.join("alias");
+    symlink(&path, &alias).unwrap();
+    assert!(tape.snapshot(&alias).is_err());
+    assert!(tape.snapshot(root).is_err());
+    for body in [
+        br#"{"unknown":true}"#.as_slice(),
+        br#"{"version":1,"version":1}"#.as_slice(),
+        br#"{"files":[{"path":"/tmp/file","foreign":true}]}"#.as_slice(),
+        &vec![b' '; (4 << 20) + 1],
+    ] {
+        fs::write(&path, body).unwrap();
+        assert!(tape.snapshot(&path).is_err())
     }
 }
