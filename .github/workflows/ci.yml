@@ -33,7 +33,7 @@ jobs:
         persist-credentials: false
       timeout-minutes: 5
     - name: Set up development tools
-      uses: nicodes/tools/setup@87da2fe9d430c67d15f62f603b07ba1ed40b5603
+      uses: nicodes/tools/setup@f412061a7a3f0914db9e09d1159e69504aee8706
       env:
         GH_TOKEN: ${{ github.token }}
       timeout-minutes: 5
@@ -51,22 +51,18 @@ jobs:
         path: .artifacts/fleet-integration.json
         if-no-files-found: error
         retention-days: 7
-    - name: Download native Rust APIs
+    - name: Download native Rust CLIs
       uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
       with:
-        pattern: native-api-*
+        pattern: native-cli-*
         merge-multiple: true
-        path: .artifacts/native-api
-    - name: Cache Go build
-      timeout-minutes: 10
-      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        path: .artifacts/native-cli
+    - name: Download native Rust hosts
+      uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
       with:
-        path: |
-          ~/.cache/go-build
-          ~/go/pkg/mod
-        key: go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', 'go.sum', 'mise.toml') }}-${{ github.sha }}
-        restore-keys: |
-          go-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', 'go.sum', 'mise.toml') }}-
+        pattern: native-host-Linux_*
+        merge-multiple: true
+        path: .artifacts/native-host
     - name: Run engineering stage
       timeout-minutes: 42
       shell: bash

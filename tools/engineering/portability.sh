@@ -1,14 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Optional source-portability exploration. Supported Darwin/Linux archives are
-# already cross-built and verified by mise run build artifact-check in CI and Release.
-# These extra operating systems are not published workstation targets.
-for t in windows/amd64 freebsd/amd64 netbsd/amd64 openbsd/amd64 dragonfly/amd64 \
-         aix/ppc64 illumos/amd64 solaris/amd64 wasip1/wasm js/wasm plan9/amd64; do
-  os="${t%/*}"; arch="${t#*/}"
-  echo "  cross  $os/$arch"
-  GOOS="$os" GOARCH="$arch" go build ./...
-  GOOS="$os" GOARCH="$arch" go vet ./...
-done
-GOOS=android GOARCH=arm64 go vet ./...
-echo "  cross  android/arm64 (vet only; linking needs cgo)"
+# Release portability is checked by four native builders, including static musl Linux.
+python3 - <<'CHECK'
+from pathlib import Path
+import subprocess
+for platform in ('Linux_x86_64','Linux_arm64','Darwin_x86_64','Darwin_arm64'):
+    path=Path('.artifacts/native-cli')/('komizo_'+platform)
+    subprocess.run(['python3','tools/engineering/native-receipt.py',str(path)],check=True)
+CHECK

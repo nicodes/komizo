@@ -71,12 +71,13 @@ pub fn proxy_env(
     ]))
 }
 fn initialize(cli: &mut Cli<'_>, remote: &Remote, network: &str, image: &str) -> Result<()> {
+    let prepared = artifacts::prepare(cli, remote)?;
     cli.script(
         remote,
         scripts::ALPINE_INIT,
         &BTreeMap::from([("SHARED_NETWORK".into(), network.into())]),
     )?;
-    artifacts::install(cli, remote)?;
+    artifacts::install(cli, remote, &prepared)?;
     cli.script(
         remote,
         scripts::ALPINE_PROXY,
@@ -215,12 +216,13 @@ pub fn update(cli: &mut Cli<'_>, args: &[String]) -> Result<()> {
             && remote
                 .fetch::<Report>(&cli.context, &["report".into()])
                 .is_ok_and(|r| r.proxy.is_some()));
+    let prepared = artifacts::prepare(cli, &remote)?;
     cli.script(
         &remote,
         scripts::ALPINE_INIT,
         &BTreeMap::from([("SHARED_NETWORK".into(), flags.text("network").into())]),
     )?;
-    artifacts::install(cli, &remote)?;
+    artifacts::install(cli, &remote, &prepared)?;
     let refreshed = (|| -> Result<()> {
         let records = records(&remote.quiet(&cli.context, &records_command())?);
         let mut failed = vec![];

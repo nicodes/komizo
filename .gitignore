@@ -1,5 +1,4 @@
-# Built binaries. `go build` names its output after the directory it builds, so
-# an absent -o leaves a stray `komizo` next to the source.
+# Native local executables.
 /bin/
 /komizo
 
@@ -11,11 +10,6 @@
 # unanchored "dist/" would ignore it.
 /dist/
 
-# Compiled agents, embedded into the CLI by internal/agent. Built by
-# `mise run agents` and by the release workflow -- never committed, because a
-# binary in git is a binary nobody can review.
-/internal/agent/bin/*
-!/internal/agent/bin/.keep
 
 # The web app's dependencies and local build state -- installed by `mise run ui`
 # or CI, never committed.
@@ -28,7 +22,6 @@ __pycache__/
 
 /.ci-tools/
 /api/target/
-/internal/nativeapi/payload.gz
 
 # Native Rust host and CLI runtime.
 /target/

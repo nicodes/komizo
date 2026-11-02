@@ -3,8 +3,6 @@ set -euo pipefail
 cargo test --locked
 python3 tools/engineering/native-root-tests.py
 cargo test --locked --manifest-path api/Cargo.toml
-# Policy, parsers and acceptance decisions need no prepared host or CLI build.
-go test -race -count=1 -timeout 5m ./internal/workflows ./internal/workload ./internal/servicehealth
 python3 -m unittest discover -s tools/engineering -p 'test_*.py' -v
 python3 scripts/platform_test.py
 python3 scripts/platform_prepare_test.py

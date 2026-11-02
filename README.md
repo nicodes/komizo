@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 4663da29c03645fbddf22107ba127bc3a4bde5d65291a711c34470e8c1bb7413 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 65f9ee472e651e56776409e437cd93264b418b358492a53e29718806d0c105f6 -->
 
 # komizo
 
@@ -62,7 +62,7 @@ mise use --global github:nicodes/komizo@latest
 
 The shell installer requires the GitHub CLI and an authenticated GitHub.com session (`gh auth login --hostname github.com`, or an existing `GH_TOKEN`) for release provenance verification. Authentication is checked before any release download. It verifies the archive checksum and GitHub attestation, then atomically installs to `~/.local/bin` without starting services. Mise manages its own installation directory and PATH through its shell activation.
 
-Release archives embed both host architectures and the workstation-native Rust API. The local UI, signed Unix-socket monitor and preview certificate listener run in Rust/Axum under `api/`. The Go CLI and privileged host executor retain their own finite command and deployment authority. No Go HTTP API is launched. The workstation needs SSH; platform maintenance also uses Python 3. The application server uses Alpine Linux with OpenRC, amd64 or arm64, and root SSH access. Use only hosts you own or administer.
+Release archives embed both host architectures and the workstation-native Rust API. The workstation CLI and privileged host executor run in native Rust. The local UI, signed Unix-socket monitor and preview certificate listener use Rust/Axum under `api/`. Protected host policy retains its finite command and deployment authority. The workstation needs SSH; platform maintenance also uses Python 3. The application server uses Alpine Linux with OpenRC, amd64 or arm64, and root SSH access. Use only hosts you own or administer.
 
 ## Agent journey
 
