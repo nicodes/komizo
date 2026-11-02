@@ -141,19 +141,33 @@ pub fn next_action(args: &[String], mutating: bool) -> Vec<String> {
     }
     next
 }
-#[derive(Default)]
 pub struct Text {
     body: Vec<u8>,
     pub truncated: bool,
+    maximum: usize,
+}
+impl Default for Text {
+    fn default() -> Self {
+        Self::with_limit(MAX_OUTPUT)
+    }
 }
 impl Text {
+    pub fn with_limit(maximum: usize) -> Self {
+        Self {
+            body: vec![],
+            truncated: false,
+            maximum,
+        }
+    }
     pub fn body(&self) -> &[u8] {
         &self.body
     }
 }
 impl Write for Text {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let n = bytes.len().min(MAX_OUTPUT.saturating_sub(self.body.len()));
+        let n = bytes
+            .len()
+            .min(self.maximum.saturating_sub(self.body.len()));
         self.body.extend_from_slice(&bytes[..n]);
         self.truncated |= n < bytes.len();
         Ok(bytes.len())

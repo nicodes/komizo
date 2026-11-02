@@ -2,6 +2,21 @@ fn main() {
     println!("cargo:rustc-check-cfg=cfg(packed_api)");
     println!("cargo:rerun-if-env-changed=KOMIZO_API_PAYLOAD");
     println!("cargo:rerun-if-env-changed=KOMIZO_VERSION");
+    for (name, flag) in [
+        ("KOMIZO_HOST_AMD64", "packed_host_amd64"),
+        ("KOMIZO_HOST_ARM64", "packed_host_arm64"),
+    ] {
+        println!("cargo:rustc-check-cfg=cfg({flag})");
+        println!("cargo:rerun-if-env-changed={name}");
+        if let Ok(path) = std::env::var(name) {
+            assert!(
+                std::path::Path::new(&path).is_absolute(),
+                "host payload must be absolute"
+            );
+            println!("cargo:rerun-if-changed={path}");
+            println!("cargo:rustc-cfg={flag}");
+        }
+    }
     if let Ok(path) = std::env::var("KOMIZO_API_PAYLOAD") {
         assert!(
             std::path::Path::new(&path).is_absolute(),
