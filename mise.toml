@@ -39,7 +39,7 @@ run = ["python3 -c 'import shutil;from pathlib import Path\nfor name in [\"bin\"
 
 [tasks."integration"]
 run = "python3 \"$TOOLS_ROOT/helpers/verification.py\" test --name integration --artifact dist --artifact .artifacts/native-host --artifact .artifacts/native-cli --environment VERSION -- mise run _integration"
-depends = ["install"]
+depends = ["install", "build"]
 
 [tasks."agents"]
 run = ["bash tools/engineering/build-agents.sh"]
