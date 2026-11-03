@@ -16,7 +16,7 @@ if [ "$os_label" = Linux ]; then
   export CC_x86_64_unknown_linux_musl=musl-gcc
   export CC_aarch64_unknown_linux_musl=musl-gcc
 fi
-cargo build --locked --manifest-path api/Cargo.toml --release --target "$rust_target"
+SOURCE_COMMIT="$(git rev-parse HEAD)" cargo build --locked --manifest-path api/Cargo.toml --release --target "$rust_target"
 mkdir -p .artifacts/native-api
 cp "${CARGO_TARGET_DIR:-api/target}/$rust_target/release/komizo-api" ".artifacts/native-api/komizo-api_${os_label}_${arch_label}"
 python3 tools/engineering/write-native-receipt.py ".artifacts/native-api/komizo-api_${os_label}_${arch_label}"

@@ -313,6 +313,16 @@ pub fn read_scoped(path: &Path) -> Result<Scoped> {
     })
 }
 pub fn target_path() -> Result<PathBuf> {
+    if let Some(directory) = std::env::var_os("KOMIZO_CONFIG_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        ensure!(
+            directory.is_absolute(),
+            "KOMIZO_CONFIG_DIR must be absolute"
+        );
+        return Ok(directory.join("targets.json"));
+    }
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let directory = if cfg!(target_os = "macos") {
         home.map(|home| home.join("Library/Application Support"))

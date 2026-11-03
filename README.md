@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 65f9ee472e651e56776409e437cd93264b418b358492a53e29718806d0c105f6 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: b9c1cce2cfc372b2de000108b1ac89419989f4bee108356cdb4cfe8e0851c92d -->
 
 # komizo
 
@@ -156,3 +156,11 @@ The gate retains Go race tests, shell and workflow checks, committed UI verifica
 Four native Actions builders produce Rust payloads for Linux and macOS on x86_64 and arm64. Linux payloads use static musl linking and run on Alpine. Each payload carries its source revision and SHA256 receipt; `mise run agents` and the release builder verify both before embedding it. A complete archive build needs all four payloads under `.artifacts/native-api/`; `bash tools/engineering/build-api.sh` produces the current platform's payload. CI downloads all four before running the complete product gate.
 
 For a quick source UI build, run `cargo build --locked --manifest-path api/Cargo.toml`, then select the absolute built executable with `KOMIZO_API_BINARY` when running the Go CLI. Release users need no Rust or Go toolchain. A Go source install that needs to construct an unembedded host agent compiles both the agent and Rust API from the same checksum-verified module version, using its committed Cargo.lock. That path requires Rust 1.94.0 through rustup and a musl C compiler for the host architecture (`musl-gcc` for native Linux, or `CC_x86_64_unknown_linux_musl` / `CC_aarch64_unknown_linux_musl` for a cross compiler). It works in a private source copy and never modifies the module cache. CI also compiles and launches this source-built agent. The pinned tools setup action supplies contributor tools.
+
+## Contributor task interface
+
+Contributor tool versions and task entry points live in the native Mise configuration. Use `mise run lint` for source checks, `mise run test` for the applicable behavioral tests, and `mise run check` for the complete supported gate. `mise run clean` removes declared generated outputs while preserving source, credentials and retained data. This package has no separate Mise development service; use its native entry points directly.
+
+## Workstation configuration override
+
+`KOMIZO_CONFIG_DIR` selects an absolute directory for workstation `targets.json` and registration keys. It takes precedence over the native configuration directory (macOS Application Support or `XDG_CONFIG_HOME`/`~/.config` on Linux). Existing default bindings remain in their established directory. Explicit command host/application flags retain their existing precedence.

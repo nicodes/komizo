@@ -36,7 +36,10 @@ impl Ui {
         self.tasks.join().await;
     }
     pub fn router(self: &Arc<Self>) -> Router {
-        Router::new().fallback(handle).with_state(self.clone())
+        Router::new()
+            .fallback(handle)
+            .layer(axum::middleware::from_fn(httpcontract::observe))
+            .with_state(self.clone())
     }
 }
 fn data(value: Value) -> Response {
@@ -72,6 +75,35 @@ async fn dispatch(ui: Arc<Ui>, request: Request) -> Response {
     let path = request.uri().path().to_owned();
     let read = matches!(*request.method(), Method::GET | Method::HEAD);
     let paths = &ui.config.paths;
+    if read && matches!(path.as_str(), "/healthz" | "/readyz") {
+        let ready =
+            path != "/readyz" || (!*ui.stop.borrow() && store::report(&paths.report).is_ok());
+        let revision = option_env!("SOURCE_COMMIT")
+            .or(option_env!("COMMIT"))
+            .unwrap_or("development");
+        let mut response = (
+            if ready {
+                StatusCode::OK
+            } else {
+                StatusCode::SERVICE_UNAVAILABLE
+            },
+            httpcontract::health(
+                if !ready {
+                    "unready"
+                } else if path == "/healthz" {
+                    "ok"
+                } else {
+                    "ready"
+                },
+                revision,
+            ),
+        )
+            .into_response();
+        if request.method() == Method::HEAD {
+            *response.body_mut() = axum::body::Body::empty();
+        }
+        return response;
+    }
     if read && path == "/api/report" {
         return match store::report(&paths.report) {
             Ok(report) => data(json!({"v":1,"report":report})),

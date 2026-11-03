@@ -15,10 +15,26 @@ import type {
   ReportResponse,
 } from "./types";
 
+export class APIError extends Error {
+  constructor(message: string, readonly status: number, readonly code = "request_failed", readonly requestId = "") { super(message); }
+}
+async function failure(response: Response): Promise<APIError> {
+  let message = `the box refused: ${response.status}`, code = "request_failed", requestId = response.headers.get("X-Request-ID") || "";
+  try {
+    const text = await response.text();
+    const value = text.length <= 65536 ? JSON.parse(text) : undefined;
+    if (typeof value?.error?.message === "string") message = value.error.message.slice(0,1024);
+    else if (typeof value?.output === "string") message = value.output.slice(0,1024);
+    if (typeof value?.error?.code === "string") code = value.error.code.slice(0,64);
+    if (!requestId && typeof value?.error?.request_id === "string") requestId = value.error.request_id.slice(0,128);
+  } catch { /* A proxy diagnostic is not a user-facing API message. */ }
+  return new APIError(message, response.status, code, requestId);
+}
+
 async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(path, { signal });
   if (!res.ok) {
-    throw new Error(`${path}: ${res.status}`);
+    throw await failure(res);
   }
   return (await res.json()) as T;
 }
@@ -56,9 +72,8 @@ export async function runAction(
     body: JSON.stringify({ app, action }),
     signal,
   });
-  const body = (await res.json()) as ActionResponse;
   if (!res.ok) {
-    throw new Error(body.output || `the box refused: ${res.status}`);
+    throw await failure(res);
   }
-  return body;
+  return (await res.json()) as ActionResponse;
 }
