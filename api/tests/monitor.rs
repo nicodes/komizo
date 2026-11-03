@@ -339,6 +339,18 @@ async fn local_ui_reads_real_files_refuses_unknown_actions_and_holds_response_ca
     let (stop, _) = tokio::sync::watch::channel(false);
     let ui = Ui::new(config, stop);
     let router = ui.router();
+    for path in ["/healthz", "/readyz"] {
+        let response = router
+            .clone()
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert!(response.headers().contains_key("x-request-id"));
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap()).unwrap();
+        assert!(value["revision"].as_str().is_some_and(|v| !v.is_empty()));
+    }
     let response = router
         .clone()
         .oneshot(
@@ -371,7 +383,14 @@ async fn local_ui_reads_real_files_refuses_unknown_actions_and_holds_response_ca
             .await
             .unwrap();
         assert_eq!(response.status(), expected);
-        drop(response);
+        let id = response.headers()["x-request-id"]
+            .to_str()
+            .unwrap()
+            .to_owned();
+        let value: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap()).unwrap();
+        assert_eq!(value["error"]["request_id"], id);
+        assert!(value["error"]["code"].is_string());
     }
     let mut held = Vec::new();
     for _ in 0..8 {

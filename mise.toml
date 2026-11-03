@@ -35,7 +35,7 @@ depends = ["build"]
 run = ["trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 api/Cargo.lock", "trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 Cargo.lock"]
 
 [tasks."clean"]
-run = ["python3 -c 'import shutil;from pathlib import Path\nfor name in [\"bin\",\"dist\"]:\n p=Path(name);assert not p.is_symlink();shutil.rmtree(p,ignore_errors=True)\n'"]
+run = "python3 \"$TOOLS_ROOT/helpers/clean.py\" --path dist --path target --path .artifacts/build --path .artifacts/rust-target --path .artifacts/advisory-db"
 
 [tasks."integration"]
 run = "python3 \"$TOOLS_ROOT/helpers/verification.py\" test --name integration --artifact dist --artifact .artifacts/native-host --artifact .artifacts/native-cli --environment VERSION -- mise run _integration"

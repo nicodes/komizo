@@ -9,6 +9,7 @@ use std::{
 };
 #[tokio::main]
 async fn main() {
+    httpcontract::init_logging();
     if let Err(error) = run().await {
         eprintln!("komizo API: {}", error.message);
         std::process::exit(1);
