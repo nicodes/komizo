@@ -15,7 +15,7 @@ export default function AppDetail() {
   const params = useParams<{ name: string }>();
   const [app, { refetch }] = createResource(() => params.name, async (name) => {
     const rep = await readReport();
-    return rep.report.apps.find((a) => a.name === name) ?? null;
+    return (rep.report.apps ?? []).find((a) => a.name === name) ?? null;
   });
   const [busy, setBusy] = createSignal<string | null>(null);
   // What the box said when it acted. Shown rather than toasted: a command

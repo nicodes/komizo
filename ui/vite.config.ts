@@ -10,8 +10,8 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineConfig({
   plugins: [solid(), tailwindcss()],
   build: {
-    // Into the package that embeds it: internal/ui's go:embed reads this
-    // directory, and CI diffs it after a rebuild.
+    // Into the directory embedded by api/build.rs. CI diffs these bytes
+    // after a rebuild.
     outDir: "../internal/ui/dist",
     emptyOutDir: true,
   },

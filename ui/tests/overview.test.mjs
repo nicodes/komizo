@@ -31,3 +31,26 @@ test('failed evidence is distinct from measured empty evidence', async () => {
   assert.equal(snapshot.errors.backups,'Error: backups unavailable');
   assert.equal(snapshot.errors.events,undefined);
 });
+
+
+test('nullable native observations render as empty evidence without changing wire documents', async () => {
+  const wire = {
+    report: {v:1, report:{at:'2026-11-03T05:00:00Z', server:{state:'ready',komizo:{}},
+      system:{cores:2}, apps:null, problems:null, preview:{reaped:null,kept:0}}},
+    events: {v:1,events:null},
+    metrics: {v:1,metrics:{rows:null}},
+    backups: {v:1,backups:[],note:'No backup state'},
+  };
+  const before=structuredClone(wire);
+  const snapshot=await collectOverview(Object.fromEntries(
+    Object.entries(wire).map(([name,value])=>[name,async()=>value])));
+  assert.deepEqual(snapshot.report.apps,[]);
+  assert.deepEqual(snapshot.report.problems,[]);
+  assert.deepEqual(snapshot.report.preview.reaped,[]);
+  assert.deepEqual(snapshot.events,[]);
+  assert.deepEqual(snapshot.metrics.metrics.rows,[]);
+  assert.equal(snapshot.report.server.state,'ready');
+  assert.equal(snapshot.report.system.cores,2);
+  assert.deepEqual(wire,before);
+  assert.ok(Object.values(snapshot.errors).every(error=>error===undefined));
+});
