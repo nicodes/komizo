@@ -12,9 +12,22 @@ export async function collectOverview(readers: {
     readers.report(), readers.events(), readers.metrics(), readers.backups(),
   ]);
   return {
-    report: report.status === "fulfilled" ? report.value.report : undefined,
-    events: events.status === "fulfilled" ? events.value.events : undefined,
-    metrics: metrics.status === "fulfilled" ? metrics.value : undefined,
+    report: report.status === "fulfilled" ? {
+      ...report.value.report,
+      // Empty native observations may be encoded as null. Normalize the view,
+      // while leaving transport documents and failed reads distinct.
+      apps: report.value.report.apps ?? [],
+      problems: report.value.report.problems ?? [],
+      preview: report.value.report.preview ? {
+        ...report.value.report.preview,
+        reaped: report.value.report.preview.reaped ?? [],
+      } : undefined,
+    } : undefined,
+    events: events.status === "fulfilled" ? events.value.events ?? [] : undefined,
+    metrics: metrics.status === "fulfilled" ? {
+      ...metrics.value,
+      metrics: {...metrics.value.metrics, rows: metrics.value.metrics.rows ?? []},
+    } : undefined,
     backups: backups.status === "fulfilled" ? backups.value : undefined,
     errors: {
       report: report.status === "rejected" ? String(report.reason) : undefined,

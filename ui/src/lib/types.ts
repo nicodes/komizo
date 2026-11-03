@@ -1,10 +1,6 @@
-// The shapes the box serves, mirrored from box/report.go, box/system.go and
-// box/result.go by hand. TYPES ONLY: this module compiles to nothing, which is
-// the point -- a value here would be a mistake.
-//
-// The JSON field names are the contract and must match the Go structs tag for
-// tag. The serve test in internal/app/ui_test.go pins the documents against
-// the Go types, so a drift fails in Go, not in a browser.
+// JSON shapes served by the native host report and local Axum API.
+// Empty native collection observations can be null; the overview collector
+// turns them into arrays for rendering without changing transport payloads.
 
 export type Report = {
   v: number;
@@ -12,10 +8,10 @@ export type Report = {
   server: Server;
   proxy?: Proxy;
   network?: Network;
-  apps: App[];
+  apps: App[] | null;
   orphans?: string[];
   system: System;
-  problems: Problem[];
+  problems: Problem[] | null;
   // What the disk-hygiene sweep last did, when it has run. Absent on a box
   // that has never swept -- see box/sweep.go.
   sweep?: Sweep;
@@ -26,7 +22,7 @@ export type Report = {
 export type PreviewReap = {
   v: number;
   at: string;
-  reaped: string[];
+  reaped: string[] | null;
   kept: number;
   note?: string;
 };
@@ -135,7 +131,7 @@ export type Sample = {
 
 export type Metrics = {
   span?: { from: number; to: number };
-  rows: { minute: number; app: string; service?: string; c2?: number; c3?: number; c4?: number; c5?: number }[];
+  rows: { minute: number; app: string; service?: string; c2?: number; c3?: number; c4?: number; c5?: number }[] | null;
 };
 
 // An event is a command the box was told and what came of it -- the daemon's
@@ -154,7 +150,7 @@ export type BoxEvent = {
 export type ReportResponse = { v: number; report: Report };
 export type HistoryResponse = { v: number; from: number; to: number; samples: Sample[] };
 export type MetricsResponse = { v: number; from: number; to: number; metrics: Metrics };
-export type EventsResponse = { v: number; events: BoxEvent[] };
+export type EventsResponse = { v: number; events: BoxEvent[] | null };
 
 // No box-local backup state exists yet (the CLI never wrote any), so v1
 // serves the empty list and says so -- the screen shows the absence honestly
