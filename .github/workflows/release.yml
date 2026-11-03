@@ -60,6 +60,7 @@ jobs:
         echo "version=$version" >> "$GITHUB_OUTPUT"
         echo "tag=$tag" >> "$GITHUB_OUTPUT"
   native-api:
+    name: "native-api"
     needs: version
     permissions:
       contents: read
@@ -89,13 +90,13 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
       timeout-minutes: 5
-    - name: Download native Rust CLIs
+    - name: "Download artifacts"
       uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
       with:
         pattern: native-cli-*
         merge-multiple: true
         path: .artifacts/native-cli
-    - name: Download native Rust hosts
+    - name: "Download artifacts"
       uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
       with:
         pattern: native-host-Linux_*

@@ -17,6 +17,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   native-api:
+    name: "Build native executables"
     permissions:
       contents: read
     uses: ./.github/workflows/native-api.yml
@@ -51,13 +52,13 @@ jobs:
         path: .artifacts/fleet-integration.json
         if-no-files-found: error
         retention-days: 7
-    - name: Download native Rust CLIs
+    - name: "Download artifacts"
       uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
       with:
         pattern: native-cli-*
         merge-multiple: true
         path: .artifacts/native-cli
-    - name: Download native Rust hosts
+    - name: "Download artifacts"
       uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
       with:
         pattern: native-host-Linux_*
