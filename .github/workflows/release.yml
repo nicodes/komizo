@@ -162,7 +162,7 @@ jobs:
         set -euo pipefail
         sudo install -d -m 700 /root/komizo-native-release/release
         sudo install -m 600 candidate-release/komizo_Linux_x86_64.tar.gz candidate-release/checksums.txt /root/komizo-native-release/release/
-        sudo --preserve-env=GH_TOKEN /usr/bin/python3 tools/engineering/cold-lifecycle-acceptance.py \
+        sudo --preserve-env=GH_TOKEN /usr/bin/python3 scripts/engineering/cold-lifecycle-acceptance.py \
           --release "$RELEASE_TAG" --source "$GITHUB_SHA" \
           --release-dir /root/komizo-native-release/release \
           --output /root/komizo-native-release/observations
@@ -172,7 +172,7 @@ jobs:
       env:
         RELEASE_TAG: ${{ needs.release.outputs.tag }}
       run: |-
-        sudo /usr/bin/python3 tools/engineering/release_acceptance.py \
+        sudo /usr/bin/python3 scripts/engineering/release_acceptance.py \
           --observations /root/komizo-native-release/observations \
           --output "$GITHUB_WORKSPACE/native-results" --release "$RELEASE_TAG" --source "$GITHUB_SHA"
     - name: Upload artifacts
@@ -222,7 +222,7 @@ jobs:
       env:
         RELEASE_TAG: ${{ needs.release.outputs.tag }}
       run: |-
-        python3 tools/engineering/release_acceptance.py --bundle native-results --artifacts dist \
+        python3 scripts/engineering/release_acceptance.py --bundle native-results --artifacts dist \
           --release "$RELEASE_TAG" --source "$GITHUB_SHA"
     - name: Attest build provenance
       timeout-minutes: 5

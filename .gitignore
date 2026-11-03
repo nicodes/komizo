@@ -6,15 +6,15 @@
 .claude/settings.local.json
 
 # Release artefacts, built by mise run build. Anchored at the root:
-# internal/ui/dist is a COMMITTED export (see api/build.rs), and an
+# internal/app/dist is a COMMITTED export (see api/build.rs), and an
 # unanchored "dist/" would ignore it.
 /dist/
 
 
 # The web app's dependencies and local build state -- installed by `mise run ui`
 # or CI, never committed.
-/ui/node_modules/
-/ui/dist/
+/app/node_modules/
+/app/dist/
 
 /.artifacts/
 

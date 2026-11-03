@@ -10,7 +10,7 @@ class NativeReceipts(unittest.TestCase):
             metadata={'schema':1,'source':source,'version':'fixture','sha256':hashlib.sha256(binary.read_bytes()).hexdigest()}
             def accepted(values):
                 binary.with_suffix('.json').write_text(json.dumps(values))
-                return subprocess.run(['/usr/bin/python3',str(root/'tools/engineering/native-receipt.py'),str(binary)],cwd=root,env=env,capture_output=True).returncode==0
+                return subprocess.run(['/usr/bin/python3',str(root/'scripts/engineering/native-receipt.py'),str(binary)],cwd=root,env=env,capture_output=True).returncode==0
             self.assertTrue(accepted(metadata))
             for key,value in [('schema',2),('source','f'*40),('version','other'),('sha256','0'*64)]:
                 with self.subTest(key=key):self.assertFalse(accepted({**metadata,key:value}))

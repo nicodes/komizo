@@ -54,8 +54,8 @@ pub fn build(ctx: &Context, arch: &str, progress: &mut dyn Write) -> Result<Vec<
         copy_tree(&source.join(name), &root.join(name), &mut budget)?;
     }
     copy_tree(
-        &source.join("internal/ui/dist"),
-        &root.join("internal/ui/dist"),
+        &source.join(".artifacts/ui"),
+        &root.join(".artifacts/ui"),
         &mut budget,
     )?;
     for name in ["Cargo.toml", "Cargo.lock", "build.rs"] {

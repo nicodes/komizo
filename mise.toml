@@ -14,10 +14,10 @@ PYTHONDONTWRITEBYTECODE = "1"
 "VERSION" = "{{ get_env(name='VERSION', default='dev') }}"
 
 [tasks."install"]
-run = ["bash -euo pipefail -c 'python3 \"$TOOLS_ROOT/helpers/workspace-storage.py\" check --path ui/node_modules --reserve-bytes 1073741824'", "rustup component add --toolchain 1.94.0 rustfmt clippy", "npm ci --prefix ui --no-audit --no-fund"]
+run = ["bash -euo pipefail -c 'python3 \"$TOOLS_ROOT/helpers/workspace-storage.py\" check --path app/node_modules --reserve-bytes 1073741824'", "rustup component add --toolchain 1.94.0 rustfmt clippy", "npm ci --prefix app --no-audit --no-fund", "npm run build --prefix app"]
 
 [tasks."lint"]
-run = ["cargo fmt --all --check", "cargo clippy --locked --all-targets -- -D warnings", "cargo fmt --manifest-path api/Cargo.toml --check", "cargo clippy --locked --manifest-path api/Cargo.toml --all-targets -- -D warnings", "bash tools/engineering/lint.sh", "bash tools/engineering/check-ui.sh"]
+run = ["cargo fmt --all --check", "cargo clippy --locked --all-targets -- -D warnings", "cargo fmt --manifest-path api/Cargo.toml --check", "cargo clippy --locked --manifest-path api/Cargo.toml --all-targets -- -D warnings", "bash scripts/engineering/lint.sh", "bash scripts/engineering/check-ui.sh"]
 
 [tasks."unit"]
 run = "python3 \"$TOOLS_ROOT/helpers/verification.py\" test --name unit --artifact dist --artifact .artifacts/native-host --artifact .artifacts/native-cli --environment VERSION -- mise run _unit"
@@ -28,47 +28,47 @@ run = "python3 \"$TOOLS_ROOT/helpers/verification.py\" build --name build --arti
 depends = ["install"]
 
 [tasks."artifact-check"]
-run = ["bash tools/engineering/artifact-check.sh"]
+run = ["bash scripts/engineering/artifact-check.sh"]
 depends = ["build"]
 
 [tasks."vuln"]
 run = ["trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 api/Cargo.lock", "trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 Cargo.lock"]
 
 [tasks."clean"]
-run = "python3 \"$TOOLS_ROOT/helpers/clean.py\" --path dist --path target --path .artifacts/build --path .artifacts/rust-target --path .artifacts/advisory-db"
+run = "python3 \"$TOOLS_ROOT/helpers/clean.py\" --path dist --path target --path .artifacts/build --path .artifacts/rust-target --path .artifacts/advisory-db --path .artifacts/ui"
 
 [tasks."integration"]
 run = "python3 \"$TOOLS_ROOT/helpers/verification.py\" test --name integration --artifact dist --artifact .artifacts/native-host --artifact .artifacts/native-cli --environment VERSION -- mise run _integration"
 depends = ["install", "build"]
 
 [tasks."agents"]
-run = ["bash tools/engineering/build-agents.sh"]
+run = ["bash scripts/engineering/build-agents.sh"]
 
 [tasks."ui"]
-run = ["npm ci --prefix ui", "npm run --prefix ui build"]
+run = ["npm ci --prefix app", "npm run --prefix app build"]
 
 [tasks."ui-check"]
-run = ["bash tools/engineering/check-ui.sh"]
+run = ["bash scripts/engineering/check-ui.sh"]
 
 [tasks."portability"]
-run = ["mise run agents", "bash tools/engineering/portability.sh"]
+run = ["mise run agents", "bash scripts/engineering/portability.sh"]
 
 [tasks."dependency-maintenance"]
 run = ["python3 \"$TOOLS_ROOT/helpers/watch-tools.py\""]
 
 [tasks."security-scan"]
-run = ["mise run install && mise run vuln", "npm audit --prefix ui --package-lock-only --audit-level=high"]
+run = ["mise run install && mise run vuln", "npm audit --prefix app --package-lock-only --audit-level=high"]
 
 [tasks."_build"]
-run = ["mise run agents", "bash tools/engineering/build-release.sh"]
+run = ["mise run agents", "bash scripts/engineering/build-release.sh"]
 hide = true
 
 [tasks."_unit"]
-run = ["bash tools/engineering/unit.sh"]
+run = ["bash scripts/engineering/unit.sh"]
 hide = true
 
 [tasks."_integration"]
-run = ["mise run agents", "bash tools/engineering/integration.sh"]
+run = ["mise run agents", "bash scripts/engineering/integration.sh"]
 hide = true
 
 [tasks."_test-stages"]

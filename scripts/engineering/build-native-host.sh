@@ -7,7 +7,7 @@ case "$os_label/$arch_label" in
   Linux/arm64) rust_target=aarch64-unknown-linux-musl ;;
   Darwin/x86_64) rust_target=x86_64-apple-darwin ;;
   Darwin/arm64) rust_target=aarch64-apple-darwin ;;
-  *) echo 'The API supports Linux and macOS.' >&2; exit 1 ;;
+  *) echo 'The host tools support Linux and macOS.' >&2; exit 1 ;;
 esac
 rustup target add --toolchain 1.94.0 "$rust_target"
 if [ "$os_label" = Linux ]; then
@@ -16,7 +16,9 @@ if [ "$os_label" = Linux ]; then
   export CC_x86_64_unknown_linux_musl=musl-gcc
   export CC_aarch64_unknown_linux_musl=musl-gcc
 fi
-SOURCE_COMMIT="$(git rev-parse HEAD)" cargo build --locked --manifest-path api/Cargo.toml --release --target "$rust_target"
-mkdir -p .artifacts/native-api
-cp "${CARGO_TARGET_DIR:-api/target}/$rust_target/release/komizo-api" ".artifacts/native-api/komizo-api_${os_label}_${arch_label}"
-python3 tools/engineering/write-native-receipt.py ".artifacts/native-api/komizo-api_${os_label}_${arch_label}"
+export KOMIZO_API_PAYLOAD="$PWD/.artifacts/native-api/payload.gz"
+export KOMIZO_VERSION="${VERSION:-dev}"
+cargo build --locked --release --bin komizo-box --target "$rust_target"
+mkdir -p .artifacts/native-host
+cp "${CARGO_TARGET_DIR:-target}/$rust_target/release/komizo-box" ".artifacts/native-host/komizo-box_${os_label}_${arch_label}"
+python3 scripts/engineering/write-native-receipt.py ".artifacts/native-host/komizo-box_${os_label}_${arch_label}"
