@@ -1,4 +1,4 @@
-name: Native Rust executables
+name: "Native executables"
 'on':
   workflow_call:
     inputs:
@@ -63,7 +63,7 @@ jobs:
       if: matrix.platform == 'Linux_x86_64'
       timeout-minutes: 15
       run: cargo test --locked --test source_build -- --ignored --nocapture
-    - name: Upload native API and source receipt
+    - name: "Upload artifacts"
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
         name: native-api-${{ matrix.platform }}
@@ -71,7 +71,7 @@ jobs:
         if-no-files-found: error
         include-hidden-files: true
         retention-days: 7
-    - name: Upload native host executable
+    - name: "Upload artifacts"
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
         name: native-host-${{ matrix.platform }}
@@ -111,12 +111,12 @@ jobs:
     - name: Install static Linux linker
       if: runner.os == 'Linux'
       run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
-    - name: Download matching native API
+    - name: "Download artifacts"
       uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
       with:
         name: native-api-${{ matrix.platform }}
         path: .artifacts/native-api
-    - name: Download both Linux hosts
+    - name: "Download artifacts"
       uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
       with:
         pattern: native-host-Linux_*
@@ -124,7 +124,7 @@ jobs:
         path: .artifacts/native-host
     - name: Build native bundled workstation executable
       run: bash tools/engineering/build-native-cli.sh
-    - name: Upload native CLI
+    - name: "Upload artifacts"
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:
         name: native-cli-${{ matrix.platform }}
