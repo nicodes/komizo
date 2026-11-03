@@ -42,14 +42,16 @@ jobs:
     - name: Verify native Rust API
       run: |-
         set -euo pipefail
+        npm ci --prefix app --no-audit --no-fund
+        npm run build --prefix app
         rustup component add --toolchain 1.94.0 rustfmt clippy
         cargo fmt --manifest-path api/Cargo.toml --check
         cargo clippy --locked --manifest-path api/Cargo.toml --all-targets -- -D warnings
         cargo test --locked --manifest-path api/Cargo.toml
-        bash tools/engineering/build-api.sh
-        python3 tools/engineering/api-payload.py ".artifacts/native-api/komizo-api_${{ matrix.platform }}"
+        bash scripts/engineering/build-api.sh
+        python3 scripts/engineering/api-payload.py ".artifacts/native-api/komizo-api_${{ matrix.platform }}"
         KOMIZO_API_PAYLOAD="$PWD/.artifacts/native-api/payload.gz" cargo build --locked --bin komizo
-        python3 tools/engineering/api-smoke.py "${CARGO_TARGET_DIR:-target}/debug/komizo"
+        python3 scripts/engineering/api-smoke.py "${CARGO_TARGET_DIR:-target}/debug/komizo"
     - name: Verify native host modes and embedded Axum API
       run: |-
         set -euo pipefail
@@ -58,7 +60,7 @@ jobs:
         cargo test --locked --test host_modes --test flags --test host_application --test caller_commands --test caller_keys_doctor
         KOMIZO_API_PAYLOAD="$PWD/.artifacts/native-api/payload.gz" cargo clippy --locked --lib --bin komizo-box -- -D warnings
         KOMIZO_API_PAYLOAD="$PWD/.artifacts/native-api/payload.gz" cargo test --locked --test host_modes
-        bash tools/engineering/build-native-host.sh
+        bash scripts/engineering/build-native-host.sh
     - name: Verify source-installed host packaging
       if: matrix.platform == 'Linux_x86_64'
       timeout-minutes: 15
@@ -123,7 +125,7 @@ jobs:
         merge-multiple: true
         path: .artifacts/native-host
     - name: Build native bundled workstation executable
-      run: bash tools/engineering/build-native-cli.sh
+      run: bash scripts/engineering/build-native-cli.sh
     - name: "Upload artifacts"
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
       with:

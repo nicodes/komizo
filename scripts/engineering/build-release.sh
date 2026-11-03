@@ -2,7 +2,7 @@
 set -euo pipefail
 mkdir -p dist
 for platform in Linux_x86_64 Linux_arm64 Darwin_x86_64 Darwin_arm64; do
-  python3 tools/engineering/native-receipt.py ".artifacts/native-cli/komizo_$platform"
+  python3 scripts/engineering/native-receipt.py ".artifacts/native-cli/komizo_$platform"
   directory="dist/komizo_$platform"
   mkdir -p "$directory"
   cp ".artifacts/native-cli/komizo_$platform" "$directory/komizo"

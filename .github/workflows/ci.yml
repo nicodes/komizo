@@ -77,11 +77,11 @@ jobs:
       run: |
         set -euo pipefail
         sudo install -d -m 700 /root/komizo-independent-ci/release
-        sudo /usr/bin/python3 tools/engineering/cold-lifecycle-acceptance.py \
+        sudo /usr/bin/python3 scripts/engineering/cold-lifecycle-acceptance.py \
           --release v0.0.0 --source "$GITHUB_SHA" --release-dir /root/komizo-independent-ci/release \
           --candidate-cli "$GITHUB_WORKSPACE/dist/komizo_Linux_x86_64/komizo" --candidate-host --deployment-only \
           --output /root/komizo-independent-ci/observations
-        sudo /usr/bin/python3 tools/engineering/candidate_evidence.py --observations /root/komizo-independent-ci/observations \
+        sudo /usr/bin/python3 scripts/engineering/candidate_evidence.py --observations /root/komizo-independent-ci/observations \
           --output "$GITHUB_WORKSPACE/.artifacts/independent-deployment" --source "$GITHUB_SHA"
         sudo chown -R "$(id -u):$(id -g)" .artifacts/independent-deployment
     - name: "Upload artifacts"

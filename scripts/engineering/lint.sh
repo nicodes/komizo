@@ -13,5 +13,5 @@ fi
 echo "shellcheck $got, as pinned"
 
 shellcheck -s sh scripts/*.sh
-shellcheck -s bash tools/engineering/*.sh
+shellcheck -s bash scripts/engineering/*.sh
 actionlint
