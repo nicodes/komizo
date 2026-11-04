@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-spec = importlib.util.spec_from_file_location('platform_operator', Path(__file__).with_name('platform.py'))
+spec = importlib.util.spec_from_file_location('platform_operator', (Path(__file__).resolve().parents[2] / 'src/runtime/platform.py'))
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 

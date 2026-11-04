@@ -2,7 +2,7 @@ import copy,importlib.util,json,os,tempfile,unittest
 from pathlib import Path
 
 def load(name):
-    spec=importlib.util.spec_from_file_location(name,Path(__file__).with_name(name+'.py'));m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
+    spec=importlib.util.spec_from_file_location(name,(Path(__file__).resolve().parents[2] / 'src/runtime' / (name+'.py')));m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
 
 m=load('preview_database');platform=load('platform')
 IMAGE='sha256:'+'e'*64

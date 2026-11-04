@@ -6,7 +6,7 @@ import unittest
 import tempfile
 from unittest.mock import patch
 
-spec=importlib.util.spec_from_file_location('fixture',Path(__file__).with_name('workload_acceptance.py'));fixture=importlib.util.module_from_spec(spec);spec.loader.exec_module(fixture)
+spec=importlib.util.spec_from_file_location('fixture',(Path(__file__).resolve().parents[2] / 'src/runtime/workload_acceptance.py'));fixture=importlib.util.module_from_spec(spec);spec.loader.exec_module(fixture)
 
 def profile():
     h=hashlib.sha256(b'fixture').hexdigest()

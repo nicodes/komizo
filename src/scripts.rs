@@ -1,21 +1,21 @@
 //! Existing first-party provisioning programs are embedded verbatim in native executables.
 use anyhow::{Result, ensure};
 use std::sync::OnceLock;
-pub const PLATFORM: &str = include_str!("../scripts/platform.py");
-pub const MAINTENANCE: &str = include_str!("../scripts/maintenance.py");
-pub const MAINTENANCE_PREPARE: &str = include_str!("../scripts/maintenance_prepare.py");
-pub const PLATFORM_PREPARE: &str = include_str!("../scripts/platform_prepare.py");
-pub const PROXY_PREPARE: &str = include_str!("../scripts/proxy_prepare.py");
-pub const CONTROLS_PREPARE: &str = include_str!("../scripts/controls_prepare.py");
-pub const WORKLOAD_ACCEPTANCE: &str = include_str!("../scripts/workload_acceptance.py");
-pub const ALPINE_REMOVE: &str = include_str!("../scripts/alpine-remove.sh");
-pub const ALPINE_UNSET_SECRET: &str = include_str!("../scripts/alpine-unset-secret.sh");
-pub const ALPINE_RELOAD_SSHD: &str = include_str!("../scripts/alpine-reload-sshd.sh");
-pub const ALPINE_INIT: &str = include_str!("../scripts/alpine-init.sh");
-pub const PREVIEW_DATABASE: &str = include_str!("../scripts/preview_database.py");
-pub const COMPRESSED_SWAP: &str = include_str!("../scripts/compressed_swap.py");
-pub const ALPINE_PROXY: &str = include_str!("../scripts/alpine-proxy.sh");
-pub const AGENT_INSTALL: &str = include_str!("../scripts/agent-install.sh");
+pub const PLATFORM: &str = include_str!("runtime/platform.py");
+pub const MAINTENANCE: &str = include_str!("runtime/maintenance.py");
+pub const MAINTENANCE_PREPARE: &str = include_str!("runtime/maintenance_prepare.py");
+pub const PLATFORM_PREPARE: &str = include_str!("runtime/platform_prepare.py");
+pub const PROXY_PREPARE: &str = include_str!("runtime/proxy_prepare.py");
+pub const CONTROLS_PREPARE: &str = include_str!("runtime/controls_prepare.py");
+pub const WORKLOAD_ACCEPTANCE: &str = include_str!("runtime/workload_acceptance.py");
+pub const ALPINE_REMOVE: &str = include_str!("runtime/alpine-remove.sh");
+pub const ALPINE_UNSET_SECRET: &str = include_str!("runtime/alpine-unset-secret.sh");
+pub const ALPINE_RELOAD_SSHD: &str = include_str!("runtime/alpine-reload-sshd.sh");
+pub const ALPINE_INIT: &str = include_str!("runtime/alpine-init.sh");
+pub const PREVIEW_DATABASE: &str = include_str!("runtime/preview_database.py");
+pub const COMPRESSED_SWAP: &str = include_str!("runtime/compressed_swap.py");
+pub const ALPINE_PROXY: &str = include_str!("runtime/alpine-proxy.sh");
+pub const AGENT_INSTALL: &str = include_str!("runtime/agent-install.sh");
 pub const STAGED_AGENT: &str = "/tmp/.komizo-box.staged";
 pub const AGENT_INTERVAL: &str = "60s";
 pub fn agent_install(stamp: &str, version: &str) -> Result<String> {
@@ -43,9 +43,9 @@ pub fn agent_install(stamp: &str, version: &str) -> Result<String> {
 pub fn alpine() -> &'static str {
     static SCRIPT: OnceLock<String> = OnceLock::new();
     SCRIPT.get_or_init(|| {
-        let raw = include_str!("../scripts/alpine.sh");
-        let run = include_str!("../scripts/preview-run.sh");
-        let stack = include_str!("../scripts/preview-stackenv.sh");
+        let raw = include_str!("runtime/alpine.sh");
+        let run = include_str!("runtime/preview-run.sh");
+        let stack = include_str!("runtime/preview-stackenv.sh");
         for (marker, body) in [
             ("# __PREVIEW_RUN_BODY__\n", run),
             ("# __PREVIEW_STACKENV_BODY__\n", stack),
