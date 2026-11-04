@@ -53,13 +53,13 @@ jobs:
         if-no-files-found: error
         retention-days: 7
     - name: "Download artifacts"
-      uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
       with:
         pattern: native-cli-*
         merge-multiple: true
         path: .artifacts/native-cli
     - name: "Download artifacts"
-      uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
       with:
         pattern: native-host-Linux_*
         merge-multiple: true
