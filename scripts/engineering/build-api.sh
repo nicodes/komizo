@@ -18,7 +18,7 @@ if [ "$os_label" = Linux ]; then
 fi
 npm ci --prefix app --no-audit --no-fund
 npm run build --prefix app
-SOURCE_COMMIT="$(git rev-parse HEAD)" cargo build --locked --manifest-path api/Cargo.toml --release --target "$rust_target"
+SOURCE_COMMIT="$(git rev-parse HEAD)" cargo build --locked --manifest-path crates/api/Cargo.toml --release --target "$rust_target"
 mkdir -p .artifacts/native-api
-cp "${CARGO_TARGET_DIR:-api/target}/$rust_target/release/komizo-api" ".artifacts/native-api/komizo-api_${os_label}_${arch_label}"
+cp "${CARGO_TARGET_DIR:-crates/api/target}/$rust_target/release/komizo-api" ".artifacts/native-api/komizo-api_${os_label}_${arch_label}"
 python3 scripts/engineering/write-native-receipt.py ".artifacts/native-api/komizo-api_${os_label}_${arch_label}"
