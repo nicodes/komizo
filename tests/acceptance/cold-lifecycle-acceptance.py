@@ -85,7 +85,7 @@ def main():
     disk=os.statvfs('/var/lib/docker')
     if disk.f_bfree*disk.f_frsize < (4<<30)+(512<<20):
         raise ValueError('fixture needs at least 4.5GiB free on the local Docker filesystem')
-    source=Path(__file__).resolve().parents[2]/'scripts/platform_prepare.py'
+    source=Path(__file__).resolve().parents[2]/'src/runtime/platform_prepare.py'
     spec=importlib.util.spec_from_file_location('public_prepare',source);prepare=importlib.util.module_from_spec(spec);spec.loader.exec_module(prepare)
     prepare.protected_directory(args.output.parent);prepare.protected_directory(args.release_dir.parent)
     if not args.output.is_absolute() or args.output.exists():raise ValueError('fresh absolute output required')

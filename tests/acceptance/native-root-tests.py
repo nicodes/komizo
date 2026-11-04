@@ -14,7 +14,7 @@ def main():
         return
     for name in ("workload_commands", "host_release_operations"):
         result = subprocess.run(
-            ["cargo", "test", "--locked", "--test", name, "--no-run", "--message-format=json"],
+            ["cargo", "test", "--locked", "--offline", "--test", name, "--no-run", "--message-format=json"],
             check=True, capture_output=True, text=True,
         )
         executables = []
