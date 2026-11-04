@@ -6,10 +6,10 @@ rust-version = "1.94"
 publish = false
 
 [workspace]
-exclude = ["api", "third_party/gtmpl"]
+exclude = ["crates/api", "vendor/gtmpl"]
 
 [patch.crates-io]
-gtmpl = { path = "third_party/gtmpl" }
+gtmpl = { path = "vendor/gtmpl" }
 
 [dependencies]
 anyhow = "1"

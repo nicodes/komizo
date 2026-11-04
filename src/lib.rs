@@ -1,4 +1,4 @@
-//! Native Komizo host and caller implementation; the existing API remains in api/.
+//! Native Komizo host and caller implementation; the existing API is packaged from crates/api/.
 pub mod caller;
 mod cgroupfs;
 pub mod flags;

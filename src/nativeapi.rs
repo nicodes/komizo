@@ -48,7 +48,7 @@ pub fn prepare() -> Result<Prepared> {
     let metadata = std::fs::metadata(&path)?;
     ensure!(
         metadata.is_file() && metadata.permissions().mode() & 0o111 != 0,
-        "native Rust API is unavailable; build api/ or use a release CLI"
+        "native Rust API is unavailable; build crates/api/ or use a release CLI"
     );
     Ok(Prepared {
         path,

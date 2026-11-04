@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: b9b8c9440e2df83d842019674c44ec8540861b8d96e592d6cdc88624dfa97073 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: d908cc9b1c116031c52270d67da5aee4e3b0e4896e5216be344d38a61ca07f0f -->
 
 # komizo
 
@@ -62,7 +62,7 @@ mise use --global github:nicodes/komizo@latest
 
 The shell installer requires the GitHub CLI and an authenticated GitHub.com session (`gh auth login --hostname github.com`, or an existing `GH_TOKEN`) for release provenance verification. Authentication is checked before any release download. It verifies the archive checksum and GitHub attestation, then atomically installs to `~/.local/bin` without starting services. Mise manages its own installation directory and PATH through its shell activation.
 
-Release archives embed both host architectures and the workstation-native Rust API. The workstation CLI and privileged host executor run in native Rust. The local UI, signed Unix-socket monitor and preview certificate listener use Rust/Axum under `api/`. Protected host policy retains its finite command and deployment authority. The workstation needs SSH; platform maintenance also uses Python 3. The application server uses Alpine Linux with OpenRC, amd64 or arm64, and root SSH access. Use only hosts you own or administer.
+Release archives embed both host architectures and the workstation-native Rust API. The workstation CLI and privileged host executor run in native Rust. The local UI, signed Unix-socket monitor and preview certificate listener use Rust/Axum under `crates/api/`. Protected host policy retains its finite command and deployment authority. The workstation needs SSH; platform maintenance also uses Python 3. The application server uses Alpine Linux with OpenRC, amd64 or arm64, and root SSH access. Use only hosts you own or administer.
 
 ## Agent journey
 
@@ -151,11 +151,11 @@ mise install
 mise run check
 ```
 
-The gate retains Go race tests, shell and workflow checks, committed UI verification, embedded host builds, archive checks and vulnerability scanning, and adds Rust formatting, Clippy, tests and dependency scanning. `mise run ui` updates the committed web export; `api/build.rs` embeds that export into the native API.
+The gate runs native Rust contracts, retained original protocol fixtures, shell and workflow checks, UI verification, embedded host builds, archive checks and vulnerability scanning. `mise run ui` builds the UI into ignored `.artifacts/ui/`; `crates/api/build.rs` embeds that export into the native API.
 
 Four native Actions builders produce Rust payloads for Linux and macOS on x86_64 and arm64. Linux payloads use static musl linking and run on Alpine. Each payload carries its source revision and SHA256 receipt; `mise run agents` and the release builder verify both before embedding it. A complete archive build needs all four payloads under `.artifacts/native-api/`; `bash scripts/engineering/build-api.sh` produces the current platform's payload. CI downloads all four before running the complete product gate.
 
-For a quick source UI build, run `cargo build --locked --manifest-path api/Cargo.toml`, then select the absolute built executable with `KOMIZO_API_BINARY` when running the Go CLI. Release users need no Rust or Go toolchain. A Go source install that needs to construct an unembedded host agent compiles both the agent and Rust API from the same checksum-verified module version, using its committed Cargo.lock. That path requires Rust 1.94.0 through rustup and a musl C compiler for the host architecture (`musl-gcc` for native Linux, or `CC_x86_64_unknown_linux_musl` / `CC_aarch64_unknown_linux_musl` for a cross compiler). It works in a private source copy and never modifies the module cache. CI also compiles and launches this source-built agent. The pinned tools setup action supplies contributor tools.
+After building the UI with `mise run ui`, run `cargo build --locked --manifest-path crates/api/Cargo.toml`, then select the absolute built executable with `KOMIZO_API_BINARY` when running the Rust CLI. Release users need no compiler toolchain. A source install that needs to construct an unembedded host agent compiles the agent and Rust API from the same locked source tree, using the existing package lockfiles. That path requires Rust 1.94.0 through rustup and a musl C compiler for the host architecture (`musl-gcc` for native Linux, or `CC_x86_64_unknown_linux_musl` / `CC_aarch64_unknown_linux_musl` for a cross compiler). It works in a private source copy and never modifies the module cache. CI also compiles and launches this source-built agent. The pinned tools setup action supplies contributor tools.
 
 ## Contributor task interface
 

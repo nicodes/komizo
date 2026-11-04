@@ -50,7 +50,7 @@ pub fn build(ctx: &Context, arch: &str, progress: &mut dyn Write) -> Result<Vec<
     let directory = tempfile::tempdir()?;
     let root = directory.path();
     let mut budget = 128 << 20;
-    for name in ["src", "scripts", "third_party", "api"] {
+    for name in ["src", "scripts", "vendor", "crates"] {
         copy_tree(&source.join(name), &root.join(name), &mut budget)?;
     }
     copy_tree(
@@ -126,7 +126,7 @@ pub fn build(ctx: &Context, arch: &str, progress: &mut dyn Write) -> Result<Vec<
         "--locked",
         "--release",
         "--manifest-path",
-        "api/Cargo.toml",
+        "crates/api/Cargo.toml",
         "--target",
         target,
     ]);
