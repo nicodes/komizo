@@ -1,0 +1,215 @@
+version = 1
+recipe = "rust-cli"
+
+[[components.rust]]
+name = "api"
+manifest = "crates/api/Cargo.toml"
+binaries = ["komizo-api"]
+profile = "release"
+[components.rust.test]
+native_host = true
+[components.rust.lint]
+native_host = true
+
+[[components.rust]]
+name = "owner"
+manifest = "Cargo.toml"
+profile = "release"
+[components.rust.test]
+enabled = false
+[components.rust.lint]
+native_host = true
+all_targets = false
+lib = true
+binaries = ["komizo-box"]
+
+[[components.rust]]
+name = "owner-source"
+manifest = "Cargo.toml"
+[components.rust.build]
+enabled = false
+[components.rust.test]
+native_host = true
+[components.rust.lint]
+native_host = true
+all_targets = true
+
+[[components.rust_tests]]
+name = "native-api-unit"
+component = "api"
+roles = ["api"]
+selectors = {native_host=true}
+
+[[components.rust_tests]]
+name = "native-owner-plain"
+component = "owner-source"
+roles = ["host"]
+dependency_context = "none"
+selectors = {native_host=true,test_targets=["host_modes","flags","host_application","caller_commands","caller_keys_doctor"]}
+
+[[components.rust_tests]]
+name = "native-owner-packed"
+component = "owner"
+roles = ["host"]
+selectors = {enabled=true,native_host=true,test_targets=["host_modes"]}
+
+[[components.rust_tests]]
+name = "source-installed-host"
+component = "owner-source"
+roles = ["host"]
+platforms = ["Linux/x86_64"]
+suite = "build"
+reuse_native_build = true
+dependency_context = "none"
+selectors = {native_host=true,test_targets=["source_build"],test_arguments=["--ignored","--nocapture"]}
+
+[[components.native]]
+name = "api"
+role = "api"
+component = "api"
+binary = "komizo-api"
+output = ".artifacts/native-api/komizo-api_{platform}_{arch}"
+environment = {SOURCE_COMMIT="{commit}"}
+
+[[components.native]]
+name = "host"
+role = "host"
+component = "owner"
+binary = "komizo-box"
+output = ".artifacts/native-host/komizo-box_{platform}_{arch}"
+environment = {KOMIZO_VERSION="{version}"}
+[[components.native.needs]]
+component = "api"
+platform = "native"
+path_environment = "KOMIZO_API_PAYLOAD"
+compression = "gzip"
+output = ".artifacts/native-api/payload_{platform}_{arch}.gz"
+
+[[components.native]]
+name = "cli"
+role = "cli"
+component = "owner"
+binary = "komizo"
+output = ".artifacts/native-cli/komizo_{platform}_{arch}"
+environment = {KOMIZO_VERSION="{version}"}
+checks = ["tests/acceptance/api-smoke.py"]
+[[components.native.needs]]
+component = "api"
+platform = "native"
+path_environment = "KOMIZO_API_PAYLOAD"
+compression = "gzip"
+output = ".artifacts/native-api/payload_{platform}_{arch}.gz"
+[[components.native.needs]]
+component = "host"
+platform = "Linux/x86_64"
+path_environment = "KOMIZO_HOST_AMD64"
+[[components.native.needs]]
+component = "host"
+platform = "Linux/arm64"
+path_environment = "KOMIZO_HOST_ARM64"
+
+[[components.ui]]
+package = "app"
+output = ".artifacts/ui"
+required_files = ["index.html"]
+
+[[node.packages]]
+directory = "app"
+manager = "npm"
+build = "build"
+typecheck = "typecheck"
+test = "test"
+
+[package]
+binary = "komizo"
+component = "owner"
+output = ".artifacts/build/komizo"
+profile = "release"
+files = ["README.md", "LICENSE"]
+version_arguments = ["version"]
+version_template = "{binary} {version}"
+
+[[package.native_targets]]
+runner = "ubuntu-24.04"
+timeout_minutes = 45
+second_wave_timeout_minutes = 35
+target = "x86_64-unknown-linux-musl"
+platform = "Linux"
+arch = "x86_64"
+extension = "tar.gz"
+
+[[package.native_targets]]
+runner = "ubuntu-24.04-arm"
+timeout_minutes = 45
+second_wave_timeout_minutes = 35
+target = "aarch64-unknown-linux-musl"
+platform = "Linux"
+arch = "arm64"
+extension = "tar.gz"
+
+[[package.native_targets]]
+runner = "macos-15-intel"
+timeout_minutes = 45
+second_wave_timeout_minutes = 35
+target = "x86_64-apple-darwin"
+platform = "Darwin"
+arch = "x86_64"
+extension = "tar.gz"
+
+[[package.native_targets]]
+runner = "macos-15"
+timeout_minutes = 45
+second_wave_timeout_minutes = 35
+target = "aarch64-apple-darwin"
+platform = "Darwin"
+arch = "arm64"
+extension = "tar.gz"
+
+[artifacts]
+paths = ["dist", ".artifacts/build", ".artifacts/native-package", ".artifacts/ui"]
+environment = ["VERSION", "COMMIT", "DATE", "RUST_TARGET"]
+revision_environment = ["COMMIT"]
+evidence_paths = [".artifacts/security/rust-source.json", ".artifacts/independent-deployment/candidate-deployment.json", ".artifacts/independent-deployment/cleanup.json"]
+
+[lint]
+shell_paths = ["src/runtime/agent-install.sh", "src/runtime/alpine-init.sh", "src/runtime/alpine-proxy.sh", "src/runtime/alpine-reload-sshd.sh", "src/runtime/alpine-remove.sh", "src/runtime/alpine-unset-secret.sh", "src/runtime/alpine.sh", "src/runtime/preview-run.sh", "src/runtime/preview-stackenv.sh", "tests/acceptance/cold-client.sh"]
+
+[security]
+rust_inventory_manifests = ["Cargo.toml", "crates/api/Cargo.toml"]
+
+[[tests.unit]]
+runner = "python-unittest"
+path = "tests/runtime"
+pattern = "*_test.py"
+
+[[tests.unit]]
+runner = "python-unittest"
+path = "tests/acceptance"
+pattern = "test_acceptance.py"
+
+[[tests.unit]]
+runner = "python"
+path = "tests/acceptance/native-root-tests.py"
+timeout = 900
+
+[[tests.integration]]
+runner = "python"
+path = "tests/acceptance/api-smoke.py"
+args = ["{binary}"]
+
+[[tests.integration]]
+runner = "bash"
+path = "tests/acceptance/cold-client.sh"
+
+[[tests.e2e]]
+runner = "python"
+path = "tests/acceptance/independent_deployment_test.py"
+args = ["--binary", "{binary}", "--source", "{commit}"]
+timeout = 1800
+
+[ci]
+runner = "ubuntu-24.04"
+timeout_minutes = 110
+
+[clean]
+paths = ["dist", "target", ".artifacts/build", ".artifacts/rust-target", ".artifacts/native-package", ".artifacts/native-api", ".artifacts/native-host", ".artifacts/native-cli", ".artifacts/native-archives", ".artifacts/advisory-db", ".artifacts/security", ".artifacts/ui", ".artifacts/independent-deployment", "app/node_modules"]
