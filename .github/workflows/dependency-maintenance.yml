@@ -22,7 +22,7 @@ jobs:
     - name: Set up development tools
       with:
         tools: python
-      uses: nicodes/tools/setup@0d59d20fe90e62af905e5e959caafff64ec9d18e
+      uses: nicodes/tools/setup@d475b54c402754a5a37a44fbd65328551995025c
       env:
         GH_TOKEN: ${{ github.token }}
       timeout-minutes: 5
