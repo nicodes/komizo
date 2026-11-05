@@ -322,8 +322,10 @@ fn native_api_supervisor_forwards_termination_and_reaps_the_child() {
     let ready = temp.path().join("ready");
     let stopped = temp.path().join("stopped");
     let script = format!(
-        "#!/bin/sh\ntrap 'printf stopped > {} ; exit 0' TERM INT\nprintf '%s\\n' \"$@\" > {}\nwhile :; do sleep 0.05; done\n",
+        "#!/bin/sh\ntrap 'printf stopped > {} ; exit 0' TERM INT\nprintf '%s\\n' \"$@\" > {}.pending\nmv {}.pending {}\nwhile :; do sleep 0.05; done\n",
         komizo::scripts::sh_quote(&stopped.to_string_lossy()),
+        komizo::scripts::sh_quote(&ready.to_string_lossy()),
+        komizo::scripts::sh_quote(&ready.to_string_lossy()),
         komizo::scripts::sh_quote(&ready.to_string_lossy())
     );
     std::fs::write(&api, script).unwrap();
