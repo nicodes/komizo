@@ -19,7 +19,9 @@ def main():
         raise ValueError('authenticated release acceptance requires native Linux and exact release/source')
     root = Path(__file__).resolve().parents[2]
     artifacts = args.artifacts.resolve(strict=True)
-    if artifacts != root / 'dist' or args.artifacts.is_symlink() or args.evidence.exists() or args.evidence.is_symlink():
+    if (artifacts != root / 'dist' or args.artifacts.is_symlink()
+            or args.evidence.resolve() != root / '.artifacts/cli-publication-evidence'
+            or args.evidence.exists() or args.evidence.is_symlink()):
         raise ValueError('release acceptance requires checkout-native archives and fresh evidence')
     for name in ('komizo_Linux_x86_64.tar.gz', 'checksums.txt'):
         path = artifacts / name
@@ -40,6 +42,7 @@ def main():
         subprocess.run(['sudo', sys.executable, str(runner / 'release_acceptance.py'),
             '--observations', str(private / 'observations'), '--output', str(args.evidence),
             '--release', args.release, '--source', args.source], check=True, timeout=120)
+    subprocess.run(['sudo', 'chown', '-R', str(os.getuid()) + ':' + str(os.getgid()), str(args.evidence)], check=True)
 
 
 if __name__ == '__main__': main()
