@@ -201,7 +201,9 @@ def main():
         assert ca.startswith(b'-----BEGIN CERTIFICATE-----') and len(ca)<16384
         fixture.write('/usr/local/share/ca-certificates/fixture.crt',ca,0o644)
         fixture.command(['update-ca-certificates'])
-        public_roots=Path(ssl.get_default_verify_paths().cafile).read_bytes()
+        # Standalone pinned Python may have no compiled CA-file path after
+        # sudo removes its environment. Keep the native Linux system CA roots.
+        public_roots=Path(ssl.get_default_verify_paths().cafile or '/etc/ssl/certs/ca-certificates.crt').read_bytes()
         ca_file=args.output/'fixture-public-roots.pem'
         ca_file.write_bytes(public_roots+b'\n'+ca);ca_file.chmod(0o600)
         env['SSL_CERT_FILE']=str(ca_file)
