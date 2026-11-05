@@ -213,3 +213,27 @@ timeout_minutes = 110
 
 [clean]
 paths = ["dist", "target", ".artifacts/build", ".artifacts/rust-target", ".artifacts/native-package", ".artifacts/native-api", ".artifacts/native-host", ".artifacts/native-cli", ".artifacts/native-archives", ".artifacts/advisory-db", ".artifacts/security", ".artifacts/ui", ".artifacts/independent-deployment", "app/node_modules"]
+
+[publication]
+tag_prefix = "v"
+initial = "first"
+version_identity = "number"
+validation_timeout = 110
+acceptance_timeout = 55
+attestation_platforms = ["Linux/x86_64"]
+
+[publication.acceptance]
+files = ["komizo-acceptance.json", "komizo-performance.json"]
+diagnostics = ["cleanup-status.json", "status.json"]
+
+[[publication.acceptance.checks]]
+runner = "python"
+path = "tests/acceptance/release_lifecycle_test.py"
+args = ["--artifacts", "{dist}", "--evidence", "{evidence}", "--release", "{tag}", "--source", "{source}"]
+timeout = 2400
+
+[[publication.acceptance.verification]]
+runner = "python"
+path = "tests/acceptance/release_acceptance.py"
+args = ["--bundle", "{evidence}", "--artifacts", "{dist}", "--release", "{tag}", "--source", "{source}"]
+timeout = 120

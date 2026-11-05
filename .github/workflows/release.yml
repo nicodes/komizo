@@ -1,3 +1,5 @@
+# Generated cookbook caller. Change recipe data and regenerate.
+# Attestation stays in this source workflow to preserve published installer trust.
 name: Release
 'on':
   workflow_dispatch:
@@ -6,267 +8,126 @@ name: Release
         description: Version bump
         required: true
         type: choice
-        options:
-        - patch
-        - minor
-        - major
+        default: patch
+        options: [patch, minor, major]
 permissions: {}
-concurrency: release-${{ github.repository }}
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
 jobs:
-  version:
-    name: Select release version
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
+  identity:
+    name: Select immutable release identity
     permissions:
       contents: read
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-      tag: ${{ steps.version.outputs.tag }}
-    steps:
-    - name: Check out source
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      with:
-        fetch-depth: 0
-    - name: Determine release version
-      timeout-minutes: 5
-      id: version
-      env:
-        BUMP: ${{ inputs.bump }}
-      run: |-
-        set -euo pipefail
-        if [ "$GITHUB_REF" != "refs/heads/main" ]; then
-          echo 'Run releases from the main branch.' >&2
-          exit 1
-        fi
-        git fetch --tags --force
-        latest="$(git tag --list 'v[0-9]*' | sed -E 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
-        if [ -z "$latest" ]; then
-          version="0.0.1"
-        else
-          IFS=. read -r major minor patch <<< "$latest"
-          case "$BUMP" in
-            major) major=$((major + 1)); minor=0; patch=0 ;;
-            minor) minor=$((minor + 1)); patch=0 ;;
-            patch) patch=$((patch + 1)) ;;
-            *) echo "Unsupported bump: $BUMP" >&2; exit 1 ;;
-          esac
-          version="${major}.${minor}.${patch}"
-        fi
-        tag="v${version}"
-        if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-          echo "Tag already exists: $tag" >&2
-          exit 1
-        fi
-        echo "version=$version" >> "$GITHUB_OUTPUT"
-        echo "tag=$tag" >> "$GITHUB_OUTPUT"
-  native-api:
-    name: "native-api"
-    needs: version
-    permissions:
-      contents: read
-    uses: ./.github/workflows/native-api.yml
+    uses: nicodes/tools/.github/workflows/cookbook-cli-identity.yml@803fa9540bf684e0b8c64f23d2efbee3dec98efb
     with:
-      version: ${{ needs.version.outputs.version }}
-  release:
-    needs: [version, native-api]
-    name: Build release
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    outputs:
-      tag: ${{ needs.version.outputs.tag }}
-      candidate-artifact: ${{ steps.candidates.outputs.artifact-id }}
+      tools-ref: 803fa9540bf684e0b8c64f23d2efbee3dec98efb
+      bump: ${{ inputs.bump }}
+  validate:
+    name: Validate release source and native archives
+    needs: identity
     permissions:
       contents: read
-      id-token: write
-      attestations: write
-    steps:
-    - name: Check out source
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      timeout-minutes: 5
-      with:
-        fetch-depth: 0
-    - name: Set up development tools
-      uses: nicodes/tools/setup@a1c0321f3b4917a7e99eca42e241e46670f6e1e1
-      env:
-        GH_TOKEN: ${{ github.token }}
-      timeout-minutes: 5
-    - name: "Download artifacts"
-      uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
-      with:
-        pattern: native-cli-*
-        merge-multiple: true
-        path: .artifacts/native-cli
-    - name: "Download artifacts"
-      uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
-      with:
-        pattern: native-host-Linux_*
-        merge-multiple: true
-        path: .artifacts/native-host
-    - name: Build
-      timeout-minutes: 15
-      run: mise run install && mise run build && mise run artifact-check
-      env:
-        VERSION: ${{ needs.version.outputs.version }}
-    - name: Test
-      timeout-minutes: 15
-      run: mise run lint && mise run test && mise run vuln
-      env:
-        VERSION: ${{ needs.version.outputs.version }}
-    - name: Attest build provenance
-      timeout-minutes: 5
-      uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
-      with:
-        subject-path: dist/*.tar.gz
-    - name: Upload artifacts
-      id: candidates
-      timeout-minutes: 5
-      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-      with:
-        name: komizo-release-candidates-${{ github.run_attempt }}
-        path: |
-          dist/*.tar.gz
-          dist/checksums.txt
-        if-no-files-found: error
-        retention-days: 7
-  native-acceptance:
-    name: Verify release
-    needs: release
-    outputs:
-      evidence-artifact: ${{ steps.evidence.outputs.artifact-id }}
+      actions: read
+    uses: nicodes/tools/.github/workflows/cookbook-native.yml@803fa9540bf684e0b8c64f23d2efbee3dec98efb
+    with:
+      tools-ref: 803fa9540bf684e0b8c64f23d2efbee3dec98efb
+      source: ${{ github.sha }}
+      version: ${{ needs.identity.outputs.version }}
+      date: ${{ needs.identity.outputs.date }}
+      runner: ubuntu-24.04
+      timeout-minutes: 110
+  accept:
+    name: Attest accepted source archives
+    needs: [identity, validate]
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     permissions:
       contents: read
       actions: read
-      attestations: read
-    steps:
-    - name: Check out source
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      timeout-minutes: 5
-      with:
-        persist-credentials: false
-    - name: Download artifacts
-      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-      timeout-minutes: 5
-      with:
-        artifact-ids: ${{ needs.release.outputs.candidate-artifact }}
-        merge-multiple: true
-        path: candidate-release
-    - name: Verify released bytes and run disposable lifecycle
-      timeout-minutes: 35
-      env:
-        GH_TOKEN: ${{ github.token }}
-        RELEASE_TAG: ${{ needs.release.outputs.tag }}
-      shell: bash
-      run: |-
-        set -euo pipefail
-        sudo install -d -m 700 /root/komizo-native-release/release
-        sudo install -m 600 candidate-release/komizo_Linux_x86_64.tar.gz candidate-release/checksums.txt /root/komizo-native-release/release/
-        sudo --preserve-env=GH_TOKEN /usr/bin/python3 scripts/engineering/cold-lifecycle-acceptance.py \
-          --release "$RELEASE_TAG" --source "$GITHUB_SHA" \
-          --release-dir /root/komizo-native-release/release \
-          --output /root/komizo-native-release/observations
-    - name: Export only validated nonsecret evidence
-      timeout-minutes: 2
-      if: always()
-      env:
-        RELEASE_TAG: ${{ needs.release.outputs.tag }}
-      run: |-
-        sudo /usr/bin/python3 scripts/engineering/release_acceptance.py \
-          --observations /root/komizo-native-release/observations \
-          --output "$GITHUB_WORKSPACE/native-results" --release "$RELEASE_TAG" --source "$GITHUB_SHA"
-    - name: Upload artifacts
-      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-      id: evidence
-      timeout-minutes: 3
-      if: always()
-      with:
-        name: komizo-native-acceptance-${{ github.run_attempt }}
-        path: native-results/
-        if-no-files-found: error
-        retention-days: 30
-  promote:
-    name: Publish release
-    needs:
-    - release
-    - native-acceptance
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      actions: read
-      id-token: write
       attestations: write
-    steps:
-    - name: Check out source
-      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      timeout-minutes: 5
-      with:
-        persist-credentials: false
-    - name: Download artifacts
-      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-      timeout-minutes: 5
-      with:
-        artifact-ids: ${{ needs.native-acceptance.outputs.evidence-artifact }}
-        merge-multiple: true
-        path: native-results
-    - name: Download artifacts
-      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-      timeout-minutes: 5
-      with:
-        artifact-ids: ${{ needs.release.outputs.candidate-artifact }}
-        merge-multiple: true
-        path: dist
-    - name: Recheck exact-source evidence
-      timeout-minutes: 2
-      env:
-        RELEASE_TAG: ${{ needs.release.outputs.tag }}
-      run: |-
-        python3 scripts/engineering/release_acceptance.py --bundle native-results --artifacts dist \
-          --release "$RELEASE_TAG" --source "$GITHUB_SHA"
-    - name: Attest build provenance
-      timeout-minutes: 5
-      uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
-      with:
-        subject-path: native-results/komizo-*.json
-    - name: Verify accepted archive provenance
-      timeout-minutes: 5
-      env:
-        GH_TOKEN: ${{ github.token }}
-        RELEASE_TAG: ${{ needs.release.outputs.tag }}
-      run: |-
-        set -euo pipefail
-        gh attestation verify dist/komizo_Linux_x86_64.tar.gz --repo "$GITHUB_REPOSITORY" \
-          --cert-identity "https://github.com/$GITHUB_REPOSITORY/.github/workflows/release.yml@refs/heads/main" \
-          --cert-oidc-issuer https://token.actions.githubusercontent.com \
-          --signer-digest "$GITHUB_SHA" --source-digest "$GITHUB_SHA" \
-          --source-ref refs/heads/main --deny-self-hosted-runners
-    - name: Select accepted release payload
-      run: |-
-        set -euo pipefail
-        mkdir accepted-release
-        cp dist/*.tar.gz dist/checksums.txt native-results/komizo-acceptance.json native-results/komizo-performance.json accepted-release/
-    - name: "Upload artifacts"
-      id: accepted
-      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-      with:
-        name: accepted-cli-${{ github.sha }}-${{ github.run_attempt }}
-        path: accepted-release/
-        if-no-files-found: error
-        retention-days: 7
+      id-token: write
     outputs:
-      artifact-id: ${{ steps.accepted.outputs.artifact-id }}
+      artifact: ${{ steps.accepted.outputs.artifact-id }}
+    env:
+      SOURCE_SHA: ${{ github.sha }}
+      COOKBOOK_SHA: 803fa9540bf684e0b8c64f23d2efbee3dec98efb
+      RELEASE_TAG: ${{ needs.identity.outputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out accepted cookbook
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/tools
+          ref: 803fa9540bf684e0b8c64f23d2efbee3dec98efb
+          path: _cookbook
+          persist-credentials: false
+      - name: Bootstrap caller-pinned Python
+        uses: ./_cookbook/setup
+        with:
+          tools: python
+      - name: Download this execution's complete source acceptance
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: cookbook-full-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .
+      - name: Recheck complete native and host proof and exact publication bytes
+        run: python3 _cookbook/cookbook/cli_release.py accept --source "$SOURCE_SHA" --tools "$COOKBOOK_SHA" --tag "$RELEASE_TAG" --before-acceptance
+      - name: Attest build provenance under the published source workflow identity
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: dist/*
+      - name: Run owned lifecycle assertions against authenticated native archives
+        id: domain
+        run: python3 _cookbook/cookbook/cli_release.py acceptance --source "$SOURCE_SHA" --tools "$COOKBOOK_SHA" --tag "$RELEASE_TAG"
+      - name: Attest accepted product release evidence under the published source identity
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-path: |
+            dist/komizo-acceptance.json
+            dist/komizo-performance.json
+      - name: Recheck native bytes and independently verified release evidence
+        run: python3 _cookbook/cookbook/cli_release.py accept --source "$SOURCE_SHA" --tools "$COOKBOOK_SHA" --tag "$RELEASE_TAG"
+      - name: Preserve only declared nonsecret assertion diagnostics on failure
+        if: failure() && steps.domain.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: cli-acceptance-failure-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            .artifacts/cli-publication-evidence/cleanup-status.json
+            .artifacts/cli-publication-evidence/status.json
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30
+      - name: Preserve accepted publication payload and source proof
+        id: accepted
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: accepted-cli-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            dist/
+            .artifacts/cookbook-validation.json
+            .artifacts/cli-publication-evidence/receipt.json
+            .artifacts/cli-publication-evidence/komizo-acceptance.json
+            .artifacts/cli-publication-evidence/komizo-performance.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
   publish:
-    name: Publish release
-    needs:
-    - release
-    - promote
-    uses: nicodes/tools/.github/workflows/cli-publish.yml@a1c0321f3b4917a7e99eca42e241e46670f6e1e1
+    name: Publish immutable release
+    needs: [identity, accept]
     permissions:
       contents: write
+      actions: read
+      attestations: read
+    uses: nicodes/tools/.github/workflows/cookbook-cli-publish.yml@803fa9540bf684e0b8c64f23d2efbee3dec98efb
     with:
-      tools-ref: f412061a7a3f0914db9e09d1159e69504aee8706
-      binary: komizo
-      tag: ${{ needs.release.outputs.tag }}
-      artifact-id: ${{ needs.promote.outputs.artifact-id }}
-      extra-files: komizo-acceptance.json komizo-performance.json
+      tools-ref: 803fa9540bf684e0b8c64f23d2efbee3dec98efb
+      tag: ${{ needs.identity.outputs.tag }}
+      artifact-id: ${{ needs.accept.outputs.artifact }}
