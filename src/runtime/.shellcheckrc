@@ -1,0 +1,2 @@
+# These embedded fragments execute through POSIX sh, including agent-install.sh.
+shell=sh
