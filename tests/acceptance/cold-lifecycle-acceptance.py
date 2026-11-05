@@ -85,7 +85,7 @@ def main():
     disk=os.statvfs('/var/lib/docker')
     if disk.f_bfree*disk.f_frsize < (4<<30)+(512<<20):
         raise ValueError('fixture needs at least 4.5GiB free on the local Docker filesystem')
-    source=Path(__file__).resolve().parents[2]/'scripts/platform_prepare.py'
+    source=Path(__file__).resolve().parents[2]/'src/runtime/platform_prepare.py'
     spec=importlib.util.spec_from_file_location('public_prepare',source);prepare=importlib.util.module_from_spec(spec);spec.loader.exec_module(prepare)
     prepare.protected_directory(args.output.parent);prepare.protected_directory(args.release_dir.parent)
     if not args.output.is_absolute() or args.output.exists():raise ValueError('fresh absolute output required')
@@ -201,7 +201,9 @@ def main():
         assert ca.startswith(b'-----BEGIN CERTIFICATE-----') and len(ca)<16384
         fixture.write('/usr/local/share/ca-certificates/fixture.crt',ca,0o644)
         fixture.command(['update-ca-certificates'])
-        public_roots=Path(ssl.get_default_verify_paths().cafile).read_bytes()
+        # Standalone pinned Python may have no compiled CA-file path after
+        # sudo removes its environment. Keep the native Linux system CA roots.
+        public_roots=Path(ssl.get_default_verify_paths().cafile or '/etc/ssl/certs/ca-certificates.crt').read_bytes()
         ca_file=args.output/'fixture-public-roots.pem'
         ca_file.write_bytes(public_roots+b'\n'+ca);ca_file.chmod(0o600)
         env['SSL_CERT_FILE']=str(ca_file)

@@ -1,7 +1,7 @@
 import importlib.util,json,os,tempfile,unittest
 from pathlib import Path
 
-spec=importlib.util.spec_from_file_location('compressed',Path(__file__).with_name('compressed_swap.py'));m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+spec=importlib.util.spec_from_file_location('compressed',(Path(__file__).resolve().parents[2] / 'src/runtime/compressed_swap.py'));m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 HEADER='Filename\tType\tSize\tUsed\tPriority\n'
 
 class KernelFixture(m.CompressedSwap):

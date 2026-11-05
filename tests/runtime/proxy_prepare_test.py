@@ -9,7 +9,7 @@ import base64
 import hashlib
 import unittest
 from unittest.mock import patch
-spec=importlib.util.spec_from_file_location('komizo_proxy_prepare',Path(__file__).with_name('proxy_prepare.py'))
+spec=importlib.util.spec_from_file_location('komizo_proxy_prepare',(Path(__file__).resolve().parents[2] / 'src/runtime/proxy_prepare.py'))
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 
 class ProxyPreparation(unittest.TestCase):
@@ -88,7 +88,7 @@ class ProxyPreparation(unittest.TestCase):
 
     def test_actual_provisioned_listener_is_preserved_and_extra_servers_refuse(self):
         # Bind this acceptance to the public provisioner's actual printf bytes.
-        script=Path(__file__).with_name('alpine-proxy.sh').read_text()
+        script=(Path(__file__).resolve().parents[2] / 'src/runtime/alpine-proxy.sh').read_text()
         escaped=m.PROVISIONED_TIMEOUTS.replace('\t','\\t').replace('\n','\\n')
         self.assertIn("printf '"+escaped+"'",script)
         current='{\n'+m.PROVISIONED_TIMEOUTS+'}\nimport /etc/caddy/routes/*.caddy\n'

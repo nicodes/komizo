@@ -1,6 +1,7 @@
 [tools]
 "python" = "3.13.11"
 "rust" = "1.94.0"
+"cargo:cargo-audit" = "0.22.2"
 "trivy" = "0.74.0"
 "caddy" = "2.11.6"
 "shellcheck" = "0.11.0"
@@ -12,75 +13,5 @@
 TOOLS_ROOT = "{{ get_env(name='TOOLS_ROOT', default=config_root ~ '/.ci-tools') }}"
 PYTHONDONTWRITEBYTECODE = "1"
 "VERSION" = "{{ get_env(name='VERSION', default='dev') }}"
-
-[tasks."install"]
-run = ["bash -euo pipefail -c 'python3 \"$TOOLS_ROOT/helpers/workspace-storage.py\" check --path app/node_modules --reserve-bytes 1073741824'", "rustup component add --toolchain 1.94.0 rustfmt clippy", "npm ci --prefix app --no-audit --no-fund", "npm run build --prefix app"]
-
-[tasks."lint"]
-run = ["cargo fmt --all --check", "cargo clippy --locked --all-targets -- -D warnings", "cargo fmt --manifest-path crates/api/Cargo.toml --check", "cargo clippy --locked --manifest-path crates/api/Cargo.toml --all-targets -- -D warnings", "bash scripts/engineering/lint.sh", "bash scripts/engineering/check-ui.sh"]
-
-[tasks."unit"]
-run = "python3 \"$TOOLS_ROOT/helpers/verification.py\" test --name unit --artifact dist --artifact .artifacts/native-host --artifact .artifacts/native-cli --environment VERSION -- mise run _unit"
-depends = ["install"]
-
-[tasks."build"]
-run = "python3 \"$TOOLS_ROOT/helpers/verification.py\" build --name build --artifact dist --artifact .artifacts/native-host --artifact .artifacts/native-cli --environment VERSION -- mise run _build"
-depends = ["install"]
-
-[tasks."artifact-check"]
-run = ["bash scripts/engineering/artifact-check.sh"]
-depends = ["build"]
-
-[tasks."vuln"]
-run = ["trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 crates/api/Cargo.lock", "trivy fs --scanners vuln --severity HIGH,CRITICAL --exit-code 1 Cargo.lock"]
-
-[tasks."clean"]
-run = "python3 \"$TOOLS_ROOT/helpers/clean.py\" --path dist --path target --path .artifacts/build --path .artifacts/rust-target --path .artifacts/advisory-db --path .artifacts/ui"
-
-[tasks."integration"]
-run = "python3 \"$TOOLS_ROOT/helpers/verification.py\" test --name integration --artifact dist --artifact .artifacts/native-host --artifact .artifacts/native-cli --environment VERSION -- mise run _integration"
-depends = ["install", "build"]
-
-[tasks."agents"]
-run = ["bash scripts/engineering/build-agents.sh"]
-
-[tasks."ui"]
-run = ["npm ci --prefix app", "npm run --prefix app build"]
-
-[tasks."ui-check"]
-run = ["bash scripts/engineering/check-ui.sh"]
-
-[tasks."portability"]
-run = ["mise run agents", "bash scripts/engineering/portability.sh"]
-
-[tasks."dependency-maintenance"]
-run = ["python3 \"$TOOLS_ROOT/helpers/watch-tools.py\""]
-
-[tasks."security-scan"]
-run = ["mise run install && mise run vuln", "npm audit --prefix app --package-lock-only --audit-level=high"]
-
-[tasks."_build"]
-run = ["mise run agents", "bash scripts/engineering/build-release.sh"]
-hide = true
-
-[tasks."_unit"]
-run = ["bash scripts/engineering/unit.sh"]
-hide = true
-
-[tasks."_integration"]
-run = ["mise run agents", "bash scripts/engineering/integration.sh"]
-hide = true
-
-[tasks."_test-stages"]
-run = [{"task" = "unit"}, {"task" = "integration"}]
-hide = true
-
-[tasks."test"]
-run = "python3 \"$TOOLS_ROOT/helpers/verification.py\" session --test unit --test integration -- mise run _test-stages"
-
-[tasks."_check-stages"]
-run = [{"task" = "install"}, {"task" = "lint"}, {"task" = "unit"}, {"task" = "integration"}, {"task" = "build"}, {"task" = "artifact-check"}, {"task" = "vuln"}]
-hide = true
-
-[tasks."check"]
-run = "python3 \"$TOOLS_ROOT/helpers/verification.py\" session --test unit --test integration -- mise run _check-stages"
+CARGO_TARGET_DIR = "{{ get_env(name='CARGO_TARGET_DIR', default=config_root ~ '/.artifacts/rust-target') }}"
+CARGO_INCREMENTAL = "0"

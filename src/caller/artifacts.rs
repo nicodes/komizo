@@ -21,7 +21,12 @@ pub fn embedded(arch: &str) -> Result<&'static [u8]> {
         "amd64" => Ok(include_bytes!(env!("KOMIZO_HOST_AMD64"))),
         #[cfg(packed_host_arm64)]
         "arm64" => Ok(include_bytes!(env!("KOMIZO_HOST_ARM64"))),
-        "amd64" | "arm64" => anyhow::bail!(
+        #[cfg(not(packed_host_amd64))]
+        "amd64" => anyhow::bail!(
+            "this komizo carries no linux/{arch} agent; run mise run agents before building, or use an authenticated release archive"
+        ),
+        #[cfg(not(packed_host_arm64))]
+        "arm64" => anyhow::bail!(
             "this komizo carries no linux/{arch} agent; run mise run agents before building, or use an authenticated release archive"
         ),
         _ => anyhow::bail!("unsupported host architecture"),

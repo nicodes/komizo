@@ -20,12 +20,14 @@ jobs:
         persist-credentials: false
       timeout-minutes: 5
     - name: Set up development tools
-      uses: nicodes/tools/setup@a1c0321f3b4917a7e99eca42e241e46670f6e1e1
+      with:
+        tools: python
+      uses: nicodes/tools/setup@d475b54c402754a5a37a44fbd65328551995025c
       env:
         GH_TOKEN: ${{ github.token }}
       timeout-minutes: 5
     - name: Dependency Maintenance
-      run: mise run dependency-maintenance
+      run: mise exec -- python3 "$TOOLS_ROOT/helpers/watch-tools.py"
       timeout-minutes: 25
       env:
         GH_TOKEN: ${{ github.token }}

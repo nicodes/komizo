@@ -9,12 +9,12 @@ import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
-spec=importlib.util.spec_from_file_location('maintenance_operator',Path(__file__).with_name('maintenance.py'))
+spec=importlib.util.spec_from_file_location('maintenance_operator',(Path(__file__).resolve().parents[2] / 'src/runtime/maintenance.py'))
 m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
 
 class MaintenanceTests(unittest.TestCase):
     def test_held_kernel_is_transaction_only_and_survives_userspace_apply(self):
-        spec=importlib.util.spec_from_file_location('shared_platform_for_hold',Path(__file__).with_name('platform.py'))
+        spec=importlib.util.spec_from_file_location('shared_platform_for_hold',(Path(__file__).resolve().parents[2] / 'src/runtime/platform.py'))
         shared=importlib.util.module_from_spec(spec);spec.loader.exec_module(shared)
         with tempfile.TemporaryDirectory() as root:
             root=Path(root)

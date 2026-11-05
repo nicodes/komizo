@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: d908cc9b1c116031c52270d67da5aee4e3b0e4896e5216be344d38a61ca07f0f -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: c7324ad01b7897ae4ec35fb6962580217c8d3298fac0e96a10c37eff56ff5b36 -->
 
 # komizo
 
@@ -142,24 +142,26 @@ For lifecycle and advanced operations use `start`, `stop`, `restart`, `logs`, `s
 
 Static workloads select an absolute image_directory, bounded limits, and explicit serving options under policy.static. Serving options include fallbacks, deny_paths, headers, header_rules, precompressed formats and encode selectors. Headers and selectors are bounded and validated; they cannot choose an upstream, root directory, plugin or revision identity. Denied paths are checked before fallback. The host retains immutable extraction, resource admission, current/previous images and stop intent.
 
-## Development
+## Contributor verification
 
-Tool versions and native contributor tasks live in mise.toml. Install mise, check out nicodes/tools at the reviewed helper revision 87da2fe9d430c67d15f62f603b07ba1ed40b5603 into .ci-tools, then run:
+`mise.toml` pins contributor SDKs. The generated root Makefile selects an immutable shared cookbook revision and binds it to `cookbook.toml`.
 
 ```sh
-mise install
-mise run check
+make help
+make setup
+make build
+make test
 ```
 
-The gate runs native Rust contracts, retained original protocol fixtures, shell and workflow checks, UI verification, embedded host builds, archive checks and vulnerability scanning. `mise run ui` builds the UI into ignored `.artifacts/ui/`; `crates/api/build.rs` embeds that export into the native API.
+`make help` works offline before setup. `make setup` explicitly prepares pinned SDKs, locked dependencies and declared fixtures. `make build` compiles and packages the native outputs, then validates their source and artifact identity. `make test` runs the implemented checks against those current-source outputs. Run build again after changing source; tests do not install tools or build missing shipping artifacts.
 
-Four native Actions builders produce Rust payloads for Linux and macOS on x86_64 and arm64. Linux payloads use static musl linking and run on Alpine. Each payload carries its source revision and SHA256 receipt; `mise run agents` and the release builder verify both before embedding it. A complete archive build needs all four payloads under `.artifacts/native-api/`; `bash scripts/engineering/build-api.sh` produces the current platform's payload. CI downloads all four before running the complete product gate.
+Use `make fmt` to apply formatting, `make test:lint`, `make test:unit`, `make test:security` or `make test:integration` to select a group. `make test:e2e` runs the declared disposable deployment journeys. `make clean` removes declared generated outputs. Build and test evidence stays in `.artifacts/verification`.
 
-After building the UI with `mise run ui`, run `cargo build --locked --manifest-path crates/api/Cargo.toml`, then select the absolute built executable with `KOMIZO_API_BINARY` when running the Rust CLI. Release users need no compiler toolchain. A source install that needs to construct an unembedded host agent compiles the agent and Rust API from the same locked source tree, using the existing package lockfiles. That path requires Rust 1.94.0 through rustup and a musl C compiler for the host architecture (`musl-gcc` for native Linux, or `CC_x86_64_unknown_linux_musl` / `CC_aarch64_unknown_linux_musl` for a cross compiler). It works in a private source copy and never modifies the module cache. CI also compiles and launches this source-built agent. The pinned tools setup action supplies contributor tools.
+Build owns the SolidJS export in `.artifacts/ui/`, native Rust API and host payloads, embedded workstation CLI and archive assembly. The verified CLI is `.artifacts/build/komizo`. CI retains Linux and macOS workstation archives for x86_64 and arm64 and verifies each declared API, host and CLI build wave before accepting the complete package. Linux host payloads retain static musl linking and Alpine execution checks.
 
-## Contributor task interface
+The gate retains native Rust contracts, frozen protocol fixtures, shell/workflow checks, UI tests, source-installed host verification, lifecycle and performance acceptance, archive integrity and dependency scanning. Runtime programs remain under `src/runtime/`; independent assertions remain under `tests/`. Publication preserves its native release acceptance and signer workflow identity.
 
-Contributor tool versions and task entry points live in the native Mise configuration. Use `mise run lint` for source checks, `mise run test` for the applicable behavioral tests, and `mise run check` for the complete supported gate. `mise run clean` removes declared generated outputs while preserving source, credentials and retained data. This package has no separate Mise development service; use its native entry points directly.
+A source install that needs an unembedded host agent compiles the agent and Rust API from the same locked source tree. It requires the pinned Rust toolchain and a musl C compiler for the host architecture (`musl-gcc` for native Linux, or the existing `CC_x86_64_unknown_linux_musl` / `CC_aarch64_unknown_linux_musl` cross-compiler selection). It works in a private source copy and preserves the module cache. Released binaries require no contributor compiler toolchain.
 
 ## Workstation configuration override
 

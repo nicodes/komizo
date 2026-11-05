@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 
 def module(name,file):
-    spec=importlib.util.spec_from_file_location(name,Path(__file__).with_name(file));m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
+    spec=importlib.util.spec_from_file_location(name,(Path(__file__).resolve().parents[2] / 'src/runtime' / file));m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m);return m
 
 class ControlPreparation(unittest.TestCase):
     def test_plan_keeps_private_options_and_delegates_exact_four_file_review(self):
@@ -49,7 +49,7 @@ class ControlPreparation(unittest.TestCase):
 
     def test_installer_default_is_persistent_idempotent_and_preserves_override(self):
         import subprocess
-        source=Path(__file__).with_name('alpine-init.sh').read_text()
+        source=(Path(__file__).resolve().parents[2] / 'src/runtime/alpine-init.sh').read_text()
         block=source.split('# BEGIN Docker runtime memory default\n')[1].split('# END Docker runtime memory default')[0]
         for before,expected,debug in [(b'DOCKER_OPTS="private option"\n',str(64<<20),'disablethp=1'),(b'GOMEMLIMIT=33554432\n','33554432','disablethp=1'),(b'GODEBUG=disablethp=0\n',str(64<<20),'disablethp=0')]:
             with tempfile.TemporaryDirectory() as root:
@@ -68,7 +68,7 @@ class ControlPreparation(unittest.TestCase):
 class SSHControlCompatibility(unittest.TestCase):
     def test_optional_ssh_does_not_change_the_three_managed_service_configs(self):
         import importlib.util
-        spec=importlib.util.spec_from_file_location('control_platform',Path(__file__).with_name('platform.py'))
+        spec=importlib.util.spec_from_file_location('control_platform',(Path(__file__).resolve().parents[2] / 'src/runtime/platform.py'))
         p=importlib.util.module_from_spec(spec);spec.loader.exec_module(p)
         group={'memory_low_bytes':16,'memory_high_bytes':48,'memory_bytes':64,'swap_bytes':0,'pids':128,'cpu_weight':100,'milli_cpus':0}
         policy={'controls':{'openrc.'+n:group for n in p.CONTROL_SERVICES}}
