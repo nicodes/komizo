@@ -167,8 +167,6 @@ extension = "tar.gz"
 
 [artifacts]
 paths = ["dist", ".artifacts/build", ".artifacts/native-package", ".artifacts/ui"]
-environment = ["VERSION", "COMMIT", "DATE", "RUST_TARGET"]
-revision_environment = ["COMMIT"]
 evidence_paths = [".artifacts/security/rust-source.json", ".artifacts/independent-deployment/candidate-deployment.json", ".artifacts/independent-deployment/cleanup.json"]
 
 [lint]
@@ -208,7 +206,6 @@ args = ["--binary", "{binary}", "--source", "{commit}"]
 timeout = 1800
 
 [ci]
-runner = "ubuntu-24.04"
 timeout_minutes = 110
 
 [clean]
