@@ -12,7 +12,7 @@ native_host = true
 native_host = true
 
 [[components.rust]]
-name = "owner"
+name = "cli"
 manifest = "Cargo.toml"
 profile = "release"
 [components.rust.test]
@@ -24,7 +24,7 @@ lib = true
 binaries = ["komizo-box"]
 
 [[components.rust]]
-name = "owner-source"
+name = "cli-source"
 manifest = "Cargo.toml"
 [components.rust.build]
 enabled = false
@@ -42,20 +42,20 @@ selectors = {native_host=true}
 
 [[components.rust_tests]]
 name = "native-owner-plain"
-component = "owner-source"
+component = "cli-source"
 roles = ["host"]
 dependency_context = "none"
 selectors = {native_host=true,test_targets=["host_modes","flags","host_application","caller_commands","caller_keys_doctor"]}
 
 [[components.rust_tests]]
 name = "native-owner-packed"
-component = "owner"
+component = "cli"
 roles = ["host"]
 selectors = {enabled=true,native_host=true,test_targets=["host_modes"]}
 
 [[components.rust_tests]]
 name = "source-installed-host"
-component = "owner-source"
+component = "cli-source"
 roles = ["host"]
 platforms = ["Linux/x86_64"]
 suite = "build"
@@ -74,7 +74,7 @@ environment = {SOURCE_COMMIT="{commit}"}
 [[components.native]]
 name = "host"
 role = "host"
-component = "owner"
+component = "cli"
 binary = "komizo-box"
 output = ".artifacts/native-host/komizo-box_{platform}_{arch}"
 environment = {KOMIZO_VERSION="{version}"}
@@ -88,7 +88,7 @@ output = ".artifacts/native-api/payload_{platform}_{arch}.gz"
 [[components.native]]
 name = "cli"
 role = "cli"
-component = "owner"
+component = "cli"
 binary = "komizo"
 output = ".artifacts/native-cli/komizo_{platform}_{arch}"
 environment = {KOMIZO_VERSION="{version}"}
@@ -109,8 +109,6 @@ platform = "Linux/arm64"
 path_environment = "KOMIZO_HOST_ARM64"
 
 [[components.ui]]
-package = "app"
-output = ".artifacts/ui"
 required_files = ["index.html"]
 
 [[node.packages]]
@@ -122,9 +120,6 @@ test = "test"
 
 [package]
 binary = "komizo"
-component = "owner"
-output = ".artifacts/build/komizo"
-profile = "release"
 files = ["README.md", "LICENSE"]
 version_arguments = ["version"]
 version_template = "{binary} {version}"
@@ -166,7 +161,6 @@ arch = "arm64"
 extension = "tar.gz"
 
 [artifacts]
-paths = ["dist", ".artifacts/build", ".artifacts/native-package", ".artifacts/ui"]
 evidence_paths = [".artifacts/security/rust-source.json", ".artifacts/independent-deployment/candidate-deployment.json", ".artifacts/independent-deployment/cleanup.json"]
 
 [lint]
