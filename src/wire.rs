@@ -137,6 +137,11 @@ impl Deref for Bytes {
         self.0.as_deref().unwrap_or_default()
     }
 }
+impl AsRef<[u8]> for Bytes {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
 impl From<Vec<u8>> for Bytes {
     fn from(value: Vec<u8>) -> Self {
         Self(Some(value))
