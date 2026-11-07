@@ -1,6 +1,7 @@
 """Fixed-budget measurements inside the owned 1 CPU/1 GiB lifecycle guest."""
 import hashlib
 import json
+import tomllib
 import math
 from pathlib import Path
 import subprocess
@@ -28,8 +29,8 @@ def evaluate(metrics, budget):
 
 
 def measure(fixture, cli, env, address, probe, setup_seconds, deployment_seconds):
-    path = Path(__file__).with_name('acceptance-budgets.json')
-    budget = json.loads(path.read_bytes())
+    path = Path(__file__).with_name('acceptance-budgets.toml')
+    budget = tomllib.loads(path.read_text())
     metrics = {'setup_seconds': setup_seconds, 'deployment_seconds': deployment_seconds,
                'route_seconds': [], 'operator_seconds': []}
     controls=json.loads(fixture.python("""import hashlib,json,subprocess

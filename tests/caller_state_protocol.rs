@@ -114,8 +114,8 @@ fn private_target_binding_is_idempotent_and_cannot_move_implicitly() {
     let project = temp.path().join("project");
     std::fs::create_dir(&project).unwrap();
     std::fs::write(
-        project.join("komizo.json"),
-        b"{\"version\":1,\"repository\":\"example/site\"}",
+        project.join("komizo.toml"),
+        b"version = 1\nrepository = \"example/site\"\n",
     )
     .unwrap();
     let mut target = Target::parse("root@host.example").unwrap();
@@ -221,5 +221,38 @@ fn typed_protocol_refuses_ambiguous_oversized_or_multiple_results() {
     assert_eq!(
         receipt,
         json!({"version":1,"action":"stop","host":"root@fixture.example","app":"fixture","details":{},"acknowledged":true})
+    );
+}
+
+#[test]
+fn canonical_deployment_preserves_images_and_refuses_legacy_or_ambiguous_source() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("komizo.toml");
+    std::fs::write(
+        &path,
+        "version = 1\nrepository = 'example/site'\nimages = ['ghcr.io/example/site:{revision}']",
+    )
+    .unwrap();
+    let source = state::read_deployment(root.path()).unwrap();
+    assert_eq!(
+        source.images.iter().map(String::as_str).collect::<Vec<_>>(),
+        vec!["ghcr.io/example/site:{revision}"]
+    );
+    for bad in [
+        "version = 1\nversion = 1",
+        "version = 1\nrepository = 'example/site'\nimages = [123]",
+        "{\"version\":1,\"repository\":\"example/site\"}",
+    ] {
+        std::fs::write(&path, bad).unwrap();
+        assert!(state::read_deployment(root.path()).is_err());
+    }
+    std::fs::remove_file(path).unwrap();
+    std::fs::write(root.path().join("komizo.json"), "{}").unwrap();
+    assert!(
+        state::read_deployment(root.path())
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("explicit conversion")
     );
 }

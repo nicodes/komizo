@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: c7324ad01b7897ae4ec35fb6962580217c8d3298fac0e96a10c37eff56ff5b36 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: f1d40b2ac85568327171fed8882ff58f1f608ff0a0504993607b773e9c687c87 -->
 
 # komizo
 
@@ -15,13 +15,19 @@ komizo deploy --host root@your-server --app mailroom --version EXACT_REVISION --
 komizo status --host root@your-server --app mailroom
 ```
 
-For GitHub-authorized applications, setup records a private repository-to-host binding in the workstation's OS configuration directory. An optional root komizo.json contains only deployment selection:
+For GitHub-authorized applications, setup records a private repository-to-host binding in the workstation's OS configuration directory. An optional root `komizo.toml` contains only deployment selection:
 
-```json
-{"version":1,"repository":"your-account/mailroom","images":["registry.example/mailroom-gate:{revision}"]}
+```toml
+version = 1
+repository = "your-account/mailroom"
+images = ["registry.example/mailroom-gate:{revision}"]
 ```
 
+Current-source builds read this authored deployment selection as TOML only; convert a legacy `komizo.json` explicitly. Installed releases retain their released interface. Private targets, protected host policy, credentials, approvals and journals retain their existing formats.
+
 Then komizo deploy selects the checkout's clean committed revision, komizo status reads installed health, and preview uses declared published images. Explicit host/app values take precedence; conflicting app or port identities fail before remote effects. SDK pins and build receipts do not affect target resolution or host admission.
+
+Current-source migration is manual: create the named TOML source with the same effective settings and archive the legacy JSON v1 source outside the active configuration directory. No automatic import command is provided. Preserve explicit `false`, zero and empty arrays; omit null overrides only where they meant inheritance or defaults. Do not copy credentials into tracked source files. Existing installed settings are not migrated by a source update.
 
 ## Artifact authority
 

@@ -6,6 +6,7 @@ import tempfile
 import subprocess
 import sys
 import json
+import tomllib
 import math
 from pathlib import Path
 import unittest
@@ -17,7 +18,7 @@ from release_acceptance import REQUIRED_STEPS, validate, validate_bundle
 
 class AcceptanceGuards(unittest.TestCase):
     def setUp(self):
-        self.budget=json.loads(Path(__file__).with_name('acceptance-budgets.json').read_bytes())
+        self.budget=tomllib.loads(Path(__file__).with_name('acceptance-budgets.toml').read_text())
         self.metrics={'setup_seconds':30,'deployment_seconds':2,'idle_control_pss_bytes':48<<20,
                       'route_seconds':[.1]*5,'operator_seconds':[.2]*5,'load_hot_bytes':64<<20,
                       'load_cpu_usec':2_000_000,'oom_events_unchanged':True,'owned_load_removed':True,
@@ -56,7 +57,7 @@ class AcceptanceGuards(unittest.TestCase):
                 'steps':[{'step':name,'accepted':True} for name in REQUIRED_STEPS],
                 'private_cgroup_namespace':True,'host_global_kernel_controls_masked':True,'host_mounts':False,'host_docker_socket':False,
                 'provider_calls':False,'real_data_accessed':False,'performance_accepted':True,'onboarding_mode':'deterministic_public_cli'}
-        performance={'accepted':True,'budget':self.budget,'metrics':self.metrics,'budget_sha256':hashlib.sha256((engine/'acceptance-budgets.json').read_bytes()).hexdigest()}
+        performance={'accepted':True,'budget':self.budget,'metrics':self.metrics,'budget_sha256':hashlib.sha256((engine/'acceptance-budgets.toml').read_bytes()).hexdigest()}
         onboarding={'accepted':True,'commands':4,'public_readme_sha256':hashlib.sha256((engine.resolve().parents[1]/'README.md').read_bytes()).hexdigest(),
                     'mode':'deterministic_public_cli','human_interventions':0,'provider_credentials_in_task':False,'source_checkout_in_task':False}
         with tempfile.TemporaryDirectory() as temp:

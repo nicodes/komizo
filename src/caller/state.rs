@@ -171,10 +171,17 @@ pub fn decode_deployment(body: &[u8]) -> Result<Deployment> {
     Ok(config)
 }
 pub fn read_deployment(directory: &Path) -> Result<Deployment> {
-    decode_deployment(
-        &read_file(&directory.join("komizo.json"), 1 << 20, false)
-            .map_err(|e| anyhow::anyhow!("read deployment configuration: {e}"))?,
-    )
+    let path = directory.join("komizo.toml");
+    ensure!(
+        path.exists() || !directory.join("komizo.json").exists(),
+        "legacy komizo.json requires explicit conversion to komizo.toml; legacy JSON v1 must be converted manually; no automatic import"
+    );
+    let bytes = read_file(&path, 1 << 20, false)
+        .map_err(|e| anyhow::anyhow!("read deployment configuration: {e}"))?;
+    let value =
+        crate::source_toml::parse(std::str::from_utf8(&bytes)?).map_err(anyhow::Error::msg)?;
+    // The existing strict deployment policy is also the explicit v1 JSON protocol codec.
+    decode_deployment(&serde_json::to_vec(&value)?)
 }
 pub fn default_target(
     directory: &Path,

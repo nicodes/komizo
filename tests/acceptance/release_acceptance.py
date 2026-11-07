@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import tomllib
 from pathlib import Path
 import re
 import tarfile
@@ -17,10 +18,18 @@ REQUIRED_STEPS = {
 }
 
 
-def read(path):
+def bounded_bytes(path):
     if path.is_symlink() or not path.is_file() or path.stat().st_size>1<<20:
         raise ValueError('bounded regular evidence file required')
-    return json.loads(path.read_bytes())
+    return path.read_bytes()
+
+
+def read(path):
+    return json.loads(bounded_bytes(path))
+
+
+def read_budget(path):
+    return tomllib.loads(bounded_bytes(path).decode('utf-8'))
 
 
 def validate(native, cleanup, performance, onboarding, release, source, budget):
@@ -53,10 +62,10 @@ def validate_bundle(directory, release, source, artifacts=None):
     summary=read(directory/'komizo-acceptance.json');performance=read(directory/'komizo-performance.json')
     if summary.get('accepted') is not True or summary.get('release')!=release or summary.get('source')!=source or summary.get('performance_sha256')!=hashlib.sha256((directory/'komizo-performance.json').read_bytes()).hexdigest():
         raise ValueError('release evidence bundle identity differs')
-    validate(summary['native'],summary['cleanup'],performance,summary['onboarding'],release,source,read(Path(__file__).with_name('acceptance-budgets.json')))
+    validate(summary['native'],summary['cleanup'],performance,summary['onboarding'],release,source,read_budget(Path(__file__).with_name('acceptance-budgets.toml')))
     if summary['onboarding']['public_readme_sha256']!=hashlib.sha256((Path(__file__).resolve().parents[2]/'README.md').read_bytes()).hexdigest():raise ValueError('onboarding README differs from release source')
     if summary['native']['runner_sha256']!=hashlib.sha256(Path(__file__).with_name('cold-lifecycle-acceptance.py').read_bytes()).hexdigest():raise ValueError('runner differs from release source')
-    if performance['budget_sha256']!=hashlib.sha256(Path(__file__).with_name('acceptance-budgets.json').read_bytes()).hexdigest():raise ValueError('budget source differs')
+    if performance['budget_sha256']!=hashlib.sha256(Path(__file__).with_name('acceptance-budgets.toml').read_bytes()).hexdigest():raise ValueError('budget source differs')
     if artifacts is not None:
         checks={}
         for line in (artifacts/'checksums.txt').read_text().splitlines():
@@ -93,11 +102,11 @@ def main():
     accepted=False
     try:
         native,cleanup,performance,onboarding=[read(args.observations/name) for name in ('accepted.json','cleanup.json','performance.json','onboarding.json')]
-        budget=read(Path(__file__).with_name('acceptance-budgets.json'))
+        budget=read_budget(Path(__file__).with_name('acceptance-budgets.toml'))
         validate(native,cleanup,performance,onboarding,args.release,args.source,budget)
         if onboarding['public_readme_sha256']!=hashlib.sha256((Path(__file__).resolve().parents[2]/'README.md').read_bytes()).hexdigest():raise ValueError('onboarding input source differs')
         if native['runner_sha256']!=hashlib.sha256(Path(__file__).with_name('cold-lifecycle-acceptance.py').read_bytes()).hexdigest():raise ValueError('runner source identity differs')
-        if performance['budget_sha256']!=hashlib.sha256(Path(__file__).with_name('acceptance-budgets.json').read_bytes()).hexdigest():raise ValueError('budget bytes differ')
+        if performance['budget_sha256']!=hashlib.sha256(Path(__file__).with_name('acceptance-budgets.toml').read_bytes()).hexdigest():raise ValueError('budget bytes differ')
         summary={'version':1,'accepted':True,'release':args.release,'source':args.source,'native':native,'cleanup':cleanup,
                  'onboarding':{k:onboarding[k] for k in ('accepted','mode','public_readme_sha256','rejected_proposals','human_interventions','commands','seconds','inputs','provider_credentials_in_task','source_checkout_in_task')},
                  'performance_sha256':hashlib.sha256((args.observations/'performance.json').read_bytes()).hexdigest()}
