@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: f1d40b2ac85568327171fed8882ff58f1f608ff0a0504993607b773e9c687c87 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: aad405310b33a4b65e1ce59060722175bea85f8cf71091c588936074d23943ca -->
 
 # komizo
 
@@ -150,18 +150,18 @@ Static workloads select an absolute image_directory, bounded limits, and explici
 
 ## Contributor verification
 
-`mise.toml` pins contributor SDKs. The generated root Makefile selects an immutable shared cookbook revision and binds it to `cookbook.toml`.
+`mise.toml` pins contributor SDKs. The canonical generated task block in root `mise.toml` selects an immutable shared cookbook revision and binds it to `cookbook.toml`.
 
 ```sh
-make help
-make setup
-make build
-make test
+mise run help
+mise run setup
+mise run build
+mise run test
 ```
 
-`make help` works offline before setup. `make setup` explicitly prepares pinned SDKs, locked dependencies and declared fixtures. `make build` compiles and packages the native outputs, then validates their source and artifact identity. `make test` runs the implemented checks against those current-source outputs. Run build again after changing source; tests do not install tools or build missing shipping artifacts.
+`mise run help` works offline before setup. `mise run setup` explicitly prepares pinned SDKs, locked dependencies and declared fixtures. `mise run build` compiles and packages the native outputs, then validates their source and artifact identity. `mise run test` runs the implemented checks against those current-source outputs. Run build again after changing source; tests do not install tools or build missing shipping artifacts.
 
-Use `make fmt` to apply formatting, `make test:lint`, `make test:unit`, `make test:security` or `make test:integration` to select a group. `make test:e2e` runs the declared disposable deployment journeys. `make clean` removes declared generated outputs. Build and test evidence stays in `.artifacts/verification`.
+Use `mise run fmt` to apply formatting, `mise run test:lint`, `mise run test:unit`, `mise run test:security` or `mise run test:integration` to select a group. `mise run test:e2e` runs the declared disposable deployment journeys. `mise run clean` removes declared generated outputs. Build and test evidence stays in `.artifacts/verification`.
 
 Build owns the SolidJS export in `.artifacts/ui/`, native Rust API and host payloads, embedded workstation CLI and archive assembly. The verified CLI is `.artifacts/build/komizo`. CI retains Linux and macOS workstation archives for x86_64 and arm64 and verifies each declared API, host and CLI build wave before accepting the complete package. Linux host payloads retain static musl linking and Alpine execution checks.
 
