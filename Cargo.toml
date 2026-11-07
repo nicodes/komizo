@@ -12,6 +12,7 @@ exclude = ["crates/api", "vendor/gtmpl"]
 gtmpl = { path = "vendor/gtmpl" }
 
 [dependencies]
+toml = "=0.9.12"
 anyhow = "1"
 aws-lc-rs = "1.19"
 base64 = "0.22"

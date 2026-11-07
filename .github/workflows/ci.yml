@@ -21,13 +21,13 @@ concurrency:
   cancel-in-progress: true
 jobs:
   validate:
-    uses: nicodes/tools/.github/workflows/cookbook-ci.yml@d7bbf3ebf27378edbea3db049ea6962edfedd6bc
+    uses: nicodes/tools/.github/workflows/cookbook-ci.yml@0eed8c16f83776b7ca33d9f7261d5a6000578b0f
     permissions:
       contents: read
       actions: read
       pull-requests: read
     with:
-      tools-ref: ${{ inputs.tools || 'd7bbf3ebf27378edbea3db049ea6962edfedd6bc' }}
+      tools-ref: ${{ inputs.tools || '0eed8c16f83776b7ca33d9f7261d5a6000578b0f' }}
       source: ${{ inputs.source || github.sha }}
       merge-gate: ${{ vars.COOKBOOK_REQUEST_MERGE == 'enabled' }}
       recipe: rust-cli

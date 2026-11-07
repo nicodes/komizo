@@ -8,6 +8,7 @@ pub mod nativeapi;
 pub mod process;
 pub mod runtime;
 pub mod scripts;
+pub mod source_toml;
 pub mod statefile;
 pub mod strict;
 pub mod template;
