@@ -190,3 +190,17 @@ fn static_assets_do_not_bypass_workload_bounds() {
     }
     assert!(read(&value).is_err());
 }
+
+#[test]
+fn oversized_security_structure_refuses_before_materialization() {
+    let body = format!("[{}]", vec!["0"; 40000].join(","));
+    assert!(komizo::deployment::validation::bounded_value(body.as_bytes(), 4 << 20).is_err());
+    let punctuation = json!({"literal":"{[,:]}".repeat(10000)});
+    assert!(
+        komizo::deployment::validation::bounded_value(
+            &serde_json::to_vec(&punctuation).unwrap(),
+            4 << 20
+        )
+        .is_ok()
+    );
+}

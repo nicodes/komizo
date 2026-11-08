@@ -42,7 +42,7 @@ fn sign(claims: &Value) -> String {
 fn policy() -> Policy {
     serde_json::from_value(json!({
     "kind":"komizo.policy","version":1,"application":"mailroom",
-    "authority":{"kind":"github","repository":"example/mailroom","repository_id":"123","workflows":{"deploy":"example/mailroom/.github/workflows/cd.yml@refs/heads/main","preview-deploy":"example/mailroom/.github/workflows/preview.yml@refs/heads/main","backup":"example/mailroom/.github/workflows/backup.yml@refs/heads/main"},"reference":"refs/heads/main","environment":"production","publisher_workflow":format!("example/publisher/.github/workflows/deliver.yml@{}","d".repeat(40))},
+    "authority":{"kind":"github","repository":"example/mailroom","repository_id":"123","workflows":{"deploy":"example/mailroom/.github/workflows/cd.yml@refs/heads/main","preview-deploy":"example/mailroom/.github/workflows/preview.yml@refs/heads/main","backup":"example/mailroom/.github/workflows/backup.yml@refs/heads/main"},"reference":"refs/heads/main","environment":"production","publisher_workflows":{"deploy":format!("example/publisher/.github/workflows/deliver.yml@{}","d".repeat(40)),"preview-deploy":format!("example/publisher/.github/workflows/preview.yml@{}","d".repeat(40))}},
     "artifact_prefixes":["ghcr.io/example/mailroom"],"hostnames":["mail.example","api.mail.example"],
     "limits":{"memory_bytes":268435456,"memory_swap_bytes":268435456,"milli_cpus":500,"pids":256},
     "secrets":{"runtime":{"path":"/etc/komizo/secrets/runtime.env","services":["api"],"environment_file":true,"generation":"1"}},
@@ -55,7 +55,22 @@ fn request() -> Value {
     let digest = read_release(&serde_json::to_vec(&release).unwrap())
         .unwrap()
         .digest;
-    json!({"kind":"komizo.request","version":1,"authority":"github","application":"mailroom","instance":"production","action":"deploy","release_digest":digest,"nonce":"1".repeat(32),"issued_at":1000,"expires_at":1120,"release":release})
+    let mut request = json!({"kind":"komizo.request","version":1,"authority":"github","application":"mailroom","instance":"production","action":"deploy","release_digest":digest,"nonce":"1".repeat(32),"issued_at":1000,"expires_at":1120,"release":release});
+    let mut proof = json!({"kind":"komizo.release-proof","version":1,"release_digest":request["release_digest"],"source_revision":"a".repeat(40),"run_id":"12345","run_attempt":"1","workflow_ref":"example/mailroom/.github/workflows/cd.yml@refs/heads/main","workflow_sha":"a".repeat(40)});
+    let mut publisher = claims(&request);
+    publisher["aud"] = json!(format!(
+        "komizo-release:{}",
+        document_digest(&authority::body_without_proof(&proof).unwrap())
+    ));
+    publisher["job_workflow_ref"] = json!(format!(
+        "example/publisher/.github/workflows/deliver.yml@{}",
+        "d".repeat(40)
+    ));
+    publisher["run_id"] = json!("12345");
+    publisher["run_attempt"] = json!("1");
+    proof["proof"] = json!(sign(&publisher));
+    request["release_proof"] = proof;
+    request
 }
 fn claims(request: &Value) -> Value {
     json!({"iss":authority::ISSUER,"aud":format!("komizo-request:{}",document_digest(&authority::body_without_proof(request).unwrap())),"iat":1000,"nbf":995,"exp":1300,"jti":"unique-token","repository":"example/mailroom","repository_id":"123","workflow_ref":"example/mailroom/.github/workflows/cd.yml@refs/heads/main","workflow_sha":"a".repeat(40),"sha":"a".repeat(40),"ref":"refs/heads/main","sub":"repo:example/mailroom:environment:production","runner_environment":"github-hosted","event_name":"push"})
@@ -115,6 +130,7 @@ fn signed_request_binds_app_action_workload_and_actual_workflow_authority() {
 fn owner_is_kernel_peer_and_cannot_bypass_github_release_approval() {
     let mut r = request();
     r["authority"] = json!("owner");
+    r.as_object_mut().unwrap().remove("release_proof");
     assert!(admit(&r, &policy(), 0).is_err());
     let mut p = policy();
     p.authority = Authority::Owner;
@@ -128,6 +144,7 @@ fn owner_is_kernel_peer_and_cannot_bypass_github_release_approval() {
 fn current_is_only_a_read_selector_and_secret_updates_are_owner_only() {
     let mut r = request();
     r.as_object_mut().unwrap().remove("release");
+    r.as_object_mut().unwrap().remove("release_proof");
     r["action"] = json!("inspect");
     r["release_digest"] = json!("current");
     r["proof"] = json!(sign(&claims(&r)));

@@ -127,7 +127,22 @@ fn native_units_escape_manager_expansion_and_do_not_publish_ports_or_repull() {
     assert!(unit.contains("%%n $$HOST_SECRET"));
     assert!(unit.contains("--pull=never"));
     assert!(unit.contains("--remote=false"));
-    assert!(unit.contains("--health-startup-interval"));
+    assert!(unit.contains("--health-interval\" \"disable"));
+    let (probe, timer) = units::health_units(
+        "mailroom",
+        "production",
+        "api",
+        doc.release.workload.services["api"]
+            .health
+            .as_ref()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(probe.contains(&format!(
+        "Slice={}",
+        units::slice("mailroom", "production").unwrap()
+    )));
+    assert!(timer.contains("OnUnitInactiveSec=2s"));
     assert!(
         !unit.contains("PublishPort")
             && !unit.contains("WantedBy=")

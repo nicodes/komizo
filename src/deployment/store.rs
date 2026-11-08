@@ -51,6 +51,34 @@ pub struct Export {
 }
 
 impl Operation {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.kind == "komizo.operation"
+                && self.version == 1
+                && hex(&self.operation_id, 32)
+                && name(&self.application)
+                && name(&self.instance)
+                && (digest(&self.release_digest) || self.release_digest == "absent")
+                && [
+                    "admitted",
+                    "staging",
+                    "jobs",
+                    "installing",
+                    "activating",
+                    "readiness",
+                    "ready",
+                    "prepared_stopped",
+                    "failed",
+                    "needs_reconciliation"
+                ]
+                .contains(&self.phase.as_str())
+                && self.ok == ["ready", "prepared_stopped"].contains(&self.phase.as_str())
+                && self.reconciliation_required == (self.phase == "needs_reconciliation")
+                && self.previous_release_digest.as_deref().is_none_or(digest),
+            "invalid durable operation state"
+        );
+        Ok(())
+    }
     pub fn terminal(&self) -> bool {
         [
             "ready",
@@ -101,8 +129,9 @@ pub struct Installed {
     pub release_digest: String,
     pub operation_id: String,
     pub desired_running: bool,
+    pub expires_at: Option<i64>,
     pub resources: Resources,
-    pub secret_generations: BTreeMap<String, String>,
+    pub secret_snapshots: BTreeMap<String, super::secrets::Snapshot>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -126,6 +155,8 @@ pub struct ContainerRecord {
     pub image: String,
     pub config_digest: String,
     pub release_digest: String,
+    pub ownership: String,
+    pub unit_sha256: String,
     pub volumes: BTreeMap<String, String>,
 }
 
@@ -134,6 +165,42 @@ pub fn identity() -> Result<String> {
     getrandom::fill(&mut bytes)
         .map_err(|_| anyhow!("operating system random source is unavailable"))?;
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+pub fn operation_identity(request: &Request) -> Result<String> {
+    ensure!(
+        name(&request.application) && name(&request.instance) && hex(&request.nonce, 32),
+        "invalid proposed operation scope"
+    );
+    let hash = document_digest(
+        format!(
+            "komizo-operation-v1\0{}\0{}\0{}",
+            request.application, request.instance, request.nonce
+        )
+        .as_bytes(),
+    );
+    Ok(hash[7..39].to_owned())
+}
+
+impl Store {
+    pub fn create_operation(&self, operation: &Operation) -> Result<()> {
+        operation.validate()?;
+        ensure!(
+            hex(&operation.operation_id, 32),
+            "invalid operation identity"
+        );
+        let parent = self.root.join("operations");
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(parent.join(format!("{}.json", operation.operation_id)))?;
+        file.write_all(&serde_json::to_vec(operation)?)?;
+        file.sync_all()?;
+        File::open(parent)?.sync_all()?;
+        Ok(())
+    }
 }
 
 pub fn protected_directory(path: &Path) -> Result<()> {
@@ -286,6 +353,7 @@ impl Store {
         Ok(())
     }
     pub fn save_operation(&self, operation: &Operation) -> Result<()> {
+        operation.validate()?;
         ensure!(
             hex(&operation.operation_id, 32),
             "invalid operation identity"
@@ -301,13 +369,19 @@ impl Store {
     }
     pub fn operation(&self, id: &str) -> Result<Operation> {
         ensure!(hex(id, 32), "invalid operation identity");
-        Ok(serde_json::from_value(crate::strict::value(
+        let operation: Operation = serde_json::from_value(crate::strict::value(
             &read_protected(
                 &self.root.join("operations").join(format!("{id}.json")),
                 MAX_DOCUMENT_BYTES,
             )?,
             MAX_DOCUMENT_BYTES,
-        )?)?)
+        )?)?;
+        operation.validate()?;
+        ensure!(
+            operation.operation_id == id,
+            "operation record identity differs from its protected path"
+        );
+        Ok(operation)
     }
     pub fn save_release(&self, document: &ReleaseDocument) -> Result<()> {
         let path = self

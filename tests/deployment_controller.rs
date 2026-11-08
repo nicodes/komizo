@@ -1,0 +1,163 @@
+use anyhow::Result;
+use komizo::deployment::{
+    controller::{self, Backend, Coordinator, Job},
+    store::{Operation, Store},
+    *,
+};
+use serde_json::{Value, json};
+use std::{
+    fs,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
+    time::{Duration, Instant},
+};
+
+struct Worker {
+    calls: Arc<AtomicUsize>,
+    gate: Mutex<mpsc::Receiver<()>>,
+    fail: bool,
+}
+impl Backend for Worker {
+    fn execute(
+        &self,
+        store: &Store,
+        _: &Policy,
+        job: &Job,
+        operation: &mut Operation,
+    ) -> Result<()> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        controller::advance(store, operation, "staging")?;
+        controller::advance(store, operation, "jobs")?;
+        self.gate
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(3))?;
+        anyhow::ensure!(!self.fail, "simulated interrupted migration effect");
+        for phase in ["installing", "activating", "readiness", "ready"] {
+            controller::advance(store, operation, phase)?;
+        }
+        assert_eq!(
+            operation.operation_id,
+            komizo::deployment::store::operation_identity(&job.request)?
+        );
+        Ok(())
+    }
+}
+fn setup(
+    fail: bool,
+) -> (
+    tempfile::TempDir,
+    Arc<Coordinator>,
+    mpsc::SyncSender<()>,
+    Arc<AtomicUsize>,
+    Value,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let policies = dir.path().join("policies");
+    fs::create_dir(&policies).unwrap();
+    let policy = json!({"kind":"komizo.policy","version":1,"application":"mailroom","authority":{"kind":"owner"},"artifact_prefixes":["ghcr.io/example/mailroom"],"hostnames":["mail.example","api.mail.example"],"limits":{"memory_bytes":268435456,"memory_swap_bytes":268435456,"milli_cpus":500,"pids":256},"readiness":[{"url":"https://mail.example/","status":200}],"secrets":{"runtime":{"path":"/etc/komizo/runtime.env","services":["api"],"environment_file":true,"generation":"1"}}});
+    komizo::deployment::store::atomic(
+        &policies.join("mailroom.json"),
+        &serde_json::to_vec(&policy).unwrap(),
+        0o600,
+    )
+    .unwrap();
+    let (gate, receiver) = mpsc::sync_channel(1);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let worker = Worker {
+        calls: calls.clone(),
+        gate: Mutex::new(receiver),
+        fail,
+    };
+    let coordinator =
+        Coordinator::new(dir.path().join("state"), policies, Arc::new(worker)).unwrap();
+    let release: Value =
+        serde_json::from_str(include_str!("fixtures/deployment/release.json")).unwrap();
+    let digest = read_release(&serde_json::to_vec(&release).unwrap())
+        .unwrap()
+        .digest;
+    let request = json!({"kind":"komizo.request","version":1,"authority":"owner","application":"mailroom","instance":"production","action":"deploy","release_digest":digest,"nonce":"b".repeat(32),"issued_at":1000,"expires_at":1120,"timeout_seconds":30,"release":release,"registry":{"server":"ghcr.io","username":"private","token":"PRIVATE_REGISTRY_TOKEN"}});
+    (dir, coordinator, gate, calls, request)
+}
+fn wait(store: &Store, id: &str) -> Operation {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let operation = store.operation(id).unwrap();
+        if operation.terminal() {
+            return operation;
+        }
+        assert!(Instant::now() < deadline, "worker did not complete");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn disconnected_submitter_does_not_cancel_or_repeat_an_admitted_effect() {
+    let (_dir, c, gate, calls, request) = setup(false);
+    let parsed: Request = serde_json::from_value(request.clone()).unwrap();
+    let id = komizo::deployment::store::operation_identity(&parsed).unwrap();
+    assert_eq!(id, "3a136f1b4cdd49cd0c83b4231129a21f");
+    let completion = c
+        .admit(serde_json::to_vec(&request).unwrap(), 0, 1000, &mut |_| {
+            panic!("owner request fetched remote keys")
+        })
+        .unwrap();
+    drop(completion);
+    gate.send(()).unwrap();
+    let operation = wait(&c.store, &id);
+    assert!(operation.ok);
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+    assert!(
+        c.admit(
+            serde_json::to_vec(&request).unwrap(),
+            0,
+            1000,
+            &mut |_| panic!()
+        )
+        .is_err()
+    );
+    let audit = fs::read_to_string(
+        c.store
+            .root
+            .join("journal")
+            .join(&id)
+            .join("admission.json"),
+    )
+    .unwrap();
+    assert!(!audit.contains("PRIVATE_REGISTRY_TOKEN"));
+    assert!(!audit.contains("\"proof\""));
+}
+
+#[test]
+fn uncertain_migration_blocks_a_new_deploy_until_explicit_owner_reconciliation() {
+    let (_dir, c, gate, calls, mut request) = setup(true);
+    let parsed: Request = serde_json::from_value(request.clone()).unwrap();
+    let id = komizo::deployment::store::operation_identity(&parsed).unwrap();
+    let completion = c
+        .admit(
+            serde_json::to_vec(&request).unwrap(),
+            0,
+            1000,
+            &mut |_| panic!(),
+        )
+        .unwrap();
+    drop(completion);
+    gate.send(()).unwrap();
+    let operation = wait(&c.store, &id);
+    assert_eq!(operation.phase, "needs_reconciliation");
+    assert!(!operation.ok);
+    request["nonce"] = json!("c".repeat(32));
+    assert!(
+        c.admit(
+            serde_json::to_vec(&request).unwrap(),
+            0,
+            1000,
+            &mut |_| panic!()
+        )
+        .is_err()
+    );
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+}

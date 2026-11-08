@@ -384,6 +384,10 @@ pub struct Policy {
     #[serde(default)]
     pub aggregate_mode: AggregateMode,
     #[serde(default)]
+    pub controls: ResourceControls,
+    #[serde(default)]
+    pub startup_memory_bytes: u64,
+    #[serde(default)]
     pub service_limits: Option<Limits>,
     #[serde(default)]
     pub secrets: BTreeMap<String, SecretGrant>,
@@ -395,6 +399,8 @@ pub struct Policy {
     pub max_asset_bytes: u64,
     #[serde(default = "default_file_bytes")]
     pub max_asset_file_bytes: u64,
+    #[serde(default = "default_image_bytes")]
+    pub max_image_bytes: u64,
     #[serde(default = "default_operation_seconds")]
     pub operation_timeout_seconds: u32,
     #[serde(default)]
@@ -411,11 +417,36 @@ pub enum AggregateMode {
     Cgroup,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceControls {
+    #[serde(default)]
+    pub memory_low_bytes: u64,
+    #[serde(default)]
+    pub memory_high_bytes: u64,
+    #[serde(default)]
+    pub cpu_weight: Option<u32>,
+    #[serde(default)]
+    pub io_weight: Option<u32>,
+    #[serde(default)]
+    pub io_max: Vec<IoRate>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IoRate {
+    pub device: String,
+    pub read_bytes_per_second: u64,
+    pub write_bytes_per_second: u64,
+}
+
 fn default_archive_bytes() -> u64 {
     256 << 20
 }
 fn default_file_bytes() -> u64 {
     128 << 20
+}
+fn default_image_bytes() -> u64 {
+    2 << 30
 }
 fn default_operation_seconds() -> u32 {
     1500
@@ -432,7 +463,7 @@ pub enum Authority {
         reference: String,
         environment: String,
         #[serde(default)]
-        publisher_workflow: String,
+        publisher_workflows: BTreeMap<String, String>,
     },
 }
 
@@ -454,14 +485,27 @@ pub struct SecretGrant {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreviewPolicy {
+    #[serde(default = "default_preview_environment")]
+    pub environment: String,
     pub hostname_suffix: String,
     pub max_instances: u32,
     pub max_ttl_seconds: u32,
     pub limits: Limits,
     #[serde(default)]
+    pub service_limits: Option<Limits>,
+    #[serde(default)]
+    pub controls: ResourceControls,
+    #[serde(default)]
     pub secrets: BTreeMap<String, SecretGrant>,
     #[serde(default)]
     pub api_path: Option<String>,
+    #[serde(default)]
+    pub prepare: Option<ProtectedTask>,
+    #[serde(default)]
+    pub retain_data_on_remove: bool,
+}
+fn default_preview_environment() -> String {
+    "preview".into()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -486,6 +530,8 @@ pub struct Request {
     pub nonce: String,
     pub issued_at: i64,
     pub expires_at: i64,
+    #[serde(default = "default_operation_seconds")]
+    pub timeout_seconds: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -500,6 +546,8 @@ pub struct Request {
     pub export_name: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub expected_secret_generations: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_seconds: Option<u32>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub proof: String,
 }

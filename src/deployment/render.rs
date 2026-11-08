@@ -248,6 +248,7 @@ pub fn caddy(
                             encode(&mut out, &proxy.encode, &proxy.encode_content_types);
                         }
                         writeln!(out, "reverse_proxy {} {{", token(upstream)).unwrap();
+                        out.push_str("header_up X-Forwarded-For {client_ip}\nheader_up X-Real-IP {client_ip}\n");
                         if let Some(proxy) = &route.proxy
                             && (proxy.dial_timeout_seconds.is_some()
                                 || proxy.response_header_timeout_seconds.is_some())

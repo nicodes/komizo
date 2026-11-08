@@ -9,7 +9,12 @@ pub fn namespace(application: &str, instance: &str) -> Result<String> {
 }
 pub fn slice(application: &str, instance: &str) -> Result<String> {
     Ok(format!(
-        "komizo-i{}.slice",
+        "komizo-{}-i{}.slice",
+        if instance == "production" {
+            "production"
+        } else {
+            "previews"
+        },
         &namespace(application, instance)?[4..]
     ))
 }
@@ -54,12 +59,9 @@ pub fn options(service: &str, value: &Container, bindings: &Bindings<'_>) -> Res
         value.limits.memory_bytes.to_string(),
         "--memory-swap".into(),
         value.limits.memory_swap_bytes.to_string(),
-        "--cpus".into(),
-        format!(
-            "{}.{:03}",
-            value.limits.milli_cpus / 1000,
-            value.limits.milli_cpus % 1000
-        ),
+        "--cpu-period=1000000".into(),
+        "--cpu-quota".into(),
+        (u64::from(value.limits.milli_cpus) * 1000).to_string(),
         "--pids-limit".into(),
         value.limits.pids.to_string(),
         "--cgroup-parent".into(),
@@ -108,14 +110,14 @@ pub fn options(service: &str, value: &Container, bindings: &Bindings<'_>) -> Res
             .get(&secret.source)
             .ok_or_else(|| anyhow!("missing staged native secret"))?;
         ensure!(
-            name(source) && absolute(&secret.target),
+            absolute(source) && absolute(&secret.target),
             "invalid staged native secret binding"
         );
         args.extend([
-            "--secret".into(),
+            "--mount".into(),
             format!(
-                "{source},type=mount,target={},uid={},gid={},mode={:04o}",
-                secret.target, secret.uid, secret.gid, secret.mode
+                "type=bind,source={source},destination={},readonly",
+                secret.target
             ),
         ]);
     }
@@ -180,7 +182,7 @@ pub fn options(service: &str, value: &Container, bindings: &Bindings<'_>) -> Res
             "--health-cmd".into(),
             serde_json::to_string(&health.command)?,
             "--health-interval".into(),
-            format!("{}s", health.interval_seconds),
+            "disable".into(),
             "--health-timeout".into(),
             format!("{}s", health.timeout_seconds),
             "--health-retries".into(),
@@ -191,18 +193,6 @@ pub fn options(service: &str, value: &Container, bindings: &Bindings<'_>) -> Res
             "--health-max-log-count=5".into(),
             "--health-max-log-size=500".into(),
         ]);
-        if let Some(interval) = health.start_interval_seconds {
-            args.extend([
-                "--health-startup-cmd".into(),
-                serde_json::to_string(&health.command)?,
-                "--health-startup-interval".into(),
-                format!("{interval}s"),
-                "--health-startup-timeout".into(),
-                format!("{}s", health.timeout_seconds),
-                "--health-startup-retries=0".into(),
-                "--health-startup-success=1".into(),
-            ]);
-        }
     }
     Ok(args)
 }
@@ -220,7 +210,18 @@ pub fn quadlet(
         .services
         .get(service)
         .ok_or_else(|| anyhow!("Quadlet requires a declared service"))?;
-    let reference = document.release.artifacts[&value.artifact].reference();
+    ensure!(
+        bindings.application == document.release.application
+            && bindings.release_digest == document.digest,
+        "runtime bindings differ from the admitted release"
+    );
+    let Artifact::Image {
+        config_digest: reference,
+        ..
+    } = &document.release.artifacts[&value.artifact]
+    else {
+        return Err(anyhow!("service artifact is not an image"));
+    };
     let ns = namespace(bindings.application, bindings.instance)?;
     let mut out = String::new();
     writeln!(
@@ -244,6 +245,9 @@ pub fn quadlet(
                 .join(" ")
         )?;
     }
+    if value.health.is_some() {
+        writeln!(out, "[Unit]\nWants={ns}-{service}-health.timer")?;
+    }
     writeln!(
         out,
         "[Service]\nSlice={}\nRestart=on-failure\nRestartSec=3\nTimeoutStartSec=300\nTimeoutStopSec={}\nExecStartPre=/usr/local/bin/komizo-box guard --application {} --instance {} --service {}\n[Install]",
@@ -259,14 +263,60 @@ pub fn quadlet(
     Ok(out)
 }
 
+pub fn health_units(
+    application: &str,
+    instance: &str,
+    service: &str,
+    health: &Health,
+) -> Result<(String, String)> {
+    ensure!(name(service), "invalid health service scope");
+    let base = format!("{}-{service}", namespace(application, instance)?);
+    let tick = health
+        .start_interval_seconds
+        .unwrap_or(health.interval_seconds)
+        .min(health.interval_seconds);
+    let unit = format!(
+        "[Unit]\nDescription=Komizo native health probe\nAfter={base}.service\nRequisite={base}.service\nPartOf={base}.service\n[Service]\nType=oneshot\nSlice={}\nTimeoutStartSec={}\nExecStart=/usr/local/bin/komizo-box health --application {application} --instance {instance} --service {service}\nStandardOutput=null\n",
+        slice(application, instance)?,
+        health.timeout_seconds + 20
+    );
+    let timer = format!(
+        "[Unit]\nDescription=Komizo native health probe timer\nAfter={base}.service\nPartOf={base}.service\n[Timer]\nOnActiveSec=1s\nOnUnitInactiveSec={tick}s\nAccuracySec=100ms\nUnit={base}-health.service\n"
+    );
+    Ok((unit, timer))
+}
+
 pub fn resource_slice(limits: &Limits) -> Result<String> {
     limits.validate()?;
     Ok(format!(
-        "[Unit]\nDescription=Komizo instance allocation\n[Slice]\nCPUAccounting=yes\nMemoryAccounting=yes\nTasksAccounting=yes\nMemoryMax={}\nMemorySwapMax={}\nCPUQuota={}.{}%\nTasksMax={}\n",
+        "[Unit]\nDescription=Komizo instance allocation\n[Slice]\nCPUAccounting=yes\nMemoryAccounting=yes\nTasksAccounting=yes\nMemoryMax={}\nMemorySwapMax={}\nCPUQuota={}.{}%\nCPUQuotaPeriodSec=1s\nTasksMax={}\n",
         limits.memory_bytes,
         limits.memory_swap_bytes - limits.memory_bytes,
         limits.milli_cpus / 10,
         limits.milli_cpus % 10,
         limits.pids
     ))
+}
+
+pub fn controlled_slice(limits: &Limits, controls: &ResourceControls) -> Result<String> {
+    controls.validate(limits)?;
+    let mut out = resource_slice(limits)?;
+    writeln!(out, "MemoryLow={}", controls.memory_low_bytes)?;
+    if controls.memory_high_bytes > 0 {
+        writeln!(out, "MemoryHigh={}", controls.memory_high_bytes)?;
+    }
+    if let Some(weight) = controls.cpu_weight {
+        writeln!(out, "CPUWeight={weight}")?;
+    }
+    if let Some(weight) = controls.io_weight {
+        writeln!(out, "IOWeight={weight}")?;
+    }
+    for rate in &controls.io_max {
+        writeln!(
+            out,
+            "IOReadBandwidthMax=/dev/block/{} {}\nIOWriteBandwidthMax=/dev/block/{} {}",
+            rate.device, rate.read_bytes_per_second, rate.device, rate.write_bytes_per_second
+        )?;
+    }
+    Ok(out)
 }
