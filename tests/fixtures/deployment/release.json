@@ -1,0 +1,53 @@
+{
+  "kind": "komizo.release",
+  "version": 1,
+  "application": "mailroom",
+  "source": {
+    "repository": "example/mailroom",
+    "repository_id": "123",
+    "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "artifacts": {
+    "api": {
+      "kind": "image",
+      "reference": "ghcr.io/example/mailroom-api@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "config_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "platform": "linux/amd64"
+    },
+    "web": {
+      "kind": "archive",
+      "reference": "ghcr.io/example/mailroom-web@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "digest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "size_bytes": 128,
+      "media_type": "application/vnd.komizo.static.v1.tar+gzip"
+    }
+  },
+  "workload": {
+    "services": {
+      "api": {
+        "artifact": "api",
+        "user": "10001:10001",
+        "environment": {"APP_REVISION": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+        "environment_files": ["runtime"],
+        "networks": ["backend"],
+        "limits": {"memory_bytes": 134217728, "memory_swap_bytes": 134217728, "milli_cpus": 250, "pids": 128},
+        "health": {"command": ["/app/server", "healthcheck"], "interval_seconds": 15, "timeout_seconds": 3, "retries": 5, "start_period_seconds": 10}
+      }
+    },
+    "jobs": {},
+    "assets": {
+      "web": {
+        "artifact": "web",
+        "serving": {"fallbacks": ["index.html"], "headers": {"X-Content-Type-Options": "nosniff"}, "precompressed": ["br", "gzip"]}
+      }
+    },
+    "networks": {"backend": {"internal": true}},
+    "volumes": {},
+    "routes": [
+      {"host": "mail.example", "path": "/", "target": {"kind": "asset", "name": "web"}},
+      {"host": "api.mail.example", "path": "/", "target": {"kind": "service", "name": "api", "port": 8080}}
+    ],
+    "readiness": [{"url": "https://api.mail.example/readyz", "status": 200, "revision_field": "revision"}]
+  }
+}
