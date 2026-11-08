@@ -12,10 +12,20 @@ pub struct Release {
     pub version: u32,
     pub application: String,
     pub source: Source,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub providers: Option<Providers>,
     pub artifacts: BTreeMap<String, Artifact>,
     pub workload: Workload,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stateful_contract: Option<StatefulContract>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Providers {
+    pub cookbook_revision: String,
+    pub tools_revision: String,
+    pub core_revision: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -189,6 +199,8 @@ pub struct Mount {
 pub struct Tmpfs {
     pub size_bytes: u64,
     pub mode: u32,
+    #[serde(default)]
+    pub executable: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

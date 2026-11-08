@@ -596,6 +596,14 @@ impl Release {
                 && safe_text(&self.source.revision, 128),
             "invalid release source identity"
         );
+        if let Some(providers) = &self.providers {
+            ensure!(
+                hex(&providers.cookbook_revision, 40)
+                    && hex(&providers.tools_revision, 40)
+                    && hex(&providers.core_revision, 40),
+                "invalid source provider identity"
+            );
+        }
         self.workload.validate()?;
         ensure!(
             !self.artifacts.is_empty() && self.artifacts.len() <= 32,

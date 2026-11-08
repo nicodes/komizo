@@ -142,8 +142,10 @@ pub fn options(service: &str, value: &Container, bindings: &Bindings<'_>) -> Res
         args.extend([
             "--tmpfs".into(),
             format!(
-                "{path}:rw,nosuid,nodev,size={},mode={:04o}",
-                tmp.size_bytes, tmp.mode
+                "{path}:rw,nosuid,nodev,{},size={},mode={:04o}",
+                if tmp.executable { "exec" } else { "noexec" },
+                tmp.size_bytes,
+                tmp.mode
             ),
         ]);
     }
