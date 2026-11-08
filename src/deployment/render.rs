@@ -190,7 +190,6 @@ pub fn caddy(
     }
     for (host, mut routes) in hosts {
         writeln!(out, "{}{host} {{", if http { "http://" } else { "" }).unwrap();
-        baseline(&mut out);
         routes.sort_by(|a, b| {
             b.1.path
                 .len()
