@@ -109,6 +109,13 @@ fn invalid_image_and_host_escape_inputs_refuse() {
     value["workload"]["services"]["api"]["volumes"] = json!([{"name":"/","target":"/host"}]);
     assert!(read(&value).is_err());
     let mut value = example();
+    value["workload"]["assets"]["web"]["serving"]["deny_paths"] = json!(["/{$HOST_SECRET}"]);
+    assert!(read(&value).is_err());
+    let mut value = example();
+    value["workload"]["assets"]["web"]["serving"]["header_rules"] =
+        json!([{"path_regexp":"[{$HOST_SECRET}]","headers":{"X-Test":"match"}}]);
+    assert!(read(&value).is_err());
+    let mut value = example();
     value["workload"]["services"]["api"]["capabilities"] = json!(["SYS_ADMIN"]);
     assert!(read(&value).is_err());
     let mut value = example();

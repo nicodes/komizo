@@ -384,6 +384,7 @@ impl Workload {
             for rule in &asset.serving.route_rules {
                 ensure!(
                     rule.pattern.len() <= 1024
+                        && !rule.pattern.contains("{$")
                         && regex::Regex::new(&rule.pattern).is_ok()
                         && rule.replacement.starts_with('/')
                         && safe_text(&rule.replacement, 1024)
@@ -437,7 +438,7 @@ impl Workload {
             }
             for path in &asset.serving.deny_paths {
                 ensure!(
-                    path.starts_with('/') && safe_text(path, 1024),
+                    path.starts_with('/') && safe_text(path, 1024) && !path.contains(['{', '}']),
                     "invalid denied path"
                 );
             }
@@ -458,7 +459,9 @@ impl Workload {
                 );
                 if let Some(pattern) = &rule.path_regexp {
                     ensure!(
-                        pattern.len() <= 1024 && regex::Regex::new(pattern).is_ok(),
+                        pattern.len() <= 1024
+                            && !pattern.contains("{$")
+                            && regex::Regex::new(pattern).is_ok(),
                         "invalid header regular expression"
                     );
                 }
@@ -478,7 +481,7 @@ impl Workload {
                         .serving
                         .encode_content_types
                         .iter()
-                        .all(|s| safe_text(s, 256)),
+                        .all(|s| safe_text(s, 256) && !s.contains(['{', '}'])),
                 "unsupported content encoding"
             );
         }
@@ -505,7 +508,10 @@ impl Workload {
                             .encode
                             .iter()
                             .all(|e| ["gzip", "zstd"].contains(&e.as_str()))
-                        && proxy.encode_content_types.iter().all(|s| safe_text(s, 256))
+                        && proxy
+                            .encode_content_types
+                            .iter()
+                            .all(|s| safe_text(s, 256) && !s.contains(['{', '}']))
                         && proxy
                             .dial_timeout_seconds
                             .is_none_or(|s| (1..=300).contains(&s))
@@ -535,6 +541,7 @@ impl Workload {
                 let url = reqwest::Url::parse(&redirect.to)?;
                 ensure!(
                     url.scheme() == "https"
+                        && !redirect.to.contains(['{', '}'])
                         && url.username().is_empty()
                         && url.password().is_none()
                         && url.fragment().is_none()
