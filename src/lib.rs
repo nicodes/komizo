@@ -1,6 +1,7 @@
 //! Native Komizo host and caller implementation; the existing API is packaged from crates/api/.
 pub mod caller;
 mod cgroupfs;
+pub mod deployment;
 pub mod flags;
 pub mod host;
 pub mod input;
