@@ -809,8 +809,8 @@ impl Policy {
                 name(key)
                     && absolute(&grant.path)
                     && grant.path != "/"
-                    && !grant.services.is_empty()
-                    && grant.services.iter().all(|s| name(s))
+                    && (!grant.services.is_empty() || !grant.jobs.is_empty())
+                    && grant.services.iter().chain(&grant.jobs).all(|s| name(s))
                     && (grant.environment_file || grant.mount)
                     && safe_text(&grant.generation, 128)
                     && !grant.generation.is_empty(),
@@ -917,7 +917,11 @@ impl Policy {
                     .get(alias)
                     .ok_or_else(|| anyhow!("unknown secret reference"))?;
                 ensure!(
-                    grant.services.contains(service),
+                    if release.workload.jobs.contains_key(service) {
+                        grant.jobs.contains(service)
+                    } else {
+                        grant.services.contains(service)
+                    },
                     "secret is outside this service's grant"
                 );
                 ensure!(

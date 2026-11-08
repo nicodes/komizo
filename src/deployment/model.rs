@@ -440,7 +440,10 @@ pub enum Authority {
 #[serde(deny_unknown_fields)]
 pub struct SecretGrant {
     pub path: String,
+    #[serde(default)]
     pub services: Vec<String>,
+    #[serde(default)]
+    pub jobs: Vec<String>,
     #[serde(default)]
     pub environment_file: bool,
     #[serde(default)]
