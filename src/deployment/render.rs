@@ -249,19 +249,18 @@ pub fn caddy(
                             encode(&mut out, &proxy.encode, &proxy.encode_content_types);
                         }
                         writeln!(out, "reverse_proxy {} {{", token(upstream)).unwrap();
-                        if let Some(proxy) = &route.proxy {
-                            if proxy.dial_timeout_seconds.is_some()
-                                || proxy.response_header_timeout_seconds.is_some()
-                            {
-                                out.push_str("transport http {\n");
-                                if let Some(seconds) = proxy.dial_timeout_seconds {
-                                    writeln!(out, "dial_timeout {seconds}s").unwrap();
-                                }
-                                if let Some(seconds) = proxy.response_header_timeout_seconds {
-                                    writeln!(out, "response_header_timeout {seconds}s").unwrap();
-                                }
-                                out.push_str("}\n");
+                        if let Some(proxy) = &route.proxy
+                            && (proxy.dial_timeout_seconds.is_some()
+                                || proxy.response_header_timeout_seconds.is_some())
+                        {
+                            out.push_str("transport http {\n");
+                            if let Some(seconds) = proxy.dial_timeout_seconds {
+                                writeln!(out, "dial_timeout {seconds}s").unwrap();
                             }
+                            if let Some(seconds) = proxy.response_header_timeout_seconds {
+                                writeln!(out, "response_header_timeout {seconds}s").unwrap();
+                            }
+                            out.push_str("}\n");
                         }
                         out.push_str("}\n");
                     }
