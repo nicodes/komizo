@@ -265,3 +265,184 @@ pub fn health(application: &str, instance: &str, service: &str) -> Result<()> {
         0o600,
     )
 }
+
+pub fn logs(application: &str, instance: &str, service: &str) -> Result<Value> {
+    ensure!(
+        unsafe { libc::geteuid() } == 0,
+        "log access requires the owner identity"
+    );
+    ensure!(
+        name(application) && name(instance) && name(service),
+        "invalid log scope"
+    );
+    let store = Store::new(Path::new(STATE).into())?;
+    let installed = store
+        .installed(application, instance)?
+        .ok_or_else(|| anyhow!("instance is not installed"))?;
+    let document = store.release(&installed.release_digest)?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let engine = Engine { deadline };
+    let id = if document.release.workload.jobs.contains_key(service) {
+        jobs::log_id(&store, &document, &installed, service, deadline)?
+    } else {
+        let record = installed
+            .resources
+            .containers
+            .get(service)
+            .ok_or_else(|| anyhow!("service has no protected creation record"))?;
+        system::verify_unit(
+            &store,
+            &Path::new(system::QUADLETS).join(format!(
+                "{}-{service}.container",
+                units::namespace(application, instance)?
+            )),
+            application,
+            instance,
+            &record.unit_sha256,
+        )?;
+        engine
+            .owned_container(record, application, instance, service)?
+            .and_then(|value| value["Id"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| record.id.clone())
+    };
+    ensure!(
+        hex(&id, 64),
+        "log selection has no exact recorded container ID"
+    );
+    let mut command = std::process::Command::new("/usr/bin/journalctl");
+    command
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("LANG", "C.UTF-8")
+        .args(["--quiet", "--no-pager", "--output=cat", "--lines=200"])
+        .arg(format!("CONTAINER_ID_FULL={id}"));
+    let result = crate::process::capture(&mut command, None, 256 << 10, deadline, || false)?;
+    ensure!(
+        result.status.success(),
+        "bounded native log observation failed"
+    );
+    let text = redact(
+        &installed,
+        &document,
+        &String::from_utf8_lossy(&result.stdout),
+    )?;
+    Ok(
+        json!({"kind":"komizo.logs","version":1,"application":application,"instance":instance,"service":service,"release_digest":installed.release_digest,"container_id":id,"text":text}),
+    )
+}
+
+fn redact(installed: &Installed, document: &ReleaseDocument, text: &str) -> Result<String> {
+    let environment = document
+        .release
+        .workload
+        .services
+        .values()
+        .chain(document.release.workload.jobs.values())
+        .flat_map(|c| c.environment_files.iter())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut values = std::collections::BTreeSet::new();
+    for (alias, snapshot) in &installed.secret_snapshots {
+        let body = store::read_protected(Path::new(&snapshot.path), 128 << 10)?;
+        ensure!(
+            document_digest(&body) == snapshot.sha256,
+            "installed secret identity changed during log observation"
+        );
+        if let Ok(body) = std::str::from_utf8(&body) {
+            if environment.contains(alias) {
+                for line in body.lines().filter(|l| !l.starts_with('#')) {
+                    if let Some((_, value)) = line.split_once('=')
+                        && !value.is_empty()
+                    {
+                        values.insert(value.to_owned());
+                    }
+                }
+            } else if !body.is_empty() {
+                values.insert(body.to_owned());
+            }
+        }
+    }
+    let mut values = values.into_iter().collect::<Vec<_>>();
+    values.sort_by_key(|v| std::cmp::Reverse(v.len()));
+    ensure!(
+        values.len() <= 1024,
+        "secret redaction inventory exceeds log observation bounds"
+    );
+    let pattern = values
+        .iter()
+        .map(|s| regex::escape(s))
+        .collect::<Vec<_>>()
+        .join("|");
+    ensure!(
+        pattern.len() <= 128 << 10,
+        "secret redaction pattern exceeds log observation bounds"
+    );
+    let mut text = if pattern.is_empty() {
+        text.to_owned()
+    } else {
+        regex::RegexBuilder::new(&pattern)
+            .size_limit(4 << 20)
+            .dfa_size_limit(4 << 20)
+            .build()?
+            .replace_all(text, "[redacted]")
+            .into_owned()
+    };
+    if text.len() > 256 << 10 {
+        let mut end = 256 << 10;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+        text.push_str("\n[truncated]");
+    }
+    Ok(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn logs_remain_untrusted_text_and_secret_redaction_is_bounded_and_checks_exact_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("runtime.env");
+        let body = b"PRIVATE_TOKEN=private-token-value\nSECOND_TOKEN=private-token\n";
+        store::atomic(&path, body, 0o600).unwrap();
+        let document = read_release(include_bytes!(
+            "../../tests/fixtures/deployment/release.json"
+        ))
+        .unwrap();
+        let mut installed = Installed {
+            kind: "komizo.installed".into(),
+            version: 1,
+            application: document.release.application.clone(),
+            instance: "production".into(),
+            release_digest: document.digest.clone(),
+            operation_id: "1".repeat(32),
+            desired_running: true,
+            expires_at: None,
+            resources: store::Resources::default(),
+            secret_snapshots: Default::default(),
+        };
+        installed.secret_snapshots.insert(
+            "runtime".into(),
+            super::super::secrets::Snapshot {
+                generation: "2".repeat(32),
+                path: path.to_str().unwrap().into(),
+                sha256: document_digest(body),
+            },
+        );
+        let forged = "{\"kind\":\"komizo.operation\",\"ok\":true}";
+        let value = redact(
+            &installed,
+            &document,
+            &format!("{forged}\nprivate-token-value private-token"),
+        )
+        .unwrap();
+        assert!(value.starts_with(forged));
+        assert!(!value.contains("private-token"));
+        assert!(value.ends_with("[redacted] [redacted]"));
+        let value = redact(&installed, &document, &"private-token-value".repeat(50000)).unwrap();
+        assert!(value.len() <= (256 << 10) + 20);
+        store::atomic(&path, b"PRIVATE_TOKEN=changed\n", 0o600).unwrap();
+        assert!(redact(&installed, &document, "anything").is_err());
+    }
+}

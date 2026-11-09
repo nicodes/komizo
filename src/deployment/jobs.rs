@@ -522,6 +522,41 @@ pub fn reconcile(
     reconcile_with_evidence(store, document, installed, operation_id, deadline, false)
 }
 
+pub fn log_id(
+    store: &Store,
+    document: &ReleaseDocument,
+    installed: &Installed,
+    job: &str,
+    deadline: std::time::Instant,
+) -> Result<String> {
+    let value = document
+        .release
+        .workload
+        .jobs
+        .get(job)
+        .ok_or_else(|| anyhow!("job is not installed"))?;
+    let receipt = read(
+        store,
+        &installed.application,
+        &installed.instance,
+        &identity(document, job, installed)?,
+    )?
+    .ok_or_else(|| anyhow!("job has no recorded execution"))?;
+    let engine = super::engine::Engine { deadline };
+    if engine.exists("container", &receipt.container_name)? {
+        let Artifact::Image { config_digest, .. } = &document.release.artifacts[&value.artifact]
+        else {
+            return Err(anyhow!("job image identity missing"));
+        };
+        owned(&engine, &receipt, value, installed, config_digest)?;
+    }
+    ensure!(
+        hex(&receipt.container_id, 64),
+        "job has no recorded native ID"
+    );
+    Ok(receipt.container_id)
+}
+
 /// The caller must independently authenticate root-owned data recovery evidence
 /// before setting allow_failed. This resolves the operation, never the job cache.
 pub fn reconcile_with_evidence(
