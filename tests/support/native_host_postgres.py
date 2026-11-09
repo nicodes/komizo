@@ -66,6 +66,30 @@ def query(sql, instance='production'):
         '--no-psqlrc','--tuples-only','--no-align','--set=ON_ERROR_STOP=1','--command',sql]).stdout.strip()
 
 
+def diagnostic():
+    """Collect only bounded synthetic process/health/resource facts, never Env."""
+    evidence={}
+    try:
+        record=runtime.installed('pgbox')['resources']['containers']['postgres']
+        actual=runtime.container(record);identity=actual['Id']
+        evidence['state']=actual['State'];evidence['exec_sessions']=actual.get('ExecIDs')
+        evidence['processes']=run(['podman','--remote=false','top',identity,'hpid','pid','ppid','args'],ok=False,timeout=5).stdout.decode(errors='replace')[:16384]
+        pid=actual['State']['Pid'];group=Path('/proc/'+str(pid)+'/cgroup').read_text().strip()
+        evidence['cgroup']=group
+        if group.startswith('0::/'):
+            base=Path('/sys/fs/cgroup')/group[4:]
+            evidence['events']={name:(base/name).read_text()[:4096] for name in ['memory.current','memory.events','memory.stat','pids.current','pids.events','cpu.stat'] if (base/name).is_file()}
+        for name,command in [
+            ('activity',['psql','-h','/tmp','-U','fixture','-d','postgres','--no-psqlrc','--tuples-only','--no-align','--command',"SELECT pid,usename,application_name,client_addr,state,wait_event_type,wait_event FROM pg_stat_activity"]),
+            ('sockets',['sh','-c','cat /proc/net/tcp; cat /proc/net/unix'])]:
+            try:
+                probe=run(['timeout','--signal=TERM','--kill-after=1s','4s','podman','--remote=false','exec',identity,*command],ok=False,timeout=6)
+                evidence[name]={'code':probe.returncode,'stdout':probe.stdout.decode(errors='replace')[:8192],'stderr':probe.stderr.decode(errors='replace')[:1024]}
+            except (OSError,ValueError,__import__('subprocess').SubprocessError) as error:evidence[name]={'error':type(error).__name__}
+    except (OSError,ValueError,KeyError,__import__('subprocess').SubprocessError) as error:evidence['collector_error']=type(error).__name__
+    write(ROOT/'postgres-diagnostic.json',evidence)
+
+
 def prepare(report):
     with Path('/etc/hosts').open('a') as output:output.write('127.0.0.1 pgbox.localhost\n')
     artifact,user=postgres_artifact();password=secrets.token_hex(24)
@@ -92,6 +116,7 @@ def prepare(report):
     _,receipt=runtime.deploy(release,seconds=120)
     write(ROOT/'timings.json',{'deployment_seconds':time.monotonic()-started})
     if not receipt.get('ok') or query('SELECT value FROM evidence')!=b'retained native row':
+        diagnostic()
         raise ValueError('real PostgreSQL native DAG did not retain its initialized row: '+json.dumps(receipt))
     runtime.fetch('pgbox',receipt['release_digest'])
     role=query("SELECT rolpassword FROM pg_authid WHERE rolname='fixture'")
