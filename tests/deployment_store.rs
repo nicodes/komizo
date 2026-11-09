@@ -40,6 +40,36 @@ fn interrupted_atomic_writes_do_not_become_operations_and_committed_ids_cannot_b
     fs::write(store.root.join("operations/unrecognized"), b"unknown").unwrap();
     assert!(store.operation_ids().is_err());
 }
+
+#[test]
+fn concurrent_atomic_observation_keeps_complete_records_and_refuses_hardlinks() {
+    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+    let path = dir.path().join("observed.json");
+    let first = b"{\"phase\":\"staging\"}";
+    let second = b"{\"phase\":\"needs_reconciliation\"}";
+    atomic(&path, first, 0o600).unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let writer_path = path.clone();
+    let writer_barrier = barrier.clone();
+    let writer = std::thread::spawn(move || {
+        writer_barrier.wait();
+        for i in 0..256 {
+            atomic(&writer_path, if i % 2 == 0 { second } else { first }, 0o600).unwrap();
+        }
+    });
+    barrier.wait();
+    for _ in 0..2048 {
+        let body = read_protected(&path, 4096).unwrap();
+        assert!(body == first || body == second);
+    }
+    writer.join().unwrap();
+    let linked = dir.path().join("linked");
+    fs::hard_link(&path, &linked).unwrap();
+    assert!(read_protected(&path, 4096).is_err());
+    assert!(read_protected(&linked, 4096).is_err());
+    fs::remove_file(linked).unwrap();
+    assert_eq!(read_protected(&path, 4096).unwrap(), first);
+}
 fn operation() -> Operation {
     Operation {
         kind: "komizo.operation".into(),

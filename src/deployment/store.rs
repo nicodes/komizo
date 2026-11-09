@@ -412,20 +412,28 @@ pub fn atomic(path: &Path, body: &[u8], mode: u32) -> Result<()> {
 }
 
 pub fn open_protected(path: &Path, maximum: u64) -> Result<File> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)?;
-    let metadata = file.metadata()?;
-    ensure!(
-        metadata.is_file()
-            && metadata.uid() == unsafe { libc::geteuid() }
-            && metadata.mode() & 0o022 == 0
-            && metadata.nlink() == 1
-            && metadata.len() <= maximum,
-        "unsafe or oversized protected file"
-    );
-    Ok(file)
+    for _ in 0..16 {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)?;
+        let metadata = file.metadata()?;
+        ensure!(
+            metadata.is_file()
+                && metadata.uid() == unsafe { libc::geteuid() }
+                && metadata.mode() & 0o022 == 0
+                && metadata.nlink() <= 1
+                && metadata.len() <= maximum,
+            "unsafe or oversized protected file"
+        );
+        if metadata.nlink() == 1 {
+            return Ok(file);
+        }
+        // An atomic replacement can unlink the opened old inode before fstat.
+        // Reopen the named successor and apply every check again; never accept
+        // an unlinked descriptor or a multiply linked protected file.
+    }
+    Err(anyhow!("protected file was repeatedly replaced while opening"))
 }
 
 pub fn read_protected(path: &Path, maximum: usize) -> Result<Vec<u8>> {
