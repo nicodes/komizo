@@ -54,7 +54,7 @@ impl Engine {
             )
             .env("HOME", "/root")
             .env("LANG", "C.UTF-8")
-            .args(["--signal=TERM", "--kill-after=5s"])
+            .arg("--signal=KILL")
             .arg(format!("{:.3}s", remaining.as_secs_f64().max(0.001)))
             .arg("/usr/bin/podman")
             .arg("--remote=false")

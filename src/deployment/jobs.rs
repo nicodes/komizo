@@ -22,6 +22,7 @@ pub struct Receipt {
     pub container_name: String,
     pub container_id: String,
     pub ownership: String,
+    pub native_timeout_seconds: u32,
     pub phase: String,
     pub exit_code: Option<i32>,
 }
@@ -117,6 +118,7 @@ fn validate(receipt: &Receipt) -> Result<()> {
             && hex(&receipt.operation_id, 32)
             && digest(&receipt.release_digest)
             && hex(&receipt.ownership, 32)
+            && (1..=1500).contains(&receipt.native_timeout_seconds)
             && receipt.container_name == format!("{namespace}-job-{}", &receipt.identity[7..27])
             && (receipt.container_id.is_empty() || hex(&receipt.container_id, 64))
             && match receipt.phase.as_str() {
@@ -162,6 +164,7 @@ pub fn completed(
 
 trait Runtime {
     fn run(&self, arguments: &[&str]) -> Result<Vec<u8>>;
+    fn start(&self, id: &str, deadline: std::time::Instant) -> Result<()>;
     fn exists(&self, kind: &str, name: &str) -> Result<bool>;
     fn inspect(&self, kind: &str, name: &str) -> Result<serde_json::Value>;
     fn retained(&self, kind: &str, record: &store::ObjectRecord) -> Result<()>;
@@ -169,6 +172,13 @@ trait Runtime {
 impl Runtime for super::engine::Engine {
     fn run(&self, arguments: &[&str]) -> Result<Vec<u8>> {
         self.run(arguments)
+    }
+    fn start(&self, id: &str, deadline: std::time::Instant) -> Result<()> {
+        Self {
+            deadline: deadline.min(self.deadline),
+        }
+        .run(&["start", id])?;
+        Ok(())
     }
     fn exists(&self, kind: &str, name: &str) -> Result<bool> {
         self.exists(kind, name)
@@ -203,7 +213,8 @@ fn owned(
             && labels["io.komizo.service"] == receipt.job
             && labels["io.komizo.release"] == receipt.release_digest
             && labels["io.komizo.ownership"] == receipt.ownership
-            && labels["io.komizo.job.identity"] == receipt.identity,
+            && labels["io.komizo.job.identity"] == receipt.identity
+            && actual["Config"]["Timeout"] == receipt.native_timeout_seconds,
         "one-shot container differs from its durable ownership"
     );
     let mounts = actual["Mounts"]
@@ -421,6 +432,14 @@ fn run_with(
         ));
     }
     let (environment_files, secrets) = environment(store, job, value, installed)?;
+    // conmon enforces this lifetime even when the controller dies. Reserve
+    // time for native creation/start and its second-rounded timer, then refuse
+    // a delayed start rather than allowing effects beyond the admitted budget.
+    let timeout = native_timeout(
+        deadline,
+        std::time::Instant::now(),
+        value.timeout_seconds.unwrap(),
+    )?;
     let mut receipt = Receipt {
         kind: "komizo.job".into(),
         version: 1,
@@ -437,6 +456,7 @@ fn run_with(
         ),
         container_id: String::new(),
         ownership: store::identity()?,
+        native_timeout_seconds: timeout,
         phase: "starting".into(),
         exit_code: None,
     };
@@ -460,7 +480,7 @@ fn run_with(
         "--name".into(),
         receipt.container_name.clone(),
         "--timeout".into(),
-        value.timeout_seconds.unwrap().to_string(),
+        timeout.to_string(),
         "--label".into(),
         format!("io.komizo.job.identity={identity}"),
     ];
@@ -478,7 +498,12 @@ fn run_with(
         receipt.container_id = id.to_owned();
         save(store, &receipt)?;
         owned(runtime, &receipt, value, installed, config_digest)?;
-        runtime.run(&["start", &receipt.container_id])?;
+        let start_deadline = deadline - std::time::Duration::from_secs(u64::from(timeout) + 2);
+        ensure!(
+            std::time::Instant::now() < start_deadline,
+            "job preparation exhausted its native lifetime reservation; start refused"
+        );
+        runtime.start(&receipt.container_id, start_deadline)?;
         receipt.phase = "running".into();
         save(store, &receipt)?;
         let output = runtime.run(&[
@@ -515,6 +540,20 @@ fn run_with(
         return Err(error);
     }
     Ok(receipt)
+}
+
+fn native_timeout(
+    deadline: std::time::Instant,
+    now: std::time::Instant,
+    declared: u32,
+) -> Result<u32> {
+    let remaining = deadline.saturating_duration_since(now).as_secs();
+    let timeout = remaining.saturating_sub(4).min(u64::from(declared));
+    ensure!(
+        timeout > 0,
+        "job deadline cannot contain native startup and lifetime bounds"
+    );
+    Ok(timeout as u32)
 }
 
 /// Explicit owner recovery may prove an interrupted exit, but never starts,
@@ -873,6 +912,7 @@ mod tests {
         exit: i32,
         corrupt_owner: bool,
         corrupt_mount: bool,
+        corrupt_timeout: bool,
         cleanup_operation: Option<String>,
     }
     impl<'a> Fake<'a> {
@@ -885,11 +925,20 @@ mod tests {
                 exit: 0,
                 corrupt_owner: false,
                 corrupt_mount: false,
+                corrupt_timeout: false,
                 cleanup_operation: None,
             }
         }
     }
     impl Runtime for Fake<'_> {
+        fn start(&self, id: &str, deadline: Instant) -> Result<()> {
+            ensure!(
+                Instant::now() < deadline,
+                "synthetic start deadline expired"
+            );
+            self.run(&["start", id])?;
+            Ok(())
+        }
         fn run(&self, args: &[&str]) -> Result<Vec<u8>> {
             self.calls
                 .borrow_mut()
@@ -921,12 +970,15 @@ mod tests {
                         labels.insert("io.komizo.ownership".into(), json!("f".repeat(32)));
                     }
                     let mut value = json!({"Id":"d".repeat(64),"Name":receipt.container_name,
-                        "Image":format!("sha256:{}","c".repeat(64)),"Config":{"Labels":labels},
+                        "Image":format!("sha256:{}","c".repeat(64)),"Config":{"Labels":labels,"Timeout":receipt.native_timeout_seconds},
                         "AppArmorProfile":super::super::bootstrap::WORKLOAD_PROFILE,
                         "State":{"Running":false,"Status":"configured","ExitCode":0,"FinishedAt":"0001-01-01T00:00:00Z"},
                         "Mounts":[{"Type":"volume","Name":"kmz-owned-data","Destination":"/var/lib/app","RW":true}]});
                     if self.corrupt_mount {
                         value["Mounts"][0]["Name"] = json!("foreign-data");
+                    }
+                    if self.corrupt_timeout {
+                        value["Config"]["Timeout"] = json!(1500);
                     }
                     *self.container.borrow_mut() = Some(value);
                     Ok(format!("{}\n", "d".repeat(64)).into_bytes())
@@ -1141,6 +1193,29 @@ mod tests {
             assert_eq!(receipt.container_id, "d".repeat(64));
             assert_eq!(runtime.calls.borrow().len(), 1);
         }
+    }
+    #[test]
+    fn native_lifetime_is_bounded_by_remaining_budget_and_verified_before_start() {
+        let now = Instant::now();
+        assert_eq!(
+            native_timeout(now + Duration::from_secs(8), now, 90).unwrap(),
+            4
+        );
+        assert_eq!(
+            native_timeout(now + Duration::from_secs(100), now, 30).unwrap(),
+            30
+        );
+        for seconds in 0..=4 {
+            assert!(native_timeout(now + Duration::from_secs(seconds), now, 90).is_err());
+        }
+        let fixture = Fixture::new();
+        let mut runtime = Fake::new(&fixture);
+        runtime.corrupt_timeout = true;
+        assert!(fixture.run(&runtime).is_err());
+        assert_eq!(fixture.receipt().unwrap().phase, "uncertain");
+        assert_eq!(runtime.calls.borrow().len(), 1);
+        assert_eq!(runtime.calls.borrow()[0][0], "create");
+        assert!(fixture.receipt().unwrap().native_timeout_seconds < 30);
     }
     #[test]
     fn cache_identity_binds_job_code_scope_secret_bytes_generation_and_retained_objects() {

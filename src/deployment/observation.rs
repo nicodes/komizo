@@ -332,11 +332,20 @@ pub fn logs(application: &str, instance: &str, service: &str) -> Result<Value> {
         result.status.success(),
         "bounded native log observation failed"
     );
-    let text = redact(
+    // The capture retains a byte tail. It may begin in the middle of a UTF-8
+    // character or a secret, so protect that boundary before trimming lines.
+    let bytes = result.stdout.as_slice();
+    let first = bytes
+        .iter()
+        .position(|b| b & 0xc0 != 0x80)
+        .unwrap_or(bytes.len());
+    let text = redact_all(
         &installed,
         &document,
-        &String::from_utf8_lossy(&result.stdout),
+        &String::from_utf8_lossy(&bytes[first..]),
+        bytes.len() == LOG_BYTES,
     )?;
+    let text = log_tail(&text);
     Ok(
         json!({"kind":"komizo.logs","version":1,"application":application,"instance":instance,"service":service,"release_digest":installed.release_digest,"container_id":id,"text":text}),
     )
@@ -346,6 +355,42 @@ pub(crate) fn redact(
     installed: &Installed,
     document: &ReleaseDocument,
     text: &str,
+) -> Result<String> {
+    let mut text = redact_all(installed, document, text, false)?;
+    if text.len() > LOG_BYTES {
+        const MARKER: &str = "\n[truncated]";
+        let mut end = LOG_BYTES - MARKER.len();
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+        text.push_str(MARKER);
+    }
+    Ok(text)
+}
+
+const LOG_BYTES: usize = 256 << 10;
+const LOG_LINES: usize = 200;
+
+fn log_tail(text: &str) -> &str {
+    let lines = text
+        .split_inclusive('\n')
+        .rev()
+        .take(LOG_LINES)
+        .map(str::len)
+        .sum::<usize>();
+    let mut start = (text.len() - lines).max(text.len().saturating_sub(LOG_BYTES));
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    &text[start..]
+}
+
+fn redact_all(
+    installed: &Installed,
+    document: &ReleaseDocument,
+    text: &str,
+    truncated_prefix: bool,
 ) -> Result<String> {
     let environment = document
         .release
@@ -391,25 +436,62 @@ pub(crate) fn redact(
         pattern.len() <= 128 << 10,
         "secret redaction pattern exceeds log observation bounds"
     );
-    let mut text = if pattern.is_empty() {
+    // Find any secret suffix exposed at the beginning of a truncated capture.
+    // KMP keeps this linear in the bounded secret inventory, including repeated
+    // characters; trying every suffix would be quadratic for large secrets.
+    let prefix = if truncated_prefix {
+        values
+            .iter()
+            .map(|s| secret_suffix_prefix(s, text))
+            .max()
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    let text = if prefix == 0 {
         text.to_owned()
+    } else {
+        format!("[redacted]{}", &text[prefix..])
+    };
+    let text = if pattern.is_empty() {
+        text
     } else {
         regex::RegexBuilder::new(&pattern)
             .size_limit(4 << 20)
             .dfa_size_limit(4 << 20)
             .build()?
-            .replace_all(text, "[redacted]")
+            .replace_all(&text, "[redacted]")
             .into_owned()
     };
-    if text.len() > 256 << 10 {
-        let mut end = 256 << 10;
-        while !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        text.truncate(end);
-        text.push_str("\n[truncated]");
-    }
     Ok(text)
+}
+
+fn secret_suffix_prefix(secret: &str, text: &str) -> usize {
+    let pattern = &text.as_bytes()[..text.len().min(secret.len())];
+    if pattern.is_empty() {
+        return 0;
+    }
+    let mut failure = vec![0; pattern.len()];
+    for i in 1..pattern.len() {
+        let mut length = failure[i - 1];
+        while length > 0 && pattern[i] != pattern[length] {
+            length = failure[length - 1];
+        }
+        if pattern[i] == pattern[length] {
+            length += 1;
+        }
+        failure[i] = length;
+    }
+    let mut length = 0;
+    for byte in secret.bytes() {
+        while length > 0 && (length == pattern.len() || pattern[length] != byte) {
+            length = failure[length - 1];
+        }
+        if pattern[length] == byte {
+            length += 1;
+        }
+    }
+    length
 }
 
 #[cfg(test)]
@@ -457,8 +539,58 @@ mod tests {
         assert!(!value.contains("private-token"));
         assert!(value.ends_with("[redacted] [redacted]"));
         let value = redact(&installed, &document, &"private-token-value".repeat(50000)).unwrap();
-        assert!(value.len() <= (256 << 10) + 20);
+        assert!(value.len() <= LOG_BYTES);
+        let value = redact_all(&installed, &document, "token-value\nnext", true).unwrap();
+        assert_eq!(value, "[redacted]\nnext");
+        let opaque = "certificate-start\nprivate-multiline-content\ncertificate-end";
+        let opaque_path = directory.path().join("certificate");
+        store::atomic(&opaque_path, opaque.as_bytes(), 0o600).unwrap();
+        installed.secret_snapshots.insert(
+            "certificate".into(),
+            super::super::secrets::Snapshot {
+                generation: "3".repeat(32),
+                path: opaque_path.to_str().unwrap().into(),
+                sha256: document_digest(opaque.as_bytes()),
+            },
+        );
+        let log = format!("{opaque}\n{}", "ordinary\n".repeat(199));
+        let value = redact_all(&installed, &document, &log, false).unwrap();
+        let value = log_tail(&value);
+        assert_eq!(value.lines().count(), LOG_LINES);
+        assert!(value.starts_with("[redacted]\n"));
+        assert!(!value.contains("private-multiline-content"));
         store::atomic(&path, b"PRIVATE_TOKEN=changed\n", 0o600).unwrap();
         assert!(redact(&installed, &document, "anything").is_err());
+    }
+
+    #[test]
+    fn rendered_log_tail_bounds_text_lines_bytes_and_utf8() {
+        let text = (0..1000).map(|n| format!("line {n}\n")).collect::<String>();
+        let tail = log_tail(&text);
+        assert_eq!(tail.lines().count(), LOG_LINES);
+        assert!(tail.starts_with("line 800\n"));
+        assert!(tail.ends_with("line 999\n"));
+        let huge = "🙂".repeat(LOG_BYTES);
+        let tail = log_tail(&huge);
+        assert!(tail.len() <= LOG_BYTES);
+        assert!(tail.ends_with('🙂'));
+        assert_eq!(log_tail(""), "");
+        assert_eq!(log_tail("one\ntwo"), "one\ntwo");
+    }
+
+    #[test]
+    fn truncated_capture_does_not_expose_a_secret_suffix() {
+        assert_eq!(secret_suffix_prefix("credential-secret", "secret\nlog"), 6);
+        assert_eq!(secret_suffix_prefix("credential-secret", "ordinary log"), 0);
+        assert_eq!(secret_suffix_prefix("secret", "secret"), 6);
+        assert_eq!(secret_suffix_prefix("secret", ""), 0);
+        assert_eq!(
+            secret_suffix_prefix("prefix\n🙂secret", "🙂secret\nend"),
+            "🙂secret".len()
+        );
+        assert_eq!(
+            secret_suffix_prefix(&"a".repeat(128 << 10), &"a".repeat(256 << 10)),
+            128 << 10
+        );
     }
 }
