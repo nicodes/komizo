@@ -132,10 +132,10 @@ commands = {
     'cloud_init': ['cloud-init', 'status', '--long', '--format=json'],
     'pending_jobs': ['systemctl', 'list-jobs', '--no-pager', '--full'],
     'system_state': ['systemctl', 'is-system-running'],
-    'boot_units': ['systemctl', 'show', 'cloud-init-local.service', 'cloud-init.service',
+    'boot_units': ['systemctl', 'show', 'cloud-init-main.service', 'cloud-init-local.service', 'cloud-init-network.service',
         'cloud-config.service', 'cloud-final.service', 'multi-user.target',
         '--property=Id,ActiveState,SubState,Result,Job'],
-    'cloud_journal': ['journalctl', '-b', '-u', 'cloud-init-local', '-u', 'cloud-init',
+    'cloud_journal': ['journalctl', '-b', '-u', 'cloud-init-main', '-u', 'cloud-init-local', '-u', 'cloud-init-network',
         '-u', 'cloud-config', '-u', 'cloud-final', '-n', '120', '--no-pager', '-o', 'short-monotonic'],
 }
 record = {'version': 1, 'boot_id': pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip(), 'observations': {}}
