@@ -214,7 +214,9 @@ def evidence():
         operations.append(row)
     containers=[]
     for item in json.loads(run(['podman','--remote=false','ps','--all','--format=json']).stdout)[:32]:
-        selected=json.loads(run(['podman','--remote=false','container','inspect',item.get('Id') or item.get('ID')]).stdout)[0]
+        identity=item.get('Id') or item.get('ID') or item.get('id')
+        if not isinstance(identity,str) or not __import__('re').fullmatch('[a-f0-9]{64}',identity):continue
+        selected=json.loads(run(['podman','--remote=false','container','inspect',identity]).stdout)[0]
         labels=selected.get('Config',{}).get('Labels',{}) or {}
         if not labels.get('io.komizo.application'):continue
         pid=selected['State']['Pid'];label=Path('/proc/'+str(pid)+'/attr/current')
