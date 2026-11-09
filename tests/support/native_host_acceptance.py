@@ -52,7 +52,7 @@ def capacity():
 
 def policy():
     return {'kind':'komizo.policy','version':1,'application':'mailroom','authority':{'kind':'owner'},
-        'artifact_prefixes':['registry.fixture.test:5443/example/mailroom-'], 'hostnames':['mailroom.localhost'],
+        'artifact_prefixes':['registry.fixture.test:5443/example/mailroom'], 'hostnames':['mailroom.localhost'],
         'readiness':[{'url':'https://mailroom.localhost/','status':200}],
         'limits':{'memory_bytes':256*MiB,'memory_swap_bytes':256*MiB,'milli_cpus':500,'pids':64}}
 
@@ -134,6 +134,9 @@ def prepare():
         'checks':{'supported_host':'passed','root_peer':'passed','forged_owner_peer':'passed','proxy_uid':'passed',
             'proxy_mount_write_refusal':'passed','secret_isolation':'passed','kernel_limits':'passed','unsafe_filesystem':'passed','idempotent_install':'passed'}}
     write(ROOT/'report.json',report)
+
+
+def runtime():
     import fixture_runtime
     fixture_runtime.prepare()
 
@@ -152,4 +155,4 @@ def verify_reboot():
 
 
 if __name__=='__main__':
-    {'prepare':prepare,'verify-reboot':verify_reboot}[sys.argv[1]]()
+    {'bootstrap':prepare,'runtime':runtime,'verify-reboot':verify_reboot}[sys.argv[1]]()

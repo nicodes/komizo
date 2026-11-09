@@ -53,7 +53,7 @@ def fetch(app, release, path='/', *, headers=None):
 
 def host_policy(app):
     value={'kind':'komizo.policy','version':1,'application':app,'authority':{'kind':'owner'},
-        'artifact_prefixes':['registry.fixture.test:5443/example/'+app+'-'],'hostnames':[app+'.localhost'],
+        'artifact_prefixes':['registry.fixture.test:5443/example/'+app],'hostnames':[app+'.localhost'],
         'readiness':[{'url':'https://'+app+'.localhost/','status':200}],
         'limits':limits(96,500,96),'max_image_bytes':64*MiB,'max_asset_bytes':MiB,'max_asset_file_bytes':MiB,
         'startup_memory_bytes':32*MiB}
@@ -93,7 +93,11 @@ def release(app,revision,*,dynamic=False,unsafe=False,job_command=None,graph=Tru
 
 
 def deploy(document,*,seconds=180):
-    body=request(document['application'],'deploy',registry.digest(registry.canonical(document)),release=document,timeout_seconds=seconds)
+    identity=registry.digest(registry.canonical(document))
+    file=ROOT/('candidate-'+document['application']+'.json');write(file,document)
+    validated=json.loads(run([BINARY,'release','validate',str(file)]).stdout)
+    if validated!={'ok':True,'release_digest':identity}:raise ValueError('offline release validation changed exact candidate identity')
+    body=request(document['application'],'deploy',identity,release=document,timeout_seconds=seconds)
     result=submit(body)
     return body,result
 

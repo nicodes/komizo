@@ -182,9 +182,11 @@ def main():
                 guest.copy(ROOT / 'tests/support/native_host_postgres.py', '/root/native-host/fixture_postgres.py')
                 guest.copy(ROOT / 'tests/support/native_host_preview.py', '/root/native-host/fixture_preview.py')
                 guest.copy(FIXTURES / 'baseline.json', '/root/native-host/baseline.json')
-                print('Running native bootstrap, authority and release effects',flush=True)
-                guest.command('chmod 755 /usr/local /usr/local/bin /usr/local/bin/komizo-box /usr/local/bin/caddy; chmod 600 /root/native-host/submission.pub; python3 /root/native-host/acceptance.py prepare', timeout=600)
+                print('Running native bootstrap and authority boundaries',flush=True)
+                guest.command('chmod 755 /usr/local /usr/local/bin /usr/local/bin/komizo-box /usr/local/bin/caddy; chmod 600 /root/native-host/submission.pub; python3 /root/native-host/acceptance.py bootstrap', timeout=300)
                 guest.submission_boundary(submit)
+                print('Running exact native workload effects and protected recovery fixtures',flush=True)
+                guest.command('python3 /root/native-host/acceptance.py runtime', timeout=600)
                 before = guest.command('cat /proc/sys/kernel/random/boot_id', capture_output=True).stdout.strip()
                 print('Rebooting the real guest with the artifact registry offline',flush=True)
                 guest.command('systemctl reboot', timeout=15)
@@ -211,6 +213,10 @@ def main():
                         (args.output / 'journal.log').write_bytes(evidence)
                         status=guest.command('/usr/local/bin/komizo-box status',timeout=30,capture_output=True).stdout
                         (args.output/'status.json').write_bytes(status)
+                        if not (args.output/'report.json').exists():
+                            report=guest.command('cat /root/native-host/report.json',timeout=10,capture_output=True).stdout
+                            partial=json.loads(report);partial['source']={'revision':os.environ.get('NATIVE_HOST_SOURCE'),'binary_sha256':binary_sha}
+                            (args.output/'report.json').write_text(json.dumps(partial,sort_keys=True)+'\n')
                     except (OSError, subprocess.SubprocessError):
                         pass
                     os.killpg(process.pid, signal.SIGTERM)
