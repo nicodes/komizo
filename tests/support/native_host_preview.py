@@ -69,7 +69,7 @@ def prepare(report):
     namespace='kmz-'+hashlib.sha256(b'pgbox\0pr-7').hexdigest()[:20]
     foreign=namespace+'-foreign';run(['podman','--remote=false','volume','create',foreign])
     report['preview']={'instance':instance,'release_digest':identity,'expires_at':value['expires_at'],
-        'volume':preview_volume['name'],'network_names':[record['name'] for record in value['resources']['networks'].values()],
+        'volume':preview_volume['name'],'volume_record':preview_volume,'network_names':[record['name'] for record in value['resources']['networks'].values()],
         'production_volume':production_volume['name'],'foreign_volume':foreign}
     report['checks'].update({'preview_full_postgresql_namespace':'passed','preview_data_independence':'passed','preview_credential_independence':'passed',
         'preview_protected_readiness':'passed','preview_instance_limit_refused':'passed','preview_hostname_authority':'passed',
@@ -83,7 +83,7 @@ def expire(report):
         time.sleep(1)
     run([BINARY,'expire'],timeout=60)
     value=installed(preview['instance'])
-    if value['desired_running'] or value['expires_at'] is not None or value['resources']['volumes']:
+    if not value.get('removed') or value['desired_running'] or value['expires_at'] is not None or value['resources']['volumes']:
         raise ValueError('preview expiry did not remove its recorded ephemeral data')
     if run(['podman','--remote=false','volume','inspect',preview['volume']],ok=False).returncode==0:
         raise ValueError('preview expiry retained an ephemeral owned volume')
@@ -95,3 +95,35 @@ def expire(report):
     run(['podman','--remote=false','volume','rm',preview['foreign_volume']])
     report['checks'].update({'preview_real_ttl_expiry':'passed','preview_owned_cleanup':'passed',
         'preview_cleanup_preserves_foreign_resources':'passed','preview_cleanup_preserves_production_data':'passed'})
+    refused=runtime.submit(runtime.request('pgbox','start',preview['release_digest'],instance=preview['instance']))
+    if refused.get('ok') or installed(preview['instance'])['resources']['volumes']:
+        raise ValueError('Start reanimated a removed preview without a fresh accepted deployment')
+    document=json.loads(Path('/var/lib/komizo/releases/'+preview['release_digest'][7:]+'.json').read_text())
+    def deploy(selected):
+        identity=registry.digest(registry.canonical(selected))
+        receipt=runtime.submit(runtime.request('pgbox','deploy',identity,instance=preview['instance'],release=selected,ttl_seconds=60))
+        return identity,receipt
+    def remove(identity):
+        receipt=runtime.submit(runtime.request('pgbox','remove',identity,instance=preview['instance']))
+        if not receipt.get('ok') or not installed(preview['instance']).get('removed'):
+            raise ValueError('scoped ephemeral removal did not finish: '+json.dumps(receipt))
+    identity,fresh=deploy(document)
+    if not fresh.get('ok') or fresh.get('phase')!='ready':raise ValueError('fresh accepted preview deployment stayed stopped after TTL: '+json.dumps(fresh))
+    regenerated=installed(preview['instance'])
+    if regenerated['resources']['volumes']['postgres-data']==preview['volume_record']:
+        raise ValueError('preview reopening reused the removed volume fingerprint')
+    if postgres.query('SELECT value FROM evidence',preview['instance'])!=b'retained native row' or postgres.query('SELECT count(*) FROM evidence',preview['instance'])!=b'1':
+        raise ValueError('preview reopening reused old data or replayed initialization')
+    remove(identity)
+    failed=json.loads(registry.canonical(document));failed['workload']['jobs']['initialize']['command']=['sh','-ec','exit 7']
+    failed_identity,failure=deploy(failed)
+    if failure.get('phase')!='needs_reconciliation' or failure.get('ok') is not False:
+        raise ValueError('failed preview migration did not record its uncertainty fence')
+    remove(failed_identity)
+    identity,repaired=deploy(document)
+    if not repaired.get('ok') or repaired.get('phase')!='ready' or postgres.query('SELECT count(*) FROM evidence',preview['instance'])!=b'1':
+        raise ValueError('scoped failed-preview removal did not release its data and reconciliation fences: '+json.dumps(repaired))
+    remove(identity)
+    run(['podman','--remote=false','volume','inspect',preview['production_volume']])
+    report['checks'].update({'preview_removed_start_refused':'passed','preview_fresh_graph_after_expiry':'passed',
+        'preview_reopen_initialization_once':'passed','failed_preview_scoped_remove':'passed','failed_preview_fresh_redeploy':'passed'})
