@@ -5,6 +5,41 @@ use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt};
 fn request() -> Request {
     serde_json::from_value(json!({"kind":"komizo.request","version":1,"authority":"github","application":"mailroom","instance":"production","action":"deploy","release_digest":format!("sha256:{}","a".repeat(64)),"nonce":"b".repeat(32),"issued_at":1000,"expires_at":1120,"proof":"SECRET_TOKEN","registry":{"server":"ghcr.io","username":"private","token":"REGISTRY_TOKEN"}})).unwrap()
 }
+
+#[test]
+fn interrupted_atomic_writes_do_not_become_operations_and_committed_ids_cannot_be_overwritten() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path().join("state")).unwrap();
+    let pending = store.root.join("operations/.komizo-pending-Ab12Cd");
+    fs::write(&pending, b"{partial").unwrap();
+    fs::set_permissions(&pending, fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(store.operation_ids().unwrap().is_empty());
+    assert_eq!(store.reconcile_interrupted().unwrap(), 0);
+    let mut accepted = operation();
+    store.create_operation(&accepted).unwrap();
+    let original = fs::read(
+        store
+            .root
+            .join("operations")
+            .join(format!("{}.json", accepted.operation_id)),
+    )
+    .unwrap();
+    accepted.transition("staging").unwrap();
+    assert!(store.create_operation(&accepted).is_err());
+    assert_eq!(
+        fs::read(
+            store
+                .root
+                .join("operations")
+                .join(format!("{}.json", accepted.operation_id))
+        )
+        .unwrap(),
+        original
+    );
+    assert_eq!(store.reconcile_interrupted().unwrap(), 1);
+    fs::write(store.root.join("operations/unrecognized"), b"unknown").unwrap();
+    assert!(store.operation_ids().is_err());
+}
 fn operation() -> Operation {
     Operation {
         kind: "komizo.operation".into(),

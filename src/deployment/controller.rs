@@ -8,7 +8,6 @@ use super::{
 use anyhow::{Result, anyhow, ensure};
 use serde_json::{Value, json};
 use std::{
-    fs,
     io::{Read, Seek, Write},
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
@@ -267,7 +266,7 @@ impl Coordinator {
         store::atomic(
             &journal.join("admission.json"),
             &serde_json::to_vec(
-                &json!({"kind":"komizo.admission","version":1,"operation_id":id,"action":request.action,"policy_digest":policy_digest,"evidence":evidence}),
+                &json!({"kind":"komizo.admission","version":1,"operation_id":id,"action":request.action,"policy_digest":policy_digest,"target_operation":request.operation,"evidence":evidence}),
             )?,
             0o600,
         )?;
@@ -445,14 +444,8 @@ impl Coordinator {
         {
             return Ok(());
         }
-        for entry in fs::read_dir(self.store.root.join("operations"))? {
-            let entry = entry?;
-            let name = entry.file_name();
-            let id = name
-                .to_str()
-                .and_then(|n| n.strip_suffix(".json"))
-                .ok_or_else(|| anyhow!("invalid operation record path"))?;
-            let operation = self.store.operation(id)?;
+        for id in self.store.operation_ids()? {
+            let operation = self.store.operation(&id)?;
             if operation.application == request.application
                 && operation.instance == request.instance
                 && (operation.reconciliation_required || !operation.terminal())

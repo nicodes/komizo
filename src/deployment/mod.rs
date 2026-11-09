@@ -18,6 +18,7 @@ pub mod native;
 pub mod observation;
 pub mod operator;
 pub mod proxy;
+pub mod recovery;
 pub mod registry;
 pub mod render;
 pub mod secrets;

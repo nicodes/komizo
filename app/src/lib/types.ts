@@ -13,7 +13,7 @@ export type Instance = {
   source?: {repository: string; revision: string};
   prepared?: {release_digest: string; operation_id: string; source?: {repository: string; revision: string}} | null;
   actions?: Partial<Record<ActionName, {release_digest: string}>>;
-  services: Record<string, Service>; operations?: Operation[]; unresolved_operations?: Operation[];
+  services: Record<string, Service>; log_targets?: string[]; operations?: Operation[]; unresolved_operations?: Operation[];
   resources?: Resources | null; secret_generations?: Record<string, string>;
   routes?: {host: string; path: string}[]; volumes?: string[];
 };

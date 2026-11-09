@@ -49,6 +49,7 @@ pub fn owned(
     let value = engine
         .owned_container(record, application, instance, service)?
         .ok_or_else(|| anyhow!("owned service is not present"))?;
+    super::engine::service_mounts(&value, record, &document.release.workload.services[service])?;
     for mount in &document.release.workload.services[service].volumes {
         engine.owned_object(
             "volume",
@@ -111,6 +112,8 @@ pub fn guard(application: &str, instance: &str, service: &str) -> Result<()> {
         unsafe { libc::geteuid() } == 0,
         "service guard requires protected owner execution"
     );
+    super::bootstrap::dns_guard()?;
+    super::bootstrap::dns_configuration_guard()?;
     let store = Store::new(Path::new(STATE).to_owned())?;
     let (policy, _) = controller::policy(Path::new(POLICIES), application)?;
     let installed = store

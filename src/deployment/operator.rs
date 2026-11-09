@@ -9,7 +9,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const USAGE: &str = "komizo -- native owner client\n\n  komizo status --host HOST [--identity PATH]\n  komizo inspect|start|stop|restart|backup --host HOST --application APP [--instance production]\n  komizo request --host HOST --file REQUEST.json\n  komizo version\n\nSSH uses the owner's root identity and strict known-host verification.\n";
+pub const USAGE: &str = "komizo -- native owner client\n\n  komizo status --host HOST [--identity PATH]\n  komizo inspect|start|stop|restart|backup --host HOST --application APP [--instance production]\n  komizo logs --host HOST --application APP --service SERVICE_OR_JOB\n  komizo ui --host HOST [--port PORT]\n  komizo request --host HOST --file REQUEST.json\n  komizo capabilities\n  komizo version\n\nSSH uses the owner's root identity and strict known-host verification.\n";
 
 fn options(args: &[String]) -> Result<BTreeMap<&str, &str>> {
     ensure!(
@@ -476,7 +476,7 @@ pub fn status() -> Result<Value> {
             .iter()
             .map(|(alias, grant)| (alias, &grant.generation))
             .collect::<BTreeMap<_, _>>();
-        instances.push(json!({"application":installed.application,"instance":installed.instance,"release_digest":installed.release_digest,"source":document.release.source,"routes":document.release.workload.routes.iter().map(|r|json!({"host":r.host,"path":r.path})).collect::<Vec<_>>(),"desired_running":installed.desired_running,"expires_at":installed.expires_at,"operation_id":installed.operation_id,"prepared":prepared,"actions":actions,"services":services,"resources":resources,"volumes":installed.resources.volumes,"secret_generations":generations,"available_secret_generations":available,"unresolved_operations":unresolved,"operations":operations}));
+        instances.push(json!({"application":installed.application,"instance":installed.instance,"release_digest":installed.release_digest,"source":document.release.source,"routes":document.release.workload.routes.iter().map(|r|json!({"host":r.host,"path":r.path})).collect::<Vec<_>>(),"desired_running":installed.desired_running,"expires_at":installed.expires_at,"operation_id":installed.operation_id,"prepared":prepared,"actions":actions,"services":services,"log_targets":document.release.workload.services.keys().chain(document.release.workload.jobs.keys()).collect::<Vec<_>>(),"resources":resources,"volumes":installed.resources.volumes,"secret_generations":generations,"available_secret_generations":available,"unresolved_operations":unresolved,"operations":operations}));
     }
     Ok(
         json!({"kind":"komizo.status","version":1,"observed_at":controller::now()?,"host":{"boot_id":bounded_text(std::path::Path::new("/proc/sys/kernel/random/boot_id")).map(|s|s.trim().to_owned()),"resources":physical_resources(),"storage":storage_resources()?,"controller_resources":system.group("komizo-control.slice").ok().map(|p|cgroup_resources(&p)),"proxy_resources":system.group("komizo-proxy.slice").ok().map(|p|cgroup_resources(&p))},"instances":instances}),

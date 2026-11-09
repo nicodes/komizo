@@ -1,3 +1,4 @@
+use komizo::deployment::Condition;
 use komizo::deployment::{Policy, canonical, read_release};
 use serde_json::{Value, json};
 
@@ -204,4 +205,54 @@ fn oversized_security_structure_refuses_before_materialization() {
         )
         .is_ok()
     );
+}
+
+#[test]
+fn backup_service_scope_is_explicit_and_cannot_start_jobs_or_unlisted_renderers() {
+    let mut p = policy();
+    p.limits.memory_bytes = 1 << 30;
+    p.limits.memory_swap_bytes = 1 << 30;
+    p.limits.milli_cpus = 4000;
+    p.limits.pids = 4096;
+    p.backup=Some(serde_json::from_value(json!({"program":"/etc/komizo/backup.bundle","sha256":format!("sha256:{}","a".repeat(64)),"timeout_seconds":300,"max_export_bytes":1 << 20,"services":["api"]})).unwrap());
+    let mut document = read(&example()).unwrap();
+    p.admit(&document.release, "production").unwrap();
+    let mut renderer = document.release.workload.services["api"].clone();
+    renderer.environment_files.clear();
+    renderer.secrets.clear();
+    document
+        .release
+        .workload
+        .services
+        .insert("renderer".into(), renderer);
+    document
+        .release
+        .workload
+        .services
+        .get_mut("api")
+        .unwrap()
+        .needs
+        .insert("renderer".into(), Condition::Started);
+    assert!(p.admit(&document.release, "production").is_err());
+    p.backup.as_mut().unwrap().services.push("renderer".into());
+    p.admit(&document.release, "production").unwrap();
+    let mut migrate = document.release.workload.services["renderer"].clone();
+    migrate.health = None;
+    migrate.timeout_seconds = Some(120);
+    document
+        .release
+        .workload
+        .jobs
+        .insert("migrate".into(), migrate);
+    document
+        .release
+        .workload
+        .services
+        .get_mut("api")
+        .unwrap()
+        .needs
+        .insert("migrate".into(), Condition::Completed);
+    assert!(p.admit(&document.release, "production").is_err());
+    p.backup.as_mut().unwrap().services.clear();
+    assert!(p.validate().is_err());
 }

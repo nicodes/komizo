@@ -515,6 +515,8 @@ pub struct ProtectedTask {
     pub sha256: String,
     pub timeout_seconds: u32,
     pub max_export_bytes: u64,
+    #[serde(default)]
+    pub services: Vec<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

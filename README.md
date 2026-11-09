@@ -1,156 +1,97 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: aad405310b33a4b65e1ce59060722175bea85f8cf71091c588936074d23943ca -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: a7327463d637eaf76176ce0b69a0f66f053156d592d6ddc7dd9777f6f8790cf1 -->
 
 # komizo
 
-Deploy immutable Compose workloads and operate Alpine/OpenRC hosts over SSH. Applications own their images, topology, health assertions and data compatibility; protected host policy authorizes artifacts and finite resources. The CLI needs no hosted Komizo account, SDK manager, application identity provider or private documentation checkout.
+Komizo installs immutable application releases on a Debian 13 host using rootful Podman, systemd and cgroup v2. Applications declare services, one-shot jobs, static assets, private networks, retained volumes, routes and readiness. Protected host policy grants artifact, resource, hostname and secret authority.
 
-Build and test applications with their own tools. Komizo consumes published images and never executes development recipes.
+A host Caddy service serves installed static files and routes to private application addresses. Static applications require no application containers. Container services publish no host ports. Workload processes use the numeric identities and capabilities declared by their application.
 
-## Deployment targets
+## Install the owner client
 
-Explicit host selection needs no checkout or configuration:
-
-```sh
-komizo deploy --host root@your-server --app mailroom --version EXACT_REVISION --approval approval.json
-komizo status --host root@your-server --app mailroom
-```
-
-For GitHub-authorized applications, setup records a private repository-to-host binding in the workstation's OS configuration directory. An optional root `komizo.toml` contains only deployment selection:
-
-```toml
-version = 1
-repository = "your-account/mailroom"
-images = ["registry.example/mailroom-gate:{revision}"]
-```
-
-Current-source builds read this authored deployment selection as TOML only; convert a legacy `komizo.json` explicitly. Installed releases retain their released interface. Private targets, protected host policy, credentials, approvals and journals retain their existing formats.
-
-Then komizo deploy selects the checkout's clean committed revision, komizo status reads installed health, and preview uses declared published images. Explicit host/app values take precedence; conflicting app or port identities fail before remote effects. SDK pins and build receipts do not affect target resolution or host admission.
-
-Current-source migration is manual: create the named TOML source with the same effective settings and archive the legacy JSON v1 source outside the active configuration directory. No automatic import command is provided. Preserve explicit `false`, zero and empty arrays; omit null overrides only where they meant inheritance or defaults. Do not copy credentials into tracked source files. Existing installed settings are not migrated by a source update.
-
-## Artifact authority
-
-Choose one authority in the root-reviewed application policy. GitHub Actions provenance uses source_repository and repository_id, with optional protected delivery authorization. The GitHub adapter authenticates exact workflow/source/test evidence and image configuration IDs.
-
-For independent use, replace those GitHub fields with "owner_approval": true. Submit the exact images selected by the root SSH operator in a bounded approval document:
-
-```json
-{
-  "version": 1,
-  "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-  "images": {
-    "registry.example/mailroom-config:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:REPLACE_WITH_CONFIGURATION_SHA256",
-    "registry.example/mailroom-gate:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": "sha256:REPLACE_WITH_CONFIGURATION_SHA256"
-  }
-}
-```
-
-Pass this file with --approval and an explicit root SSH host. Root SSH authenticates the approving operator; the document fixes byte identities. It makes no CI or publisher claim. The host stores a protected approval receipt and compares every pulled configuration ID before starting services. Revision tags identify the release, while immutable registry digests select execution bytes. A digest alone grants no authority.
-
-Owner approval and GitHub source/delivery authority are mutually exclusive. Generated CI wrappers cannot select owner approval, and an application PR cannot change protected host policy. Existing GitHub-authorized installations keep their provenance requirements. Supply --proof for their audience-bound release proof instead of --approval.
-
-## Install
-
-Linux and macOS (x86_64 or arm64), using prebuilt binaries:
-
-With curl:
+Linux and macOS, x86_64 and arm64:
 
 ```sh
 curl -fsSL https://komizo.dev/install | sh
 ```
 
-Or with mise:
+The installer requires an authenticated GitHub CLI session for release attestation verification. It verifies the selected archive checksum and signing workflow, then atomically installs `komizo` to `~/.local/bin`. It starts no services.
+
+The four owner archives contain the workstation-native client and its embedded local Rust API/UI. Linux host executors and audited Caddy executables with build receipts are separate release assets. Host installation uses verified executable artifacts; it requires no source compiler on the server.
+
+## Operate a host
+
+Pin the host's SSH key in the owner's known-hosts file before connecting. The client uses the owner's root SSH identity with strict host-key verification. `--identity` selects an optional absolute private-key path.
 
 ```sh
-mise use --global github:nicodes/komizo@latest
+komizo capabilities
+komizo status --host server.example
+komizo inspect --host server.example --application mailroom
+komizo stop --host server.example --application mailroom
+komizo start --host server.example --application mailroom
+komizo restart --host server.example --application mailroom
+komizo backup --host server.example --application mailroom
+komizo logs --host server.example --application mailroom --service migrate
+komizo ui --host server.example
 ```
 
-The shell installer requires the GitHub CLI and an authenticated GitHub.com session (`gh auth login --hostname github.com`, or an existing `GH_TOKEN`) for release provenance verification. Authentication is checked before any release download. It verifies the archive checksum and GitHub attestation, then atomically installs to `~/.local/bin` without starting services. Mise manages its own installation directory and PATH through its shell activation.
+`--instance` selects `production` or an admitted `pr-N` preview. The UI listens on loopback and supervises its local API. It displays observed source, resources, operation history and bounded service or job logs. Actions bind the displayed release and a proposed operation identity. A failed or lost acknowledgment requires inspection before retrying.
 
-Release archives embed both host architectures and the workstation-native Rust API. The workstation CLI and privileged host executor run in native Rust. The local UI, signed Unix-socket monitor and preview certificate listener use Rust/Axum under `crates/api/`. Protected host policy retains its finite command and deployment authority. The workstation needs SSH; platform maintenance also uses Python 3. The application server uses Alpine Linux with OpenRC, amd64 or arm64, and root SSH access. Use only hosts you own or administer.
-
-## Agent journey
+Commands return typed JSON. Failed mutation receipts remain on stdout with a nonzero exit status; diagnostics use stderr. `inspect` accepts `--operation` with an exact operation ID and `--release` with its release digest. The owner client exposes a finite command set and a typed request-file transport:
 
 ```sh
-komizo --json capabilities
-komizo --json doctor --host root@your-server
-komizo --json setup --host root@your-server --definition ./app.json
-komizo --json deploy --host root@your-server --app mailroom --version COMMIT
-komizo --json operation inspect --host root@your-server --app mailroom
-komizo --json report --host root@your-server
+komizo request --host server.example --file request.json
 ```
 
-Pin the server SSH key before setup. First-use trust is explicit with `--accept-host-key`; changed keys continue to refuse. `doctor` reads prerequisites without installing packages or invoking Docker. `setup` checks first, prepares an uninitialized host and optionally registers the declared app. At least 256 MiB measured system memory, 1 GiB ordinary free space on `/var/lib` and 4096 free inodes are required for setup; these are installation prerequisites, not an app-capacity guarantee.
+Request files can contain credentials. Keep them private. Requests travel over SSH stdin; secrets and bearer proofs are never command arguments.
 
-Existing ready hosts are observed without an incidental upgrade. Existing application keys and established workload authority are preserved. A changed definition requires the separate reviewed authority migration. An older executor without setup capabilities must be explicitly upgraded before registration. Setup returns the private key's filename; it never prints its contents. `--key PATH` selects a destination. The default is a private komizo directory under the workstation's OS configuration directory. A registration interrupted after writing its key can resume with the intact key bound to the same app and host.
+## Prepare the host
 
-Use `setup --host root@your-server` without a definition to prepare just the host. All commands support `--help`. `komizo --json list` returns registered applications; `komizo --json report` returns the typed host report.
+The supported host baseline is Debian 13, distro Podman 5.4.2 or newer, systemd and a unified cgroup v2 hierarchy. The executor requires enforced memory, CPU and PID controllers. Capacity policy accounts for measured RAM, CPU, storage, operating-system reserve, application pools, shared helpers and ingress.
 
-## Application definition
-
-This is operator-reviewed configuration, with no secret values. Adapt the artifact authority, resource envelope, images and readiness to the app. The repository ID is the immutable numeric GitHub repository ID. Configuration images must end in `-config`, contain the app's Compose/hostname artifacts and use the matching image family. Applications use the existing app-scoped gate/ingress convention.
-
-```json
-{
-  "version": 1,
-  "app": "mailroom",
-  "config": "ghcr.io/your-account/mailroom-config",
-  "policy": {
-    "version": 1,
-    "app": "mailroom",
-    "app_dir": "/srv/mailroom",
-    "image_prefix": "ghcr.io/your-account/mailroom-",
-    "shared_network": "edge",
-    "source_repository": "your-account/mailroom",
-    "repository_id": "123456",
-    "resources": {
-      "default": {"memory_bytes": 134217728, "memory_swap_bytes": 134217728, "milli_cpus": 250},
-      "max_memory_bytes": 268435456,
-      "max_memory_swap_bytes": 268435456,
-      "max_milli_cpus": 500
-    },
-    "readiness": {"probes": [{"url": "https://mail.example/readyz", "revision_field": "revision"}]}
-  }
-}
-```
-
-The definition authorizes initial deployment policy only for its registered app. Setup cannot overwrite an established policy, replace an operation fence or accept another app's directories or image family. App-specific privileged adapters and preview profiles remain explicit operator-owned inputs through `add --scoped-env-spec` and `preview configure`; CI cannot install them.
-
-## Deploy and recover
-
-`deploy` submits the exact 40-character source commit through installed host deployment authority. The host verifies its selected approval authority, immutable artifacts, finite resources, readiness, stateful compatibility and any required delivery authorization. The CLI does not build or publish untrusted images, invent CI proof or bypass those requirements. GitHub Actions remains an optional delivery client of the same host executor.
-
-Use `--proof FILE` when supplying an existing authenticated release proof. Private GHCR pulls accept `--registry-user USER --registry-token-file PRIVATE_FILE`; the token travels over SSH stdin into the existing operation-private credential slot. Tokens and proof bodies are never placed in SSH arguments. Use the app's exact existing `--generation` for scoped credentials. `--wait=false` returns after submission; the default waits for the durable result and verifies its operation identity. A stopped app remains stopped.
-
-On refusal, timeout or lost acknowledgement, inspect the operation before resubmitting. Inspection returns its decision, policy/operation identities and reviewable recovery argv for interrupted states. Select the intended serving revision and outcome explicitly. `operation recover` requires those exact reviewed identities, and the host independently rechecks them and its serving postconditions. It does not restore database data, replay provider work, restart the application or discard the fence.
-
-Platform configuration recovery uses the root operator and its exact protected server stage and reviewed digest:
+Install the verified `komizo-box` and native Caddy artifacts at their protected paths, including the matching Caddy build receipt. Prepare root-owned capacity, proxy and application policies under `/etc/komizo`. Then the owner installs the restricted submission boundary:
 
 ```sh
-komizo --json platform inspect --host root@your-server \
-  --stage /var/lib/komizo/upgrades/STAGE --expected-manifest REVIEWED_SHA256
-komizo --json platform recover --host root@your-server \
-  --stage /var/lib/komizo/upgrades/STAGE --expected-manifest REVIEWED_SHA256
+komizo-box install --authorized-keys /absolute/path/submission-public-keys
 ```
 
-Inspect the journal before choosing recovery. Recovery restores the recorded prior platform configuration; database recovery is a separate operation. Host identity, foreign-writer and fence checks remain mandatory.
+Bootstrap verifies the Caddy executable and provenance receipt, manages systemd units and creates the restricted `komizo-submit` account and independent unprivileged `komizo-proxy` account. Individual applications do not receive host SSH accounts. GitHub application/action authorization is checked independently inside the protected controller; possession of a submission key grants no application authority.
 
-## Machine contract
+Policy types and finite constraints are defined in [the deployment model](src/deployment/model.rs) and [validation](src/deployment/validation.rs). Protected policy, state and secret files remain private. Installed public assets use a separate readable, immutable serving cache.
 
-Prefix any supported finite command with `--json`. Stdout is one version-1 envelope containing `version`, `command`, `ok`, `exit_code`, `data` and `error`, plus a safe `next_action` argv when applicable. Progress goes to stderr. `capabilities` publishes the envelope schema, command effects and result formats. Management commands return structured objects or arrays. A receipt acknowledges successful command completion; readiness remains a separate observation. `capabilities` publishes a common management receipt schema. Application logs, complete command help and printable installer source are explicitly wrapped in `data.text`.
+## Author and deliver an application
 
-Errors include a stable code, diagnostic message, `retryable: false` and `reconciliation_required`. Local validation uses `invalid_input` without uncertain remote effects; inventory differences use `state_mismatch` with typed findings. Missing or malformed structured results fail as `invalid_response`. Flag values spelled `--help` cannot clear mutation uncertainty. A failed mutating command is conservatively uncertain; inspect before retrying. Failed doctor checks and acknowledged operation IDs remain in `data` when available. `komizo --json --timeout 5m COMMAND ...` selects a deadline from one second to one hour; the default is 30 minutes. Structured results and retained log/help output are bounded at 4 MiB. Results are emitted directly by command handlers; komizo does not relaunch itself or parse its printed output. Timeouts do not cancel durable host work. The optional UI command use the foreground terminal. Hosted-account commands are unavailable. Help succeeds; invalid flags still fail.
+`deploy/application.toml` contains the versioned `komizo.application` definition and its complete workload. Services and jobs reference immutable image artifacts. Static assets reference bounded immutable archives. Dependencies explicitly select started, healthy or completed conditions. Environment files and mounted secrets select named operator grants; application source contains no secret values or host paths.
 
-For lifecycle and advanced operations use `start`, `stop`, `restart`, `logs`, `set-secret`, `preview`, `platform`, `artifact` and their command help. Authority changes, upgrades and package maintenance retain their explicit reviewed plan/apply interfaces.
+A canonical `komizo.release` descriptor binds the source repository and revision, immutable artifact inventory, workload and optional stateful compatibility contract. Its SHA256 is the release identity. Source revision, release digest, application instance and operation ID are separate facts.
 
-## Static serving
+```sh
+komizo-box application validate deploy/application.toml
+komizo-box release validate release.json
+```
 
-Static workloads select an absolute image_directory, bounded limits, and explicit serving options under policy.static. Serving options include fallbacks, deny_paths, headers, header_rules, precompressed formats and encode selectors. Headers and selectors are bounded and validated; they cannot choose an upstream, root directory, plugin or revision identity. Denied paths are checked before fallback. The host retains immutable extraction, resource admission, current/previous images and stop intent.
+Applications build and test with their own tools. [Cookbook](https://github.com/nicodes/cookbook) can generate contributor workflows and immutable release packets. [komizo-actions](https://github.com/nicodes/komizo-actions) submits bounded requests and fresh audience-bound GitHub proofs. The host independently checks the approved repository, workflow, source, action and artifact family before accepting effects. Owner-authorized applications use the separately authenticated local owner authority.
+
+The release packet contains its exact descriptor and inventory, explicitly inventoried metadata, image archives where required and static archives where required. There is no configuration image. Podman imports the accepted image configuration IDs without retagging unrelated images or pulling a mutable execution target.
+
+## State, secrets and recovery
+
+Services run through protected Quadlet definitions. The controller journals effects before executing them and survives submitter disconnects. One-shot job receipts bind code, secrets, retained objects and native exit evidence. Failed or uncertain migrations never replay automatically. Native boot uses only installed artifacts and retains deliberate stop intent.
+
+Deploying to a stopped instance stages an accepted prepared release without starting databases, jobs or public routes. Start selects that exact prepared release. Restart, Stop and ordinary Backup select the installed release.
+
+Volume-bearing production applications require explicit owner enrollment. Owner-only `data-prepare` creates stopped owned data resources from the reviewed descriptor. Owner-only `data-accept` binds their actual volume fingerprints to explicit empty initialization or an exact hashed transfer-verification report. Empty initialization refuses existing data. Transfer acceptance records database, authorization and file verification evidence. Data preparation alone cannot activate application source; the admitted delivery must stage that source first.
+
+Protected backup bundles capture the actual installed descriptor and data, encrypt snapshots to the owner's public recovery certificate and export exact ciphertext/receipt pairs. The private recovery key stays with the owner. Retained data can be captured when an API never started. Migration or credential recovery requires independently verified owner evidence.
+
+Secret values live in private immutable versions. Owner `secret-set` requests contain a finite `secret_updates` batch with expected generations. Komizo validates the complete batch and changes policy references in one atomic commit. Installed secret snapshots remain immutable until a later activation.
+
+Owner `recover` requests select an exact uncertain operation. Recovery verifies protected creation/removal intents, actual native IDs, complete retained mount bindings, unit hashes and task quiescence. It repairs only proven metadata and finishes only accepted cleanup; it never starts an application or replays a migration. Capture helper cleanup uses the exact original protected bundle and removes only its recorded helper containers and owned plaintext staging.
+
+Previews use the same full workload graph, private database, volumes, resource admission and lifecycle as production. They receive isolated secret grants and a bounded lifetime. Expiry removes only their owned resources. The initial preview policy supports disposable data; a host may refuse a complete preview allocation when capacity is insufficient.
 
 ## Contributor verification
 
-`mise.toml` pins contributor SDKs. The canonical generated task block in root `mise.toml` selects an immutable shared cookbook revision and binds it to `cookbook.toml`.
+`mise.toml` pins contributor SDKs. `cookbook.toml` declares native components, acceptance suites and package assets. Generated task and CI callers use the same immutable Cookbook source.
 
 ```sh
 mise run help
@@ -159,16 +100,6 @@ mise run build
 mise run test
 ```
 
-`mise run help` works offline before setup. `mise run setup` explicitly prepares pinned SDKs, locked dependencies and declared fixtures. `mise run build` compiles and packages the native outputs, then validates their source and artifact identity. `mise run test` runs the implemented checks against those current-source outputs. Run build again after changing source; tests do not install tools or build missing shipping artifacts.
+Setup prepares declared SDKs and fixtures. Build produces the UI, local API, owner clients, separate host executors and audited Caddy companions. Test verifies current-source outputs; it does not install tools or build missing shipping artifacts. Verification evidence stays in `.artifacts/verification`.
 
-Use `mise run fmt` to apply formatting, `mise run test:lint`, `mise run test:unit`, `mise run test:security` or `mise run test:integration` to select a group. `mise run test:e2e` runs the declared disposable deployment journeys. `mise run clean` removes declared generated outputs. Build and test evidence stays in `.artifacts/verification`.
-
-Build owns the SolidJS export in `.artifacts/ui/`, native Rust API and host payloads, embedded workstation CLI and archive assembly. The verified CLI is `.artifacts/build/komizo`. CI retains Linux and macOS workstation archives for x86_64 and arm64 and verifies each declared API, host and CLI build wave before accepting the complete package. Linux host payloads retain static musl linking and Alpine execution checks.
-
-The gate retains native Rust contracts, frozen protocol fixtures, shell/workflow checks, UI tests, source-installed host verification, lifecycle and performance acceptance, archive integrity and dependency scanning. Runtime programs remain under `src/runtime/`; independent assertions remain under `tests/`. Publication preserves its native release acceptance and signer workflow identity.
-
-A source install that needs an unembedded host agent compiles the agent and Rust API from the same locked source tree. It requires the pinned Rust toolchain and a musl C compiler for the host architecture (`musl-gcc` for native Linux, or the existing `CC_x86_64_unknown_linux_musl` / `CC_aarch64_unknown_linux_musl` cross-compiler selection). It works in a private source copy and preserves the module cache. Released binaries require no contributor compiler toolchain.
-
-## Workstation configuration override
-
-`KOMIZO_CONFIG_DIR` selects an absolute directory for workstation `targets.json` and registration keys. It takes precedence over the native configuration directory (macOS Application Support or `XDG_CONFIG_HOME`/`~/.config` on Linux). Existing default bindings remain in their established directory. Explicit command host/application flags retain their existing precedence.
+The matrix covers Linux and macOS owner clients on both architectures. Disposable Debian hosts verify actual boot, Podman lifecycle, data capture/restore, deliberately stopped state, network isolation and kernel limits. Release acceptance separately measures the reviewed one-CPU/one-GiB host profile and cold owner operations. Source, package, installed and application acceptance remain separate evidence.

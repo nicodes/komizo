@@ -924,6 +924,10 @@ impl Policy {
         }
         if let Some(task) = &self.backup {
             task.validate()?;
+            ensure!(
+                !task.services.is_empty(),
+                "backup policy must declare the required data services"
+            );
         }
         Ok(())
     }
@@ -961,6 +965,23 @@ impl Policy {
                             .is_some_and(|s| s.starts_with('-') || s.starts_with('/'))),
                 "artifact is outside the application's admitted family"
             );
+        }
+        if !preview && let Some(task) = &self.backup {
+            for name in &task.services {
+                let service =
+                    release.workload.services.get(name).ok_or_else(|| {
+                        anyhow!("backup policy selects an undeclared data service")
+                    })?;
+                ensure!(
+                    service
+                        .needs
+                        .iter()
+                        .all(|(dependency, condition)| *condition != Condition::Completed
+                            && task.services.contains(dependency)
+                            && release.workload.services.contains_key(dependency)),
+                    "backup data-service dependencies exceed the protected subset"
+                );
+            }
         }
         let mut memory = 0u64;
         let mut swap = 0u64;
@@ -1075,7 +1096,10 @@ impl ProtectedTask {
             absolute(&self.program)
                 && digest(&self.sha256)
                 && (1..=1500).contains(&self.timeout_seconds)
-                && (1..=64u64 << 30).contains(&self.max_export_bytes),
+                && (1..=64u64 << 30).contains(&self.max_export_bytes)
+                && self.services.len() <= 16
+                && self.services.iter().all(|service| name(service))
+                && self.services.iter().collect::<BTreeSet<_>>().len() == self.services.len(),
             "invalid protected bounded task"
         );
         Ok(())

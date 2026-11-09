@@ -66,6 +66,9 @@ fn path(store: &Store, directory: &str, installed: &Installed) -> Result<PathBuf
         Store::instance_key(&installed.application, &installed.instance)?
     )))
 }
+pub fn enrolled(store: &Store, installed: &Installed) -> Result<bool> {
+    Ok(path(store, "data-admissions", installed)?.try_exists()?)
+}
 fn same_volumes(
     left: &BTreeMap<String, ObjectRecord>,
     right: &BTreeMap<String, ObjectRecord>,

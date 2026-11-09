@@ -175,3 +175,34 @@ fn full_length_logical_object_names_produce_bounded_distinct_native_names() {
         units::object_name("mailroom", "production", "network", &"b".repeat(63)).unwrap()
     );
 }
+
+#[test]
+fn retained_mount_evidence_binds_the_target_and_write_authority() {
+    let mut container = document().release.workload.services["api"].clone();
+    container.volumes = vec![Mount {
+        name: "files".into(),
+        target: "/app/files".into(),
+        read_only: true,
+    }];
+    let record = store::ContainerRecord {
+        name: "owned-api".into(),
+        id: "a".repeat(64),
+        image: "ghcr.io/example/mailroom@sha256:unused".into(),
+        config_digest: format!("sha256:{}", "b".repeat(64)),
+        release_digest: document().digest,
+        ownership: "c".repeat(32),
+        unit_sha256: format!("sha256:{}", "d".repeat(64)),
+        volumes: BTreeMap::from([("files".into(), "owned-files".into())]),
+    };
+    let actual = json!({"Mounts":[{"Type":"volume","Name":"owned-files","Destination":"/app/files","RW":false}]});
+    engine::service_mounts(&actual, &record, &container).unwrap();
+    for (key, value) in [
+        ("Destination", json!("/app/database")),
+        ("RW", json!(true)),
+        ("Name", json!("foreign-files")),
+    ] {
+        let mut changed = actual.clone();
+        changed["Mounts"][0][key] = value;
+        assert!(engine::service_mounts(&changed, &record, &container).is_err());
+    }
+}

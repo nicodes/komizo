@@ -254,14 +254,8 @@ impl Store {
     pub fn unresolved(&self, application: &str, instance: &str) -> Result<Vec<Operation>> {
         Self::instance_key(application, instance)?;
         let mut result = Vec::new();
-        for entry in fs::read_dir(self.root.join("operations"))? {
-            let entry = entry?;
-            let filename = entry.file_name();
-            let id = filename
-                .to_str()
-                .and_then(|n| n.strip_suffix(".json"))
-                .ok_or_else(|| anyhow!("invalid operation ledger path"))?;
-            let operation = self.operation(id)?;
+        for id in self.operation_ids()? {
+            let operation = self.operation(&id)?;
             if operation.application != application
                 || operation.instance != instance
                 || (!operation.reconciliation_required && operation.terminal())
@@ -294,14 +288,15 @@ impl Store {
             "invalid operation identity"
         );
         let parent = self.root.join("operations");
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(parent.join(format!("{}.json", operation.operation_id)))?;
+        let mut file = tempfile::Builder::new()
+            .prefix(".komizo-pending-")
+            .tempfile_in(&parent)?;
+        file.as_file()
+            .set_permissions(fs::Permissions::from_mode(0o600))?;
         file.write_all(&serde_json::to_vec(operation)?)?;
-        file.sync_all()?;
+        file.as_file().sync_all()?;
+        file.persist_noclobber(parent.join(format!("{}.json", operation.operation_id)))
+            .map_err(|error| error.error)?;
         File::open(parent)?.sync_all()?;
         let path = self.root.join("history").join(format!(
             "{}.json",
@@ -377,7 +372,9 @@ pub fn atomic(path: &Path, body: &[u8], mode: u32) -> Result<()> {
             "refusing unsafe protected replacement"
         );
     }
-    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    let mut file = tempfile::Builder::new()
+        .prefix(".komizo-pending-")
+        .tempfile_in(parent)?;
     file.as_file()
         .set_permissions(fs::Permissions::from_mode(mode))?;
     file.write_all(body)?;
@@ -422,6 +419,36 @@ impl Drop for Guard {
 }
 
 impl Store {
+    pub fn operation_ids(&self) -> Result<Vec<String>> {
+        let mut ids = Vec::new();
+        for entry in fs::read_dir(self.root.join("operations"))? {
+            let entry = entry?;
+            let filename = entry.file_name();
+            let filename = filename
+                .to_str()
+                .ok_or_else(|| anyhow!("invalid operation ledger member"))?;
+            if filename
+                .strip_prefix(".komizo-pending-")
+                .is_some_and(|tail| {
+                    tail.len() == 6 && tail.bytes().all(|b| b.is_ascii_alphanumeric())
+                })
+            {
+                let pending = open_protected(&entry.path(), MAX_DOCUMENT_BYTES as u64)?;
+                ensure!(
+                    pending.metadata()?.mode() & 0o077 == 0,
+                    "pending operation bytes are not private"
+                );
+                continue;
+            }
+            let id = filename
+                .strip_suffix(".json")
+                .filter(|id| hex(id, 32))
+                .ok_or_else(|| anyhow!("unexpected operation ledger member"))?;
+            ids.push(id.to_owned());
+        }
+        ids.sort();
+        Ok(ids)
+    }
     pub fn new(root: PathBuf) -> Result<Self> {
         protected_directory(&root)?;
         for name in [
@@ -582,14 +609,8 @@ impl Store {
     }
     pub fn reconcile_interrupted(&self) -> Result<usize> {
         let mut count = 0;
-        for file in fs::read_dir(self.root.join("operations"))? {
-            let file = file?;
-            let name = file.file_name();
-            let id = name
-                .to_str()
-                .and_then(|n| n.strip_suffix(".json"))
-                .ok_or_else(|| anyhow!("unexpected operation record"))?;
-            let mut operation = self.operation(id)?;
+        for id in self.operation_ids()? {
+            let mut operation = self.operation(&id)?;
             if !operation.terminal() {
                 operation.transition("needs_reconciliation")?;
                 self.save_operation(&operation)?;

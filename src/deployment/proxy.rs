@@ -132,6 +132,7 @@ pub fn upstreams(
 
 pub fn refresh(store: &Store, deadline: Instant) -> Result<()> {
     let _lock = store.lock("platform", "proxy")?;
+    system::reconcile_framework_units(store, "platform", "proxy")?;
     let engine = Engine { deadline };
     let mut body = globals()?;
     let mut hosts = BTreeMap::new();

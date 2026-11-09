@@ -327,3 +327,45 @@ pub fn volume_identity(value: &Value) -> Result<String> {
         &serde_json::json!({"Name":value["Name"],"CreatedAt":value["CreatedAt"],"Driver":value["Driver"],"Mountpoint":value["Mountpoint"],"Options":value["Options"]}),
     )?))
 }
+
+pub fn service_mounts(
+    value: &Value,
+    record: &ContainerRecord,
+    container: &super::model::Container,
+) -> Result<()> {
+    let expected = container
+        .volumes
+        .iter()
+        .map(|mount| {
+            record
+                .volumes
+                .get(&mount.name)
+                .map(|physical| (physical.as_str(), mount.target.as_str(), !mount.read_only))
+                .ok_or_else(|| anyhow!("declared retained mount has no protected binding"))
+        })
+        .collect::<Result<std::collections::BTreeSet<_>>>()?;
+    let actual = value["Mounts"]
+        .as_array()
+        .ok_or_else(|| anyhow!("native retained mount evidence missing"))?
+        .iter()
+        .filter(|mount| mount["Type"] == "volume")
+        .map(|mount| {
+            Ok((
+                mount["Name"]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("native retained mount name missing"))?,
+                mount["Destination"]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("native retained mount target missing"))?,
+                mount["RW"]
+                    .as_bool()
+                    .ok_or_else(|| anyhow!("native retained mount access missing"))?,
+            ))
+        })
+        .collect::<Result<std::collections::BTreeSet<_>>>()?;
+    ensure!(
+        actual == expected,
+        "native retained mount targets or access differ from the installed descriptor"
+    );
+    Ok(())
+}
