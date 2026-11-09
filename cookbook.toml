@@ -21,7 +21,7 @@ enabled = false
 native_host = true
 all_targets = false
 lib = true
-binaries = ["komizo-box"]
+binaries = ["komizo-box", "komizo"]
 
 [[components.rust]]
 name = "cli-source"
@@ -45,16 +45,10 @@ name = "native-owner-plain"
 component = "cli-source"
 roles = ["host"]
 dependency_context = "none"
-selectors = {native_host=true,test_targets=["host_modes","flags","host_application","caller_commands","caller_keys_doctor"]}
+selectors = {native_host=true,lib=true,test_targets=["deployment_assets","deployment_authority","deployment_contract","deployment_controller","deployment_data","deployment_native","deployment_recovery","deployment_resources","deployment_secrets","deployment_store","source_build"]}
 
 [[components.rust_tests]]
-name = "native-owner-packed"
-component = "cli"
-roles = ["host"]
-selectors = {enabled=true,native_host=true,test_targets=["host_modes"]}
-
-[[components.rust_tests]]
-name = "source-installed-host"
+name = "source-installed-owner"
 component = "cli-source"
 roles = ["host"]
 platforms = ["Linux/x86_64"]
@@ -78,12 +72,6 @@ component = "cli"
 binary = "komizo-box"
 output = ".artifacts/native-host/komizo-box_{platform}_{arch}"
 environment = {KOMIZO_VERSION="{version}"}
-[[components.native.needs]]
-component = "api"
-platform = "native"
-path_environment = "KOMIZO_API_PAYLOAD"
-compression = "gzip"
-output = ".artifacts/native-api/payload_{platform}_{arch}.gz"
 
 [[components.native]]
 name = "cli"
@@ -99,14 +87,6 @@ platform = "native"
 path_environment = "KOMIZO_API_PAYLOAD"
 compression = "gzip"
 output = ".artifacts/native-api/payload_{platform}_{arch}.gz"
-[[components.native.needs]]
-component = "host"
-platform = "Linux/x86_64"
-path_environment = "KOMIZO_HOST_AMD64"
-[[components.native.needs]]
-component = "host"
-platform = "Linux/arm64"
-path_environment = "KOMIZO_HOST_ARM64"
 
 [[components.ui]]
 required_files = ["index.html"]
@@ -123,6 +103,23 @@ binary = "komizo"
 files = ["README.md", "LICENSE"]
 version_arguments = ["version"]
 version_template = "{binary} {version}"
+extra_files = ["komizo-box_Linux_x86_64", "komizo-box_Linux_arm64", "caddy_Linux_x86_64", "caddy_Linux_arm64"]
+
+[package.extra_file_sources.komizo-box_Linux_x86_64]
+component = "host"
+platform = "Linux/x86_64"
+
+[package.extra_file_sources.komizo-box_Linux_arm64]
+component = "host"
+platform = "Linux/arm64"
+
+[package.extra_file_sources.caddy_Linux_x86_64]
+provider = "caddy"
+platform = "Linux/x86_64"
+
+[package.extra_file_sources.caddy_Linux_arm64]
+provider = "caddy"
+platform = "Linux/arm64"
 
 [[package.native_targets]]
 runner = "ubuntu-24.04"
@@ -152,7 +149,7 @@ arch = "x86_64"
 extension = "tar.gz"
 
 [[package.native_targets]]
-runner = "macos-15"
+runner = "macos-26"
 timeout_minutes = 45
 second_wave_timeout_minutes = 35
 target = "aarch64-apple-darwin"
@@ -164,20 +161,35 @@ extension = "tar.gz"
 evidence_paths = [".artifacts/security/rust-source.json", ".artifacts/independent-deployment/candidate-deployment.json", ".artifacts/independent-deployment/cleanup.json"]
 
 [lint]
-shell_paths = ["src/runtime/agent-install.sh", "src/runtime/alpine-init.sh", "src/runtime/alpine-proxy.sh", "src/runtime/alpine-reload-sshd.sh", "src/runtime/alpine-remove.sh", "src/runtime/alpine-unset-secret.sh", "src/runtime/alpine.sh", "src/runtime/preview-run.sh", "src/runtime/preview-stackenv.sh", "tests/acceptance/cold-client.sh"]
+shell_paths = ["install.sh", "tests/acceptance/cold-client.sh"]
 
 [security]
 rust_inventory_manifests = ["Cargo.toml", "crates/api/Cargo.toml"]
 
 [[tests.unit]]
 runner = "python-unittest"
-path = "tests/runtime"
-pattern = "*_test.py"
+path = "tests/acceptance"
+pattern = "test_acceptance.py"
 
 [[tests.unit]]
 runner = "python-unittest"
 path = "tests/acceptance"
-pattern = "test_acceptance.py"
+pattern = "test_native_release.py"
+
+[[tests.unit]]
+runner = "python-unittest"
+path = "tests/acceptance"
+pattern = "test_native_root.py"
+
+[[tests.unit]]
+runner = "python-unittest"
+path = "tests/acceptance"
+pattern = "test_native_performance*.py"
+
+[[tests.unit]]
+runner = "python-unittest"
+path = "tests/acceptance"
+pattern = "test_native_sdk.py"
 
 [[tests.unit]]
 runner = "python"
@@ -203,7 +215,7 @@ timeout = 1800
 timeout_minutes = 110
 
 [clean]
-paths = ["dist", "target", ".artifacts/build", ".artifacts/rust-target", ".artifacts/native-package", ".artifacts/native-api", ".artifacts/native-host", ".artifacts/native-cli", ".artifacts/native-archives", ".artifacts/advisory-db", ".artifacts/security", ".artifacts/ui", ".artifacts/independent-deployment", "app/node_modules"]
+paths = ["dist", "target", ".artifacts/build", ".artifacts/rust-target", ".artifacts/native-package", ".artifacts/native-api", ".artifacts/native-host", ".artifacts/native-cli", ".artifacts/native-archives", ".artifacts/native-proxy", ".artifacts/advisory-db", ".artifacts/security", ".artifacts/ui", ".artifacts/independent-deployment", "app/node_modules"]
 
 [publication]
 tag_prefix = "v"
@@ -211,7 +223,7 @@ initial = "first"
 version_identity = "number"
 validation_timeout = 110
 acceptance_timeout = 55
-attestation_platforms = ["Linux/x86_64"]
+attestation_platforms = ["Linux/x86_64", "Linux/arm64", "Darwin/x86_64", "Darwin/arm64"]
 
 [publication.acceptance]
 files = ["komizo-acceptance.json", "komizo-performance.json"]

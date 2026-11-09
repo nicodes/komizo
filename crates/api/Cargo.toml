@@ -8,8 +8,6 @@ publish = false
 [dependencies]
 httpcontract = { git = "https://github.com/nicodes/tools", rev = "185fa0d4fd80861af4c0012c6fb3d421fe8d8a2a" }
 axum = "=0.8.9"
-aws-lc-rs = "1.19"
-base64 = "0.22"
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
 flate2 = "1"
@@ -22,6 +20,7 @@ libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+subtle = "=2.6.1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "net", "sync", "time", "io-util", "fs", "process"] }
 uuid = { version = "1", features = ["v4"] }
 

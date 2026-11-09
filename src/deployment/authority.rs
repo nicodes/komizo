@@ -19,6 +19,7 @@ pub struct AdmittedRequest {
     pub request: Request,
     pub digest: String,
     pub release: Option<ReleaseDocument>,
+    pub evidence: Value,
 }
 
 pub fn body_without_proof(value: &Value) -> Result<Vec<u8>> {
@@ -180,6 +181,7 @@ fn check_workflow(
     workflow: &str,
     reference: &str,
     environment: Option<&str>,
+    preview: bool,
 ) -> Result<()> {
     ensure!(
         string(claims, "repository") == repository
@@ -193,10 +195,10 @@ fn check_workflow(
                 string(claims, "runner_environment"),
                 "github-hosted" | "self-hosted"
             )
-            && matches!(
+            && (matches!(
                 string(claims, "event_name"),
                 "push" | "workflow_dispatch" | "pull_request_target" | "schedule"
-            ),
+            ) || (preview && string(claims, "event_name") == "issue_comment")),
         "request is outside approved repository and workflow authority"
     );
     if let Some(environment) = environment {
@@ -220,7 +222,7 @@ pub fn admit(
     key: &mut KeyProvider<'_>,
 ) -> Result<AdmittedRequest> {
     policy.validate()?;
-    let raw = crate::strict::value(body, MAX_DOCUMENT_BYTES)?;
+    let raw = bounded_value(body, MAX_DOCUMENT_BYTES)?;
     let request: Request = serde_json::from_value(raw.clone())?;
     ensure!(
         request.kind == "komizo.request"
@@ -238,7 +240,8 @@ pub fn admit(
             && request.issued_at >= now - 300
             && request.expires_at > now
             && request.expires_at > request.issued_at
-            && request.expires_at <= request.issued_at + 300,
+            && request.expires_at <= request.issued_at + 300
+            && (1..=1500).contains(&request.timeout_seconds),
         "invalid request scope, identity or lifetime"
     );
     ensure!(
@@ -252,6 +255,8 @@ pub fn admit(
             "backup",
             "remove",
             "secret-set",
+            "data-prepare",
+            "data-accept",
             "export"
         ]
         .contains(&request.action.as_str()),
@@ -262,19 +267,75 @@ pub fn admit(
         "invalid operation identity"
     );
     ensure!(
-        (request.action == "deploy") == request.release.is_some(),
-        "only deployment submits a release body"
+        (request.action == "data-accept") == request.data_evidence.is_some()
+            && request.data_evidence.as_deref().is_none_or(digest),
+        "data acceptance requires exact protected evidence"
+    );
+    if ["data-prepare", "data-accept"].contains(&request.action.as_str()) {
+        ensure!(
+            request.authority == "owner" && request.instance == "production",
+            "retained data enrollment requires the production owner"
+        );
+    }
+    ensure!(
+        request
+            .recovery_evidence
+            .as_deref()
+            .is_none_or(|hash| request.authority == "owner"
+                && request.action == "recover"
+                && request.operation.is_some()
+                && digest(hash)),
+        "data recovery evidence requires an exact owner recovery request"
     );
     ensure!(
-        (request.action == "secret-set") == request.secret_update.is_some(),
+        request.instance == "production"
+            || request
+                .instance
+                .strip_prefix("pr-")
+                .is_some_and(|n| n.parse::<u64>().is_ok_and(|v| v > 0 && v.to_string() == n)),
+        "invalid application instance identity"
+    );
+    if request.action == "deploy" && request.instance != "production" {
+        let preview = policy
+            .previews
+            .as_ref()
+            .ok_or_else(|| anyhow!("previews are not admitted"))?;
+        ensure!(
+            request
+                .ttl_seconds
+                .is_some_and(|n| (60..=preview.max_ttl_seconds).contains(&n)),
+            "preview deployment needs a bounded instance lifetime"
+        );
+    } else {
+        ensure!(
+            request.ttl_seconds.is_none(),
+            "instance lifetime is only valid for preview deployment"
+        );
+    }
+    ensure!(
+        ["deploy", "data-prepare"].contains(&request.action.as_str()) == request.release.is_some(),
+        "only deployment or owner data preparation submits a release body"
+    );
+    ensure!(
+        request.action == "deploy" || request.release_proof.is_none(),
+        "release proof is only valid for deployment"
+    );
+    ensure!(
+        (request.action == "secret-set") != request.secret_updates.is_empty(),
         "secret update requires the owner secret operation"
     );
-    if let Some(update) = &request.secret_update {
+    ensure!(
+        request.secret_updates.len() <= 32,
+        "too many owner secret updates"
+    );
+    let mut references = std::collections::BTreeSet::new();
+    for update in &request.secret_updates {
         ensure!(
             request.authority == "owner"
                 && request.instance == "production"
                 && name(&update.reference)
-                && safe_text(&update.expected_generation, 128)
+                && hex(&update.expected_generation, 32)
+                && references.insert(&update.reference)
                 && !update.value.is_empty()
                 && update.value.len() <= 128 << 10
                 && ["environment-file", "opaque"].contains(&update.format.as_str()),
@@ -358,6 +419,7 @@ pub fn admit(
             "registry credential is outside admitted artifact authority"
         );
     }
+    let mut evidence = serde_json::json!({"authority":request.authority,"peer_uid":peer_uid,"admitted_at":now,"request_digest":request_digest,"nonce":request.nonce});
     match request.authority.as_str() {
         "owner" => {
             ensure!(
@@ -371,8 +433,8 @@ pub fn admit(
         }
         "github" => {
             ensure!(
-                request.secret_update.is_none(),
-                "GitHub cannot update host secrets"
+                request.secret_updates.is_empty() && request.action != "recover",
+                "GitHub cannot update host secrets or approve owner recovery"
             );
             let Authority::Github {
                 repository,
@@ -380,7 +442,7 @@ pub fn admit(
                 workflows,
                 reference,
                 environment,
-                publisher_workflow,
+                publisher_workflows,
             } = &policy.authority
             else {
                 return Err(anyhow!("host policy does not admit GitHub authority"));
@@ -404,11 +466,25 @@ pub fn admit(
             let workflow = if request.action == "inspect" {
                 workflows
                     .values()
+                    .flatten()
                     .find(|workflow| string(&claims, "workflow_ref") == *workflow)
             } else {
-                workflows.get(&scope)
+                workflows.get(&scope).and_then(|callers| {
+                    callers
+                        .iter()
+                        .find(|workflow| string(&claims, "workflow_ref") == *workflow)
+                })
             }
             .ok_or_else(|| anyhow!("action has no approved workflow identity"))?;
+            let environment = if request.instance == "production" {
+                environment
+            } else {
+                &policy
+                    .previews
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("preview environment is not admitted"))?
+                    .environment
+            };
             check_workflow(
                 &claims,
                 repository,
@@ -416,16 +492,40 @@ pub fn admit(
                 workflow,
                 reference,
                 Some(environment),
+                request.instance != "production",
             )?;
+            for field in [
+                "repository",
+                "repository_id",
+                "workflow_ref",
+                "workflow_sha",
+                "run_id",
+                "run_attempt",
+                "actor",
+                "actor_id",
+                "sub",
+            ] {
+                if let Some(value) = claims.get(field) {
+                    ensure!(
+                        value.as_str().is_some_and(|v| safe_text(v, 1024)),
+                        "invalid identity audit field"
+                    );
+                    evidence[field] = value.clone();
+                }
+            }
             if let Some(release) = &release {
                 if request.instance == "production" {
                     ensure!(
                         release.release.source.revision == string(&claims, "sha"),
                         "production release differs from the approved caller source"
                     );
-                } else {
+                }
+                {
+                    let publisher_workflow = publisher_workflows
+                        .get(&scope)
+                        .ok_or_else(|| anyhow!("release has no immutable publisher authority"))?;
                     let proof = request.release_proof.as_ref().ok_or_else(|| {
-                        anyhow!("preview requires independent selected-source release proof")
+                        anyhow!("deployment requires independent selected-source release proof")
                     })?;
                     ensure!(
                         proof.kind == "komizo.release-proof"
@@ -437,23 +537,34 @@ pub fn admit(
                             && proof.run_id.bytes().all(|b| b.is_ascii_digit())
                             && !proof.run_attempt.is_empty()
                             && proof.run_attempt.bytes().all(|b| b.is_ascii_digit())
-                            && !publisher_workflow.is_empty(),
+                            && proof.workflow_ref == *workflow
+                            && hex(&proof.workflow_sha, 40),
                         "invalid selected-source release proof"
                     );
                     let value = serde_json::to_value(proof)?;
                     let hash = document_digest(&body_without_proof(&value)?);
                     let publisher =
                         verify_token(&proof.proof, &format!("komizo-release:{hash}"), now, key)?;
+                    check_workflow(
+                        &publisher,
+                        repository,
+                        repository_id,
+                        workflow,
+                        reference,
+                        Some(environment),
+                        request.instance != "production",
+                    )?;
                     ensure!(
                         string(&publisher, "repository") == repository
                             && string(&publisher, "repository_id") == repository_id
                             && string(&publisher, "ref") == reference
                             && string(&publisher, "workflow_ref") == proof.workflow_ref
                             && string(&publisher, "workflow_sha") == proof.workflow_sha
+                            && string(&publisher, "sha") == proof.workflow_sha
                             && string(&publisher, "job_workflow_ref") == publisher_workflow
                             && string(&publisher, "run_id") == proof.run_id
                             && string(&publisher, "run_attempt") == proof.run_attempt,
-                        "preview release proof is outside approved publisher authority"
+                        "release proof is outside approved publisher authority"
                     );
                 }
             }
@@ -464,5 +575,6 @@ pub fn admit(
         request,
         digest: request_digest,
         release,
+        evidence,
     })
 }

@@ -1,7 +1,8 @@
 //! The Axum API remains a separate, supervised native process.
-use crate::workload::activation::Context;
+use crate::runtime::Context;
 use anyhow::{Result, ensure};
 use std::{
+    io::Write,
     os::unix::{fs::PermissionsExt, process::CommandExt},
     path::PathBuf,
     process::{Command, Stdio},
@@ -57,15 +58,38 @@ pub fn prepare() -> Result<Prepared> {
 }
 pub fn run(ctx: &Context, args: &[String]) -> Result<()> {
     let mut prepared = prepare()?;
+    let bootstrap = tempfile::Builder::new()
+        .prefix("komizo-ui-")
+        .tempdir_in(std::env::temp_dir().canonicalize()?)?;
+    std::fs::set_permissions(bootstrap.path(), std::fs::Permissions::from_mode(0o700))?;
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes)
+        .map_err(|_| anyhow::anyhow!("owner session entropy unavailable"))?;
+    let capability: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    let frame = serde_json::to_vec(&serde_json::json!({"kind":"komizo.ui-session","version":1,
+        "capability":capability,"bootstrap_directory":bootstrap.path()}))?;
     let mut command = Command::new(&prepared.path);
     command
         .args(args)
         .args(["--parent-pid", &std::process::id().to_string()])
-        .stdin(Stdio::inherit())
+        .stdin(Stdio::piped())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .process_group(0);
     let mut child = command.spawn()?;
+    if child
+        .stdin
+        .take()
+        .expect("private child stdin")
+        .write_all(&frame)
+        .is_err()
+    {
+        unsafe {
+            libc::kill(-(child.id() as i32), libc::SIGKILL);
+        }
+        let _ = child.wait();
+        return Err(anyhow::anyhow!("owner session transport unavailable"));
+    }
     prepared.started();
     let pid = child.id() as i32;
     let mut stopping = None;

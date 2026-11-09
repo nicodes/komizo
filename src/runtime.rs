@@ -1,4 +1,5 @@
-use crate::workload::activation::Context;
+//! Cancellation for the local owner client and supervised loopback API.
+use anyhow::{Result, ensure};
 use std::{
     sync::{
         Arc, OnceLock,
@@ -6,10 +7,27 @@ use std::{
     },
     time::{Duration, Instant},
 };
-pub const VERSION: &str = match option_env!("KOMIZO_VERSION") {
-    Some(version) => version,
-    None => "dev",
-};
+#[derive(Clone)]
+pub struct Context {
+    pub deadline: Instant,
+    pub cancelled: Arc<AtomicBool>,
+}
+impl Context {
+    pub fn new(deadline: Instant) -> Self {
+        Self {
+            deadline,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+    pub fn check(&self) -> Result<()> {
+        ensure!(
+            !self.cancelled.load(Ordering::Acquire),
+            "operation cancelled"
+        );
+        ensure!(Instant::now() < self.deadline, "operation deadline expired");
+        Ok(())
+    }
+}
 static STOP: OnceLock<Arc<AtomicBool>> = OnceLock::new();
 extern "C" fn terminate(_: libc::c_int) {
     if let Some(stopping) = STOP.get() {
@@ -24,53 +42,8 @@ pub fn signal_context() -> Context {
         libc::signal(libc::SIGINT, terminate as *const () as libc::sighandler_t);
         libc::signal(libc::SIGTERM, terminate as *const () as libc::sighandler_t);
     }
-    let mut ctx = Context::new(Instant::now() + Duration::from_secs(365 * 24 * 3600));
-    ctx.cancelled = cancelled;
-    ctx
-}
-pub fn bounded(parent: &Context, duration: Duration) -> Context {
-    let mut ctx = parent.clone();
-    ctx.deadline = ctx.deadline.min(Instant::now() + duration);
-    ctx
-}
-pub fn sleep(ctx: &Context, duration: Duration) -> bool {
-    let end = Instant::now() + duration;
-    while Instant::now() < end {
-        if ctx.check().is_err() {
-            return false;
-        }
-        std::thread::sleep(
-            Duration::from_millis(20).min(end.saturating_duration_since(Instant::now())),
-        );
-    }
-    ctx.check().is_ok()
-}
-pub struct Ticker {
-    next: Instant,
-    period: Duration,
-}
-impl Ticker {
-    pub fn new(period: Duration) -> Self {
-        assert!(!period.is_zero());
-        Self {
-            next: Instant::now() + period,
-            period,
-        }
-    }
-    pub fn wait(&mut self, ctx: &Context) -> bool {
-        if !sleep(ctx, self.next.saturating_duration_since(Instant::now())) {
-            return false;
-        }
-        let missed = Instant::now()
-            .saturating_duration_since(self.next)
-            .as_nanos()
-            / self.period.as_nanos()
-            + 1;
-        self.next = if let Ok(missed) = u32::try_from(missed) {
-            self.next + self.period * missed
-        } else {
-            Instant::now() + self.period
-        };
-        true
+    Context {
+        deadline: Instant::now() + Duration::from_secs(365 * 24 * 3600),
+        cancelled,
     }
 }

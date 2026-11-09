@@ -5,6 +5,84 @@ use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt};
 fn request() -> Request {
     serde_json::from_value(json!({"kind":"komizo.request","version":1,"authority":"github","application":"mailroom","instance":"production","action":"deploy","release_digest":format!("sha256:{}","a".repeat(64)),"nonce":"b".repeat(32),"issued_at":1000,"expires_at":1120,"proof":"SECRET_TOKEN","registry":{"server":"ghcr.io","username":"private","token":"REGISTRY_TOKEN"}})).unwrap()
 }
+
+#[test]
+fn interrupted_atomic_writes_do_not_become_operations_and_committed_ids_cannot_be_overwritten() {
+    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+    let store = Store::new(dir.path().join("state")).unwrap();
+    let pending = store.root.join("operations/.komizo-pending-Ab12Cd");
+    fs::write(&pending, b"{partial").unwrap();
+    fs::set_permissions(&pending, fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(store.operation_ids().unwrap().is_empty());
+    assert_eq!(store.reconcile_interrupted().unwrap(), 0);
+    let mut accepted = operation();
+    store.create_operation(&accepted).unwrap();
+    let original = fs::read(
+        store
+            .root
+            .join("operations")
+            .join(format!("{}.json", accepted.operation_id)),
+    )
+    .unwrap();
+    accepted.transition("staging").unwrap();
+    assert!(store.create_operation(&accepted).is_err());
+    assert_eq!(
+        fs::read(
+            store
+                .root
+                .join("operations")
+                .join(format!("{}.json", accepted.operation_id))
+        )
+        .unwrap(),
+        original
+    );
+    assert_eq!(store.reconcile_interrupted().unwrap(), 1);
+    fs::write(store.root.join("operations/unrecognized"), b"unknown").unwrap();
+    assert!(store.operation_ids().is_err());
+}
+
+#[test]
+fn concurrent_atomic_observation_keeps_complete_records_and_refuses_hardlinks() {
+    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+    let path = dir.path().join("observed.json");
+    let first = b"{\"phase\":\"staging\"}";
+    let second = b"{\"phase\":\"needs_reconciliation\"}";
+    atomic(&path, first, 0o600).unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let writer_path = path.clone();
+    let writer_barrier = barrier.clone();
+    let writer = std::thread::spawn(move || {
+        writer_barrier.wait();
+        for i in 0..256 {
+            atomic(&writer_path, if i % 2 == 0 { second } else { first }, 0o600).unwrap();
+        }
+    });
+    barrier.wait();
+    let mut complete_reads = 0;
+    for _ in 0..2048 {
+        match read_protected(&path, 4096) {
+            Ok(body) => {
+                assert!(body == first || body == second);
+                complete_reads += 1;
+            }
+            // Continuous replacement can exhaust the bounded reopen loop.
+            // That refusal is safe; incomplete or linked records are not.
+            Err(error) => assert_eq!(
+                error.to_string(),
+                "protected file was repeatedly replaced while opening"
+            ),
+        }
+    }
+    writer.join().unwrap();
+    assert!(complete_reads > 0);
+    assert_eq!(read_protected(&path, 4096).unwrap(), first);
+    let linked = dir.path().join("linked");
+    fs::hard_link(&path, &linked).unwrap();
+    assert!(read_protected(&path, 4096).is_err());
+    assert!(read_protected(&linked, 4096).is_err());
+    fs::remove_file(linked).unwrap();
+    assert_eq!(read_protected(&path, 4096).unwrap(), first);
+}
 fn operation() -> Operation {
     Operation {
         kind: "komizo.operation".into(),
@@ -23,7 +101,7 @@ fn operation() -> Operation {
 
 #[test]
 fn replay_and_concurrency_are_fenced_and_journal_never_stores_credentials() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let s = Store::new(directory.path().join("state")).unwrap();
     let guard = s.lock("mailroom", "production").unwrap();
     assert!(s.lock("mailroom", "production").is_err());
@@ -56,7 +134,7 @@ fn replay_and_concurrency_are_fenced_and_journal_never_stores_credentials() {
 
 #[test]
 fn interrupted_effect_is_retained_as_reconciliation_and_cannot_automatically_retry_jobs() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let s = Store::new(directory.path().join("state")).unwrap();
     let mut o = operation();
     o.transition("staging").unwrap();
@@ -71,7 +149,7 @@ fn interrupted_effect_is_retained_as_reconciliation_and_cannot_automatically_ret
 
 #[test]
 fn protected_store_refuses_linked_and_other_writable_records() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let s = Store::new(directory.path().join("state")).unwrap();
     let o = operation();
     let path = s
@@ -127,7 +205,22 @@ fn native_units_escape_manager_expansion_and_do_not_publish_ports_or_repull() {
     assert!(unit.contains("%%n $$HOST_SECRET"));
     assert!(unit.contains("--pull=never"));
     assert!(unit.contains("--remote=false"));
-    assert!(unit.contains("--health-startup-interval"));
+    assert!(unit.contains("--health-interval\" \"disable"));
+    let (probe, timer) = units::health_units(
+        "mailroom",
+        "production",
+        "api",
+        doc.release.workload.services["api"]
+            .health
+            .as_ref()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(probe.contains(&format!(
+        "Slice={}",
+        units::slice("mailroom", "production").unwrap()
+    )));
+    assert!(timer.contains("OnUnitInactiveSec=2s"));
     assert!(
         !unit.contains("PublishPort")
             && !unit.contains("WantedBy=")
@@ -137,4 +230,78 @@ fn native_units_escape_manager_expansion_and_do_not_publish_ports_or_repull() {
         units::namespace("mailroom", "production").unwrap(),
         units::namespace("mailroom", "pr-1").unwrap()
     );
+}
+
+#[test]
+fn removed_preview_state_cannot_retain_data_or_be_confused_with_a_deliberate_stop() {
+    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+    let store = Store::new(dir.path().join("state")).unwrap();
+    let mut installed = Installed {
+        kind: "komizo.installed".into(),
+        version: 1,
+        application: "mailroom".into(),
+        instance: "pr-1".into(),
+        release_digest: format!("sha256:{}", "a".repeat(64)),
+        operation_id: "b".repeat(32),
+        desired_running: false,
+        removed: false,
+        expires_at: None,
+        resources: Resources::default(),
+        secret_snapshots: BTreeMap::new(),
+    };
+    installed.resources.volumes.insert(
+        "data".into(),
+        ObjectRecord {
+            name: "owned-data".into(),
+            id: format!("sha256:{}", "c".repeat(64)),
+        },
+    );
+    store.save_installed(&installed).unwrap();
+    assert!(
+        !store
+            .installed("mailroom", "pr-1")
+            .unwrap()
+            .unwrap()
+            .removed
+    );
+    installed.removed = true;
+    assert!(store.save_installed(&installed).is_err());
+    installed.resources = Resources::default();
+    store.save_installed(&installed).unwrap();
+    assert!(
+        store
+            .installed("mailroom", "pr-1")
+            .unwrap()
+            .unwrap()
+            .removed
+    );
+    assert!(store.view("mailroom", "pr-1").unwrap().1.is_none());
+    installed.desired_running = true;
+    assert!(installed.validate().is_err());
+    installed.desired_running = false;
+    installed.instance = "production".into();
+    assert!(installed.validate().is_err());
+    let pending = store.root.join("instances/.komizo-pending-A1b2C3");
+    fs::write(&pending, b"{partial").unwrap();
+    fs::set_permissions(&pending, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        komizo::deployment::proxy::instances(&store).unwrap().len(),
+        1
+    );
+    fs::set_permissions(&pending, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(komizo::deployment::proxy::instances(&store).is_err());
+}
+
+#[test]
+fn protected_state_refuses_a_symbolic_ancestor_even_when_its_target_is_private() {
+    use std::os::unix::fs::symlink;
+    let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+    let direct = directory.path().join("direct");
+    fs::create_dir(&direct).unwrap();
+    fs::set_permissions(&direct, fs::Permissions::from_mode(0o700)).unwrap();
+    let alias = directory.path().join("alias");
+    symlink(&direct, &alias).unwrap();
+    assert!(Store::new(alias.join("state")).is_err());
+    assert!(!direct.join("state").exists());
+    assert!(Store::new(direct.join("state")).is_ok());
 }

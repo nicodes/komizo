@@ -1,4 +1,5 @@
 use komizo::deployment::{assets, *};
+use std::os::unix::fs::MetadataExt;
 use std::{fs, io::Write};
 
 fn policy() -> Policy {
@@ -27,7 +28,7 @@ fn archive(entries: &[(&str, &[u8], tar::EntryType)], trailer: bool) -> Vec<u8> 
 
 #[test]
 fn static_bytes_are_exact_and_archive_metadata_cannot_choose_host_permissions() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let source = dir.path().join("web.gz");
     let target = dir.path().join("web");
     let bytes = archive(
@@ -47,11 +48,44 @@ fn static_bytes_are_exact_and_archive_metadata_cannot_choose_host_permissions() 
     );
     assert_eq!(
         fs::metadata(target.join("index.html")).unwrap().mode() & 0o777,
-        0o644
+        0o444
     );
     assert!(assets::extract(&source, &target, &policy()).is_err());
     fs::write(&source, b"changed").unwrap();
     assert!(assets::verify_file(&source, &document_digest(&bytes), bytes.len() as u64).is_err());
+}
+
+#[test]
+fn public_asset_permissions_survive_the_private_controller_umask() {
+    if std::env::var_os("KOMIZO_ASSET_UMASK_CHILD").is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "public_asset_permissions_survive_the_private_controller_umask",
+            ])
+            .env("KOMIZO_ASSET_UMASK_CHILD", "1")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
+    unsafe {
+        libc::umask(0o077);
+    }
+    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+    let source = dir.path().join("web.gz");
+    let target = dir.path().join("web");
+    fs::write(
+        &source,
+        archive(&[("index.html", b"public", tar::EntryType::Regular)], false),
+    )
+    .unwrap();
+    assets::extract(&source, &target, &policy()).unwrap();
+    assert_eq!(
+        fs::metadata(target.join("index.html")).unwrap().mode() & 0o777,
+        0o444
+    );
+    assert_eq!(fs::metadata(target).unwrap().mode() & 0o777, 0o755);
 }
 
 #[test]
@@ -76,14 +110,14 @@ fn archive_links_duplicates_expansion_and_trailing_payload_refuse_before_install
         ),
         archive(&[("index.html", b"ok", tar::EntryType::Regular)], true),
     ] {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let source = dir.path().join("web.gz");
         let target = dir.path().join("web");
         fs::write(&source, bytes).unwrap();
         assert!(assets::extract(&source, &target, &policy()).is_err());
         assert!(!target.exists());
     }
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let source = dir.path().join("web.gz");
     let target = dir.path().join("web");
     let mut bytes = archive(&[("index.html", b"ok", tar::EntryType::Regular)], false);

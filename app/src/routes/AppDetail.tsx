@@ -1,126 +1,72 @@
-// One app on this box: what it is, what serves it, and the three things the
-// allowlist permits doing to it.
-//
-// The buttons are a convenience, NOT the boundary. The allowlist is enforced
-// server-side in the CLI -- a request for anything but start/stop/restart is
-// refused no matter what this page sends, and ui_test.go pins that.
-import { useParams } from "@solidjs/router";
-import { createResource, createSignal, For, Show } from "solid-js";
-import { readReport, runAction } from "@/lib/api";
-import { deploymentStatus } from "@/lib/deployment";
-import { ago } from "@/lib/format";
-import { Badge, Dim, Row, Section } from "@/components";
-const ACTIONS = ["restart", "start", "stop"] as const;
+import {A, useParams} from "@solidjs/router";
+import {createResource, createSignal, For, Show} from "solid-js";
+import {readLogs, readOperation, readStatus, runAction} from "@/lib/api";
+import {actionable, deploymentStatus, propose, resourceNumber} from "@/lib/deployment";
+import {formatBytes} from "@/lib/format";
+import type {ActionName, ActionRequest, Operation} from "@/lib/types";
+import {Badge, Dim, Row, Section} from "@/components";
+const ACTIONS: ActionName[] = ["start", "stop", "restart", "backup"];
+
 export default function AppDetail() {
-  const params = useParams<{ name: string }>();
-  const [app, { refetch }] = createResource(() => params.name, async (name) => {
-    const rep = await readReport();
-    return (rep.report.apps ?? []).find((a) => a.name === name) ?? null;
-  });
-  const [busy, setBusy] = createSignal<string | null>(null);
-  // What the box said when it acted. Shown rather than toasted: a command
-  // that changed something on somebody's server leaves its answer on screen.
-  const [answer, setAnswer] = createSignal<string | null>(null);
-  const act = async (action: (typeof ACTIONS)[number]) => {
-    if (busy()) return;
-    setBusy(action);
-    setAnswer(null);
+  const params = useParams<{application: string; instance: string}>();
+  const [instance, {refetch}] = createResource(() => `${params.application}/${params.instance}`, async () => (await readStatus()).status.instances.find(value => value.application === params.application && value.instance === params.instance));
+  const [busy, setBusy] = createSignal(false);
+  const [pending, setPending] = createSignal<{request: ActionRequest; operation_id: string}>();
+  const [result, setResult] = createSignal<Operation>();
+  const [message, setMessage] = createSignal("");
+  const [logs, setLogs] = createSignal("");
+  const [service, setService] = createSignal("");
+  const act = async (action: ActionName) => {
+    if (busy() || !instance()) return;
+    setBusy(true); setResult(undefined); setMessage("");
     try {
-      const res = await runAction(params.name, action);
-      setAnswer(res.output.trim() || `${action}: done`);
-    } catch (e) {
-      setAnswer(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(null);
-      // Re-read after acting: the report is the truth, the button's answer is
-      // a moment ago.
-      void refetch();
-    }
+      const selected = await propose(instance()!, action); setPending(selected);
+      const response = await runAction(selected.request);
+      setResult(response.result);
+      setMessage(response.confirmation === "unconfirmed" ? response.message || "Admission is unconfirmed. Inspect before another change." : "Host operation observed.");
+    } catch (error) {setMessage(`${String(error)}. Inspect the proposed operation before another change.`);}
+    finally {setBusy(false); void refetch();}
   };
-  return (
-    <main class="min-h-screen bg-bg">
-      <div class="mx-auto max-w-3xl p-4">
-        <Show when={!app.error && app()?.name === params.name && app()} fallback={<Dim>{app.error ? `Could not read this box: ${String(app.error)}` : app.loading ? "reading the box…" : `${params.name} is not an app on this box.`}</Dim>}>
-          {(a) => (
-            <>
-              <header class="mb-4">
-                <h1 class="text-ink text-lg font-semibold">{a().name}</h1>
-              </header>
-
-              <Section title="app">
-                <Row label="state">
-                  <Badge
-                    word={
-                      a().runtime_state ?? "unknown"
-                    }
-                  />
-                </Row>
-                <Row label="last deployment check">{deploymentStatus(a())}</Row>
-                <Show when={a().deployment}><Row label="checked">{ago(a().deployment!.at)}</Row></Show>
-                <Row label="deployed">{a().version ?? "none"}</Row>
-                <Row label="config">{a().config_image ?? "—"}</Row>
-                <Show when={a().stopped && a().stopped_at}>
-                  <Row label="stopped">{`${ago(a().stopped_at!)}${a().stopped_by ? ` by ${a().stopped_by}` : ""}`}</Row>
-                </Show>
-              </Section>
-
-              <Section title="actions">
-                <div class="flex gap-2.5">
-                  <For each={ACTIONS}>
-                    {(action) => (
-                      <button
-                        type="button"
-                        disabled={busy() !== null}
-                        onClick={() => void act(action)}
-                        class="rounded-lg border border-accent px-4 py-2 text-sm font-semibold text-accent min-w-21 disabled:opacity-50">
-                        {busy() === action ? "…" : action}
-                      </button>
-                    )}
-                  </For>
-                </div>
-                <Show when={answer()}>
-                  <Dim>{answer()}</Dim>
-                </Show>
-                <Dim>
-                  Start, stop or restart this app. A restart does not verify public readiness.
-                </Dim>
-              </Section>
-
-              <Section title="services">
-                <Show when={(a().containers ?? []).length === 0}>
-                  <Dim>No containers.</Dim>
-                </Show>
-                <For each={a().containers ?? []}>
-                  {(c) => (
-                    <div class="flex items-center justify-between gap-3">
-                      <span class="min-w-0">
-                        <span class="text-ink text-sm">{c.service}</span>
-                        <Dim>{c.status ?? c.state}</Dim>
-                      </span>
-                      <Badge word={c.state} />
-                    </div>
-                  )}
-                </For>
-              </Section>
-
-              <Section title="routes">
-                <Show when={(a().hosts ?? []).length === 0}>
-                  <Dim>This app publishes no hostnames.</Dim>
-                </Show>
-                <For each={a().hosts ?? []}>
-                  {(h) => <Row label={h.name}>{h.service ? `→ ${h.service}` : "→ gate"}</Row>}
-                </For>
-              </Section>
-
-              <Show when={(a().known_as ?? []).length > 0}>
-                <Section title="known as">
-                  <Dim>{(a().known_as ?? []).join(", ")}</Dim>
-                </Section>
-              </Show>
-            </>
-          )}
-        </Show>
-      </div>
-    </main>
-  );
+  const inspect = async () => {
+    const selected = pending(); if (!selected || busy()) return;
+    setBusy(true);
+    try {setResult(await readOperation(selected.request.application, selected.request.instance, selected.operation_id, selected.request.release_digest)); setMessage("Host operation observed.");}
+    catch (error) {setMessage(`Operation admission remains unconfirmed: ${String(error)}`);}
+    finally {setBusy(false); void refetch();}
+  };
+  const unresolved = () => pending() && (!result() || result()!.reconciliation_required || !["ready", "prepared_stopped", "failed"].includes(result()!.phase));
+  const showLogs = async () => {
+    if (!service()) return;
+    try {setLogs((await readLogs(params.application, params.instance, service())).text);}
+    catch (error) {setLogs(`Logs unavailable: ${String(error)}`);}
+  };
+  return <main class="min-h-screen bg-bg"><div class="mx-auto max-w-3xl p-4">
+    <header class="mb-5 flex items-baseline justify-between"><h1 class="text-ink text-lg font-semibold">{params.application} <span class="text-dim text-sm">{params.instance}</span></h1><A class="text-accent text-sm" href="/">all applications</A></header>
+    <Show when={instance.error}><Dim>Host observation unavailable: {String(instance.error)}</Dim></Show>
+    <Show when={instance()} fallback={<Dim>{instance.loading ? "Reading application…" : "This instance is unavailable."}</Dim>}>{value => <>
+      <Section title="Release"><Row label="status"><Badge word={deploymentStatus(value())}/></Row><Row label="intent">{value().removed ? "removed" : value().desired_running ? "running" : "stopped"}</Row>
+        <Row label="release"><span class="break-all font-mono text-xs">{value().release_digest}</span></Row>
+        <Show when={value().source}><Row label="source">{value().source?.repository} · {value().source?.revision.slice(0, 12)}</Row></Show>
+        <Show when={value().prepared}><Row label="prepared for start"><span class="break-all font-mono text-xs">{value().prepared?.release_digest}</span></Row></Show>
+        <Show when={value().expires_at}><Row label="expires">{new Date(value().expires_at! * 1000).toLocaleString()}</Row></Show>
+      </Section>
+      <Section title="Resources"><Row label="memory current / limit">{formatBytes(resourceNumber(value().resources, "memory_current_bytes"))} / {formatBytes(resourceNumber(value().resources, "memory_max_bytes"))}</Row>
+        <Row label="swap current / limit">{formatBytes(resourceNumber(value().resources, "memory_swap_current_bytes"))} / {formatBytes(resourceNumber(value().resources, "memory_swap_max_bytes"))}</Row>
+        <Row label="processes current / limit">{resourceNumber(value().resources, "pids_current") ?? "—"} / {resourceNumber(value().resources, "pids_max") ?? "—"}</Row>
+        <Dim>Unavailable measurements are shown as —.</Dim>
+      </Section>
+      <Section title="Actions"><div class="flex flex-wrap gap-2"><For each={ACTIONS}>{action => <button type="button" class="rounded-lg border border-accent px-4 py-2 text-sm text-accent disabled:opacity-40" disabled={busy() || !!unresolved() || !actionable(value(), action)} onClick={() => void act(action)}>{action === "backup" ? "back up" : action}</button>}</For></div>
+        <Show when={(value().unresolved_operations?.length ?? 0) > 0}><Dim>An operation requires inspection before another change.</Dim></Show>
+        <Show when={message()}><Dim>{message()}</Dim></Show>
+        <Show when={pending()}>{selected => <><Row label="operation"><span class="font-mono text-xs break-all">{selected().operation_id}</span></Row><button type="button" class="text-accent text-sm self-start disabled:opacity-40" disabled={busy()} onClick={() => void inspect()}>inspect operation</button></>}</Show>
+        <Show when={result()}>{operation => <Row label="observed outcome"><Badge word={operation().phase}/></Row>}</Show>
+      </Section>
+      <Section title="Services"><Show when={Object.keys(value().services).length === 0}><Dim>This release serves static assets without application containers.</Dim></Show>
+        <For each={Object.entries(value().services)}>{([name, current]) => <Row label={name}><Badge word={current.health || current.state || "unavailable"}/><span>{formatBytes(resourceNumber(current.resources, "memory_current_bytes", "memory_current"))}</span></Row>}</For>
+      </Section>
+      <Section title="Routes"><Show when={(value().routes?.length ?? 0) === 0}><Dim>No route observation is available.</Dim></Show><For each={value().routes}>{route => <Dim>{route.host}{route.path}</Dim>}</For></Section>
+      <Section title="Operation history"><Show when={(value().operations?.length ?? 0) === 0}><Dim>No retained operation observations are available.</Dim></Show><For each={value().operations}>{operation => <Row label={operation.operation_id.slice(0, 12)}><Badge word={operation.phase}/></Row>}</For></Section>
+      <Section title="Logs"><div class="flex gap-2"><select class="rounded border border-edge bg-bg p-2 text-ink" value={service()} onChange={event => setService(event.currentTarget.value)}><option value="">select service or job</option><For each={value().log_targets ?? Object.keys(value().services)}>{name => <option value={name}>{name}</option>}</For></select><button type="button" class="text-accent text-sm" disabled={!service()} onClick={() => void showLogs()}>read logs</button></div><Show when={logs()}><pre class="overflow-auto max-h-96 whitespace-pre-wrap break-words text-xs text-ink">{logs()}</pre></Show></Section>
+    </>}</Show>
+  </div></main>;
 }

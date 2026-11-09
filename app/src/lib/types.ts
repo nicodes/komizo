@@ -1,163 +1,29 @@
-// JSON shapes served by the native host report and local Axum API.
-// Empty native collection observations can be null; the overview collector
-// turns them into arrays for rendering without changing transport payloads.
-
-export type Report = {
-  v: number;
-  at: string;
-  server: Server;
-  proxy?: Proxy;
-  network?: Network;
-  apps: App[] | null;
-  orphans?: string[];
-  system: System;
-  problems: Problem[] | null;
-  // What the disk-hygiene sweep last did, when it has run. Absent on a box
-  // that has never swept -- see box/sweep.go.
-  sweep?: Sweep;
-  // What the preview reaper last did, when it has run -- see box/preview.go.
-  preview?: PreviewReap;
+export type ActionName = "start" | "stop" | "restart" | "backup";
+export type Operation = {
+  kind: "komizo.operation"; version: 1; operation_id: string; application: string;
+  instance: string; release_digest: string; phase: string; ok: boolean;
+  reconciliation_required?: boolean; action?: string; admitted_at?: number; failure?: {message?: string};
+  backup?: {status: string; files?: {name: string; size_bytes: number; sha256: string}[]};
 };
-
-export type PreviewReap = {
-  v: number;
-  at: string;
-  reaped: string[] | null;
-  kept: number;
-  note?: string;
+export type Resources = Record<string, unknown>;
+export type Service = {container_id?: string | null; state?: string | null; health?: string | null; resources?: Resources};
+export type Instance = {
+  application: string; instance: string; release_digest: string; desired_running: boolean; removed?: boolean;
+  operation_id: string; expires_at?: number | null;
+  source?: {repository: string; revision: string};
+  prepared?: {release_digest: string; operation_id: string; source?: {repository: string; revision: string}} | null;
+  actions?: Partial<Record<ActionName, {release_digest: string}>>;
+  services: Record<string, Service>; log_targets?: string[]; operations?: Operation[]; unresolved_operations?: Operation[];
+  resources?: Resources | null; secret_generations?: Record<string, string>;
+  routes?: {host: string; path: string}[]; volumes?: string[];
 };
-
-export type Sweep = {
-  v: number;
-  at: string;
-  min_age_days: number;
-  candidates: number;
-  removed: number;
-  skipped: number;
-  reclaimed_bytes: number;
-  note?: string;
+export type HostStatus = {
+  kind: "komizo.status"; version: 1; observed_at?: string;
+  host?: {boot_id?: string; resources?: Resources}; instances: Instance[];
 };
-
-export type Server = {
-  state: string; // ready | docker-stopped | bare
-  docker?: string;
-  os?: string;
-  uptime_s?: number;
-  komizo: { installed: boolean; version?: string; stamp?: string; agent?: string };
-};
-
-export type Proxy = {
-  state: string; // running | stopped
-  network?: string;
-  image?: string;
-  status?: string;
-  tls_ask?: string;
-};
-
-export type Network = {
-  name: string;
-  members?: { container: string; aliases?: string[] }[];
-};
-
-export type App = {
-  runtime_state?: string;
-  name: string;
-  user?: string;
-  dir?: string;
-  version?: string;
-  config_image?: string;
-  deployment?: { version: number; app: string; candidate: string; previous?: string; phase: string; at: string };
-  ingress?: Network;
-  known_as?: string[];
-  stopped?: boolean;
-  stopped_by?: string;
-  stopped_at?: string;
-  containers?: Container[];
-  hosts?: Host[];
-};
-
-export type Host = {
-  name: string;
-  service?: string;
-};
-
-export type Container = {
-  service: string;
-  name: string;
-  state: string;
-  health?: string;
-  exit_code?: number;
-  status?: string;
-  image?: string;
-  started_at?: string;
-  finished_at?: string;
-};
-
-export type Problem = {
-  kind: string;
-  detail: string;
-  app?: string;
-};
-
-export type System = {
-  cores?: number;
-  cpu?: { total: number; idle: number };
-  pressure?: Pressure;
-  groups?: {name: string; stat: ContainerStat}[];
-  mem?: { total: number; used: number; available: number; swap?: { total: number; used: number } };
-  disks?: { mount: string; dev?: string; used: number; size: number; available: number }[];
-  containers?: ContainerStat[];
-  volumes?: { app: string; service: string; name: string; bytes: number }[];
-};
-
-export type Pressure = {
-  cpu?: PressureResource;
-  memory?: PressureResource;
-  io?: PressureResource;
-};
-export type PressureResource = {some?: PressureLine; full?: PressureLine};
-export type PressureLine = {avg10: number; avg60: number; avg300: number; total_usec: number};
-export type ContainerStat = {
-  app: string; service: string; cpu_usec?: number; mem?: number; limit?: number;
-  cpu_periods?: number; cpu_throttled_periods?: number; cpu_throttled_usec?: number;
-  memory_current?: number; memory_max_events?: number; oom_kills?: number;
-  swap?: number; pressure?: Pressure;
-};
-
-export type Sample = {
-  at: string;
-  system: System;
-};
-
-export type Metrics = {
-  span?: { from: number; to: number };
-  rows: { minute: number; app: string; service?: string; c2?: number; c3?: number; c4?: number; c5?: number }[] | null;
-};
-
-// An event is a command the box was told and what came of it -- the daemon's
-// results directory, which is the only box-local record of things happening.
-export type BoxEvent = {
-  id: string;
-  op: string;
-  at: string;
-  ok: boolean;
-  detail?: string;
-};
-
-// What `komizo ui` serves under /api/. Every document carries v, the same
-// rule the box's own API holds itself to: a document that does not state its
-// schema is one the reader has to guess at.
-export type ReportResponse = { v: number; report: Report };
-export type HistoryResponse = { v: number; from: number; to: number; samples: Sample[] };
-export type MetricsResponse = { v: number; from: number; to: number; metrics: Metrics };
-export type EventsResponse = { v: number; events: BoxEvent[] | null };
-
-// No box-local backup state exists yet (the CLI never wrote any), so v1
-// serves the empty list and says so -- the screen shows the absence honestly
-// rather than inventing a shape nothing writes.
-export type BackupsResponse = { v: number; backups: string[]; note: string };
-
-// The action allowlist, server-side in the CLI: these three verbs and no
-// others, whatever the UI sends.
-export type ActionRequest = { app: string; action: "start" | "stop" | "restart" };
-export type ActionResponse = { v: number; ok: boolean; output: string };
+export type Observation = {captured_at: string; status: HostStatus};
+export type StatusResponse = Observation & {kind: "komizo.ui.status"; version: 1; host: string};
+export type HistoryResponse = {kind: "komizo.ui.history"; version: 1; scope: string; samples: Observation[]};
+export type ActionRequest = {application: string; instance: string; action: ActionName; release_digest: string; nonce: string};
+export type ActionResponse = {kind: "komizo.ui.action"; version: 1; confirmation: "confirmed" | "observed" | "unconfirmed"; operation_id: string; result?: Operation; message?: string};
+export type Logs = {kind: "komizo.logs"; version: 1; application: string; instance: string; service: string; container_id: string; text: string};

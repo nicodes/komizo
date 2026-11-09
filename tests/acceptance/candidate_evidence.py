@@ -1,23 +1,63 @@
-"""Export bounded nonsecret provisional deployment observations."""
+"""Export finite nonsecret source-candidate observations without a release claim."""
 import argparse
 import json
 from pathlib import Path
 import re
+import sys
 
-def export(observations, output, source):
- if not re.fullmatch('[a-f0-9]{40}',source) or output.exists(): raise ValueError('exact source and fresh output required')
- rows={}
- for name in ('candidate-deployment.json','cleanup.json'):
-  p=observations/name
-  if p.is_symlink() or not p.is_file() or p.stat().st_size>1<<20:raise ValueError('bounded regular evidence required')
-  rows[name]=json.loads(p.read_bytes())
- result=rows['candidate-deployment.json'];cleanup=rows['cleanup.json']
- if result['source']!=source or not result['accepted'] or result['signed_release_acceptance'] or result['candidate_cli']['authenticated'] or result['github_credentials_present'] or not cleanup['owned_container_removed'] or cleanup['shared_images_removed']:raise ValueError('candidate identity, isolation or cleanup differs')
- required={'public_setup','public_app_setup_idempotence','public_owner_approved_activation','public_update_and_rollback'}
- if not required <= {s['step'] for s in result['steps'] if s.get('accepted') is True}:raise ValueError('deployment observations missing')
- output.mkdir(mode=0o700)
- for name,row in rows.items():(output/name).write_text(json.dumps(row,indent=2)+'\n')
+sys.path.insert(0,str(Path(__file__).resolve().parent))
+from release_acceptance import read, read_budget, sha, REQUIRED_STEPS, validate_measurements
+
+CANDIDATE_STEPS=set(REQUIRED_STEPS)
+BOUNDED_STEPS={'apparmor_override_refused','apparmor_root_helper_default','apparmor_signal_delivery','apparmor_stacked_profile_enforced','apparmor_foreign_profile_signal_refused','apparmor_host_signal_refused','real_reboot','bounded_full_postgresql_offline_reboot','fixed_budget_performance',
+    'real_postgresql_api_dag','shared_dns_control_budget','owner_postgresql_encrypted_restore','recovery_private_key_outside_capture_host','source_bound_authenticated_snapshot'}
+
+
+def export(observations,output,source):
+    if not re.fullmatch('[a-f0-9]{40}',source) or output.exists() or output.is_symlink():raise ValueError('exact source and fresh output required')
+    result=read(observations/'candidate-deployment.json');cleanup=read(observations/'cleanup.json')
+    if (result.get('source')!=source or result.get('accepted') is not True or result.get('signed_release_acceptance') is not False
+            or result.get('candidate_cli',{}).get('authenticated') is not False or result.get('github_credentials_present') is not False
+            or type(cleanup.get('version')) is not int or cleanup!={'version':1,'owned_guest_removed':True,'private_storage_removed':True,'shared_images_removed':False}):
+        raise ValueError('candidate identity, isolation, scope or owned cleanup differs')
+    profiles=result.get('profiles',{})
+    if not isinstance(profiles,dict) or set(profiles)!={'functional','bounded'}:raise ValueError('both source candidate profiles are required')
+    for name,required in [('functional',CANDIDATE_STEPS),('bounded',BOUNDED_STEPS)]:
+        profile=profiles[name]
+        if not isinstance(profile,dict):raise ValueError('source candidate profile must be an object')
+        checks=profile.get('checks',{})
+        missing=sorted(check for check in required if not isinstance(checks,dict) or checks.get(check)!='passed')
+        identity={'accepted':profile.get('ok') is True,'profile_matches':profile.get('profile')==name,
+            'source_matches':profile.get('source')=={'revision':source,'binary_sha256':result.get('host_sha256')}}
+        if not all(identity.values()) or missing:
+            # Export only finite predicate results and reviewed check names,
+            # never an arbitrary report value, transcript or private path.
+            raise ValueError(json.dumps({'phase':'source_candidate_profile','profile':name,
+                **identity,'missing_checks':missing},sort_keys=True))
+    performance=read(observations/'performance.json');onboarding=read(observations/'onboarding.json')
+    root=Path(__file__).parent;budget=read_budget(root/'acceptance-budgets.toml')
+    validate_measurements(performance,onboarding,{'host_sha256':result['host_sha256'],'proxy_sha256':result['proxy_sha256'],
+        'cli_sha256':result['candidate_cli']['sha256']},budget)
+    if performance['budget_sha256']!=sha(root/'acceptance-budgets.toml') or onboarding['public_readme_sha256']!=sha(root.parents[1]/'README.md'):
+        raise ValueError('source candidate budget or public owner instructions changed')
+    for name in ('host_sha256','proxy_sha256'):
+        if not re.fullmatch('[a-f0-9]{64}',result.get(name,'')):raise ValueError('candidate native binary identity missing')
+    if not re.fullmatch('[a-f0-9]{64}',result['candidate_cli'].get('sha256','')):raise ValueError('candidate owner identity missing')
+    output.mkdir(mode=0o700)
+    # Do not copy arbitrary transcripts, paths or raw fixture reports.
+    closed={key:result[key] for key in ('source','accepted','signed_release_acceptance','github_credentials_present','host_sha256','proxy_sha256')}
+    closed['candidate_cli']={key:result['candidate_cli'][key] for key in ('authenticated','sha256')}
+    closed['profiles']={}
+    for name,required in [('functional',CANDIDATE_STEPS),('bounded',BOUNDED_STEPS)]:
+        closed['profiles'][name]={key:profiles[name][key] for key in ('ok','profile','source')}
+        closed['profiles'][name]['checks']={check:'passed' for check in sorted(required)}
+    owner={key:onboarding[key] for key in ('accepted','mode','commands','seconds','human_interventions','provider_credentials_in_task','source_checkout_in_task','public_readme_sha256','cli_sha256')}
+    for name,row in [('candidate-deployment.json',closed),('candidate-performance.json',performance),('candidate-onboarding.json',owner),('cleanup.json',cleanup)]:
+        (output/name).write_text(json.dumps(row,sort_keys=True)+'\n')
+
+
 
 if __name__=='__main__':
- p=argparse.ArgumentParser(description=__doc__);p.add_argument('--observations',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--source',required=True)
- a=p.parse_args();export(a.observations,a.output,a.source)
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--observations',type=Path,required=True)
+    parser.add_argument('--output',type=Path,required=True);parser.add_argument('--source',required=True)
+    args=parser.parse_args();export(args.observations,args.output,args.source)

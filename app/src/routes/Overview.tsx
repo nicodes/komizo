@@ -1,235 +1,38 @@
-// The one screen v1 is mostly about: this box, read off the box itself.
-//
-// The shape mirrors the RN-port overview (status and problems first, usage
-// next, apps after), and every byte on it arrived from /api/ on the same
-// listener that served this page -- the report the daemon writes, the command
-// results it leaves. There is no account, no registry, no second service in
-// the path.
-import { A } from "@solidjs/router";
-import { createResource, createSignal, For, Show } from "solid-js";
-import { readBackups, readEvents, readMetrics, readReport } from "@/lib/api";
-import { deploymentStatus } from "@/lib/deployment";
-import { collectOverview } from "@/lib/overview";
-import { ago, formatBytes, formatDuration } from "@/lib/format";
-import { Badge, Bar, Dim, Row, Section } from "@/components";
+import {A} from "@solidjs/router";
+import {createResource, createSignal, For, Show} from "solid-js";
+import {readHistory, readStatus} from "@/lib/api";
+import {deploymentStatus, resourceNumber} from "@/lib/deployment";
+import {collectOverview} from "@/lib/overview";
+import {ago, formatBytes} from "@/lib/format";
+import {Badge, Dim, Row, Section} from "@/components";
+
 export default function Overview() {
-  // One load on open and one per refresh click. No polling loop: the report
-  // itself is written on a timer, and a page that re-asks faster than the box
-  // re-measures is reading the same file twice.
-  const [generation, setGeneration] = createSignal(1);
-  const [snapshot] = createResource(generation, () => collectOverview({
-    report: readReport, events: readEvents, metrics: readMetrics, backups: readBackups,
-  }));
-  const report = () => snapshot()?.report;
-  const events = () => snapshot()?.events;
-  const metrics = () => snapshot()?.metrics;
-  const backups = () => snapshot()?.backups;
-  const reportError = () => snapshot()?.errors.report;
-  const requestTotal = () => metrics()
-    ? metrics()!.metrics.rows.reduce((n, r) => n + (r.c2 ?? 0) + (r.c3 ?? 0) + (r.c4 ?? 0) + (r.c5 ?? 0), 0)
-    : "unavailable";
-  return (
-    <main class="min-h-screen bg-bg">
-      <div class="mx-auto max-w-3xl p-4">
-        <header class="mb-4 flex items-baseline justify-between">
-          <h1 class="text-ink text-lg font-semibold">komizo</h1>
-          <button
-            class="text-accent text-sm hover:underline"
-            onClick={() => setGeneration((value) => value + 1)}
-            type="button">
-            refresh
-          </button>
-        </header>
-
-        <Show when={reportError()}>
-          <Section title="could not read this box">
-            <Dim>{reportError()}</Dim>
-            <Dim>komizo ui serves what the box wrote -- a box that has never reported has nothing to show yet.</Dim>
-          </Section>
-        </Show>
-
-        <For each={[snapshot()?.errors.events, snapshot()?.errors.metrics, snapshot()?.errors.backups].filter(Boolean)}>
-          {(error) => <Dim>Some box evidence could not be refreshed: {String(error)}</Dim>}
-        </For>
-
-        <Show when={report()} fallback={<Dim>reading the box…</Dim>}>
-          {(rep) => {
-            const mem = () => rep().system.mem;
-            const memUsed = () => (mem() ? mem()!.total - mem()!.available : 0);
-            return (
-              <>
-                <Section title="server">
-                  <Row label="state">
-                    <Badge word={rep().server.state} />
-                  </Row>
-                  <Row label="os">{rep().server.os ?? "—"}</Row>
-                  <Row label="uptime">{formatDuration(rep().server.uptime_s)}</Row>
-                  <Row label="docker">{rep().server.docker ?? "—"}</Row>
-                  <Row label="agent">{rep().server.komizo.agent ?? "—"}</Row>
-                  <Row label="reported">{ago(rep().at)}</Row>
-                </Section>
-
-                <Show when={rep().problems.length > 0}>
-                  <Section title="problems">
-                    <For each={rep().problems}>
-                      {(p) => (
-                        <div>
-                          <p class="text-warn text-sm font-semibold">
-                            {p.kind}
-                            {p.app ? ` · ${p.app}` : ""}
-                          </p>
-                          <Dim>{p.detail}</Dim>
-                        </div>
-                      )}
-                    </For>
-                  </Section>
-                </Show>
-
-                <Section title="usage">
-                  <Show when={mem()}>
-                    {(m) => (
-                      <div class="flex items-center gap-2.5">
-                        <span class="text-dim text-[13px] w-28">memory</span>
-                        <Bar used={memUsed()} total={m().total} alert={memUsed() / m().total > 0.9} />
-                        <span class="text-ink text-xs w-32 text-right">
-                          {formatBytes(memUsed())} / {formatBytes(m().total)}
-                        </span>
-                      </div>
-                    )}
-                  </Show>
-                  <For each={rep().system.disks ?? []}>
-                    {(d) => (
-                      <div class="flex items-center gap-2.5">
-                        <span class="text-dim text-[13px] w-28">{d.mount}</span>
-                        <Bar used={d.used} total={d.size} alert={d.used / d.size > 0.9} />
-                        <span class="text-ink text-xs w-32 text-right">
-                          {formatBytes(d.used)} / {formatBytes(d.size)}
-                        </span>
-                      </div>
-                    )}
-                  </For>
-                  <Show when={rep().system.cores !== undefined}>
-                    <Dim>{rep().system.cores} cores</Dim>
-                  </Show>
-                </Section>
-
-                <Section title="apps">
-                  <Show when={rep().apps.length === 0}>
-                    <Dim>No apps yet. `komizo add` puts one here.</Dim>
-                  </Show>
-                  <For each={rep().apps}>
-                    {(a) => (
-                      <A
-                        href={`/app/${encodeURIComponent(a.name)}`}
-                        class="flex items-center justify-between gap-3 py-1.5 group">
-                        <span class="min-w-0">
-                          <span class="text-ink text-sm group-hover:text-accent">{a.name}</span>
-                          <Dim>
-                            {a.version ?? "none"} · {deploymentStatus(a)}
-                            {(a.hosts ?? []).length > 0 ? ` · ${(a.hosts ?? []).map((h) => h.name).join(", ")}` : ""}
-                          </Dim>
-                        </span>
-                        <Badge
-                          word={
-                            a.runtime_state ?? "unknown"
-                          }
-                        />
-                      </A>
-                    )}
-                  </For>
-                  <Show when={(rep().orphans ?? []).length > 0}>
-                    <Dim>orphan directories: {(rep().orphans ?? []).join(", ")}</Dim>
-                  </Show>
-                </Section>
-
-                <Section title="proxy & network">
-                  <Show when={rep().proxy} fallback={<Dim>No shared proxy on this box.</Dim>}>
-                    {(p) => (
-                      <>
-                        <Row label="proxy">
-                          <Badge word={p().state} />
-                        </Row>
-                        <Row label="image">{p().image ?? "—"}</Row>
-                        <Show when={p().tls_ask}>
-                          <Row label="on-demand tls">{p().tls_ask}</Row>
-                        </Show>
-                      </>
-                    )}
-                  </Show>
-                  <Show when={rep().network}>
-                    {(n) => <Row label="network">{`${n().name} · ${(n().members ?? []).length} attached`}</Row>}
-                  </Show>
-                  <Show when={metrics() && metrics()!.metrics.rows.length > 0}>
-                    <Dim>requests in the measured window: {requestTotal()}</Dim>
-                  </Show>
-                </Section>
-
-                <Section title="events">
-                  <Show when={(events() ?? []).length === 0}>
-                    <Dim>{events() === undefined ? "Events unavailable." : "Nothing has been told to this box yet."}</Dim>
-                  </Show>
-                  <For each={events() ?? []}>
-                    {(e) => (
-                      <div class="flex items-center gap-2.5">
-                        <Badge word={e.ok ? "ok" : "failed"} />
-                        <span class="min-w-0">
-                          <span class="text-ink text-sm">{e.op}</span>
-                          <Dim>
-                            {ago(e.at)}
-                            {e.detail ? ` · ${e.detail}` : ""}
-                          </Dim>
-                        </span>
-                      </div>
-                    )}
-                  </For>
-                </Section>
-
-                <Show when={rep().sweep}>
-                  {(sw) => (
-                    <Section title="disk hygiene">
-                      <Row label="last sweep">{ago(sw().at)}</Row>
-                      <Row label="swept">
-                        {`${sw().removed} dangling image${sw().removed === 1 ? "" : "s"} · ${formatBytes(sw().reclaimed_bytes)} reclaimed`}
-                      </Row>
-                      <Show when={sw().skipped > 0}>
-                        <Row label="kept">{`${sw().skipped} (docker or the rules said no)`}</Row>
-                      </Show>
-                      <Show when={sw().note}>
-                        <Dim>{sw().note}</Dim>
-                      </Show>
-                      <Dim>Only dangling images older than {sw().min_age_days} days are ever swept — tagged images, anything a container references, volumes, and anything state names are always kept.</Dim>
-                    </Section>
-                  )}
-                </Show>
-
-                <Show when={rep().preview}>
-                  {(pv) => (
-                    <Section title="previews">
-                      <Row label="last reap">{ago(pv().at)}</Row>
-                      <Row label="reaped">
-                        {pv().reaped.length === 0 ? "none" : pv().reaped.join(", ")}
-                      </Row>
-                      <Row label="kept">{pv().kept}</Row>
-                      <Show when={pv().note}>
-                        <Dim>{pv().note}</Dim>
-                      </Show>
-                      <Dim>
-                        The reaper only ever touches previews it has state records for — expired PR previews and the
-                        least-recently-used over the ceiling. Apps, volumes, and anything without a record are never touched.
-                      </Dim>
-                    </Section>
-                  )}
-                </Show>
-
-                <Section title="backups">
-                  <Dim>{backups()?.note ?? "—"}</Dim>
-                  <Dim>Recovery is unverified here. A backup export alone does not prove it can be restored.</Dim>
-                </Section>
-              </>
-            );
-          }}
-        </Show>
-      </div>
-    </main>
-  );
+  const [generation, setGeneration] = createSignal(0);
+  const [view] = createResource(generation, () => collectOverview({status: readStatus, history: readHistory}));
+  const current = () => view()?.status;
+  const resources = () => current()?.status.host?.resources;
+  return <main class="min-h-screen bg-bg"><div class="mx-auto max-w-3xl p-4">
+    <header class="mb-5 flex items-baseline justify-between"><h1 class="text-ink text-lg font-semibold">komizo</h1>
+      <button class="text-accent text-sm disabled:opacity-50" disabled={view.loading} onClick={() => setGeneration(value => value + 1)} type="button">{view.loading ? "refreshing…" : "refresh"}</button></header>
+    <Show when={view()?.errors.status}><Section title="Host unavailable"><Dim>{view()?.errors.status}</Dim><Dim>The local UI is running. The remote host has not supplied a current observation.</Dim></Section></Show>
+    <Show when={current()} fallback={<Dim>{view.loading ? "Reading owner host…" : "No current host observation."}</Dim>}>{value => <>
+      <Section title="Host"><Row label="host">{value().host}</Row><Row label="observed">{ago(value().captured_at)}</Row>
+        <Row label="memory total">{formatBytes(resourceNumber(resources(), "memory_total_bytes"))}</Row>
+        <Row label="memory available">{formatBytes(resourceNumber(resources(), "memory_available_bytes"))}</Row>
+        <Row label="swap free">{formatBytes(resourceNumber(resources(), "swap_free_bytes"))} / {formatBytes(resourceNumber(resources(), "swap_total_bytes"))}</Row>
+        <Show when={value().status.host?.boot_id}><Row label="boot">{value().status.host?.boot_id?.slice(0, 12)}</Row></Show>
+      </Section>
+      <Section title="Applications"><Show when={value().status.instances.length === 0}><Dim>No accepted application instances.</Dim></Show>
+        <For each={value().status.instances}>{instance => <A class="flex justify-between gap-3 rounded-lg border border-edge p-3" href={`/app/${encodeURIComponent(instance.application)}/${encodeURIComponent(instance.instance)}`}>
+          <span><span class="text-ink font-semibold">{instance.application}</span><Dim>{instance.instance} · {instance.source?.revision.slice(0, 12) ?? instance.release_digest.slice(7, 19)}</Dim></span>
+          <Badge word={deploymentStatus(instance)}/>
+        </A>}</For>
+      </Section>
+    </>}</Show>
+    <Section title="Recent observations"><Dim>Samples collected by this local UI session. Application operation history is retained by the host.</Dim>
+      <Show when={(view()?.history?.samples.length ?? 0) === 0}><Dim>No successful observations collected yet.</Dim></Show>
+      <For each={view()?.history?.samples.slice(-5).reverse()}>{sample => <Row label={ago(sample.captured_at)}>{sample.status.instances.length} instances · {formatBytes(resourceNumber(sample.status.host?.resources, "memory_available_bytes"))} available</Row>}</For>
+      <Show when={view()?.errors.history}><Dim>{view()?.errors.history}</Dim></Show>
+    </Section>
+  </div></main>;
 }

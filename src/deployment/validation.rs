@@ -26,6 +26,34 @@ pub fn canonical(value: &Value) -> Result<Vec<u8>> {
 pub fn document_digest(body: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(body))
 }
+
+pub fn bounded_value(body: &[u8], limit: usize) -> Result<Value> {
+    ensure!(
+        body.len() <= limit,
+        "security document exceeds its byte bound"
+    );
+    let (mut quoted, mut escaped, mut tokens) = (false, false, 0usize);
+    for byte in body {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if *byte == b'\\' {
+                escaped = true;
+            } else if *byte == b'"' {
+                quoted = false;
+            }
+        } else if *byte == b'"' {
+            quoted = true;
+        } else if b"[]{}:,".contains(byte) {
+            tokens += 1;
+            ensure!(
+                tokens <= 32768,
+                "security document exceeds its structural bound"
+            );
+        }
+    }
+    crate::strict::value(body, limit)
+}
 pub fn hex(value: &str, n: usize) -> bool {
     value.len() == n
         && value
@@ -726,7 +754,7 @@ impl StatefulContract {
 }
 
 pub fn read_release(body: &[u8]) -> Result<ReleaseDocument> {
-    let value = crate::strict::value(body, MAX_DOCUMENT_BYTES)?;
+    let value = bounded_value(body, MAX_DOCUMENT_BYTES)?;
     let release: Release = serde_json::from_value(value.clone())?;
     release.validate()?;
     let canonical = canonical(&value)?;
@@ -745,6 +773,11 @@ impl Policy {
             "invalid host policy identity"
         );
         self.limits.validate()?;
+        self.controls.validate(&self.limits)?;
+        ensure!(
+            self.startup_memory_bytes <= 512 << 20,
+            "startup allocation exceeds its finite bound"
+        );
         if let Some(service_limits) = &self.service_limits {
             service_limits.validate()?;
         }
@@ -771,7 +804,9 @@ impl Policy {
                 && (1..=1500).contains(&self.operation_timeout_seconds)
                 && self.max_asset_file_bytes > 0
                 && self.max_asset_file_bytes <= self.max_asset_bytes
-                && self.max_asset_bytes <= 4u64 << 30,
+                && self.max_asset_bytes <= 4u64 << 30
+                && self.max_image_bytes > 0
+                && self.max_image_bytes <= 8u64 << 30,
             "host policy needs bounded readiness, deadline and archive limits"
         );
         if let Authority::Github {
@@ -780,7 +815,7 @@ impl Policy {
             workflows,
             reference,
             environment,
-            publisher_workflow,
+            publisher_workflows,
         } = &self.authority
         {
             ensure!(
@@ -792,15 +827,27 @@ impl Policy {
                     && !environment.is_empty()
                     && safe_text(environment, 128)
                     && !workflows.is_empty()
-                    && (publisher_workflow.is_empty()
-                        || publisher_workflow
-                            .rsplit_once('@')
-                            .is_some_and(|(path, revision)| path.contains("/.github/workflows/")
+                    && workflows.len() <= 32
+                    && workflows
+                        .keys()
+                        .filter(|a| a.ends_with("deploy"))
+                        .all(|a| publisher_workflows.contains_key(a))
+                    && publisher_workflows
+                        .iter()
+                        .all(|(action, w)| workflows.contains_key(action)
+                            && action.ends_with("deploy")
+                            && w.rsplit_once('@').is_some_and(|(path, revision)| path
+                                .contains("/.github/workflows/")
+                                && safe_text(path, 512)
                                 && hex(revision, 40)))
-                    && workflows.iter().all(|(a, w)| name(a)
-                        && w.starts_with(&format!("{repository}/.github/workflows/"))
-                        && w.ends_with("@refs/heads/main")
-                        && safe_text(w, 512)),
+                    && workflows.iter().all(|(a, callers)| name(a)
+                        && !callers.is_empty()
+                        && callers.len() <= 8
+                        && callers.iter().collect::<BTreeSet<_>>().len() == callers.len()
+                        && callers.iter().all(|w| w
+                            .starts_with(&format!("{repository}/.github/workflows/"))
+                            && w.ends_with("@refs/heads/main")
+                            && safe_text(w, 512))),
                 "invalid GitHub workflow authority"
             );
         }
@@ -812,15 +859,64 @@ impl Policy {
                     && (!grant.services.is_empty() || !grant.jobs.is_empty())
                     && grant.services.iter().chain(&grant.jobs).all(|s| name(s))
                     && (grant.environment_file || grant.mount)
-                    && safe_text(&grant.generation, 128)
-                    && !grant.generation.is_empty(),
+                    && hex(&grant.generation, 32),
                 "invalid service secret grant"
             );
         }
         if let Some(preview) = &self.previews {
+            ensure!(
+                !preview.readiness.is_empty(),
+                "preview policy requires its own protected readiness probes"
+            );
+            let probes = preview
+                .readiness
+                .iter()
+                .map(|probe| {
+                    let mut probe = probe.clone();
+                    probe.url = probe.url.replace("{instance}", "pr-1");
+                    probe
+                })
+                .collect::<Vec<_>>();
+            ensure!(
+                probes.iter().all(|p| !p.url.contains(['{', '}'])),
+                "preview readiness has unsupported placeholders"
+            );
+            validate_readiness(
+                &probes,
+                &[
+                    format!("pr-1.{}", preview.hostname_suffix),
+                    format!("pr-1-api.{}", preview.hostname_suffix),
+                ]
+                .into_iter()
+                .collect(),
+            )?;
             preview.limits.validate()?;
+            preview.controls.validate(&preview.limits)?;
+            if let Some(limits) = &preview.service_limits {
+                limits.validate()?;
+            }
+            for (alias, grant) in &preview.secrets {
+                ensure!(
+                    name(alias)
+                        && grant.path.starts_with(&format!(
+                            "/var/lib/komizo/preview-secrets/{}/{{instance}}/",
+                            self.application
+                        ))
+                        && absolute(&grant.path.replace("{instance}", "pr-1"))
+                        && (!grant.services.is_empty() || !grant.jobs.is_empty())
+                        && grant.services.iter().chain(&grant.jobs).all(|n| name(n))
+                        && (grant.environment_file || grant.mount)
+                        && hex(&grant.generation, 32),
+                    "preview secret grants require isolated instance paths and explicit service scope"
+                );
+            }
+            if let Some(task) = &preview.prepare {
+                task.validate()?;
+            }
             ensure!(
                 hostname(&preview.hostname_suffix)
+                    && !preview.environment.is_empty()
+                    && safe_text(&preview.environment, 128)
                     && (1..=100).contains(&preview.max_instances)
                     && (60..=604800).contains(&preview.max_ttl_seconds)
                     && preview.limits.fits(&self.limits)
@@ -832,12 +928,10 @@ impl Policy {
             );
         }
         if let Some(task) = &self.backup {
+            task.validate()?;
             ensure!(
-                absolute(&task.program)
-                    && digest(&task.sha256)
-                    && (1..=1500).contains(&task.timeout_seconds)
-                    && (1..=64u64 << 30).contains(&task.max_export_bytes),
-                "invalid protected backup task"
+                !task.services.is_empty(),
+                "backup policy must declare the required data services"
             );
         }
         Ok(())
@@ -877,6 +971,23 @@ impl Policy {
                 "artifact is outside the application's admitted family"
             );
         }
+        if !preview && let Some(task) = &self.backup {
+            for name in &task.services {
+                let service =
+                    release.workload.services.get(name).ok_or_else(|| {
+                        anyhow!("backup policy selects an undeclared data service")
+                    })?;
+                ensure!(
+                    service
+                        .needs
+                        .iter()
+                        .all(|(dependency, condition)| *condition != Condition::Completed
+                            && task.services.contains(dependency)
+                            && release.workload.services.contains_key(dependency)),
+                    "backup data-service dependencies exceed the protected subset"
+                );
+            }
+        }
         let mut memory = 0u64;
         let mut swap = 0u64;
         let mut cpu = 0u64;
@@ -888,7 +999,12 @@ impl Policy {
             .chain(&release.workload.jobs)
         {
             let service_limits = if preview {
-                limits
+                self.previews
+                    .as_ref()
+                    .unwrap()
+                    .service_limits
+                    .as_ref()
+                    .unwrap_or(limits)
             } else {
                 self.service_limits.as_ref().unwrap_or(limits)
             };
@@ -934,7 +1050,7 @@ impl Policy {
                 );
             }
         }
-        if preview || self.aggregate_mode == AggregateMode::Sum {
+        if self.aggregate_mode == AggregateMode::Sum {
             ensure!(
                 memory <= limits.memory_bytes
                     && swap <= limits.memory_swap_bytes
@@ -975,6 +1091,50 @@ impl Policy {
             !self.require_stateful_contract || release.stateful_contract.is_some(),
             "application requires a stateful contract"
         );
+        Ok(())
+    }
+}
+
+impl ProtectedTask {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            absolute(&self.program)
+                && digest(&self.sha256)
+                && (1..=1500).contains(&self.timeout_seconds)
+                && (1..=64u64 << 30).contains(&self.max_export_bytes)
+                && self.services.len() <= 16
+                && self.services.iter().all(|service| name(service))
+                && self.services.iter().collect::<BTreeSet<_>>().len() == self.services.len(),
+            "invalid protected bounded task"
+        );
+        Ok(())
+    }
+}
+
+impl ResourceControls {
+    pub fn validate(&self, limits: &Limits) -> Result<()> {
+        ensure!(
+            self.memory_low_bytes <= limits.memory_bytes
+                && (self.memory_high_bytes == 0
+                    || (self.memory_high_bytes >= self.memory_low_bytes
+                        && self.memory_high_bytes <= limits.memory_bytes))
+                && self.cpu_weight.is_none_or(|w| (1..=10000).contains(&w))
+                && self.io_weight.is_none_or(|w| (1..=10000).contains(&w))
+                && self.io_max.len() <= 16,
+            "invalid protected resource controls"
+        );
+        let mut devices = BTreeSet::new();
+        for rate in &self.io_max {
+            ensure!(
+                rate.device
+                    .split_once(':')
+                    .is_some_and(|(a, b)| a.parse::<u32>().is_ok() && b.parse::<u32>().is_ok())
+                    && devices.insert(&rate.device)
+                    && rate.read_bytes_per_second > 0
+                    && rate.write_bytes_per_second > 0,
+                "invalid protected IO rate"
+            );
+        }
         Ok(())
     }
 }

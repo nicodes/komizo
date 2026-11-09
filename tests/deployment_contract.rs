@@ -1,3 +1,4 @@
+use komizo::deployment::Condition;
 use komizo::deployment::{Policy, canonical, read_release};
 use serde_json::{Value, json};
 
@@ -14,7 +15,7 @@ fn policy() -> Policy {
         "artifact_prefixes":["ghcr.io/example/mailroom"],
         "hostnames":["mail.example","api.mail.example"],
         "limits":{"memory_bytes":268435456,"memory_swap_bytes":268435456,"milli_cpus":500,"pids":256},
-        "secrets":{"runtime":{"path":"/etc/komizo/secrets/mailroom/runtime.env","services":["api"],"environment_file":true,"generation":"1"}},
+        "secrets":{"runtime":{"path":"/etc/komizo/secrets/mailroom/runtime.env","services":["api"],"environment_file":true,"generation":"11111111111111111111111111111111"}},
         "readiness":[{"url":"https://api.mail.example/readyz","status":200,"revision_field":"revision"}]
     })).unwrap()
 }
@@ -169,6 +170,7 @@ fn previews_cannot_inherit_production_secret_grants() {
     let mut grant = policy();
     grant.previews=Some(serde_json::from_value(json!({
         "hostname_suffix":"preview.example","max_instances":2,"max_ttl_seconds":3600,
+        "readiness":[{"url":"https://{instance}.preview.example/","status":200}],
         "limits":{"memory_bytes":268435456,"memory_swap_bytes":268435456,"milli_cpus":500,"pids":256}
     })).unwrap());
     let mut value = example();
@@ -189,4 +191,68 @@ fn static_assets_do_not_bypass_workload_bounds() {
         value["workload"]["services"][format!("worker-{i}")] = service;
     }
     assert!(read(&value).is_err());
+}
+
+#[test]
+fn oversized_security_structure_refuses_before_materialization() {
+    let body = format!("[{}]", vec!["0"; 40000].join(","));
+    assert!(komizo::deployment::validation::bounded_value(body.as_bytes(), 4 << 20).is_err());
+    let punctuation = json!({"literal":"{[,:]}".repeat(10000)});
+    assert!(
+        komizo::deployment::validation::bounded_value(
+            &serde_json::to_vec(&punctuation).unwrap(),
+            4 << 20
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn backup_service_scope_is_explicit_and_cannot_start_jobs_or_unlisted_renderers() {
+    let mut p = policy();
+    p.limits.memory_bytes = 1 << 30;
+    p.limits.memory_swap_bytes = 1 << 30;
+    p.limits.milli_cpus = 4000;
+    p.limits.pids = 4096;
+    p.backup=Some(serde_json::from_value(json!({"program":"/etc/komizo/backup.bundle","sha256":format!("sha256:{}","a".repeat(64)),"timeout_seconds":300,"max_export_bytes":1 << 20,"services":["api"]})).unwrap());
+    let mut document = read(&example()).unwrap();
+    p.admit(&document.release, "production").unwrap();
+    let mut renderer = document.release.workload.services["api"].clone();
+    renderer.environment_files.clear();
+    renderer.secrets.clear();
+    document
+        .release
+        .workload
+        .services
+        .insert("renderer".into(), renderer);
+    document
+        .release
+        .workload
+        .services
+        .get_mut("api")
+        .unwrap()
+        .needs
+        .insert("renderer".into(), Condition::Started);
+    assert!(p.admit(&document.release, "production").is_err());
+    p.backup.as_mut().unwrap().services.push("renderer".into());
+    p.admit(&document.release, "production").unwrap();
+    let mut migrate = document.release.workload.services["renderer"].clone();
+    migrate.health = None;
+    migrate.timeout_seconds = Some(120);
+    document
+        .release
+        .workload
+        .jobs
+        .insert("migrate".into(), migrate);
+    document
+        .release
+        .workload
+        .services
+        .get_mut("api")
+        .unwrap()
+        .needs
+        .insert("migrate".into(), Condition::Completed);
+    assert!(p.admit(&document.release, "production").is_err());
+    p.backup.as_mut().unwrap().services.clear();
+    assert!(p.validate().is_err());
 }

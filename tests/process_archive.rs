@@ -6,7 +6,7 @@ use std::{
 };
 #[test]
 fn archive_is_consumed_incrementally_while_stderr_is_drained() {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let ack = root.path().join("ack");
     let mut command = Command::new("sh");
     command.args(["-c","printf ready; while [ ! -f \"$ACK_PATH\" ]; do sleep 0.01; done; head -c 1048576 /dev/zero >&2; head -c 8388608 /dev/zero"]).env("ACK_PATH",&ack);
@@ -63,7 +63,7 @@ fn streaming_archive_enforces_bounds_status_deadline_and_cancellation() {
 }
 #[test]
 fn consumer_can_stop_at_tar_eof_without_leaving_a_writer_blocked() {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let path = root.path().join("archive");
     let mut archive = tar::Builder::new(std::fs::File::create(&path).unwrap());
     let mut header = tar::Header::new_gnu();

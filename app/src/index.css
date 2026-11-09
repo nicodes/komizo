@@ -1,8 +1,3 @@
-/* Tailwind v4, utilities only -- the palette is the one the RN-port screens
-   used, kept so the port reads as the same product. No component framework
-   beyond this: the page is served by the CLI from an embedded export, and
-   every runtime added to it is code in the trust base of a screen that can
-   restart an app. */
 @import "tailwindcss";
 
 @theme {
