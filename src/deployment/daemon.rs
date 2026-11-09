@@ -15,7 +15,7 @@ use std::{
     sync::Arc,
 };
 
-pub const USAGE: &str = "komizo-box -- native Komizo host\n\n  komizo-box install --authorized-keys /absolute/owner/public-keys\n  komizo-box daemon\n  komizo-box submit\n  komizo-box status\n  komizo-box proxy-guard\n  komizo-box guard|health|resource --application APP --instance INST --service SVC\n  komizo-box expire\n  komizo-box release validate|render FILE [render flags]\n  komizo-box application validate FILE\n  komizo-box version\n";
+pub const USAGE: &str = "komizo-box -- native Komizo host\n\n  komizo-box install --authorized-keys /absolute/owner/public-keys\n  komizo-box daemon\n  komizo-box submit\n  komizo-box status\n  komizo-box proxy-guard\n  komizo-box guard|health|resource --application APP --instance INST --service SVC\n  komizo-box expire\n  komizo-box release validate|render FILE [render flags]\n  komizo-box application validate FILE\n  komizo-box policy validate POLICY RELEASE [--instance INST]\n  komizo-box version\n";
 
 fn scope(args: &[String]) -> Result<(&str, &str, &str)> {
     ensure!(
@@ -118,7 +118,7 @@ pub fn run(args: &[String], input: &mut dyn Read, output: &mut dyn Write) -> Res
         return Err(anyhow!("native host command is required"));
     };
     match mode.as_str() {
-        "release" | "application" => commands::offline(args, output),
+        "release" | "application" | "policy" => commands::offline(args, output),
         "dns" => bootstrap::dns(flags, output),
         "dns-guard" => {
             ensure!(flags.is_empty(), "DNS guard does not accept arguments");

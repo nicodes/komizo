@@ -128,8 +128,13 @@ def enroll_empty(document):
     app=document['application'];identity=registry.digest(registry.canonical(document))
     record=Path('/var/lib/komizo/instances/'+app+'--production.json')
     if not document['workload']['volumes'] or record.exists():return False
+    policy=Path('/etc/komizo/apps/'+app+'.json');selected=ROOT/('owner-data-'+app+'.json');write(selected,document)
+    admitted=json.loads(run([BINARY,'policy','validate',str(policy),str(selected)]).stdout)
+    if admitted.get('release_digest')!=identity or admitted.get('application')!=app:
+        raise ValueError('offline owner policy review changed candidate identity')
     refused=submit(request(app,'deploy',identity,release=document))
-    if refused.get('ok') or record.exists():raise ValueError('unenrolled production data reached ordinary deployment effects')
+    if refused.get('kind')!='komizo.operation' or refused.get('phase')!='failed' or refused.get('ok') is not False or record.exists():
+        raise ValueError('unenrolled production expected a completed data-safety refusal: '+json.dumps(refused))
     prepared=submit(request(app,'data-prepare',identity,release=document))
     if prepared.get('phase')!='prepared_stopped' or not prepared.get('ok'):
         raise ValueError('explicit owner data preparation failed: '+json.dumps(prepared))
