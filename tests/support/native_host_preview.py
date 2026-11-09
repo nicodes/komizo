@@ -61,6 +61,35 @@ def prepare(report):
     denied=runtime.submit(runtime.request('pgbox','deploy',registry.digest(registry.canonical(other)),instance='pr-8',
         release=other,ttl_seconds=60))
     if denied.get('ok') is not False:raise ValueError('preview maximum admitted another full database instance')
+    # Admit the instance count, then make the complete reservation impossible.
+    # A reviewed preparation program would write a marker immediately on entry;
+    # refusal must precede that credential-effect boundary, not merely roll back
+    # its resulting container or reservation afterward.
+    saved=path.read_bytes();marker=ROOT/'capacity-prepare-entered'
+    if marker.exists():raise ValueError('capacity refusal probe requires a fresh effect marker')
+    prepare=ROOT/'capacity-prepare.py'
+    program=b'#!/usr/bin/python3\nfrom pathlib import Path\nPath("/root/native-host/capacity-prepare-entered").write_text("entered")\n'
+    write(prepare,program,0o700)
+    capacity=json.loads(Path('/etc/komizo/capacity.json').read_text())
+    allocations=Path('/var/lib/komizo/allocations.json');before=allocations.read_bytes()
+    reserved=json.loads(before)['pgbox--pr-7']['memory_reservation_bytes']
+    if reserved+policy['previews']['limits']['memory_bytes']<=capacity['previews']['memory_bytes']:
+        raise ValueError('preview capacity refusal probe would fit its protected pool')
+    credential=Path('/var/lib/komizo/preview-secrets/pgbox/pr-8/postgres-owner.env');credential_before=credential.read_bytes()
+    try:
+        policy['previews']['max_instances']=2
+        policy['previews']['prepare']={'program':str(prepare),'sha256':registry.digest(program),
+            'timeout_seconds':30,'max_export_bytes':1<<20,'services':[]}
+        write(path,policy)
+        refused_capacity=runtime.submit(runtime.request('pgbox','deploy',registry.digest(registry.canonical(other)),
+            instance='pr-8',release=other,ttl_seconds=60))
+        if (refused_capacity.get('kind')!='komizo.operation' or refused_capacity.get('ok') is not False
+                or marker.exists() or credential.read_bytes()!=credential_before or allocations.read_bytes()!=before
+                or Path('/var/lib/komizo/preview-prepared/pgbox--pr-8.json').exists()):
+            raise ValueError('preview capacity refusal crossed its credential preparation boundary')
+        write(ROOT/'capacity-prepare-refusal.json',{'instance':'pr-8','operation_id':refused_capacity['operation_id'],
+            'preparation_entered':False,'credential_bytes_unchanged':True,'allocations_unchanged':True})
+    finally:write(path,saved)
     unsafe=projected(document,'pr-8');unsafe['workload']['routes'][0]['host']='unapproved.localhost'
     refused=runtime.submit(runtime.request('pgbox','deploy',registry.digest(registry.canonical(unsafe)),instance='pr-8',
         release=unsafe,ttl_seconds=60))
@@ -79,6 +108,7 @@ def prepare(report):
         'namespace_orphan':orphan,'orphan_created_at':orphan_record['CreatedAt']}
     report['checks'].update({'preview_full_postgresql_namespace':'passed','preview_data_independence':'passed','preview_credential_independence':'passed',
         'preview_protected_readiness':'passed','preview_instance_limit_refused':'passed','preview_hostname_authority':'passed',
+        'capacity_refusal_before_preview_credentials':'passed',
         'preview_production_tcp_refused':'passed'})
 
 
