@@ -425,7 +425,11 @@ wait "$child"
     for pid in &pids {
         assert_eq!(unsafe { libc::getpgid(*pid) }, pids[0]);
     }
-    tokio::time::timeout(std::time::Duration::from_secs(5), f.ui.shutdown())
+    // SIGKILL requests termination; the kernel may finish a descendant after
+    // reaping the direct child. Observe that transition inside the same total
+    // shutdown deadline rather than requiring synchronous signal delivery.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    tokio::time::timeout_at(deadline, f.ui.shutdown())
         .await
         .unwrap();
     assert_eq!(observation.await.unwrap().0, 503);
@@ -435,28 +439,49 @@ wait "$child"
         Some(libc::ESRCH),
         "owned client was not reaped"
     );
-    for pid in pids {
-        #[cfg(target_os = "linux")]
-        assert!(
-            std::fs::read_to_string(format!("/proc/{pid}/stat"))
-                .map_or(true, |value| value.split_whitespace().nth(2) == Some("Z")),
-            "owned child still running: {pid}"
-        );
-        #[cfg(not(target_os = "linux"))]
-        {
-            // The orphan's system reaper may not have collected its zombie yet.
-            // As on Linux, require absence or an observed zombie, never a live task.
-            let output = std::process::Command::new("/bin/ps")
-                .args(["-o", "stat=", "-p", &pid.to_string()])
-                .output()
-                .unwrap();
-            let state = std::str::from_utf8(&output.stdout).unwrap().trim();
-            let absent = unsafe { libc::kill(pid, 0) } == -1
-                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
-            assert!(
-                absent || (output.status.success() && !state.is_empty() && state.starts_with('Z')),
-                "owned child still running: {pid}, state: {state:?}"
-            );
+    let mut observed_states = Vec::new();
+    let stopped = tokio::time::timeout_at(deadline, async {
+        loop {
+            observed_states.clear();
+            for pid in &pids[1..] {
+                #[cfg(target_os = "linux")]
+                let state = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+                    Ok(value) => value.split_whitespace().nth(2).unwrap().to_owned(),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                    Err(error) => panic!("cannot observe owned child {pid}: {error}"),
+                };
+                #[cfg(not(target_os = "linux"))]
+                let state = {
+                    let output = std::process::Command::new("/bin/ps")
+                        .args(["-o", "stat=", "-p", &pid.to_string()])
+                        .output()
+                        .unwrap();
+                    let state = std::str::from_utf8(&output.stdout).unwrap().trim();
+                    let absent = unsafe { libc::kill(*pid, 0) } == -1
+                        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+                    if absent {
+                        String::new()
+                    } else {
+                        assert!(output.status.success() && !state.is_empty());
+                        state.to_owned()
+                    }
+                };
+                observed_states.push((*pid, state));
+            }
+            // An orphan may await the system reaper; only absence or zombie
+            // proves it has stopped. A live task never satisfies the control.
+            if observed_states
+                .iter()
+                .all(|(_, state)| state.is_empty() || state.starts_with('Z'))
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-    }
+    })
+    .await;
+    assert!(
+        stopped.is_ok(),
+        "owned children still running at shutdown deadline: {observed_states:?}"
+    );
 }
