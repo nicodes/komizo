@@ -33,7 +33,8 @@ if args[0]=='status':
  if (root/'hold').exists():
   signal.signal(signal.SIGTERM,signal.SIG_IGN)
   child=subprocess.Popen(['/usr/bin/python3','-I','-c','import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(60)'])
-  (root/'pids').write_text(str(os.getpid())+' '+str(child.pid))
+  (root/'pids.pending').write_text(str(os.getpid())+' '+str(child.pid))
+  os.replace(root/'pids.pending',root/'pids')
   time.sleep(60)
  if (root/'offline').exists():sys.exit(3)
  print(json.dumps({{'kind':'komizo.status','version':1,'instances':[{{'application':'mailroom','instance':'production','release_digest':'sha256:'+'a'*64,'desired_running':True,'operation_id':'c'*32,'services':{{'web':{{'state':'running','health':'healthy'}}}}}}]}}))
@@ -407,6 +408,11 @@ async fn shutdown_reaps_owned_client_and_stops_its_pipe_holding_descendant() {
         .split_whitespace()
         .map(|value| value.parse().unwrap())
         .collect();
+    assert_eq!(
+        pids.len(),
+        2,
+        "fixture must publish both complete process IDs"
+    );
     tokio::time::timeout(std::time::Duration::from_secs(5), f.ui.shutdown())
         .await
         .unwrap();
