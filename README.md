@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: ec774be067eff9249bd66d2b8d5f16cc41aaa5e6ab4d0e6f0f844ff542461ec1 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: d0287e696b33e43c2d8c54e9777d10c9396d61110d2b47fd1d0ff6d4cce2ee3a -->
 
 # komizo
 
@@ -34,7 +34,7 @@ komizo logs --host server.example --application mailroom --service migrate
 komizo ui --host server.example
 ```
 
-`--instance` selects `production` or an admitted `pr-N` preview. Logical Backup is available for production instances. The UI listens on loopback and supervises its local API. It displays observed source, resources, operation history and bounded service or job logs. Actions bind the displayed release and a proposed operation identity. A failed or lost acknowledgment requires inspection before retrying.
+`--instance` selects `production` or an admitted `pr-N` preview. Logical Backup is available for production instances. The UI listens on an OS-assigned loopback port and supervises its local API. Open the printed private `file://` launcher for each launch; it passes a fresh owner capability to the browser without exposing it in process arguments or a public page. All API observations and actions require that capability. It displays observed source, resources, operation history and bounded service or job logs. Actions bind the displayed release and a proposed operation identity. A failed or lost acknowledgment requires inspection before retrying.
 
 Commands return typed JSON. Failed mutation receipts remain on stdout with a nonzero exit status; diagnostics use stderr. `inspect` accepts `--operation` with an exact operation ID and `--release` with its release digest. The owner client exposes a finite command set and a typed request-file transport:
 
