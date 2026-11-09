@@ -99,6 +99,8 @@ def prepare(report):
         raise ValueError('host alias provisioning changed initialized PostgreSQL credentials or rows')
     if runtime.container(old_record['resources']['containers']['postgres'])['Id']!=before:
         raise ValueError('owner alias rotation silently restarted PostgreSQL')
+    import fixture_backup
+    fixture_backup.capture_postgres(report)
     report['postgres']={'release_digest':receipt['release_digest'],'base_reference':BASE,'image':artifact['config_digest']}
     report['checks'].update({'real_postgresql_api_dag':'passed','immutable_postgresql_base':'passed',
         'postgresql_rows_preserved_by_secret_rotation':'passed','initialized_postgresql_credentials_unchanged':'passed'})
@@ -107,6 +109,49 @@ def prepare(report):
 def stop():
     stopped=runtime.submit(runtime.request('pgbox','stop',runtime.installed('pgbox')['release_digest']))
     if stopped.get('phase')!='prepared_stopped':raise ValueError('real PostgreSQL stop intent was not preserved')
+
+
+def restore_dump():
+    dump=ROOT/'owner-postgres.dump'
+    if not dump.is_file() or dump.is_symlink() or dump.stat().st_size>1<<20 or not dump.read_bytes().startswith(b'PGDMP'):
+        raise ValueError('owner PostgreSQL restoration lacks its bounded authenticated custom dump')
+    report=json.loads((ROOT/'report.json').read_text());identity=report['postgres']['release_digest']
+    release=json.loads(Path('/var/lib/komizo/releases/'+identity[7:]+'.json').read_text())
+    image=release['artifacts']['postgres']['config_digest'];user=release['workload']['services']['postgres']['user']
+    if image!=report['postgres']['image']:raise ValueError('owner restoration selected another installed image')
+    uid,gid=map(int,user.split(':'));dump.chmod(0o400);__import__('os').chown(dump,uid,gid)
+    token=secrets.token_hex(16);name='native-owner-restore-'+token
+    script='''initdb -D /recovery/data -U fixture --auth=trust >/dev/null
+pg_ctl -D /recovery/data -l /tmp/server.log -o "-h '' -k /tmp -c shared_buffers=8MB -c max_connections=8" -w start >/dev/null
+trap 'pg_ctl -D /recovery/data -m immediate -w stop >/dev/null || true' EXIT
+pg_restore -h /tmp -U fixture -d postgres --no-owner --no-privileges --exit-on-error /restore.dump
+psql -h /tmp -U fixture -d postgres --no-psqlrc --tuples-only --no-align --set=ON_ERROR_STOP=1 --command 'SELECT value FROM evidence; SELECT count(*) FROM evidence;'
+'''
+    try:
+        restored=run(['timeout','--signal=TERM','--kill-after=5s','90s','podman','--remote=false','run','--name',name,
+            '--label','io.komizo.fixture='+token,'--pull=never','--network=none','--read-only','--read-only-tmpfs=false',
+            '--cap-drop=all','--security-opt=no-new-privileges','--image-volume=ignore','--user',user,
+            '--memory=128m','--memory-swap=128m','--pids-limit=64','--cpu-period=1000000','--cpu-quota=200000','--http-proxy=false',
+            '--tmpfs','/tmp:rw,nosuid,nodev,noexec,size=16m,mode=1777','--tmpfs','/recovery:rw,nosuid,nodev,noexec,size=64m,mode=1777',
+            '--mount','type=bind,source='+str(dump)+',destination=/restore.dump,ro','--entrypoint=/bin/sh',image,'-ec',script],timeout=100)
+        actual=json.loads(run(['podman','--remote=false','container','inspect',name]).stdout)[0]
+        host=actual['HostConfig']
+        if (restored.stdout.strip()!=b'retained native row\n1' or actual['State']['ExitCode']!=0
+                or host['NetworkMode']!='none' or host['Memory']!=128*MiB or host['MemorySwap']!=128*MiB
+                or host['PidsLimit']!=64 or host['CpuPeriod']!=1000000 or host['CpuQuota']!=200000
+                or host.get('PortBindings') or not host['ReadonlyRootfs'] or actual['Config']['User']!=user
+                or 'sha256:'+actual['Image'].removeprefix('sha256:')!=image):
+            raise ValueError('owner PostgreSQL restore lost its rows, image or disposable isolation bounds')
+        print(json.dumps({'kind':'komizo.native-database-recovery','version':1,'scope':'disposable owner PostgreSQL restoration',
+            'current_source_ci_acceptance':False,'release_digest':identity,'image_config_digest':image,'rows':'passed',
+            'network':'none','published_ports':[],'memory_bytes':128*MiB,'pids':64},sort_keys=True))
+    finally:
+        observed=run(['podman','--remote=false','container','inspect',name],ok=False)
+        if observed.returncode==0:
+            value=json.loads(observed.stdout)[0]
+            if value['Config']['Labels'].get('io.komizo.fixture')!=token:raise ValueError('owner recovery cleanup encountered foreign container identity')
+            run(['podman','--remote=false','rm','--force',name])
+        dump.unlink(missing_ok=True)
 
 
 def verify_reboot(report):
@@ -128,3 +173,9 @@ def verify_reboot(report):
     if stopped.get('phase')!='prepared_stopped':raise ValueError('PostgreSQL owner restart did not restore deliberate stop')
     report['checks'].update({'postgresql_offline_reboot_stop_intent':'passed','postgresql_offline_owner_restart':'passed',
         'postgresql_initialization_not_replayed':'passed','postgresql_retained_rows_after_reboot':'passed'})
+
+
+if __name__=='__main__':
+    import sys
+    if sys.argv[1:]!=['restore']:raise SystemExit('expected explicit disposable owner restore')
+    restore_dump()

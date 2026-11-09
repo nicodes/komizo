@@ -331,7 +331,7 @@ def prepare():
     fixture_preview.expire(report)
     run(['systemctl','stop','native-fixture-registry.service'])
     report['runtime_acceptance']=False
-    report['remaining']=['installed PostgreSQL encrypted recovery','small-host capacity acceptance']
+    report['remaining']=['small-host capacity acceptance']
     report['installed']={'static':result['release_digest'],'mailroom':ready['release_digest'],'prepared':prepared['release_digest'],
         'running':live['release_digest'],'containers':before}
     write(ROOT/'report.json',report)

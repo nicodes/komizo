@@ -148,7 +148,7 @@ def owner_recovery(guest, directory, key):
     report=json.loads(guest.command('cat /root/native-host/report.json',capture_output=True).stdout)
     checks={}
     records=report.get('owner_exports')
-    if not isinstance(records,list) or {value['application'] for value in records}!={'secretbox'}:
+    if not isinstance(records,list) or {value['application'] for value in records}!={'secretbox','pgbox'}:
         raise ValueError('owner recovery lacks its expected captured synthetic instance')
     for record in records:
         if len(record['files'])!=2 or {metadata['name'] for metadata in record['files']}!={'snapshot.cms','receipt.json'}:
@@ -164,6 +164,15 @@ def owner_recovery(guest, directory, key):
             if json.loads(plaintext)!={'application':record['application'],'release_digest':record['release_digest'],'count':'accepted\n'}:
                 raise ValueError('owner synthetic decryption changed retained data or source identity')
             checks['synthetic_owner_decryption']='passed'
+        elif record['format']=='postgresql-custom':
+            if not plaintext.startswith(b'PGDMP') or len(plaintext)>1<<20:raise ValueError('owner PostgreSQL plaintext is not the bounded captured dump')
+            dump=directory/'owner-postgres.dump';dump.write_bytes(plaintext);dump.chmod(0o600)
+            guest.copy(dump,'/root/native-host/owner-postgres.dump')
+            restored=json.loads(guest.command('python3 /root/native-host/fixture_postgres.py restore',timeout=120,capture_output=True).stdout)
+            if (restored.get('kind')!='komizo.native-database-recovery' or restored.get('release_digest')!=record['release_digest']
+                    or restored.get('current_source_ci_acceptance') is not False or restored.get('rows')!='passed'):
+                raise ValueError('owner PostgreSQL restoration did not prove the captured installed source')
+            checks['owner_postgresql_encrypted_restore']='passed';checks['owner_recovery_disposable_isolation']='passed'
         else:raise ValueError('owner received an unsupported synthetic recovery format')
     checks['owner_side_exact_framed_exports']='passed';checks['recovery_private_key_outside_capture_host']='passed'
     return checks
