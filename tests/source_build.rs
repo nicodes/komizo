@@ -64,7 +64,7 @@ fn exact_source_build_contains_and_supervises_its_axum_api() {
     let root = private.path();
     fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
     let mut budget = 128 << 20;
-    for name in ["src", "vendor", "crates"] {
+    for name in ["src", "crates"] {
         copy_tree(&original.join(name), &root.join(name), &mut budget).unwrap();
     }
     copy_tree(
@@ -106,9 +106,7 @@ fn exact_source_build_contains_and_supervises_its_axum_api() {
             .env("CARGO_TARGET_DIR", &build_root)
             .env("CC_x86_64_unknown_linux_musl", &compiler)
             .env("CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER", &compiler)
-            .env_remove("KOMIZO_API_PAYLOAD")
-            .env_remove("KOMIZO_HOST_AMD64")
-            .env_remove("KOMIZO_HOST_ARM64");
+            .env_remove("KOMIZO_API_PAYLOAD");
     };
     let mut api = Command::new("cargo");
     api.args([

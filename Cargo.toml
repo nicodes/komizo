@@ -6,10 +6,8 @@ rust-version = "1.94"
 publish = false
 
 [workspace]
-exclude = ["crates/api", "vendor/gtmpl"]
+exclude = ["crates/api"]
 
-[patch.crates-io]
-gtmpl = { path = "vendor/gtmpl" }
 
 [dependencies]
 toml = "=0.9.12"
@@ -19,17 +17,14 @@ base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 getrandom = "0.4"
 flate2 = "1"
-gtmpl = "0.7"
 libc = "0.2"
 regex = "1"
-regex-syntax = "0.8"
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value", "preserve_order"] }
 sha2 = "0.10"
 tar = "0.4"
 tempfile = "3"
-yaml-rust2 = "0.13"
 
 [profile.release]
 lto = "thin"
