@@ -235,7 +235,7 @@ class NativeBootGuards(unittest.TestCase):
                     patch.dict(sys.modules, {'fixture_runtime': runtime}), patch.object(Path, 'read_text', selected_file):
                 acceptance.verify_reboot()
             runtime.verify_reboot.assert_called_once_with()
-            boundaries.assert_called_once_with({})
+            boundaries.assert_called_once_with({}, phase='post-reboot')
             result = json.loads((root / 'report.json').read_text())
             self.assertTrue(result['ok'])
             self.assertEqual(result['checks'], {'real_reboot': 'passed'})
