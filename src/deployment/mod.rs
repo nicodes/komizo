@@ -24,6 +24,7 @@ pub mod render;
 pub mod secrets;
 pub mod store;
 pub mod system;
+pub mod tls;
 pub mod transport;
 pub mod units;
 pub mod validation;

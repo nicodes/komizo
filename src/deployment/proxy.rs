@@ -148,6 +148,7 @@ pub fn refresh(store: &Store, deadline: Instant) -> Result<()> {
             continue;
         }
         let document = store.release(&installed.release_digest)?;
+        super::tls::require(store, &document, &installed.instance)?;
         for host in document
             .release
             .workload
