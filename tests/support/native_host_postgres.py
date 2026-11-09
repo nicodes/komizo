@@ -81,13 +81,15 @@ def diagnostic():
             if not row.split()[0].isdecimal():continue
             base=Path('/proc')/row.split()[0]
             if not base.is_dir():continue
-            evidence['backend_processes'][row.split()[0]]={key:(base/key).read_text()[:2048] for key in ['wchan','syscall','cgroup'] if (base/key).is_file()}
+            evidence['backend_processes'][row.split()[0]]={key:(base/key).read_text()[:2048] for key in ['wchan','syscall','cgroup','attr/current'] if (base/key).is_file()}
             if ('authentication' in row or 'io worker 0' in row or row.split()[1]=='1') and len(trace_pids)<4:
                 trace_pids.append(row.split()[0])
-                evidence['backend_processes'][row.split()[0]]['fds']={item.name:{'target':str(item.readlink())[:256],'info':(base/'fdinfo'/item.name).read_text()[:256]} for item in sorted((base/'fd').iterdir(),key=lambda path:int(path.name))[:12]}
+                evidence['backend_processes'][row.split()[0]]['fds']={item.name:{'target':str(item.readlink())[:256],'info':(base/'fdinfo'/item.name).read_text()[:256]} for item in sorted((base/'fd').iterdir(),key=lambda path:int(path.name))[:10]}
         traced=run(['timeout','--signal=TERM','--kill-after=1s','4s','strace','-k','-qq','-s','0','-e','trace=epoll_wait,poll,read,write,pread64,preadv,fcntl,kill,tgkill','-e','raw=read,write,pread64,preadv',*[argument for pid in trace_pids for argument in ['-p',pid]]],ok=False,timeout=6)
-        evidence['syscalls']={'code':traced.returncode,'trace':traced.stderr.decode(errors='replace')[:16384]}
+        evidence['syscalls']={'code':traced.returncode,'trace':traced.stderr.decode(errors='replace')[:12288]}
         native=json.loads(run(['podman','--remote=false','volume','inspect',runtime.installed('pgbox')['resources']['volumes']['postgres-data']['name']]).stdout)[0]
+        device=Path(native['Mountpoint']).stat().st_dev
+        evidence['volume_device']={'major':__import__('os').major(device),'minor':__import__('os').minor(device)}
         evidence['hba']='\n'.join(line for line in (Path(native['Mountpoint'])/'pg'/'pg_hba.conf').read_text().splitlines() if line and not line.startswith('#'))[:4096]
         for name in ['hosts','resolv.conf']:
             evidence[name]=run(['podman','--remote=false','exec',identity,'cat','/etc/'+name],ok=False,timeout=4).stdout.decode(errors='replace')[:2048]
@@ -96,6 +98,11 @@ def diagnostic():
         if group.startswith('0::/'):
             base=Path('/sys/fs/cgroup')/group[4:]
             evidence['events']={name:(base/name).read_text()[:4096] for name in ['memory.current','memory.events','memory.stat','pids.current','pids.events','cpu.stat'] if (base/name).is_file()}
+            evidence['io_ancestors']={}
+            while base.is_relative_to(Path('/sys/fs/cgroup')):
+                evidence['io_ancestors'][str(base)]={name:(base/name).read_text()[:512] for name in ['io.max','io.stat','io.pressure'] if (base/name).is_file()}
+                if base==Path('/sys/fs/cgroup'):break
+                base=base.parent
         for name,command in [
             ('activity',['psql','host=/tmp user=fixture dbname=postgres connect_timeout=2','--no-psqlrc','--tuples-only','--no-align','--command',"SELECT pid,usename,application_name,client_addr,state,wait_event_type,wait_event FROM pg_stat_activity"]),
             ('sockets',['sh','-c','cat /proc/net/tcp; cat /proc/net/unix'])]:
@@ -104,6 +111,9 @@ def diagnostic():
                 evidence[name]={'code':probe.returncode,'stdout':probe.stdout.decode(errors='replace')[:8192],'stderr':probe.stderr.decode(errors='replace')[:1024]}
             except (OSError,ValueError,__import__('subprocess').SubprocessError) as error:evidence[name]={'error':type(error).__name__}
     except (OSError,ValueError,KeyError,__import__('subprocess').SubprocessError) as error:evidence['collector_error']=type(error).__name__
+    for optional in ['sockets','hosts','resolv.conf']:
+        if len(registry.canonical(evidence))>60000:
+            evidence.pop(optional,None);evidence['truncated']=True
     write(ROOT/'postgres-diagnostic.json',evidence)
 
 
@@ -150,7 +160,7 @@ def prepare(report):
         'networks':['app'],'environment_files':['postgres-owner'],'environment':{'PGDATA':'/data/pg'},
         'volumes':[{'name':'postgres-data','target':'/data'}],
         'tmpfs':{'/tmp':{'size_bytes':16*MiB,'mode':0o1777}},
-        'command':['sh','-ec','if [ ! -e "$PGDATA/PG_VERSION" ]; then printf %s "$PGPASSWORD" > /tmp/owner-password; initdb -D "$PGDATA" -U "$PGUSER" --pwfile=/tmp/owner-password --auth-local=trust --auth-host=scram-sha-256; rm /tmp/owner-password; fi; exec postgres -D "$PGDATA" -h 0.0.0.0 -c unix_socket_directories=/tmp -c shared_buffers=8MB -c max_connections=8 -c max_locks_per_transaction=16'],
+        'command':['sh','-ec','if [ ! -e "$PGDATA/PG_VERSION" ]; then printf %s "$PGPASSWORD" > /tmp/owner-password; initdb -D "$PGDATA" -U "$PGUSER" --pwfile=/tmp/owner-password --auth-local=trust --auth-host=scram-sha-256; rm /tmp/owner-password; printf "host all all 0.0.0.0/0 scram-sha-256\\n" >> "$PGDATA/pg_hba.conf"; fi; exec postgres -D "$PGDATA" -h 0.0.0.0 -c unix_socket_directories=/tmp -c shared_buffers=8MB -c max_connections=8 -c max_locks_per_transaction=16'],
         'health':{'command':['pg_isready','-h','127.0.0.1','-U','fixture','-d','postgres'],'interval_seconds':2,'timeout_seconds':2,'retries':30,'start_period_seconds':30}}
     workload['jobs']={'initialize':{'artifact':'postgres','user':user,'limits':runtime.limits(32,100,32),
         'networks':['app'],'environment_files':['postgres-owner'],'needs':{'postgres':'healthy'},'timeout_seconds':45,

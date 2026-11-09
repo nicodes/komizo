@@ -35,6 +35,71 @@ const ENGINE_CONFIG: &str = "/etc/containers/containers.conf.d/80-komizo-network
 const DNS_WRAPPER: &str = "#!/bin/sh\nexec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C.UTF-8 /usr/local/bin/komizo-box dns \"$@\"\n";
 const ENGINE_NETWORK: &str = "[engine]\nhelper_binaries_dir=[\"/usr/local/libexec/komizo-network\",\"/usr/lib/podman\"]\n[network]\nnetwork_backend=\"netavark\"\ndns_bind_port=53\n";
 
+pub const WORKLOAD_PROFILE: &str = "komizo-workload";
+const APPARMOR_FILE: &str = "/etc/apparmor.d/komizo-workload";
+const APPARMOR_PARSER: &str = "/usr/sbin/apparmor_parser";
+const APPARMOR_POLICY: &[u8] = include_bytes!("apparmor-workload");
+const APPARMOR_LICENSE: &[u8] = include_bytes!("apparmor-workload.LICENSE");
+
+fn kernel_text(path: &Path, maximum: u64) -> Result<String> {
+    let mut input = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?
+        .take(maximum + 1);
+    let mut body = String::new();
+    input.read_to_string(&mut body)?;
+    ensure!(
+        body.len() as u64 <= maximum,
+        "kernel confinement metadata exceeds bounds"
+    );
+    Ok(body)
+}
+
+fn enforcing_profile(enabled: &str, profiles: &str) -> Result<()> {
+    ensure!(enabled.trim() == "Y", "AppArmor confinement is unavailable");
+    ensure!(
+        profiles
+            .lines()
+            .filter(|line| *line == "komizo-workload (enforce)")
+            .count()
+            == 1,
+        "the reviewed workload AppArmor profile is not enforcing"
+    );
+    Ok(())
+}
+
+/// The shared service and job profile is fixed owner-installed policy, never source input.
+pub fn apparmor_guard() -> Result<()> {
+    ensure!(
+        unsafe { libc::geteuid() } == 0,
+        "workload confinement guard requires the owner identity"
+    );
+    let ledger: Ledger = serde_json::from_value(crate::strict::value(
+        &protected_file(Path::new(LEDGER), 65536)?,
+        65536,
+    )?)?;
+    let identity = ledger
+        .files
+        .get(APPARMOR_FILE)
+        .ok_or_else(|| anyhow!("workload confinement is not owner installed"))?;
+    ensure!(
+        ledger.kind == "komizo.bootstrap" && ledger.version == 1 && identity.mode == 0o644,
+        "invalid workload confinement ownership record"
+    );
+    let body = protected_file(Path::new(APPARMOR_FILE), 65536)?;
+    ensure!(
+        body == APPARMOR_POLICY
+            && document_digest(&body) == identity.sha256
+            && fs::symlink_metadata(APPARMOR_FILE)?.mode() & 0o7777 == 0o644,
+        "workload confinement differs from the reviewed installed policy"
+    );
+    enforcing_profile(
+        &kernel_text(Path::new("/sys/module/apparmor/parameters/enabled"), 32)?,
+        &kernel_text(Path::new("/sys/kernel/security/apparmor/profiles"), 2 << 20)?,
+    )
+}
+
 pub const PROXY_RECEIPT: &str = "/etc/komizo-proxy/binary.json";
 const PROXY_BINARY: &str = "/usr/local/bin/caddy";
 
@@ -681,6 +746,8 @@ pub fn install(public_keys: &Path) -> Result<()> {
         ("/usr/local/libexec", 0o755),
         ("/usr/local/libexec/komizo-network", 0o755),
         ("/etc/containers", 0o755),
+        ("/etc/apparmor.d", 0o755),
+        ("/usr/share/doc/komizo", 0o755),
         ("/etc/containers/containers.conf.d", 0o755),
     ] {
         directory(path, mode)?;
@@ -701,6 +768,16 @@ pub fn install(public_keys: &Path) -> Result<()> {
         ledger.kind == "komizo.bootstrap" && ledger.version == 1,
         "invalid native bootstrap ownership record"
     );
+    public_root_file(Path::new(APPARMOR_PARSER), 32 << 20, 0o755)?;
+    managed(
+        &mut ledger,
+        "/usr/share/doc/komizo/apparmor-workload.LICENSE",
+        APPARMOR_LICENSE,
+        0o644,
+    )?;
+    managed(&mut ledger, APPARMOR_FILE, APPARMOR_POLICY, 0o644)?;
+    command(APPARMOR_PARSER, &["-r", APPARMOR_FILE], deadline)?;
+    apparmor_guard()?;
     managed(&mut ledger, DNS_HELPER, DNS_WRAPPER.as_bytes(), 0o755)?;
     managed(&mut ledger, ENGINE_CONFIG, ENGINE_NETWORK.as_bytes(), 0o644)?;
     managed(&mut ledger, SHELL, SUBMISSION_SHELL.as_bytes(), 0o755)?;
@@ -780,6 +857,36 @@ mod tests {
         blob.extend([byte; 32]);
         format!("ssh-ed25519 {} harmless comment\n", STANDARD.encode(blob))
     }
+    #[test]
+    fn workload_profile_requires_enforcement_and_only_the_reviewed_stacked_peer() {
+        enforcing_profile("Y\n", "distro (enforce)\nkomizo-workload (enforce)\n").unwrap();
+        for (enabled, profiles) in [
+            ("N", "komizo-workload (enforce)"),
+            ("Y", "komizo-workload (complain)"),
+            ("Y", "other (enforce)"),
+            ("Y", "komizo-workload (enforce)\nkomizo-workload (enforce)"),
+        ] {
+            assert!(enforcing_profile(enabled, profiles).is_err());
+        }
+        let profile = std::str::from_utf8(APPARMOR_POLICY).unwrap();
+        assert!(profile.contains("signal (send,receive) peer=komizo-workload//&crun,"));
+        assert!(!profile.contains("peer=komizo-workload//&*"));
+        for denied in [
+            "deny mount,",
+            "deny @{PROC}/kcore rwklx,",
+            "deny /sys/kernel/security/** rwklx,",
+        ] {
+            assert!(profile.contains(denied));
+        }
+        assert_eq!(
+            profile
+                .lines()
+                .filter(|line| line.contains("signal (send,receive)"))
+                .count(),
+            2
+        );
+    }
+
     #[test]
     fn keys_are_forced_restricted_and_do_not_preserve_source_options() {
         let value = String::from_utf8(authorized_keys(key(1).as_bytes()).unwrap()).unwrap();

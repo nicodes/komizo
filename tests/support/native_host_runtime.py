@@ -282,6 +282,45 @@ def application_limits(app):
     if actual['HostConfig'].get('PortBindings'):raise ValueError('application published host ports')
 
 
+def apparmor_boundary(app,report):
+    record=installed(app)['resources']['containers']['api'];actual=container(record)
+    if actual.get('AppArmorProfile')!='komizo-workload':raise ValueError('native service lacks explicit workload confinement')
+    label=Path('/proc/'+str(actual['State']['Pid'])+'/attr/current').read_text().strip()
+    if label not in {'komizo-workload (enforce)','komizo-workload//&crun (mixed)','komizo-workload//&crun (enforce)'}:
+        raise ValueError('actual native process has an unexpected confinement label: '+label)
+    status=Path('/proc/'+str(actual['State']['Pid'])+'/status').read_text()
+    if status.split('NoNewPrivs:',1)[1].splitlines()[0].strip()!='1':raise ValueError('LSM repair removed no-new-privileges')
+    delivered=run(['podman','--remote=false','exec',record['name'],'/bin/busybox','sh','-ec',
+        "trap 'echo delivered' URG; kill -URG $$"])
+    if delivered.stdout.strip()!=b'delivered':raise ValueError('same-profile SIGURG was not delivered')
+    parent=Path(actual['State']['CgroupPath']).parent.name
+    prefix=['podman','--remote=false','run','--rm','--pull=never','--image-volume=ignore','--http-proxy=false','--network=none','--read-only','--read-only-tmpfs=false',
+        '--cap-drop=all','--security-opt=no-new-privileges','--user=10001:10001','--memory=32m','--memory-swap=32m',
+        '--pids-limit=16','--cpu-period=1000000','--cpu-quota=100000','--cgroup-parent='+parent,
+        '--label=io.komizo.fixture=signal-boundary','--entrypoint=/bin/busybox']
+    # Different LSM profile, but deliberately the same PID namespace and UID:
+    # the denial must not rely solely on namespace or UID separation.
+    run([*prefix,'--pid=container:'+actual['Id'],actual['Image'],'sh','-ec',
+        'test -r /proc/1/status; if kill -URG 1; then exit 9; fi'])
+    victim=subprocess.Popen(['setpriv','--reuid=10001','--regid=10001','--clear-groups','--no-new-privs','/bin/sleep','30'],
+        env={'PATH':'/usr/bin:/bin'},stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    try:
+        until(lambda:Path('/proc/'+str(victim.pid)+'/status').exists() and
+            '10001' in Path('/proc/'+str(victim.pid)+'/status').read_text().split('Uid:',1)[1].splitlines()[0],seconds=3)
+        run(['setpriv','--reuid=10001','--regid=10001','--clear-groups','--no-new-privs','/bin/busybox','kill','-URG',str(victim.pid)])
+        # Host PID visibility is granted only to this disposable negative probe.
+        run([*prefix,'--security-opt=apparmor=komizo-workload','--pid=host',actual['Image'],'sh','-ec',
+            'test -r /proc/'+str(victim.pid)+'/status; if kill -URG '+str(victim.pid)+'; then exit 9; fi'])
+    finally:
+        victim.terminate()
+        try:victim.wait(timeout=5)
+        except subprocess.TimeoutExpired:victim.kill();victim.wait(timeout=5)
+    write(ROOT/'apparmor-boundary.json',{'service_label':label,'no_new_privileges':True,'same_uid_host_signal_baseline':'passed',
+        'same_profile_sigurg':'passed','foreign_profile_refused':'passed','host_signal_refused':'passed'})
+    report['checks'].update({'apparmor_signal_delivery':'passed','apparmor_stacked_profile_enforced':'passed',
+        'apparmor_foreign_profile_signal_refused':'passed','apparmor_host_signal_refused':'passed'})
+
+
 def failures(report):
     bad=release('badjob','a'*40,dynamic=True,job_command='echo accepted >> /data/count; exit 7')
     _,result=deploy(bad)
@@ -357,6 +396,7 @@ def bounded_prepare():
     report=json.loads((ROOT/'report.json').read_text())
     import fixture_postgres
     fixture_postgres.prepare(report)
+    apparmor_boundary('pgbox',report)
     if not shared_dns('bounded-full-postgresql-workload'):raise ValueError('bounded shared DNS escaped infrastructure accounting')
     report['installed']={'static':receipt['release_digest']}
     report['runtime_acceptance']=False
@@ -421,6 +461,7 @@ def prepare():
         'application_uid_capabilities':'passed','application_read_only_root':'passed','no_published_application_ports':'passed',
         'cross_application_tcp_refused':'passed','same_network_tcp_allowed':'passed','installed_asset_proxy_uid_read':'passed',
         'installed_asset_proxy_uid_write_refused':'passed'})
+    apparmor_boundary('livebox',report)
     import fixture_postgres
     fixture_postgres.prepare(report)
     import fixture_preview
