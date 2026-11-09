@@ -92,7 +92,13 @@ impl Capacity {
             .and_then(|v| v.parse::<u64>().ok())
             .and_then(|v| v.checked_mul(1024))
             .ok_or_else(|| anyhow!("physical memory measurement unavailable"))?;
-        let cpus = std::thread::available_parallelism()?.get() as u32 * 1000;
+        // Physical host capacity is independent of this controller's cgroup
+        // quota. available_parallelism deliberately observes that quota.
+        let online = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) };
+        ensure!(online > 0, "online CPU measurement unavailable");
+        let cpus = u32::try_from(online)?
+            .checked_mul(1000)
+            .ok_or_else(|| anyhow!("physical CPU measurement overflow"))?;
         ensure!(
             self.physical_memory_bytes <= memory && self.physical_milli_cpus <= cpus,
             "protected allocation exceeds actual host capacity"
