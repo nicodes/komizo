@@ -8,7 +8,7 @@
     "sha512": "d25999de0770d4cde1be72c299ba3ad94eac7ea8fd4d18f8cc86c69df69337e2e8a91d64465a9bfd8f2a78c566fcbcb0842eacc91c09efdef72d719d9f13b535",
     "max_bytes": 1073741824
   },
-  "proxy_tools_revision": "134237cd8f9b169c53dfc31beb4172bb481e49ec",
+  "proxy_tools_revision": "09511ec42375d453f8fd16fc9cf574f84e7401b6",
   "proxy_go_version": "1.27.3",
   "proxy_source_sha256": {
     "caddy.go.mod": "sha256:a9056233663f7ccd6ded5f1334393061cfa06bd088f67b0050758c3a2555ba3a",
