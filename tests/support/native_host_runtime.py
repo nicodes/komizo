@@ -361,7 +361,8 @@ def failures(report):
         try:child.wait(timeout=10)
         except subprocess.TimeoutExpired:child.kill();child.wait(timeout=5)
         child.stdout.close();child.stderr.close()
-    deadline=release('deadline','a'*40,dynamic=True,job_command='/bin/busybox sleep 600')
+    deadline=release('deadline','a'*40,dynamic=True,
+        job_command='echo entered > /data/deadline-started; /bin/busybox sleep 12; echo late > /data/deadline-late')
     enroll_empty(deadline)
     _,staged=deploy(deadline)
     if staged.get('phase')!='prepared_stopped':raise ValueError('deadline fixture did not finish its separate owner preparation')
@@ -369,9 +370,24 @@ def failures(report):
     started=time.monotonic();bounded=submit(body);elapsed=time.monotonic()-started
     write(ROOT/'deadline-observation.json',{'timeout_seconds':8,'elapsed_seconds':elapsed,'receipt':bounded})
     if elapsed>40 or bounded.get('ok') is not False:raise ValueError('admitted worker exceeded its original end-to-end deadline: '+json.dumps({'elapsed_seconds':elapsed,'receipt':bounded}))
+    volume=installed('deadline')['resources']['volumes']['data']
+    mount=Path(run(['podman','--remote=false','volume','inspect',volume['name'],'--format={{.Mountpoint}}']).stdout.decode().strip())
+    receipts=[json.loads(path.read_text()) for path in Path('/var/lib/komizo/jobs').rglob('*.json')
+        if json.loads(path.read_text()).get('application')=='deadline']
+    if len(receipts)!=1 or not (mount/'deadline-started').exists():raise ValueError('deadline did not interrupt an actual running native job')
+    def stopped():
+        value=json.loads(run(['podman','--remote=false','container','inspect',receipts[0]['container_id']]).stdout)[0]
+        return value if value['State']['Running'] is False else None
+    try:actual=until(stopped,seconds=5)
+    finally:
+        write(ROOT/'deadline-observation.json',{'timeout_seconds':8,'elapsed_seconds':elapsed,'receipt':bounded,
+            'job_stopped':bool(stopped()),'entered_job':(mount/'deadline-started').exists(),
+            'late_write_present':(mount/'deadline-late').exists()})
+    if (mount/'deadline-late').exists():raise ValueError('native job wrote retained data after its operation deadline')
     _,unsafe=deploy(release('unsafe','a'*40,unsafe=True))
     if unsafe.get('phase')!='failed' or unsafe.get('ok') is not False:raise ValueError('unsafe archive reached activation')
-    report['checks'].update({'failed_job_no_replay':'passed','interrupted_job_no_replay':'passed','worker_deadline':'passed','unsafe_archive':'passed'})
+    report['checks'].update({'failed_job_no_replay':'passed','interrupted_job_no_replay':'passed','worker_deadline':'passed',
+        'worker_deadline_stops_job':'passed','unsafe_archive':'passed'})
 
 
 def resource_stress(report):
