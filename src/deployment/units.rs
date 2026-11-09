@@ -304,9 +304,16 @@ pub fn health_units(
 }
 
 pub fn resource_slice(limits: &Limits) -> Result<String> {
+    Ok(format!(
+        "[Unit]\nDescription=Komizo instance allocation\n[Slice]\n{}",
+        resource_limits(limits)?
+    ))
+}
+
+pub fn resource_limits(limits: &Limits) -> Result<String> {
     limits.validate()?;
     Ok(format!(
-        "[Unit]\nDescription=Komizo instance allocation\n[Slice]\nCPUAccounting=yes\nMemoryAccounting=yes\nTasksAccounting=yes\nMemoryMax={}\nMemorySwapMax={}\nCPUQuota={}.{}%\nCPUQuotaPeriodSec=1s\nTasksMax={}\n",
+        "CPUAccounting=yes\nMemoryAccounting=yes\nTasksAccounting=yes\nMemoryMax={}\nMemorySwapMax={}\nCPUQuota={}.{}%\nCPUQuotaPeriodSec=1s\nTasksMax={}\n",
         limits.memory_bytes,
         limits.memory_swap_bytes - limits.memory_bytes,
         limits.milli_cpus / 10,

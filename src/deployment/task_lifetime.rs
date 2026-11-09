@@ -65,7 +65,7 @@ pub fn deadline(deadline: Instant, maximum_seconds: u32) -> Result<(String, u64)
 fn group(text: &str, unit: &str) -> Result<String> {
     let expected = format!("/komizo.slice/komizo-control.slice/{unit}");
     ensure!(
-        text.trim() == format!("0::{expected}"),
+        text.trim() == format!("0::{expected}/runner"),
         "protected task is outside its exact service cgroup"
     );
     Ok(expected)
@@ -210,18 +210,7 @@ mod linux {
         }
         pub fn finish(mut self) -> Result<()> {
             loop {
-                let mut body = String::new();
-                File::open(self.path.join("cgroup.procs"))?
-                    .take(65537)
-                    .read_to_string(&mut body)?;
-                ensure!(
-                    !body.trim().is_empty() && body.len() <= 65536,
-                    "protected task lost its bounded cgroup process evidence"
-                );
-                if body
-                    .lines()
-                    .all(|line| line.parse::<u32>().ok() == Some(std::process::id()))
-                {
+                if only_wrapper(&self.path)? {
                     break;
                 }
                 ensure!(
@@ -237,6 +226,63 @@ mod linux {
             self.settled = true;
             Ok(())
         }
+        pub fn verify_limits(&self, limits: &crate::deployment::model::Limits) -> Result<()> {
+            crate::deployment::capacity::verify_cgroup(&self.path, limits, &Default::default())
+        }
+    }
+
+    fn only_wrapper(root: &Path) -> Result<bool> {
+        let mut pending = vec![root.to_owned()];
+        let mut groups = 0;
+        let mut own = false;
+        while let Some(path) = pending.pop() {
+            groups += 1;
+            ensure!(
+                groups <= 1024,
+                "protected task cgroup inventory exceeds its bound"
+            );
+            let mut body = String::new();
+            let processes = match File::open(path.join("cgroup.procs")) {
+                Ok(file) => file,
+                Err(error) if path != root && error.kind() == std::io::ErrorKind::NotFound => {
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            processes.take(65537).read_to_string(&mut body)?;
+            ensure!(
+                body.len() <= 65536,
+                "protected task process inventory exceeds its bound"
+            );
+            for line in body.lines() {
+                let pid: u32 = line.parse()?;
+                ensure!(pid > 0, "invalid protected task process identity");
+                if pid != std::process::id() {
+                    return Ok(false);
+                }
+                own = true;
+            }
+            let entries = match fs::read_dir(&path) {
+                Ok(entries) => entries,
+                Err(error) if path != root && error.kind() == std::io::ErrorKind::NotFound => {
+                    continue;
+                }
+                Err(error) => return Err(error.into()),
+            };
+            for entry in entries {
+                let entry = entry?;
+                let kind = entry.file_type()?;
+                ensure!(
+                    !kind.is_symlink(),
+                    "protected task cgroup has a linked member"
+                );
+                if kind.is_dir() {
+                    pending.push(entry.path());
+                }
+            }
+        }
+        ensure!(own, "protected task lost its supervising process");
+        Ok(true)
     }
     impl Drop for Lifetime {
         fn drop(&mut self) {
@@ -254,6 +300,26 @@ mod linux {
     #[cfg(test)]
     mod tests {
         use super::*;
+        #[test]
+        fn quiescence_includes_native_helper_subgroups() {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path();
+            fs::write(root.join("cgroup.procs"), "").unwrap();
+            fs::create_dir(root.join("runner")).unwrap();
+            fs::write(
+                root.join("runner/cgroup.procs"),
+                format!("{}\n", std::process::id()),
+            )
+            .unwrap();
+            assert!(only_wrapper(root).unwrap());
+            fs::create_dir(root.join("libpod-owned")).unwrap();
+            fs::write(root.join("libpod-owned/cgroup.procs"), "1\n").unwrap();
+            assert!(!only_wrapper(root).unwrap());
+            fs::write(root.join("libpod-owned/cgroup.procs"), "").unwrap();
+            assert!(only_wrapper(root).unwrap());
+            fs::write(root.join("runner/cgroup.procs"), "").unwrap();
+            assert!(only_wrapper(root).is_err());
+        }
         #[test]
         fn absolute_timer_child() {
             let Some(path) = std::env::var_os("KOMIZO_TASK_TIMER_TEST") else {
@@ -301,6 +367,9 @@ impl Lifetime {
     pub fn finish(self) -> Result<()> {
         anyhow::bail!("protected task lifetime requires Linux")
     }
+    pub fn verify_limits(&self, _: &crate::deployment::model::Limits) -> Result<()> {
+        anyhow::bail!("protected task lifetime requires Linux")
+    }
 }
 
 #[cfg(test)]
@@ -311,7 +380,7 @@ mod tests {
         let unit = "komizo-backup-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.service";
         assert!(
             group(
-                &format!("0::/komizo.slice/komizo-control.slice/{unit}\n"),
+                &format!("0::/komizo.slice/komizo-control.slice/{unit}/runner\n"),
                 unit
             )
             .is_ok()

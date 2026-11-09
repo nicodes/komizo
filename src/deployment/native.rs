@@ -395,12 +395,24 @@ fn run_task(
         "invalid protected task identity"
     );
     let unit = format!("komizo-{kind}-{operation_id}.service");
+    let mut environment = environment.clone();
+    ensure!(
+        !environment.contains_key("KOMIZO_TASK_OPERATION_ID"),
+        "task identity cannot be supplied by a protected program"
+    );
+    environment.insert("KOMIZO_TASK_OPERATION_ID".into(), operation_id.into());
     let journal = store.root.join("journal").join(operation_id);
     let request_path = journal.join(format!("{kind}-request.json"));
     store::atomic(&request_path, input, 0o600)?;
     let mut body = format!(
         "[Unit]\nDescription=Komizo protected {kind} task\nRequiresMountsFor=/var/lib/komizo\n[Service]\nType=oneshot\nUser=root\nGroup=root\nSlice=komizo-control.slice\nUMask=0077\nNoNewPrivileges=yes\nKillMode=control-group\nKillSignal=SIGKILL\nTimeoutStartFailureMode=kill\nTimeoutStartSec={remaining}s\nTimeoutStopSec=0\nRemainAfterExit=no\nStandardInput=null\nStandardOutput=null\nStandardError=journal\nExecStart=/usr/local/bin/komizo-box task-run --operation {operation_id} --task {kind}\n",
     );
+    // Native capture containers belong below this one task, so its independent
+    // watchdog owns them too. The runner leaf leaves the delegated parent free
+    // of processes, as required by the unified hierarchy's domain controllers.
+    body.push_str("Delegate=yes\nDelegateSubgroup=runner\n");
+    let capacity = capacity::read(Path::new("/etc/komizo/capacity.json"))?;
+    body.push_str(&units::resource_limits(&capacity.control.limits)?);
     if kind == "reconcile" {
         let output = journal.join("reconcile-output.json");
         ensure!(!output.try_exists()?, "reconciliation output is not fresh");
@@ -413,7 +425,7 @@ fn run_task(
             ),
         );
     }
-    for (key, value) in environment {
+    for (key, value) in &environment {
         ensure!(
             key.starts_with("KOMIZO_") || ["PATH", "HOME", "LANG"].contains(&key.as_str()),
             "unsupported protected task environment"
@@ -519,6 +531,16 @@ pub fn task_run(operation_id: &str, kind: &str) -> Result<()> {
     );
     let lifetime =
         task_lifetime::Lifetime::arm(&intent.unit, &intent.boot_id, intent.deadline_monotonic_ns)?;
+    ensure!(
+        intent
+            .environment
+            .get("KOMIZO_TASK_OPERATION_ID")
+            .map(String::as_str)
+            == Some(operation_id),
+        "protected task environment changed its supervising operation"
+    );
+    let capacity = capacity::read(Path::new("/etc/komizo/capacity.json"))?;
+    lifetime.verify_limits(&capacity.control.limits)?;
     let operation = store.operation(operation_id)?;
     ensure!(
         operation.application == intent.application
