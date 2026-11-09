@@ -95,7 +95,7 @@ fn public_root_file(path: &Path, maximum: u64, mode: u32) -> Result<fs::File> {
             && info.uid() == 0
             && info.nlink() == 1
             && info.mode() & 0o022 == 0
-            && info.mode() & 0o777 == mode
+            && info.mode() & 0o7777 == mode
             && info.len() > 0
             && info.len() <= maximum,
         "proxy provenance input is not a protected ordinary file"
