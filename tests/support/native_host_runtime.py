@@ -249,7 +249,12 @@ def shared_dns(stage):
 
 def cross_network_refused(source,target,service,port,*,source_instance='production',target_instance='production'):
     def selected(app,instance):return json.loads(Path('/var/lib/komizo/instances/'+app+'--'+instance+'.json').read_text())
-    origin=selected(source,source_instance)['resources']['containers']['api']['name']
+    record=selected(source,source_instance)
+    origin=record['resources']['containers']['api']['name']
+    document=json.loads(Path('/var/lib/komizo/releases/'+record['release_digest'][7:]+'.json').read_text())
+    if registry.digest(registry.canonical(document))!=record['release_digest']:
+        raise ValueError('network control source descriptor changed')
+    revision=document['source']['revision'].encode()
     destination=container(selected(target,target_instance)['resources']['containers'][service])
     if not destination['State']['Running']:raise ValueError('network isolation test needs a live destination')
     addresses=[network['IPAddress'] for network in destination['NetworkSettings']['Networks'].values() if network.get('IPAddress')]
@@ -258,7 +263,7 @@ def cross_network_refused(source,target,service,port,*,source_instance='producti
         return run(['podman','--remote=false','exec',origin,'/bin/busybox','timeout','4','/bin/busybox','sh','-c',
             'printf "GET / HTTP/1.0\\r\\n\\r\\n" | /bin/busybox nc -w 2 '+address+' '+str(port)],ok=False,timeout=8)
     positive=probe('127.0.0.1',8080)
-    if positive.returncode or b'a'*40 not in positive.stdout:raise ValueError('positive TCP control failed inside the source application')
+    if positive.returncode or revision not in positive.stdout:raise ValueError('positive TCP control failed inside the source application')
     for address in addresses:
         result=probe(address,port)
         if result.returncode==0:raise ValueError('application or preview established an ungranted cross-network TCP connection')

@@ -267,6 +267,32 @@ class NativeBootGuards(unittest.TestCase):
 
 
 class NativeCaptureGuards(unittest.TestCase):
+    def test_tcp_control_uses_the_actual_installed_source_before_asserting_isolation(self):
+        canonical = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':')).encode()
+        digest = lambda body: 'sha256:' + hashlib.sha256(body).hexdigest()
+        document = {'source': {'revision': 'c' * 40}}
+        identity = digest(canonical(document))
+        record = {'release_digest': identity, 'resources': {'containers': {'api': {'name': 'fixture-api'}}}}
+        files = {'/var/lib/komizo/instances/pgbox--production.json': json.dumps(record),
+            '/var/lib/komizo/releases/' + identity[7:] + '.json': json.dumps(document)}
+        responses = [subprocess.CompletedProcess([], 0, b'HTTP/1.0 200 OK\r\n\r\n' + b'c' * 40),
+                     subprocess.CompletedProcess([], 1, b'')]
+        run = Mock(side_effect=responses)
+        spec = importlib.util.spec_from_file_location('network_fixture', ENGINE.parent / 'support/native_host_runtime.py')
+        fixture = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {'acceptance': SimpleNamespace(ROOT=Path('/fixture'), MiB=1 << 20, BINARY='/fixture/box', run=run, write=Mock()),
+                'fixture_registry': SimpleNamespace(canonical=canonical, digest=digest)}):
+            spec.loader.exec_module(fixture)
+        fixture.Path = lambda name: SimpleNamespace(read_text=lambda: files[name])
+        fixture.container = lambda _: {'State': {'Running': True}, 'NetworkSettings': {'Networks': {'private': {'IPAddress': '10.0.0.2'}}}}
+        fixture.cross_network_refused('pgbox', 'pgbox', 'api', 8080)
+        self.assertEqual(run.call_count, 2)
+        run.reset_mock(side_effect=True)
+        run.return_value = subprocess.CompletedProcess([], 0, b'a' * 40)
+        with self.assertRaisesRegex(ValueError, 'positive TCP control failed'):
+            fixture.cross_network_refused('pgbox', 'pgbox', 'api', 8080)
+        self.assertEqual(run.call_count, 1)
+
     def test_actual_source_identity_reaches_pinned_postgres_build_without_engine_side_effects(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
