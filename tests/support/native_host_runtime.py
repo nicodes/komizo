@@ -144,6 +144,7 @@ def enroll_empty(document):
         'volumes':resources['volumes'],'created_at':int(time.time()),
         'source':{'kind':'empty','confirmation':'initialize-new-empty-application'}}
     body=registry.canonical(evidence)
+    Path('/var/lib/komizo/data-evidence').mkdir(mode=0o700,exist_ok=True)
     write('/var/lib/komizo/data-evidence/'+app+'--production.json',body)
     wrong=submit(request(app,'data-accept',identity,data_evidence='sha256:'+'0'*64))
     if wrong.get('ok'):raise ValueError('owner data evidence hash was not enforced')
