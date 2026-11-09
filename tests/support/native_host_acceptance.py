@@ -120,6 +120,15 @@ def prepare():
     expected=capacity();write(directory/'capacity.json',expected)
     write(directory/'proxy.json',{'kind':'komizo.proxy','version':1,'trusted_proxies':[]})
     run([BINARY,'install','--authorized-keys',str(ROOT/'submission.pub')],timeout=240)
+    proxy_receipt=Path('/etc/komizo-proxy/binary.json');accepted_receipt=proxy_receipt.read_bytes()
+    run(['runuser','-u','komizo-proxy','--',BINARY,'proxy-guard'])
+    changed=json.loads(accepted_receipt);changed['binary_sha256']='sha256:'+'0'*64
+    try:
+        write(proxy_receipt,changed,0o644)
+        refused=run(['runuser','-u','komizo-proxy','--',BINARY,'proxy-guard'],ok=False)
+        if refused.returncode==0 or refused.stdout:raise ValueError('unprivileged proxy guard accepted changed executable provenance')
+    finally:write(proxy_receipt,accepted_receipt,0o644)
+    run(['runuser','-u','komizo-proxy','--',BINARY,'proxy-guard'])
     write('/etc/komizo/apps/mailroom.json',policy())
     write('/var/lib/komizo/private-acceptance',b'private fixture bytes')
     write('/var/lib/komizo-assets/public-acceptance',b'public fixture bytes',0o644)
@@ -139,7 +148,8 @@ def prepare():
         'runtime_acceptance':False,'baseline':baseline,
         'checks':{'supported_host':'passed','root_peer':'passed','forged_owner_peer':'passed','proxy_uid':'passed',
             'proxy_mount_write_refusal':'passed','proxy_process_metadata_isolation':'passed','secret_isolation':'passed',
-            'kernel_limits':'passed','unsafe_filesystem':'passed','idempotent_install':'passed'}}
+            'kernel_limits':'passed','unsafe_filesystem':'passed','idempotent_install':'passed',
+            'native_proxy_source_receipt':'passed','unprivileged_proxy_digest_guard':'passed'}}
     write(ROOT/'report.json',report)
 
 

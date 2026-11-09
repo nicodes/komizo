@@ -15,7 +15,7 @@ use std::{
     sync::Arc,
 };
 
-pub const USAGE: &str = "komizo-box -- native Komizo host\n\n  komizo-box install --authorized-keys /absolute/owner/public-keys\n  komizo-box daemon\n  komizo-box submit\n  komizo-box status\n  komizo-box guard|health|resource --application APP --instance INST --service SVC\n  komizo-box expire\n  komizo-box release validate|render FILE [render flags]\n  komizo-box application validate FILE\n  komizo-box version\n";
+pub const USAGE: &str = "komizo-box -- native Komizo host\n\n  komizo-box install --authorized-keys /absolute/owner/public-keys\n  komizo-box daemon\n  komizo-box submit\n  komizo-box status\n  komizo-box proxy-guard\n  komizo-box guard|health|resource --application APP --instance INST --service SVC\n  komizo-box expire\n  komizo-box release validate|render FILE [render flags]\n  komizo-box application validate FILE\n  komizo-box version\n";
 
 fn scope(args: &[String]) -> Result<(&str, &str, &str)> {
     ensure!(
@@ -149,7 +149,7 @@ pub fn run(args: &[String], input: &mut dyn Read, output: &mut dyn Write) -> Res
                 }
             }
         }
-        "daemon" | "submit" | "expire" | "version" | "status" => {
+        "daemon" | "submit" | "expire" | "version" | "status" | "proxy-guard" => {
             ensure!(
                 flags.is_empty(),
                 "native host command does not accept arguments"
@@ -158,6 +158,7 @@ pub fn run(args: &[String], input: &mut dyn Read, output: &mut dyn Write) -> Res
                 "daemon" => daemon(),
                 "submit" => transport::submit(input, output),
                 "expire" => native::expire(),
+                "proxy-guard" => bootstrap::proxy_guard(),
                 "status" => {
                     serde_json::to_writer(&mut *output, &super::operator::status()?)?;
                     output.write_all(b"\n")?;

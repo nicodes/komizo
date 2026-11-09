@@ -9,10 +9,12 @@ use super::{
 use anyhow::{Result, anyhow, ensure};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    fs,
-    os::unix::fs::{MetadataExt, PermissionsExt},
+    fs::{self, OpenOptions},
+    io::Read,
+    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::Path,
     process::Command,
     time::{Duration, Instant},
@@ -25,6 +27,134 @@ const CONFIG: &str = "/etc/komizo";
 const LEDGER: &str = "/etc/komizo/bootstrap.json";
 const KEYS: &str = "/etc/ssh/komizo-submit/authorized_keys";
 const CLI: &str = "/usr/local/bin/komizo-box";
+pub const PROXY_RECEIPT: &str = "/etc/komizo-proxy/binary.json";
+const PROXY_BINARY: &str = "/usr/local/bin/caddy";
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProxyBuild {
+    kind: String,
+    version: u32,
+    tools_revision: String,
+    platform: String,
+    go_version: String,
+    caddy_version: String,
+    source_sha256: BTreeMap<String, String>,
+    binary_sha256: String,
+}
+
+fn proxy_build(body: &[u8], platform: &str) -> Result<String> {
+    let value: ProxyBuild = serde_json::from_value(crate::strict::value(body, 16384)?)?;
+    ensure!(
+        value.kind == "komizo.proxy-build"
+            && value.version == 1
+            && super::validation::hex(&value.tools_revision, 40)
+            && value.platform == platform
+            && ["linux/amd64", "linux/arm64"].contains(&platform)
+            && value.go_version == "1.27.3"
+            && value.caddy_version == "2.11.6"
+            && value
+                .source_sha256
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                == ["caddy-build.sh", "caddy.go.mod", "caddy.go.sum"]
+            && value
+                .source_sha256
+                .values()
+                .all(|v| super::validation::digest(v))
+            && super::validation::digest(&value.binary_sha256),
+        "proxy provenance differs from the reviewed compiler, source closure or native platform"
+    );
+    Ok(value.binary_sha256)
+}
+
+fn public_root_file(path: &Path, maximum: u64, mode: u32) -> Result<fs::File> {
+    ensure!(
+        path.is_absolute(),
+        "proxy provenance requires fixed absolute paths"
+    );
+    for parent in path.ancestors().skip(1) {
+        let info = fs::symlink_metadata(parent)?;
+        ensure!(
+            info.is_dir()
+                && !info.file_type().is_symlink()
+                && info.uid() == 0
+                && info.mode() & 0o022 == 0
+                && info.mode() & 0o111 == 0o111,
+            "proxy provenance traverses an unsafe parent"
+        );
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(path)?;
+    let info = file.metadata()?;
+    ensure!(
+        info.is_file()
+            && info.uid() == 0
+            && info.nlink() == 1
+            && info.mode() & 0o022 == 0
+            && info.mode() & 0o777 == mode
+            && info.len() > 0
+            && info.len() <= maximum,
+        "proxy provenance input is not a protected ordinary file"
+    );
+    Ok(file)
+}
+
+/// Public provenance can be checked inside the unprivileged ingress sandbox.
+pub fn proxy_guard() -> Result<()> {
+    ensure!(
+        std::env::consts::OS == "linux",
+        "native proxy requires Linux"
+    );
+    let platform = match std::env::consts::ARCH {
+        "x86_64" => "linux/amd64",
+        "aarch64" => "linux/arm64",
+        _ => return Err(anyhow!("unsupported native proxy architecture")),
+    };
+    let mut body = Vec::new();
+    public_root_file(Path::new(PROXY_RECEIPT), 16384, 0o644)?
+        .take(16385)
+        .read_to_end(&mut body)?;
+    let expected = proxy_build(&body, platform)?;
+    let mut binary = public_root_file(Path::new(PROXY_BINARY), 128 << 20, 0o755)?;
+    let before = binary.metadata()?;
+    ensure!(
+        before.mode() & 0o111 == 0o111,
+        "proxy binary is not publicly executable"
+    );
+    let mut hash = Sha256::new();
+    let mut header = [0u8; 64];
+    binary.read_exact(&mut header)?;
+    let machine = u16::from_le_bytes([header[18], header[19]]);
+    ensure!(
+        header[..7] == *b"\x7fELF\x02\x01\x01"
+            && machine == if platform == "linux/amd64" { 62 } else { 183 },
+        "installed proxy is not the declared native Linux executable"
+    );
+    hash.update(header);
+    let mut buffer = [0u8; 65536];
+    loop {
+        let count = binary.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    let after = binary.metadata()?;
+    ensure!(
+        before.len() == after.len()
+            && before.mtime() == after.mtime()
+            && before.mtime_nsec() == after.mtime_nsec()
+            && before.ctime() == after.ctime()
+            && before.ctime_nsec() == after.ctime_nsec()
+            && format!("sha256:{:x}", hash.finalize()) == expected,
+        "installed proxy binary differs from its protected source receipt"
+    );
+    Ok(())
+}
 
 const SUBMISSION_SHELL: &str = r#"#!/bin/sh
 # OpenSSH invokes this root-owned account shell with its fixed forced command.
@@ -41,7 +171,7 @@ pub fn controller_unit() -> &'static str {
 }
 
 pub fn proxy_unit() -> &'static str {
-    "[Unit]\nDescription=Komizo public ingress\nWants=network-online.target\nAfter=network-online.target\nRequiresMountsFor=/var/lib/komizo-assets /var/lib/komizo-proxy\n[Service]\nType=notify\nNotifyAccess=main\nUser=komizo-proxy\nGroup=komizo-proxy\nUMask=0077\nWorkingDirectory=/var/lib/komizo-proxy\nStateDirectory=komizo-proxy\nStateDirectoryMode=0700\nRuntimeDirectory=komizo-proxy\nRuntimeDirectoryMode=0700\nEnvironment=XDG_DATA_HOME=/var/lib/komizo-proxy/data\nEnvironment=XDG_CONFIG_HOME=/var/lib/komizo-proxy/config\nExecStart=/usr/local/bin/caddy run --config /etc/komizo-proxy/Caddyfile --adapter caddyfile\nExecReload=/usr/local/bin/caddy reload --config /etc/komizo-proxy/Caddyfile --adapter caddyfile --address unix//run/komizo-proxy/admin.sock\nRestart=on-failure\nRestartSec=2\nTimeoutStopSec=10\nSlice=komizo-proxy.slice\nNoNewPrivileges=yes\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nProtectSystem=strict\nProtectHome=yes\nProtectProc=invisible\nProcSubset=pid\nPrivateTmp=yes\nPrivateDevices=yes\nProtectKernelTunables=yes\nProtectKernelModules=yes\nProtectKernelLogs=yes\nProtectControlGroups=yes\nRestrictSUIDSGID=yes\nLockPersonality=yes\nMemoryDenyWriteExecute=yes\nSystemCallArchitectures=native\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX\nReadOnlyPaths=/var/lib/komizo-assets /etc/komizo-proxy\nInaccessiblePaths=/var/lib/komizo /etc/komizo /run/komizo\n[Install]\nWantedBy=multi-user.target\n"
+    "[Unit]\nDescription=Komizo public ingress\nWants=network-online.target\nAfter=network-online.target\nRequiresMountsFor=/var/lib/komizo-assets /var/lib/komizo-proxy\n[Service]\nType=notify\nNotifyAccess=main\nUser=komizo-proxy\nGroup=komizo-proxy\nUMask=0077\nWorkingDirectory=/var/lib/komizo-proxy\nStateDirectory=komizo-proxy\nStateDirectoryMode=0700\nRuntimeDirectory=komizo-proxy\nRuntimeDirectoryMode=0700\nEnvironment=XDG_DATA_HOME=/var/lib/komizo-proxy/data\nEnvironment=XDG_CONFIG_HOME=/var/lib/komizo-proxy/config\nExecStartPre=/usr/local/bin/komizo-box proxy-guard\nExecStart=/usr/local/bin/caddy run --config /etc/komizo-proxy/Caddyfile --adapter caddyfile\nExecReload=/usr/local/bin/caddy reload --config /etc/komizo-proxy/Caddyfile --adapter caddyfile --address unix//run/komizo-proxy/admin.sock\nRestart=on-failure\nRestartSec=2\nTimeoutStopSec=10\nSlice=komizo-proxy.slice\nNoNewPrivileges=yes\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nProtectSystem=strict\nProtectHome=yes\nProtectProc=invisible\nProcSubset=pid\nPrivateTmp=yes\nPrivateDevices=yes\nProtectKernelTunables=yes\nProtectKernelModules=yes\nProtectKernelLogs=yes\nProtectControlGroups=yes\nRestrictSUIDSGID=yes\nLockPersonality=yes\nMemoryDenyWriteExecute=yes\nSystemCallArchitectures=native\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX\nReadOnlyPaths=/var/lib/komizo-assets /etc/komizo-proxy\nInaccessiblePaths=/var/lib/komizo /etc/komizo /run/komizo\n[Install]\nWantedBy=multi-user.target\n"
 }
 
 const EXPIRE_SERVICE: &str = "[Unit]\nDescription=Expire recorded Komizo previews\nWants=komizo-controller.service\nAfter=komizo-controller.service\n[Service]\nType=oneshot\nUser=root\nGroup=root\nUMask=0077\nExecStart=/usr/local/bin/komizo-box expire\nTimeoutStartSec=1500\nSlice=komizo-control.slice\n";
@@ -291,7 +421,7 @@ pub fn install(public_keys: &Path) -> Result<()> {
     );
     let keys = authorized_keys(&protected_file(public_keys, 65536)?)?;
     protected_file(Path::new(CLI), 128 << 20)?;
-    protected_file(Path::new("/usr/local/bin/caddy"), 128 << 20)?;
+    proxy_guard()?;
     let deadline = Instant::now() + Duration::from_secs(180);
     Engine { deadline }.preflight()?;
     let version = command("/usr/local/bin/caddy", &["version"], deadline)?;
@@ -444,5 +574,36 @@ mod tests {
         assert!(controller_unit().contains("Type=notify"));
         assert!(controller_unit().contains("KillMode=process"));
         assert!(controller_unit().contains("Slice=komizo-control.slice"));
+    }
+
+    #[test]
+    fn proxy_receipt_binds_the_closed_native_source_and_compiler_identity() {
+        let receipt = serde_json::json!({
+            "kind":"komizo.proxy-build","version":1,"tools_revision":"a".repeat(40),
+            "platform":"linux/amd64","go_version":"1.27.3","caddy_version":"2.11.6",
+            "source_sha256":{"caddy.go.mod":format!("sha256:{}","b".repeat(64)),
+                "caddy.go.sum":format!("sha256:{}","c".repeat(64)),
+                "caddy-build.sh":format!("sha256:{}","d".repeat(64))},
+            "binary_sha256":format!("sha256:{}","e".repeat(64))
+        });
+        assert_eq!(
+            proxy_build(&serde_json::to_vec(&receipt).unwrap(), "linux/amd64").unwrap(),
+            receipt["binary_sha256"].as_str().unwrap()
+        );
+        for (field, replacement) in [
+            ("tools_revision", serde_json::json!("short")),
+            ("platform", serde_json::json!("linux/arm64")),
+            ("go_version", serde_json::json!("1.26.0")),
+            ("caddy_version", serde_json::json!("2.11.5")),
+            ("binary_sha256", serde_json::json!("e".repeat(64))),
+            (
+                "source_sha256",
+                serde_json::json!({"unexpected":"sha256:bad"}),
+            ),
+        ] {
+            let mut changed = receipt.clone();
+            changed[field] = replacement;
+            assert!(proxy_build(&serde_json::to_vec(&changed).unwrap(), "linux/amd64").is_err());
+        }
     }
 }

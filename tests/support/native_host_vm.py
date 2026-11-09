@@ -11,7 +11,6 @@ import secrets
 import selectors
 import socket
 import subprocess
-import tarfile
 import tempfile
 import time
 import urllib.request
@@ -181,6 +180,8 @@ def owner_recovery(guest, directory, key):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', required=True, type=Path)
+    parser.add_argument('--proxy-binary', required=True, type=Path)
+    parser.add_argument('--proxy-receipt', required=True, type=Path)
     parser.add_argument('--output', type=Path, default=ROOT / '.artifacts/native-host')
     args = parser.parse_args()
     binary = args.binary.absolute()
@@ -189,6 +190,17 @@ def main():
     if not Path('/dev/kvm').exists() or not os.access('/dev/kvm', os.R_OK | os.W_OK):
         raise ValueError('real native host acceptance requires accessible KVM; no simulated success fallback')
     baseline = json.loads((FIXTURES / 'baseline.json').read_text())
+    caddy=args.proxy_binary.absolute();proxy_receipt=args.proxy_receipt.absolute()
+    for path,maximum in [(caddy,128<<20),(proxy_receipt,16384)]:
+        if path.is_symlink() or not path.is_file() or not 0<path.stat().st_size<=maximum:raise ValueError('native host requires exact ordinary proxy outputs')
+    proxy_build=json.loads(proxy_receipt.read_bytes())
+    expected_keys={'kind','version','tools_revision','platform','go_version','caddy_version','source_sha256','binary_sha256'}
+    if (set(proxy_build)!=expected_keys or proxy_build['kind']!='komizo.proxy-build' or type(proxy_build['version']) is not int or proxy_build['version']!=1
+            or proxy_build['tools_revision']!=baseline['proxy_tools_revision'] or proxy_build['platform']!='linux/amd64'
+            or proxy_build['go_version']!=baseline['proxy_go_version'] or proxy_build['caddy_version']!=baseline['caddy_version']
+            or set(proxy_build['source_sha256'])!={'caddy.go.mod','caddy.go.sum','caddy-build.sh'}
+            or proxy_build['binary_sha256']!='sha256:'+hashlib.sha256(caddy.read_bytes()).hexdigest()):
+        raise ValueError('native proxy bytes differ from their reviewed source receipt')
     args.output.mkdir(parents=True, mode=0o700, exist_ok=False)
     with tempfile.TemporaryDirectory(prefix='komizo-native-host-') as temporary:
         directory = Path(temporary)
@@ -198,16 +210,6 @@ def main():
         base = directory / 'base.qcow2'
         print('Downloading and authenticating the pinned Debian cloud image',flush=True)
         download(baseline['cloud_image'], base)
-        archive = directory / 'caddy.tar.gz'
-        print('Downloading and authenticating the pinned Caddy archive',flush=True)
-        download(baseline['caddy_archive'], archive)
-        caddy = directory / 'caddy'
-        with tarfile.open(archive, 'r:gz') as package:
-            entries = [entry for entry in package.getmembers() if entry.name == 'caddy']
-            if len(entries) != 1 or not entries[0].isfile() or not 0 < entries[0].size <= 64 << 20:
-                raise ValueError('reviewed Caddy archive lacks its bounded executable')
-            caddy.write_bytes(package.extractfile(entries[0]).read())
-        caddy.chmod(0o755)
         recovery_key=directory/'recipient.key';recipient=directory/'recipient.crt'
         run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(recovery_key),
             '-out',str(recipient),'-days','2','-subj','/CN=disposable-native-owner'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -249,6 +251,9 @@ def main():
                 if guest.command('sha256sum /usr/local/bin/komizo-box',capture_output=True).stdout.decode().split()[0]!=binary_sha:
                     raise ValueError('guest native binary differs from the exact compiled source artifact')
                 guest.copy(caddy, '/usr/local/bin/caddy')
+                guest.command('install -d -m 755 /etc/komizo-proxy')
+                guest.copy(proxy_receipt,'/etc/komizo-proxy/binary.json')
+                guest.command('chmod 644 /etc/komizo-proxy/binary.json')
                 guest.copy(submit.with_suffix('.pub'), '/root/native-host/submission.pub')
                 guest.copy(recipient, '/root/native-host/recipient.crt')
                 guest.copy(ROOT / 'tests/support/native_host_acceptance.py', '/root/native-host/acceptance.py')
@@ -278,6 +283,7 @@ def main():
                 (args.output / 'report.json').write_bytes(result)
                 accepted = json.loads(result)
                 accepted['source']={'revision':os.environ.get('NATIVE_HOST_SOURCE'),'binary_sha256':binary_sha}
+                accepted['proxy_build']=proxy_build
                 accepted['checks']['ssh_forced_submission'] = 'passed'
                 accepted['checks']['ssh_forwarding_refused'] = 'passed'
                 accepted['checks'].update(owner_checks)
