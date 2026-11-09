@@ -31,7 +31,9 @@ pub fn workload_label(label: &str) -> Result<()> {
     ensure!(
         label == format!("{profile} (enforce)")
             || label == format!("{profile}//&crun (enforce)")
-            || label == format!("{profile}//&crun (mixed)"),
+            || label == format!("{profile}//&crun (mixed)")
+            || label == format!("crun//&{profile} (enforce)")
+            || label == format!("crun//&{profile} (mixed)"),
         "native workload has an unexpected or non-enforcing kernel AppArmor label"
     );
     Ok(())

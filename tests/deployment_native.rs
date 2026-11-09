@@ -261,6 +261,8 @@ fn workload_confinement_requires_the_fixed_enforcing_profile_and_reviewed_crun_s
         format!("{profile} (enforce)"),
         format!("{profile}//&crun (enforce)"),
         format!("{profile}//&crun (mixed)"),
+        format!("crun//&{profile} (enforce)"),
+        format!("crun//&{profile} (mixed)"),
     ] {
         engine::workload_label(&accepted).unwrap();
     }
@@ -271,6 +273,8 @@ fn workload_confinement_requires_the_fixed_enforcing_profile_and_reviewed_crun_s
         format!("{profile}//&unconfined (enforce)"),
         format!("{profile}//&other (enforce)"),
         "foreign (enforce)".to_owned(),
+        format!("{profile}//&{profile} (enforce)"),
+        format!("crun//&{profile}//&other (mixed)"),
     ] {
         assert!(engine::workload_label(&refused).is_err());
     }
