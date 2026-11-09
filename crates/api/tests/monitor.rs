@@ -6,6 +6,8 @@ use komizo_api::{config::Config, ui::Ui};
 use serde_json::{Value, json};
 use std::{os::unix::fs::PermissionsExt, path::PathBuf, sync::Arc};
 use tower::ServiceExt;
+const TOKEN: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const AUTH: &str = "Bearer aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 struct Fixture {
     root: PathBuf,
     ui: Arc<Ui>,
@@ -65,9 +67,15 @@ else:sys.exit(9)
             parent_pid: None,
         };
         let (stop, _) = tokio::sync::watch::channel(false);
+        let bootstrap = root.join("bootstrap");
+        std::fs::create_dir(&bootstrap).unwrap();
+        std::fs::set_permissions(&bootstrap, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let session = komizo_api::session::Session::receive(std::io::Cursor::new(serde_json::to_vec(&json!({
+            "kind":"komizo.ui-session","version":1,"capability":TOKEN,"bootstrap_directory":bootstrap
+        })).unwrap()), &config).unwrap();
         Self {
             root,
-            ui: Ui::new(config, stop),
+            ui: Ui::new(config, session, stop),
         }
     }
     fn calls(&self) -> Vec<Value> {
@@ -90,10 +98,23 @@ async fn call(
     headers: &[(&str, &str)],
     body: Value,
 ) -> (u16, Value) {
+    call_as(ui, method, path, headers, body, Some(AUTH)).await
+}
+async fn call_as(
+    ui: &Arc<Ui>,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: Value,
+    authorization: Option<&str>,
+) -> (u16, Value) {
     let mut request = Request::builder()
         .method(method)
         .uri(path)
         .header("host", "127.0.0.1:8480");
+    if let Some(value) = authorization {
+        request = request.header("authorization", value);
+    }
     for (key, value) in headers {
         request = request.header(*key, *value);
     }
@@ -123,6 +144,56 @@ const WRITE: &[(&str, &str)] = &[
     ("content-type", "application/json"),
     ("x-komizo-request", "1"),
 ];
+
+#[tokio::test]
+async fn forged_local_headers_without_the_private_launch_capability_never_invoke_owner() {
+    let f = Fixture::new();
+    for (method, path) in [
+        ("GET", "/api/status"),
+        ("GET", "/api/history"),
+        ("GET", "/api/logs"),
+        ("GET", "/api/operation"),
+        ("POST", "/api/actions"),
+    ] {
+        for capability in [
+            None,
+            Some("Bearer wrong"),
+            Some("Bearer bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        ] {
+            let (status, value) = call_as(&f.ui, method, path, WRITE, action(), capability).await;
+            assert_eq!(status, 403);
+            assert!(!value.to_string().contains(TOKEN));
+        }
+        assert_eq!(
+            call_as(
+                &f.ui,
+                method,
+                path,
+                &[("authorization", AUTH)],
+                action(),
+                Some(AUTH)
+            )
+            .await
+            .0,
+            403
+        );
+    }
+    assert!(f.calls().is_empty());
+    let response =
+        f.ui.router()
+            .oneshot(
+                Request::builder()
+                    .uri("/")
+                    .header("host", "127.0.0.1:8480")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+    let bytes = to_bytes(response.into_body(), 8 << 20).await.unwrap();
+    assert!(!String::from_utf8_lossy(&bytes).contains(TOKEN));
+    f.ui.shutdown().await;
+}
 
 #[tokio::test]
 async fn local_health_and_remote_status_are_separate_and_history_is_observed_only() {
@@ -283,11 +354,11 @@ fn only_loopback_fixed_host_owner_client_configuration_is_supported() {
         "--owner-client".into(),
         binary.to_str().unwrap().into(),
     ];
-    assert!(Config::parse(&args).is_ok());
+    assert_eq!(Config::parse(&args).unwrap().port, 0);
     for extra in [
         vec!["--bind", "0.0.0.0"],
         vec!["--bind", "192.0.2.1"],
-        vec!["--port", "0"],
+        vec!["--port", "-1"],
         vec!["--port", "65536"],
         vec!["--hosts", "other"],
         vec!["--report", "/etc/private"],

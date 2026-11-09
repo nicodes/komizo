@@ -46,7 +46,7 @@ impl Config {
     pub fn parse(args: &[String]) -> Result<Self> {
         let mut config = Self {
             bind: "127.0.0.1".into(),
-            port: 8480,
+            port: 0,
             host: String::new(),
             owner_client: PathBuf::new(),
             identity: None,
@@ -86,8 +86,7 @@ impl Config {
                     config.port = value
                         .parse()
                         .ok()
-                        .filter(|port| *port > 0)
-                        .ok_or_else(|| invalid("port must be 1-65535"))?
+                        .ok_or_else(|| invalid("port must be 0-65535"))?
                 }
                 "--host" => config.host = value,
                 "--owner-client" => config.owner_client = value.into(),

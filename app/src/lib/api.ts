@@ -1,8 +1,16 @@
 import type {ActionRequest, ActionResponse, HistoryResponse, Logs, Operation, StatusResponse} from "./types";
+import {ownerCapability} from "./session.ts";
 
-export class APIError extends Error { constructor(message: string, readonly status: number) {super(message);} }
+export class APIError extends Error {
+  readonly status: number;
+  constructor(message: string, status: number) {super(message); this.status = status;}
+}
 async function read<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const response = await fetch(path, options);
+  const capability = ownerCapability();
+  if (!capability) throw new APIError("Open the owner-private launcher printed by komizo ui.", 403);
+  const headers = new Headers(options.headers);
+  headers.set("Authorization", "Bearer " + capability);
+  const response = await fetch(path, {...options, headers, credentials: "omit", mode: "same-origin", redirect: "error"});
   const text = await response.text();
   if (text.length > 4 << 20) throw new APIError("The response exceeded its limit.", response.status);
   let value: unknown;

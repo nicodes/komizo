@@ -54,9 +54,14 @@ pub struct Ui {
     stop: watch::Sender<bool>,
     tasks: Arc<crate::tasks::Tasks>,
     history: Mutex<History>,
+    session: crate::session::Session,
 }
 impl Ui {
-    pub fn new(config: Config, stop: watch::Sender<bool>) -> Arc<Self> {
+    pub fn new(
+        config: Config,
+        session: crate::session::Session,
+        stop: watch::Sender<bool>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             config,
             files: Static::default(),
@@ -64,6 +69,7 @@ impl Ui {
             stop,
             tasks: Arc::new(crate::tasks::Tasks::default()),
             history: Mutex::new(History::default()),
+            session,
         })
     }
     pub async fn shutdown(&self) {
@@ -365,6 +371,12 @@ async fn change(ui: &Ui, action: Action) -> Response {
 async fn handle(State(ui): State<Arc<Ui>>, request: Request) -> Response {
     if let Err(status) = browser_boundary(&ui.config, &request) {
         return security(error(status, "local same-origin request required"));
+    }
+    if request.uri().path().starts_with("/api/") && !ui.session.authorizes(request.headers()) {
+        return security(error(
+            403,
+            "open the owner-private launcher to access this session",
+        ));
     }
     let Ok(permit) = ui.admission.clone().try_acquire_owned() else {
         return security(error(503, "local UI is busy"));

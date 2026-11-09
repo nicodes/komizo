@@ -3,6 +3,7 @@ pub mod config;
 pub mod error;
 pub mod response;
 pub mod server;
+pub mod session;
 pub mod static_files;
 pub mod tasks;
 pub mod ui;
