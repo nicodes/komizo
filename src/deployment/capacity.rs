@@ -192,6 +192,31 @@ pub fn reserve(
     instance: &str,
     startup: bool,
 ) -> Result<()> {
+    check(store, capacity, policy, document, instance, startup, true)
+}
+
+/// Refuse an impossible full instance before staging or credential preparation.
+/// Activation repeats admission while atomically committing its reservation.
+pub fn preflight(
+    store: &Store,
+    capacity: &Capacity,
+    policy: &Policy,
+    document: &ReleaseDocument,
+    instance: &str,
+    startup: bool,
+) -> Result<()> {
+    check(store, capacity, policy, document, instance, startup, false)
+}
+
+fn check(
+    store: &Store,
+    capacity: &Capacity,
+    policy: &Policy,
+    document: &ReleaseDocument,
+    instance: &str,
+    startup: bool,
+    commit: bool,
+) -> Result<()> {
     let is_static =
         document.release.workload.services.is_empty() && document.release.workload.jobs.is_empty();
     let _lock = store.lock("platform", "capacity")?;
@@ -234,6 +259,9 @@ pub fn reserve(
         is_static,
     };
     capacity.admit(&records, &candidate)?;
+    if !commit {
+        return Ok(());
+    }
     records.insert(
         Store::instance_key(&policy.application, instance)?,
         candidate,

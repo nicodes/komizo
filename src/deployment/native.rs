@@ -1314,13 +1314,8 @@ fn stage(store: &Store, policy: &Policy, document: &ReleaseDocument, job: &Job) 
     proxy::seal_assets(store, document)
 }
 
-fn prepare_preview(
-    store: &Store,
-    policy: &Policy,
-    job: &Job,
-    operation: &mut Operation,
-) -> Result<()> {
-    if job.request.instance == "production" {
+fn preview_capacity(store: &Store, policy: &Policy, instance: &str) -> Result<()> {
+    if instance == "production" {
         return Ok(());
     }
     let preview = policy
@@ -1332,7 +1327,7 @@ fn prepare_preview(
         .filter(|i| {
             i.application == policy.application
                 && i.instance != "production"
-                && i.instance != job.request.instance
+                && i.instance != instance
                 && (i.desired_running || i.expires_at.is_some())
         })
         .count();
@@ -1340,6 +1335,23 @@ fn prepare_preview(
         active < preview.max_instances as usize,
         "application preview capacity refuses another full instance"
     );
+    Ok(())
+}
+
+fn prepare_preview(
+    store: &Store,
+    policy: &Policy,
+    job: &Job,
+    operation: &mut Operation,
+) -> Result<()> {
+    preview_capacity(store, policy, &job.request.instance)?;
+    if job.request.instance == "production" {
+        return Ok(());
+    }
+    let preview = policy
+        .previews
+        .as_ref()
+        .ok_or_else(|| anyhow!("preview authority missing"))?;
     let Some(task) = &preview.prepare else {
         return Ok(());
     };
@@ -2298,10 +2310,8 @@ impl Backend for Native {
                 advance(store, operation, "ready")
             }
             "deploy" => {
-                advance(store, operation, "staging")?;
                 let document = store.release(&job.request.release_digest)?;
                 policy.admit(&document.release, instance)?;
-                super::tls::reserve(store, &document, instance, controller::now()?)?;
                 if instance == "production" && !document.release.workload.volumes.is_empty() {
                     let enrolled = previous.as_ref().ok_or_else(|| {
                         anyhow!(
@@ -2313,6 +2323,13 @@ impl Backend for Native {
                 if let Some(previous) = &previous {
                     retained_topology(&store.release(&previous.release_digest)?, &document)?;
                 }
+                preview_capacity(store, policy, instance)?;
+                if previous.as_ref().is_none_or(|p| p.desired_running) {
+                    let capacity = capacity::read(Path::new("/etc/komizo/capacity.json"))?;
+                    capacity::preflight(store, &capacity, policy, &document, instance, true)?;
+                }
+                advance(store, operation, "staging")?;
+                super::tls::reserve(store, &document, instance, controller::now()?)?;
                 stage(store, policy, &document, job)?;
                 prepare_preview(store, policy, job, operation)?;
                 let snapshots = secrets::stage(&store.root, &document, policy, instance)?;
