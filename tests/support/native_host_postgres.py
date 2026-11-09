@@ -7,7 +7,6 @@ from pathlib import Path
 import secrets
 import time
 import threading
-import os
 import tarfile
 
 from acceptance import ROOT, MiB, run, write
@@ -77,11 +76,19 @@ def diagnostic():
         evidence['state']=actual['State'];evidence['exec_sessions']=actual.get('ExecIDs')
         evidence['processes']=run(['podman','--remote=false','top',identity,'hpid','pid','ppid','args'],ok=False,timeout=5).stdout.decode(errors='replace')[:16384]
         evidence['backend_processes']={}
+        trace_pids=[]
         for row in evidence['processes'].splitlines()[1:32]:
             if not row.split()[0].isdecimal():continue
             base=Path('/proc')/row.split()[0]
             if not base.is_dir():continue
             evidence['backend_processes'][row.split()[0]]={key:(base/key).read_text()[:2048] for key in ['wchan','syscall','cgroup'] if (base/key).is_file()}
+            if ('authentication' in row or 'io worker 0' in row or row.split()[1]=='1') and len(trace_pids)<4:
+                trace_pids.append(row.split()[0])
+                evidence['backend_processes'][row.split()[0]]['fds']={item.name:{'target':str(item.readlink())[:256],'info':(base/'fdinfo'/item.name).read_text()[:256]} for item in sorted((base/'fd').iterdir(),key=lambda path:int(path.name))[:12]}
+        traced=run(['timeout','--signal=TERM','--kill-after=1s','4s','strace','-k','-qq','-s','0','-e','trace=epoll_wait,poll,read,write,pread64,preadv,fcntl,kill,tgkill','-e','raw=read,write,pread64,preadv',*[argument for pid in trace_pids for argument in ['-p',pid]]],ok=False,timeout=6)
+        evidence['syscalls']={'code':traced.returncode,'trace':traced.stderr.decode(errors='replace')[:16384]}
+        native=json.loads(run(['podman','--remote=false','volume','inspect',runtime.installed('pgbox')['resources']['volumes']['postgres-data']['name']]).stdout)[0]
+        evidence['hba']='\n'.join(line for line in (Path(native['Mountpoint'])/'pg'/'pg_hba.conf').read_text().splitlines() if line and not line.startswith('#'))[:4096]
         for name in ['hosts','resolv.conf']:
             evidence[name]=run(['podman','--remote=false','exec',identity,'cat','/etc/'+name],ok=False,timeout=4).stdout.decode(errors='replace')[:2048]
         pid=actual['State']['Pid'];group=Path('/proc/'+str(pid)+'/cgroup').read_text().strip()
@@ -90,7 +97,7 @@ def diagnostic():
             base=Path('/sys/fs/cgroup')/group[4:]
             evidence['events']={name:(base/name).read_text()[:4096] for name in ['memory.current','memory.events','memory.stat','pids.current','pids.events','cpu.stat'] if (base/name).is_file()}
         for name,command in [
-            ('activity',['psql','-h','/tmp','-U','fixture','-d','postgres','--no-psqlrc','--tuples-only','--no-align','--command',"SELECT pid,usename,application_name,client_addr,state,wait_event_type,wait_event FROM pg_stat_activity"]),
+            ('activity',['psql','host=/tmp user=fixture dbname=postgres connect_timeout=2','--no-psqlrc','--tuples-only','--no-align','--command',"SELECT pid,usename,application_name,client_addr,state,wait_event_type,wait_event FROM pg_stat_activity"]),
             ('sockets',['sh','-c','cat /proc/net/tcp; cat /proc/net/unix'])]:
             try:
                 probe=run(['timeout','--signal=TERM','--kill-after=1s','4s','podman','--remote=false','exec',identity,*command],ok=False,timeout=6)
@@ -117,7 +124,7 @@ def initial_connections(stop):
         else:return
         sql="SELECT json_build_object('settings',(SELECT json_object_agg(name,setting) FROM pg_settings WHERE name IN ('ssl','ssl_library','authentication_timeout','log_hostname','log_connections','listen_addresses','shared_preload_libraries','session_preload_libraries','local_preload_libraries')),'hba',(SELECT json_agg(json_build_object('number',rule_number,'type',type,'database',database,'user',user_name,'address',address,'method',auth_method,'error',error)) FROM pg_hba_file_rules))"
         for name,command in [
-            ('unix',['psql','-h','/tmp','-U','fixture','-d','postgres','--no-psqlrc','--tuples-only','--no-align','--command',sql]),
+            ('unix',['psql','host=/tmp user=fixture dbname=postgres connect_timeout=2','--no-psqlrc','--tuples-only','--no-align','--command',sql]),
             ('tcp_default',['pg_isready','-h','127.0.0.1','-U','fixture','-d','postgres','-t','2']),
             ('tcp_without_negotiation',['psql','host=127.0.0.1 user=fixture dbname=postgres connect_timeout=2 sslmode=disable gssencmode=disable','--no-psqlrc','--tuples-only','--no-align','--command','SELECT 1'])]:
             began=time.monotonic()

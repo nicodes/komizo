@@ -183,7 +183,7 @@ class IsolatedOwner:
         self.directory=None;self.uid=None
 
     def __enter__(self):
-        run(['sudo','-n','useradd','--system','--no-create-home','--shell','/usr/sbin/nologin',self.name],capture_output=True)
+        run(['sudo','-n','useradd','--system','--user-group','--no-create-home','--shell','/usr/sbin/nologin',self.name],capture_output=True)
         try:
             uid=int(run(['id','-u',self.name],capture_output=True).stdout)
             if uid in {0,os.getuid()}:raise ValueError('cold owner client must have an independent unprivileged UID')
@@ -198,7 +198,14 @@ class IsolatedOwner:
                 'UserKnownHostsFile='+str(pins) if value.startswith('UserKnownHostsFile=') else value for value in self.guest.arguments]
             wrapper=tools/'ssh';wrapper.write_text('#!/bin/sh\nexec /usr/bin/ssh '+shlex.join(arguments)+' "$@"\n');wrapper.chmod(0o700)
             gid=int(run(['id','-g',self.name],capture_output=True).stdout)
-            run(['sudo','-n','chown','-R',str(self.uid)+':'+str(gid),str(self.directory)],capture_output=True)
+            # The client may write its home and use the disposable identity, but
+            # cannot replace its own executable, SSH adapter or protected pins.
+            run(['sudo','-n','chown','-R','root:'+str(gid),str(self.directory)],capture_output=True)
+            run(['sudo','-n','chown',str(self.uid)+':'+str(gid),str(self.home),str(private)],capture_output=True)
+            run(['sudo','-n','chmod','0555',str(tools),str(target),str(wrapper)],capture_output=True)
+            run(['sudo','-n','chmod','0440',str(pins)],capture_output=True)
+            run(['sudo','-n','chmod','0400',str(private)],capture_output=True)
+            run(['sudo','-n','chmod','0710',str(self.directory)],capture_output=True)
             self.prefix=['sudo','-n','--user='+self.name,'--','/usr/bin/env','-i','HOME='+str(self.home),
                 'PATH='+str(tools)+':/usr/bin:/bin','LANG=C.UTF-8']
             # Scrubbing environment variables alone cannot isolate another process
@@ -208,6 +215,10 @@ class IsolatedOwner:
                 probe=run([*self.prefix,'/usr/bin/python3','-I','-B','-c',
                     'import pathlib,sys\ntry: pathlib.Path(sys.argv[1]).open("rb").read(1)\nexcept PermissionError: sys.exit(0)\nsys.exit(1)',
                     str(protected)],capture_output=True)
+            for immutable in [target,wrapper,pins]:
+                run([*self.prefix,'/usr/bin/python3','-I','-B','-c',
+                    'import pathlib,sys\ntry: pathlib.Path(sys.argv[1]).open("ab")\nexcept PermissionError: sys.exit(0)\nsys.exit(1)',
+                    str(immutable)],capture_output=True)
             self.executable=target
             return self
         except BaseException:
@@ -360,7 +371,7 @@ def main():
             'users': [{'name': 'root', 'ssh_authorized_keys': [owner.with_suffix('.pub').read_text().strip()]}],
             'ssh_keys': {'ed25519_private': host.read_text(), 'ed25519_public': host.with_suffix('.pub').read_text().strip()},
             'package_update': True,
-            'packages': ['podman', 'uidmap', 'netavark', 'aardvark-dns', 'busybox-static', 'python3', 'curl', 'ca-certificates', 'nftables'],
+            'packages': ['podman', 'uidmap', 'netavark', 'aardvark-dns', 'busybox-static', 'python3', 'curl', 'ca-certificates', 'nftables', 'strace'],
             'runcmd': [['sh', '-c', 'install -d -m 700 /root/native-host; touch /root/native-host/cloud-ready']]}
         config = directory / 'user-data'
         config.write_text('#cloud-config\n' + json.dumps(user_data))
