@@ -286,7 +286,7 @@ def apparmor_boundary(app,report):
     record=installed(app)['resources']['containers']['api'];actual=container(record)
     if actual.get('AppArmorProfile')!='komizo-workload':raise ValueError('native service lacks explicit workload confinement')
     label=Path('/proc/'+str(actual['State']['Pid'])+'/attr/current').read_text().strip()
-    if label not in {'komizo-workload (enforce)','komizo-workload//&crun (mixed)','komizo-workload//&crun (enforce)'}:
+    if label not in {'komizo-workload (enforce)','komizo-workload//&crun (mixed)','komizo-workload//&crun (enforce)','crun//&komizo-workload (mixed)','crun//&komizo-workload (enforce)'}:
         raise ValueError('actual native process has an unexpected confinement label: '+label)
     status=Path('/proc/'+str(actual['State']['Pid'])+'/status').read_text()
     if status.split('NoNewPrivs:',1)[1].splitlines()[0].strip()!='1':raise ValueError('LSM repair removed no-new-privileges')
@@ -298,27 +298,37 @@ def apparmor_boundary(app,report):
         '--cap-drop=all','--security-opt=no-new-privileges','--user=10001:10001','--memory=32m','--memory-swap=32m',
         '--pids-limit=16','--cpu-period=1000000','--cpu-quota=100000','--cgroup-parent='+parent,
         '--label=io.komizo.fixture=signal-boundary','--entrypoint=/bin/busybox']
-    # Different LSM profile, but deliberately the same PID namespace and UID:
-    # the denial must not rely solely on namespace or UID separation.
-    foreign=run([*prefix,'--pid=container:'+actual['Id'],actual['Image'],'sh','-ec',
-        'cat /proc/self/attr/current; test -r /proc/1/status; if kill -URG 1; then exit 9; fi'])
-    victim=subprocess.Popen(['setpriv','--reuid=10001','--regid=10001','--clear-groups','--no-new-privs','/bin/sleep','30'],
-        env={'PATH':'/usr/bin:/bin'},stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    default_helper=run([*prefix,actual['Image'],'sh','-ec',"cat /proc/self/attr/current; trap 'echo delivered' URG; kill -URG $$"])
+    if default_helper.stdout.decode().strip().splitlines()!=[label,'delivered']:
+        raise ValueError('root Podman helper default does not preserve the reviewed profile and SIGURG')
+    foreign_file=ROOT/'apparmor-foreign'
+    write(foreign_file,Path('/etc/apparmor.d/komizo-workload').read_bytes().replace(b'komizo-workload',b'komizo-native-negative'))
+    run(['/usr/sbin/apparmor_parser','-r',str(foreign_file)],timeout=10)
     try:
-        until(lambda:Path('/proc/'+str(victim.pid)+'/status').exists() and
-            '10001' in Path('/proc/'+str(victim.pid)+'/status').read_text().split('Uid:',1)[1].splitlines()[0],seconds=3)
-        run(['setpriv','--reuid=10001','--regid=10001','--clear-groups','--no-new-privs','/bin/busybox','kill','-URG',str(victim.pid)])
-        # Host PID visibility is granted only to this disposable negative probe.
-        run([*prefix,'--security-opt=apparmor=komizo-workload','--pid=host',actual['Image'],'sh','-ec',
-            'test -r /proc/'+str(victim.pid)+'/status; if kill -URG '+str(victim.pid)+'; then exit 9; fi'])
+        # Different LSM profile, but deliberately the same PID namespace and UID:
+        # the denial must not rely solely on namespace or UID separation.
+        foreign=run([*prefix,'--security-opt=apparmor=komizo-native-negative','--pid=container:'+actual['Id'],actual['Image'],'sh','-ec',
+            'cat /proc/self/attr/current; test -r /proc/1/status; if kill -URG 1; then exit 9; fi'])
+        victim=subprocess.Popen(['setpriv','--reuid=10001','--regid=10001','--clear-groups','--no-new-privs','/bin/sleep','30'],
+            env={'PATH':'/usr/bin:/bin'},stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        try:
+            until(lambda:Path('/proc/'+str(victim.pid)+'/status').exists() and
+                '10001' in Path('/proc/'+str(victim.pid)+'/status').read_text().split('Uid:',1)[1].splitlines()[0],seconds=3)
+            run(['setpriv','--reuid=10001','--regid=10001','--clear-groups','--no-new-privs','/bin/busybox','kill','-URG',str(victim.pid)])
+            # Host PID visibility is granted only to this disposable negative probe.
+            run([*prefix,'--security-opt=apparmor=komizo-workload','--pid=host',actual['Image'],'sh','-ec',
+                'test -r /proc/'+str(victim.pid)+'/status; if kill -URG '+str(victim.pid)+'; then exit 9; fi'])
+        finally:
+            victim.terminate()
+            try:victim.wait(timeout=5)
+            except subprocess.TimeoutExpired:victim.kill();victim.wait(timeout=5)
     finally:
-        victim.terminate()
-        try:victim.wait(timeout=5)
-        except subprocess.TimeoutExpired:victim.kill();victim.wait(timeout=5)
-    write(ROOT/'apparmor-boundary.json',{'service_label':label,'foreign_profile_label':foreign.stdout.decode().strip(),'no_new_privileges':True,'same_uid_host_signal_baseline':'passed',
+        run(['/usr/sbin/apparmor_parser','-R',str(foreign_file)],timeout=10)
+        foreign_file.unlink()
+    write(ROOT/'apparmor-boundary.json',{'service_label':label,'foreign_profile_label':foreign.stdout.decode().strip(),'helper_default_label':default_helper.stdout.decode().splitlines()[0],'no_new_privileges':True,'same_uid_host_signal_baseline':'passed',
         'same_profile_sigurg':'passed','foreign_profile_refused':'passed','host_signal_refused':'passed'})
     report['checks'].update({'apparmor_signal_delivery':'passed','apparmor_stacked_profile_enforced':'passed',
-        'apparmor_foreign_profile_signal_refused':'passed','apparmor_host_signal_refused':'passed'})
+        'apparmor_foreign_profile_signal_refused':'passed','apparmor_host_signal_refused':'passed','apparmor_root_helper_default':'passed'})
 
 
 def failures(report):

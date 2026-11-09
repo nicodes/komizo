@@ -33,7 +33,7 @@ const DNS_SERVICE: &str = "komizo-dns.service";
 const DNS_HELPER: &str = "/usr/local/libexec/komizo-network/aardvark-dns";
 const ENGINE_CONFIG: &str = "/etc/containers/containers.conf.d/80-komizo-network.conf";
 const DNS_WRAPPER: &str = "#!/bin/sh\nexec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C.UTF-8 /usr/local/bin/komizo-box dns \"$@\"\n";
-const ENGINE_NETWORK: &str = "[engine]\nhelper_binaries_dir=[\"/usr/local/libexec/komizo-network\",\"/usr/lib/podman\"]\n[network]\nnetwork_backend=\"netavark\"\ndns_bind_port=53\n";
+const ENGINE_NETWORK: &str = "[containers]\napparmor_profile=\"komizo-workload\"\n[engine]\nhelper_binaries_dir=[\"/usr/local/libexec/komizo-network\",\"/usr/lib/podman\"]\n[network]\nnetwork_backend=\"netavark\"\ndns_bind_port=53\n";
 
 pub const WORKLOAD_PROFILE: &str = "komizo-workload";
 const APPARMOR_FILE: &str = "/etc/apparmor.d/komizo-workload";
@@ -69,6 +69,128 @@ fn enforcing_profile(enabled: &str, profiles: &str) -> Result<()> {
     Ok(())
 }
 
+fn configured_profile(body: &[u8]) -> Result<Option<String>> {
+    let text = std::str::from_utf8(body)
+        .map_err(|_| anyhow!("root container configuration is not UTF-8"))?;
+    let value: toml::Value = toml::from_str(text)
+        .map_err(|_| anyhow!("root container configuration is invalid TOML"))?;
+    let tables = value
+        .as_table()
+        .ok_or_else(|| anyhow!("invalid root container configuration table"))?;
+    let matches = tables
+        .iter()
+        .filter(|(key, _)| key.eq_ignore_ascii_case("containers"))
+        .collect::<Vec<_>>();
+    ensure!(
+        matches.len() <= 1,
+        "ambiguous root container configuration table"
+    );
+    let Some((_, containers)) = matches.first() else {
+        return Ok(None);
+    };
+    let fields = containers
+        .as_table()
+        .ok_or_else(|| anyhow!("invalid root container settings"))?;
+    let profiles = fields
+        .iter()
+        .filter(|(key, _)| key.replace('_', "").eq_ignore_ascii_case("apparmorprofile"))
+        .collect::<Vec<_>>();
+    ensure!(
+        profiles.len() <= 1,
+        "ambiguous root container AppArmor selection"
+    );
+    profiles
+        .first()
+        .map(|(_, value)| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| anyhow!("root container AppArmor selection must be literal"))
+        })
+        .transpose()
+}
+
+fn configuration_profile() -> Result<()> {
+    for name in [
+        "CONTAINERS_CONF",
+        "CONTAINERS_CONF_OVERRIDE",
+        "XDG_CONFIG_HOME",
+    ] {
+        ensure!(
+            std::env::var_os(name).is_none_or(|value| value.is_empty()),
+            "root container configuration has an unreviewed environment selector"
+        );
+    }
+    ensure!(
+        std::env::var_os("HOME").is_none_or(|value| value == "/root"),
+        "root container configuration requires the fixed owner home"
+    );
+    // containers/common v0.62.3 new.go systemConfigs/addConfigs. Modules are
+    // opt-in CLI arguments and are absent from all approved native helper argv.
+    let mut paths = vec![
+        Path::new("/usr/share/containers/containers.conf").to_path_buf(),
+        Path::new("/etc/containers/containers.conf").to_path_buf(),
+    ];
+    for (directory, main) in [
+        ("/etc/containers/containers.conf.d", None),
+        (
+            "/root/.config/containers/containers.conf.d",
+            Some("/root/.config/containers/containers.conf"),
+        ),
+    ] {
+        if let Some(main) = main {
+            paths.push(Path::new(main).to_path_buf());
+        }
+        match fs::symlink_metadata(directory) {
+            Ok(info) => {
+                ensure!(
+                    info.is_dir()
+                        && !info.file_type().is_symlink()
+                        && info.uid() == 0
+                        && info.mode() & 0o022 == 0,
+                    "unsafe root container configuration directory"
+                );
+                let mut entries = fs::read_dir(directory)?.collect::<std::io::Result<Vec<_>>>()?;
+                ensure!(
+                    entries.len() <= 64,
+                    "root container configuration exceeds bounds"
+                );
+                entries.sort_by_key(|entry| entry.file_name());
+                for entry in entries {
+                    if !entry.file_type()?.is_dir()
+                        && entry.file_name().as_encoded_bytes().ends_with(b".conf")
+                    {
+                        paths.push(entry.path());
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    ensure!(
+        paths.len() <= 64,
+        "root container configuration exceeds bounds"
+    );
+    let mut selected = None;
+    for path in paths {
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                if let Some(profile) = configured_profile(&protected_file(&path, 256 << 10)?)? {
+                    selected = Some(profile);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    ensure!(
+        selected.as_deref() == Some(WORKLOAD_PROFILE),
+        "effective root container defaults select an unreviewed AppArmor profile"
+    );
+    Ok(())
+}
+
 /// The shared service and job profile is fixed owner-installed policy, never source input.
 pub fn apparmor_guard() -> Result<()> {
     ensure!(
@@ -94,6 +216,19 @@ pub fn apparmor_guard() -> Result<()> {
             && fs::symlink_metadata(APPARMOR_FILE)?.mode() & 0o7777 == 0o644,
         "workload confinement differs from the reviewed installed policy"
     );
+    let config = protected_file(Path::new(ENGINE_CONFIG), 65536)?;
+    let configured = ledger
+        .files
+        .get(ENGINE_CONFIG)
+        .ok_or_else(|| anyhow!("root container defaults are not owner installed"))?;
+    ensure!(
+        config == ENGINE_NETWORK.as_bytes()
+            && document_digest(&config) == configured.sha256
+            && configured.mode == 0o644
+            && fs::symlink_metadata(ENGINE_CONFIG)?.mode() & 0o7777 == 0o644,
+        "root container defaults changed after installation"
+    );
+    configuration_profile()?;
     enforcing_profile(
         &kernel_text(Path::new("/sys/module/apparmor/parameters/enabled"), 32)?,
         &kernel_text(Path::new("/sys/kernel/security/apparmor/profiles"), 2 << 20)?,
@@ -777,9 +912,9 @@ pub fn install(public_keys: &Path) -> Result<()> {
     )?;
     managed(&mut ledger, APPARMOR_FILE, APPARMOR_POLICY, 0o644)?;
     command(APPARMOR_PARSER, &["-r", APPARMOR_FILE], deadline)?;
-    apparmor_guard()?;
     managed(&mut ledger, DNS_HELPER, DNS_WRAPPER.as_bytes(), 0o755)?;
     managed(&mut ledger, ENGINE_CONFIG, ENGINE_NETWORK.as_bytes(), 0o644)?;
+    apparmor_guard()?;
     managed(&mut ledger, SHELL, SUBMISSION_SHELL.as_bytes(), 0o755)?;
     let gid = account("komizo-submit", "/nonexistent", SHELL, deadline)?;
     account(
@@ -858,6 +993,38 @@ mod tests {
         format!("ssh-ed25519 {} harmless comment\n", STANDARD.encode(blob))
     }
     #[test]
+    fn root_profile_configuration_is_literal_and_case_ambiguity_is_refused() {
+        assert_eq!(
+            configured_profile(ENGINE_NETWORK.as_bytes())
+                .unwrap()
+                .as_deref(),
+            Some(WORKLOAD_PROFILE)
+        );
+        assert_eq!(
+            configured_profile(b"[engine]\nnetwork_cmd_path='/usr/bin/pasta'\n").unwrap(),
+            None
+        );
+        assert_eq!(
+            configured_profile(b"[Containers]\nAppArmor_Profile='komizo-workload'\n")
+                .unwrap()
+                .as_deref(),
+            Some(WORKLOAD_PROFILE)
+        );
+        for invalid in [
+            "[containers]\napparmor_profile=false",
+            "[containers]\napparmor_profile='one'\nAppArmor_Profile='two'",
+            "[containers]\napparmor_profile='one'\n[CONTAINERS]\napparmor_profile='two'",
+            "[containers]\napparmor_profile=['invalid']",
+            "malformed secret-value",
+        ] {
+            let error = configured_profile(invalid.as_bytes())
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("secret-value"));
+        }
+    }
+
+    #[test]
     fn workload_profile_requires_enforcement_and_only_the_reviewed_stacked_peer() {
         enforcing_profile("Y\n", "distro (enforce)\nkomizo-workload (enforce)\n").unwrap();
         for (enabled, profiles) in [
@@ -869,7 +1036,7 @@ mod tests {
             assert!(enforcing_profile(enabled, profiles).is_err());
         }
         let profile = std::str::from_utf8(APPARMOR_POLICY).unwrap();
-        assert!(profile.contains("signal (send,receive) peer=komizo-workload//&crun,"));
+        assert!(profile.contains("signal (send,receive) peer=crun//&komizo-workload,"));
         assert!(!profile.contains("peer=komizo-workload//&*"));
         for denied in [
             "deny mount,",

@@ -15,7 +15,7 @@ from performance_acceptance import evaluate, SCOPE
 from native_release import inventory, read as payload_read, SOURCE, TAG, PAYLOAD, CLI_NAMES
 
 REQUIRED_STEPS={
-    'apparmor_signal_delivery','apparmor_stacked_profile_enforced','apparmor_foreign_profile_signal_refused','apparmor_host_signal_refused',
+    'apparmor_override_refused','apparmor_root_helper_default','apparmor_signal_delivery','apparmor_stacked_profile_enforced','apparmor_foreign_profile_signal_refused','apparmor_host_signal_refused',
     'supported_host','root_peer','forged_owner_peer','proxy_uid','proxy_mount_write_refusal',
     'proxy_process_metadata_isolation','secret_isolation','kernel_limits','unsafe_filesystem','idempotent_install',
     'managed_bootstrap_upgrade','foreign_bootstrap_bytes_refused','typed_dns_helper_refusal','native_proxy_source_receipt','unprivileged_proxy_digest_guard',

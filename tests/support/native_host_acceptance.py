@@ -179,6 +179,20 @@ def prepare():
         raise ValueError('reviewed managed bootstrap update did not replace the accepted key set')
     run([BINARY,'install','--authorized-keys',str(ROOT/'submission.pub')],timeout=240)
     if hashlib.sha256(ledger.read_bytes()).hexdigest()!=prior:raise ValueError('reviewed key restoration changed unrelated bootstrap ownership')
+    # A later root configuration layer must not silently undo confinement for
+    # protected capture helpers that do not pass an explicit profile flag.
+    override=Path('/etc/containers/containers.conf.d/99-native-unreviewed.conf')
+    if override.exists() or override.is_symlink():raise ValueError('confinement override fixture encountered foreign configuration')
+    prior=ledger.read_bytes()
+    write(override,b'[containers]\napparmor_profile="unconfined"\n',0o644)
+    try:
+        refused=run([BINARY,'install','--authorized-keys',str(ROOT/'submission.pub')],ok=False,timeout=240)
+        if refused.returncode==0 or b'effective root container defaults' not in refused.stderr:
+            raise ValueError('later container configuration bypassed the protected default profile')
+        if override.read_bytes()!=b'[containers]\napparmor_profile="unconfined"\n' or ledger.read_bytes()!=prior:
+            raise ValueError('confinement refusal altered a borrowed configuration or ownership record')
+    finally:override.unlink()
+    run([BINARY,'install','--authorized-keys',str(ROOT/'submission.pub')],timeout=240)
     network=json.loads(run(['podman','--remote=false','info','--format=json']).stdout)['host']['networkBackendInfo']
     if network['dns']['path']!='/usr/local/libexec/komizo-network/aardvark-dns':raise ValueError('Podman bypassed the protected typed DNS helper')
     report={'kind':'komizo.native-host-acceptance','version':1,'ok':False,
@@ -188,7 +202,7 @@ def prepare():
         'checks':{'supported_host':'passed','root_peer':'passed','forged_owner_peer':'passed','proxy_uid':'passed',
             'proxy_mount_write_refusal':'passed','proxy_process_metadata_isolation':'passed','secret_isolation':'passed',
             'kernel_limits':'passed','unsafe_filesystem':'passed','idempotent_install':'passed','managed_bootstrap_upgrade':'passed','foreign_bootstrap_bytes_refused':'passed',
-            'typed_dns_helper_refusal':'passed','native_proxy_source_receipt':'passed','unprivileged_proxy_digest_guard':'passed'}}
+            'apparmor_override_refused':'passed','typed_dns_helper_refusal':'passed','native_proxy_source_receipt':'passed','unprivileged_proxy_digest_guard':'passed'}}
     write(ROOT/'report.json',report)
 
 
