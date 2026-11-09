@@ -24,9 +24,16 @@ def export(observations,output,source):
     if not isinstance(profiles,dict) or set(profiles)!={'functional','bounded'}:raise ValueError('both source candidate profiles are required')
     for name,required in [('functional',CANDIDATE_STEPS),('bounded',BOUNDED_STEPS)]:
         profile=profiles[name]
-        if (profile.get('ok') is not True or profile.get('profile')!=name or profile.get('source')!={'revision':source,'binary_sha256':result.get('host_sha256')}
-                or any(profile.get('checks',{}).get(name)!='passed' for name in required)):
-            raise ValueError('source candidate native effects, small-host fit or exact running executable differ')
+        if not isinstance(profile,dict):raise ValueError('source candidate profile must be an object')
+        checks=profile.get('checks',{})
+        missing=sorted(check for check in required if not isinstance(checks,dict) or checks.get(check)!='passed')
+        identity={'accepted':profile.get('ok') is True,'profile_matches':profile.get('profile')==name,
+            'source_matches':profile.get('source')=={'revision':source,'binary_sha256':result.get('host_sha256')}}
+        if not all(identity.values()) or missing:
+            # Export only finite predicate results and reviewed check names,
+            # never an arbitrary report value, transcript or private path.
+            raise ValueError(json.dumps({'phase':'source_candidate_profile','profile':name,
+                **identity,'missing_checks':missing},sort_keys=True))
     performance=read(observations/'performance.json');onboarding=read(observations/'onboarding.json')
     root=Path(__file__).parent;budget=read_budget(root/'acceptance-budgets.toml')
     validate_measurements(performance,onboarding,{'host_sha256':result['host_sha256'],'proxy_sha256':result['proxy_sha256'],

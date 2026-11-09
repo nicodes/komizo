@@ -206,6 +206,18 @@ class AcceptanceGuards(unittest.TestCase):
                 with self.subTest(mutate=mutate), self.assertRaises(ValueError):
                     export(observations, root / 'refused', self.source)
             (observations / 'candidate-deployment.json').write_text(json.dumps(result))
+            bad=copy.deepcopy(result)
+            bad['profiles']['bounded']['checks'].pop('shared_dns_control_budget')
+            bad['profiles']['bounded']['private_transcript']='PRIVATE-CANDIDATE-SENTINEL'
+            (observations/'candidate-deployment.json').write_text(json.dumps(bad))
+            with self.assertRaises(ValueError) as missing:
+                export(observations,root/'refused',self.source)
+            diagnostic=json.loads(str(missing.exception))
+            self.assertEqual(diagnostic,{'phase':'source_candidate_profile','profile':'bounded',
+                'accepted':True,'profile_matches':True,'source_matches':True,
+                'missing_checks':['shared_dns_control_budget']})
+            self.assertNotIn('PRIVATE-CANDIDATE-SENTINEL',str(missing.exception))
+            (observations/'candidate-deployment.json').write_text(json.dumps(result))
             for mutate in [lambda p: p['metrics'].update(guest_memory_bytes=2<<30),
                     lambda p: p['metrics'].update(guest_milli_cpus=2000),
                     lambda p: p['metrics'].update(oom_events_unchanged=False),
@@ -217,6 +229,30 @@ class AcceptanceGuards(unittest.TestCase):
 
 
 class NativeBootGuards(unittest.TestCase):
+    def test_bounded_dns_evidence_requires_its_actual_accounting_check(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            spec=importlib.util.spec_from_file_location('bounded_fixture_runtime',ENGINE.parent/'support/native_host_runtime.py')
+            fixture=importlib.util.module_from_spec(spec)
+            write=Mock(side_effect=lambda path,value:Path(path).write_text(json.dumps(value)))
+            with patch.dict(sys.modules,{'acceptance':SimpleNamespace(ROOT=root,MiB=1<<20,BINARY='/fixture/box',
+                    run=Mock(),write=write,actual_boundaries=Mock(),capacity=Mock()),'fixture_registry':SimpleNamespace()}):
+                spec.loader.exec_module(fixture)
+            fixture.setup_registry=Mock();fixture.host_policy=Mock();fixture.release=Mock()
+            fixture.deploy=Mock(return_value=(None,{'ok':True,'release_digest':'sha256:'+'a'*64}))
+            fixture.apparmor_boundary=Mock();fixture.shared_dns=Mock()
+            for accepted in [False,True]:
+                with self.subTest(accounting=accepted):
+                    (root/'report.json').write_text(json.dumps({'checks':{}}))
+                    write.reset_mock();fixture.shared_dns.return_value=accepted
+                    with patch.dict(sys.modules,{'fixture_postgres':SimpleNamespace(prepare=Mock())}):
+                        if accepted:fixture.bounded_prepare()
+                        else:
+                            with self.assertRaisesRegex(ValueError,'shared DNS escaped'):fixture.bounded_prepare()
+                    result=json.loads((root/'report.json').read_text())
+                    self.assertEqual(result['checks'].get('shared_dns_control_budget'),'passed' if accepted else None)
+                    self.assertEqual(write.call_count,int(accepted))
+
     def test_bounded_reboot_verifies_its_own_graph_without_a_functional_only_application(self):
         spec = importlib.util.spec_from_file_location('native_fixture_acceptance', ENGINE.parent / 'support/native_host_acceptance.py')
         acceptance = importlib.util.module_from_spec(spec); spec.loader.exec_module(acceptance)

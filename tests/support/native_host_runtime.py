@@ -466,6 +466,7 @@ def bounded_prepare():
     fixture_postgres.prepare(report)
     apparmor_boundary('pgbox',report)
     if not shared_dns('bounded-full-postgresql-workload'):raise ValueError('bounded shared DNS escaped infrastructure accounting')
+    report['checks']['shared_dns_control_budget']='passed'
     report['installed']={'static':receipt['release_digest']}
     report['runtime_acceptance']=False
     report['remaining']=['bounded performance and owner-client observations']
