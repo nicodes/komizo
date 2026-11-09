@@ -76,7 +76,7 @@ class Guest:
             if process.poll() is not None:
                 raise ValueError('disposable guest stopped before SSH readiness')
             try:
-                self.command('test -f /run/cloud-init/result.json && cloud-init status --wait', timeout=15,
+                self.command('test -f /root/native-host/cloud-ready && cloud-init status --wait', timeout=15,
                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 return
             except (subprocess.SubprocessError, OSError):
@@ -124,8 +124,10 @@ def main():
         submit = key(directory, 'submission')
         host = key(directory, 'host')
         base = directory / 'base.qcow2'
+        print('Downloading and authenticating the pinned Debian cloud image',flush=True)
         download(baseline['cloud_image'], base)
         archive = directory / 'caddy.tar.gz'
+        print('Downloading and authenticating the pinned Caddy archive',flush=True)
         download(baseline['caddy_archive'], archive)
         caddy = directory / 'caddy'
         with tarfile.open(archive, 'r:gz') as package:
@@ -153,7 +155,9 @@ def main():
         guest = Guest(directory, owner, host.with_suffix('.pub'), ssh_port)
         console = args.output / 'console.log'
         with console.open('wb') as log:
-            process = subprocess.Popen(['qemu-system-x86_64', '-nodefaults', '-no-user-config', '-display', 'none',
+            # Debian GRUB needs the default console/video device model even
+            # with a hidden display (Debian bug 1111240); the image stays exact.
+            process = subprocess.Popen(['qemu-system-x86_64', '-no-user-config', '-display', 'none',
                 '-machine', 'q35,accel=kvm', '-cpu', 'host', '-m', '2048', '-smp', '2',
                 '-drive', 'file=' + str(overlay) + ',if=virtio,format=qcow2',
                 '-drive', 'file=' + str(seed) + ',if=virtio,format=raw,readonly=on',
@@ -161,17 +165,24 @@ def main():
                 '-device', 'virtio-net-pci,netdev=net0', '-serial', 'stdio', '-monitor', 'none',
                 '-device', 'virtio-rng-pci'], stdout=log, stderr=log, start_new_session=True)
             try:
+                print('Booting the disposable guest and waiting for its bounded cloud setup',flush=True)
                 guest.ready(process, time.monotonic() + 600)
+                print('Guest setup completed; installing the exact compiled native controller',flush=True)
                 guest.copy(binary, '/usr/local/bin/komizo-box')
+                binary_sha=hashlib.sha256(binary.read_bytes()).hexdigest()
+                if guest.command('sha256sum /usr/local/bin/komizo-box',capture_output=True).stdout.decode().split()[0]!=binary_sha:
+                    raise ValueError('guest native binary differs from the exact compiled source artifact')
                 guest.copy(caddy, '/usr/local/bin/caddy')
                 guest.copy(submit.with_suffix('.pub'), '/root/native-host/submission.pub')
                 guest.copy(ROOT / 'tests/support/native_host_acceptance.py', '/root/native-host/acceptance.py')
                 guest.copy(ROOT / 'tests/support/native_host_runtime.py', '/root/native-host/fixture_runtime.py')
                 guest.copy(ROOT / 'tests/support/native_host_registry.py', '/root/native-host/fixture_registry.py')
                 guest.copy(FIXTURES / 'baseline.json', '/root/native-host/baseline.json')
+                print('Running native bootstrap, authority and release effects',flush=True)
                 guest.command('chmod 755 /usr/local /usr/local/bin /usr/local/bin/komizo-box /usr/local/bin/caddy; chmod 600 /root/native-host/submission.pub; python3 /root/native-host/acceptance.py prepare', timeout=600)
                 guest.submission_boundary(submit)
                 before = guest.command('cat /proc/sys/kernel/random/boot_id', capture_output=True).stdout.strip()
+                print('Rebooting the real guest with the artifact registry offline',flush=True)
                 guest.command('systemctl reboot', timeout=15)
                 time.sleep(3)
                 guest.ready(process, time.monotonic() + 240)
@@ -182,6 +193,7 @@ def main():
                 result = guest.command('cat /root/native-host/report.json', capture_output=True).stdout
                 (args.output / 'report.json').write_bytes(result)
                 accepted = json.loads(result)
+                accepted['source']={'revision':os.environ.get('NATIVE_HOST_SOURCE'),'binary_sha256':binary_sha}
                 accepted['checks']['ssh_forced_submission'] = 'passed'
                 accepted['checks']['ssh_forwarding_refused'] = 'passed'
                 (args.output / 'report.json').write_text(json.dumps(accepted,sort_keys=True)+'\n')
@@ -190,9 +202,11 @@ def main():
             finally:
                 if process.poll() is None:
                     try:
-                        guest.command('journalctl -b -u komizo-controller -u komizo-proxy --no-pager > /root/native-host/journal.log', timeout=20)
+                        guest.command("journalctl -b -u komizo-controller -u komizo-proxy -u 'kmz-*' -n 500 --no-pager > /root/native-host/journal.log", timeout=20)
                         evidence = guest.command('cat /root/native-host/journal.log', timeout=20, capture_output=True).stdout
                         (args.output / 'journal.log').write_bytes(evidence)
+                        status=guest.command('/usr/local/bin/komizo-box status',timeout=30,capture_output=True).stdout
+                        (args.output/'status.json').write_bytes(status)
                     except (OSError, subprocess.SubprocessError):
                         pass
                     os.killpg(process.pid, signal.SIGTERM)

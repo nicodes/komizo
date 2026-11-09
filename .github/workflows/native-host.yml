@@ -15,10 +15,13 @@ jobs:
     name: Debian 13 native host
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      NATIVE_HOST_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
         with:
           install: false
@@ -41,7 +44,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: native-host-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: native-host-${{ env.NATIVE_HOST_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: .artifacts/native-host/
           retention-days: 14
           if-no-files-found: error

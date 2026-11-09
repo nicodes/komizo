@@ -132,6 +132,64 @@ def count(app):
     return len((Path(path)/'count').read_text().splitlines())
 
 
+def container(record):
+    return json.loads(run(['podman','--remote=false','container','inspect',record['name']]).stdout)[0]
+
+
+def application_limits(app):
+    record=installed(app)['resources']['containers']['api'];actual=container(record)
+    pid=actual['State']['Pid']
+    fields=dict(line.split(':',1) for line in Path('/proc/'+str(pid)+'/status').read_text().splitlines() if ':' in line)
+    if set(map(int,fields['Uid'].split()))!={10001} or int(fields['CapEff'].strip(),16):
+        raise ValueError('actual application UID or capabilities exceed the release')
+    group=next(line[3:] for line in Path('/proc/'+str(pid)+'/cgroup').read_text().splitlines() if line.startswith('0::'))
+    path=Path('/sys/fs/cgroup')/group.removeprefix('/')
+    while (path/'memory.max').read_text().strip()=='max':path=path.parent
+    if (path/'memory.max').read_text().strip()!=str(32*MiB) or (path/'memory.swap.max').read_text().strip()!='0':
+        raise ValueError('actual application memory/swap enforcement differs')
+    if (path/'pids.max').read_text().strip()!='32':raise ValueError('actual application PID enforcement differs')
+    quota,period=map(int,(path/'cpu.max').read_text().split())
+    if quota*1000!=200*period:raise ValueError('actual application CPU enforcement differs')
+    denied=run(['podman','--remote=false','exec','--user=0',record['name'],'/bin/busybox','touch','/unexpected-write'],ok=False)
+    if denied.returncode==0 or b'Read-only file system' not in denied.stderr:raise ValueError('application root filesystem permits writes')
+    if actual['HostConfig'].get('PortBindings'):raise ValueError('application published host ports')
+
+
+def failures(report):
+    bad=release('badjob','a'*40,dynamic=True,job_command='echo accepted >> /data/count; exit 7')
+    _,result=deploy(bad)
+    if result.get('phase')!='needs_reconciliation' or result.get('ok') is not False or count('badjob')!=1:
+        raise ValueError('failed data job was not durably fenced')
+    _,refused=deploy(bad)
+    if refused.get('kind')!='komizo.error' or count('badjob')!=1:raise ValueError('failed data job was replayed')
+    hanging=release('hungjob','a'*40,dynamic=True,job_command='echo accepted >> /data/count; /bin/busybox sleep 600')
+    body=request('hungjob','deploy',registry.digest(registry.canonical(hanging)),release=hanging)
+    child=subprocess.Popen([BINARY,'submit'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    child.stdin.write(registry.canonical(body));child.stdin.close()
+    try:
+        def running():
+            return any(json.loads(path.read_text()).get('phase')=='running' for path in Path('/var/lib/komizo/jobs').rglob('*.json')
+                if json.loads(path.read_text()).get('application')=='hungjob')
+        until(running,seconds=60)
+        run(['systemctl','kill','--signal=KILL','--kill-whom=main','komizo-controller.service'])
+        until(lambda:run(['systemctl','is-active','komizo-controller.service'],ok=False).stdout.strip()==b'active')
+        operation=hashlib.sha256(('komizo-operation-v1\0hungjob\0production\0'+body['nonce']).encode()).hexdigest()[:32]
+        observed=submit(request('hungjob','inspect',body['release_digest'],operation=operation))
+        if observed.get('phase')!='needs_reconciliation' or count('hungjob')!=1:raise ValueError('interrupted data job lost its durable uncertainty fence')
+        _,refused=deploy(hanging)
+        if refused.get('kind')!='komizo.error' or count('hungjob')!=1:raise ValueError('interrupted data job was replayed')
+    finally:
+        try:child.wait(timeout=10)
+        except subprocess.TimeoutExpired:child.kill();child.wait(timeout=5)
+        child.stdout.close();child.stderr.close()
+    deadline=release('deadline','a'*40,dynamic=True,job_command='/bin/busybox sleep 600')
+    started=time.monotonic();_,bounded=deploy(deadline,seconds=8)
+    if time.monotonic()-started>40 or bounded.get('ok') is not False:raise ValueError('admitted worker exceeded its original end-to-end deadline')
+    _,unsafe=deploy(release('unsafe','a'*40,unsafe=True))
+    if unsafe.get('phase')!='failed' or unsafe.get('ok') is not False:raise ValueError('unsafe archive reached activation')
+    report['checks'].update({'failed_job_no_replay':'passed','interrupted_job_no_replay':'passed','worker_deadline':'passed','unsafe_archive':'passed'})
+
+
 def prepare():
     setup_registry()
     for app in ['staticbox','mailroom','livebox','badjob','hungjob','deadline','unsafe']:host_policy(app)
@@ -143,33 +201,38 @@ def prepare():
     mutation,ready=deploy(app)
     if ready.get('phase')!='ready' or not ready.get('ok'):raise ValueError('actual API/job release failed: '+json.dumps(ready))
     if b'a'*40 not in fetch('mailroom',ready['release_digest']) or count('mailroom')!=1:raise ValueError('DAG did not execute once against the retained data')
+    application_limits('mailroom')
     forged=fetch('mailroom',ready['release_digest'],'/cgi-bin/who',headers={'X-Forwarded-For':'203.0.113.29'})
     if b'203.0.113.29' in forged:raise ValueError('untrusted forwarded client IP reached the application')
     if submit(mutation).get('kind')!='komizo.error' or count('mailroom')!=1:raise ValueError('accepted mutation replay executed again')
     _,live=deploy(release('livebox','a'*40,dynamic=True,graph=False))
     if not live.get('ok'):raise ValueError('independent supervised service did not activate')
-    records=installed('mailroom')['resources']['containers'];before={name:value['id'] for name,value in records.items()}
+    records=installed('mailroom')['resources']['containers'];before={name:container(value)['Id'] for name,value in records.items()}
     api=records['api']['name'];db=records['db']['name']
     run(['podman','--remote=false','exec',api,'/bin/busybox','nslookup',db])
     run(['systemctl','kill','--signal=KILL','--kill-whom=main','komizo-controller.service'])
     until(lambda:run(['systemctl','is-active','komizo-controller.service'],ok=False).stdout.strip()==b'active')
-    if before!={name:value['id'] for name,value in installed('mailroom')['resources']['containers'].items()}:
+    if before!={name:container(value)['Id'] for name,value in installed('mailroom')['resources']['containers'].items()}:
         raise ValueError('controller death replaced supervised application containers')
     run(['podman','--remote=false','exec',api,'/bin/busybox','nslookup',db])
     fetch('mailroom',ready['release_digest'])
     stop=submit(request('mailroom','stop',ready['release_digest']))
     if stop.get('phase')!='prepared_stopped':raise ValueError('stop intent was not retained')
+    live_api=installed('livebox')['resources']['containers']['api']['name']
+    run(['podman','--remote=false','exec',live_api,'/bin/busybox','nslookup',live_api])
     next_release=release('mailroom','b'*40,dynamic=True)
     _,prepared=deploy(next_release)
     if prepared.get('phase')!='prepared_stopped' or count('mailroom')!=1:raise ValueError('stopped preparation executed jobs or changed retained data')
     if installed('mailroom')['release_digest']!=ready['release_digest']:raise ValueError('prepared candidate silently replaced installed identity')
-    run(['systemctl','stop','native-fixture-registry.service'])
     report=json.loads((ROOT/'report.json').read_text())
     report['checks'].update({'static_archive':'passed','service_job_dag':'passed','mutation_replay':'passed',
         'source_bound_https':'passed','forwarded_ip_refused':'passed','controller_death':'passed',
-        'dns_after_controller_death':'passed','stopped_candidate_no_jobs':'passed'})
+        'dns_after_controller_death':'passed','dns_after_other_application_stop':'passed','stopped_candidate_no_jobs':'passed','application_kernel_limits':'passed',
+        'application_uid_capabilities':'passed','application_read_only_root':'passed','no_published_application_ports':'passed'})
+    failures(report)
+    run(['systemctl','stop','native-fixture-registry.service'])
     report['runtime_acceptance']=False
-    report['remaining']=['failed/interrupted jobs','end-to-end deadline','unsafe archive','protected backup/export','complete resource stress']
+    report['remaining']=['protected backup/export','complete resource stress']
     report['installed']={'static':result['release_digest'],'mailroom':ready['release_digest'],'prepared':prepared['release_digest'],
         'running':live['release_digest'],'containers':before}
     write(ROOT/'report.json',report)
@@ -185,5 +248,13 @@ def verify_reboot():
     for container in record['resources']['containers'].values():
         info=run(['podman','--remote=false','container','inspect',container['name']],ok=False)
         if info.returncode==0 and json.loads(info.stdout)[0]['State']['Running']:raise ValueError('stopped application ran after real reboot')
+    if 'failed_job_no_replay' in report['checks']:
+        for application in ['badjob','hungjob']:
+            if count(application)!=1:raise ValueError('data job replayed during a real reboot')
+            record=installed(application)['resources']['containers']['api']
+            info=run(['podman','--remote=false','container','inspect',record['name']],ok=False)
+            if info.returncode==0 and json.loads(info.stdout)[0]['State']['Running']:
+                raise ValueError('API bypassed its failed or interrupted job dependency during reboot')
+        report['checks']['uncertain_job_reboot_no_replay']='passed'
     report['checks']['registry_offline_reboot']='passed';report['checks']['stopped_reboot_no_replay']='passed'
     write(ROOT/'report.json',report)
