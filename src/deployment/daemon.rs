@@ -120,6 +120,13 @@ pub fn run(args: &[String], input: &mut dyn Read, output: &mut dyn Write) -> Res
     match mode.as_str() {
         "release" | "application" | "policy" => commands::offline(args, output),
         "dns" => bootstrap::dns(flags, output),
+        "task-run" => {
+            ensure!(
+                flags.len() == 4 && flags[0] == "--operation" && flags[2] == "--task",
+                "protected task execution requires its exact operation and task kind"
+            );
+            native::task_run(&flags[1], &flags[3])
+        }
         "dns-guard" => {
             ensure!(flags.is_empty(), "DNS guard does not accept arguments");
             bootstrap::dns_guard()
@@ -238,6 +245,15 @@ mod tests {
             vec!["podman", "ps"],
             vec!["submit", "id"],
             vec!["daemon", "--socket", "/tmp/other"],
+            vec!["task-run", "--program", "/bin/sh"],
+            vec!["task-run", "--operation", "../../host", "--task", "backup"],
+            vec![
+                "task-run",
+                "--operation",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "--task",
+                "exec",
+            ],
         ] {
             assert!(run(&args(&value), &mut &b""[..], &mut Vec::new()).is_err());
         }

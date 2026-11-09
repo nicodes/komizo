@@ -27,6 +27,9 @@ use std::{
 
 pub struct Native;
 
+#[path = "task_lifetime.rs"]
+mod task_lifetime;
+
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TaskIntent {
@@ -38,9 +41,13 @@ struct TaskIntent {
     task: String,
     unit: String,
     unit_sha256: String,
+    program: String,
     program_sha256: String,
     request_sha256: String,
     request_operation_id: String,
+    environment: BTreeMap<String, String>,
+    boot_id: String,
+    deadline_monotonic_ns: u64,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -360,6 +367,10 @@ fn run_task(
         hex(operation_id, 32) && ["backup", "prepare", "reconcile"].contains(&kind),
         "invalid protected task scope"
     );
+    // Freeze before hashing, writing units or reloading the service manager.
+    // The independent helper never turns this into a fresh relative budget.
+    let (boot_id, deadline_monotonic_ns) =
+        task_lifetime::deadline(deadline, program.timeout_seconds)?;
     ensure!(
         document_digest(&store::read_protected(
             Path::new(&program.program),
@@ -388,9 +399,7 @@ fn run_task(
     let request_path = journal.join(format!("{kind}-request.json"));
     store::atomic(&request_path, input, 0o600)?;
     let mut body = format!(
-        "[Unit]\nDescription=Komizo protected {kind} task\nRequiresMountsFor=/var/lib/komizo\n[Service]\nType=oneshot\nUser=root\nGroup=root\nSlice=komizo-control.slice\nUMask=0077\nNoNewPrivileges=yes\nKillMode=control-group\nTimeoutStartSec={remaining}s\nTimeoutStopSec=5s\nRemainAfterExit=yes\nStandardInput=file:{}\nStandardOutput=null\nStandardError=journal\nExecStart={}\n",
-        request_path.display(),
-        units::word(&program.program)
+        "[Unit]\nDescription=Komizo protected {kind} task\nRequiresMountsFor=/var/lib/komizo\n[Service]\nType=oneshot\nUser=root\nGroup=root\nSlice=komizo-control.slice\nUMask=0077\nNoNewPrivileges=yes\nKillMode=control-group\nKillSignal=SIGKILL\nTimeoutStartFailureMode=kill\nTimeoutStartSec={remaining}s\nTimeoutStopSec=0\nRemainAfterExit=no\nStandardInput=null\nStandardOutput=null\nStandardError=journal\nExecStart=/usr/local/bin/komizo-box task-run --operation {operation_id} --task {kind}\n",
     );
     if kind == "reconcile" {
         let output = journal.join("reconcile-output.json");
@@ -427,6 +436,7 @@ fn run_task(
             task: kind.into(),
             unit: unit.clone(),
             unit_sha256: hash.clone(),
+            program: program.program.clone(),
             program_sha256: program.sha256.clone(),
             request_sha256: document_digest(input),
             request_operation_id: scope["operation_id"]
@@ -434,6 +444,9 @@ fn run_task(
                 .filter(|id| hex(id, 32))
                 .ok_or_else(|| anyhow!("protected task operation scope missing"))?
                 .into(),
+            environment: environment.clone(),
+            boot_id,
+            deadline_monotonic_ns,
         })?,
         0o600,
     )?;
@@ -453,6 +466,10 @@ fn run_task(
     if kind != "reconcile" {
         super::bootstrap::apparmor_guard()?;
     }
+    ensure!(
+        task_lifetime::monotonic_ns()? < deadline_monotonic_ns,
+        "protected task setup exhausted its absolute lifetime"
+    );
     system.start(&unit)?;
     let status = system.run(&["show", "--property=ExecMainStatus", "--value", &unit])?;
     ensure!(
@@ -468,6 +485,107 @@ fn run_task(
         &canonical(&json!({"unit_sha256":hash,"exit_code":0}))?,
         0o600,
     )
+}
+
+/// Internal systemd entrypoint. No caller-selected executable, environment or
+/// path crosses this boundary; all are frozen in the protected effect intent.
+pub fn task_run(operation_id: &str, kind: &str) -> Result<()> {
+    ensure!(
+        unsafe { libc::geteuid() } == 0
+            && hex(operation_id, 32)
+            && ["backup", "prepare", "reconcile"].contains(&kind),
+        "invalid protected task execution scope"
+    );
+    let store = Store::new(Path::new(observation::STATE).into())?;
+    let journal = store.root.join("journal").join(operation_id);
+    let intent: TaskIntent = serde_json::from_value(bounded_value(
+        &store::read_protected(&journal.join(format!("{kind}-task.json")), 16384)?,
+        16384,
+    )?)?;
+    ensure!(
+        intent.kind == "komizo.task"
+            && intent.version == 1
+            && intent.operation_id == operation_id
+            && intent.task == kind
+            && name(&intent.application)
+            && name(&intent.instance)
+            && intent.unit == format!("komizo-{kind}-{operation_id}.service")
+            && absolute(&intent.program)
+            && digest(&intent.program_sha256)
+            && digest(&intent.request_sha256)
+            && digest(&intent.unit_sha256)
+            && hex(&intent.request_operation_id, 32),
+        "protected task intent is invalid"
+    );
+    let lifetime =
+        task_lifetime::Lifetime::arm(&intent.unit, &intent.boot_id, intent.deadline_monotonic_ns)?;
+    let operation = store.operation(operation_id)?;
+    ensure!(
+        operation.application == intent.application
+            && operation.instance == intent.instance
+            && operation.phase == "jobs"
+            && !operation.ok
+            && !operation.reconciliation_required,
+        "protected task no longer belongs to its admitted effect phase"
+    );
+    system::verify_unit(
+        &store,
+        &Path::new(system::UNITS).join(&intent.unit),
+        &intent.application,
+        &intent.instance,
+        &intent.unit_sha256,
+    )?;
+    ensure!(
+        document_digest(&store::read_protected(
+            Path::new(&intent.program),
+            32 << 20
+        )?) == intent.program_sha256,
+        "protected task executable changed before execution"
+    );
+    let request = store::read_protected(
+        &journal.join(format!("{kind}-request.json")),
+        MAX_DOCUMENT_BYTES,
+    )?;
+    let scope = bounded_value(&request, MAX_DOCUMENT_BYTES)?;
+    ensure!(
+        document_digest(&request) == intent.request_sha256
+            && scope["application"] == intent.application
+            && scope["instance"] == intent.instance
+            && scope["operation_id"] == intent.request_operation_id,
+        "protected task input escaped its frozen operation scope"
+    );
+    for key in intent.environment.keys() {
+        ensure!(
+            key.starts_with("KOMIZO_") || ["PATH", "HOME", "LANG"].contains(&key.as_str()),
+            "protected task environment is not admitted"
+        );
+    }
+    // O_EXCL prevents even an early repeated service start from replaying an
+    // uncertain program. Recovery uses a separately admitted task and intent.
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut started = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(journal.join(format!("{kind}-started.json")))?;
+    use std::io::Write;
+    started.write_all(&canonical(&json!({"unit_sha256":intent.unit_sha256,"deadline_monotonic_ns":intent.deadline_monotonic_ns}))?)?;
+    started.sync_all()?;
+    use std::io::{Seek, SeekFrom};
+    let mut input = tempfile::tempfile()?;
+    input.write_all(&request)?;
+    input.seek(SeekFrom::Start(0))?;
+    let status = std::process::Command::new(&intent.program)
+        .env_clear()
+        .envs(&intent.environment)
+        .stdin(std::process::Stdio::from(input))
+        .status()?;
+    ensure!(
+        status.success(),
+        "protected task program did not complete successfully"
+    );
+    lifetime.finish()
 }
 
 fn task_quiescent(system: &System, unit: &str) -> Result<()> {
@@ -517,6 +635,7 @@ fn reconcile_tasks(store: &Store, operation: &Operation, system: &System) -> Res
                 && intent.unit == format!("komizo-{kind}-{}.service", operation.operation_id)
                 && digest(&intent.unit_sha256)
                 && digest(&intent.program_sha256)
+                && absolute(&intent.program)
                 && digest(&intent.request_sha256)
                 && hex(&intent.request_operation_id, 32),
             "protected task intent differs from the interrupted operation"
@@ -2160,6 +2279,7 @@ impl Backend for Native {
                 advance(store, operation, "staging")?;
                 let document = store.release(&job.request.release_digest)?;
                 policy.admit(&document.release, instance)?;
+                super::tls::reserve(store, &document, instance, controller::now()?)?;
                 if instance == "production" && !document.release.workload.volumes.is_empty() {
                     let enrolled = previous.as_ref().ok_or_else(|| {
                         anyhow!(

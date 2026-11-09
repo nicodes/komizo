@@ -213,7 +213,7 @@ def runtime():
 
 def evidence():
     files={}
-    for pattern in ['readiness-*.json','proxy-active-*.caddy','shared-dns.json','postgres-wrapper.json','postgres-diagnostic.json','postgres-initial.json','apparmor-boundary.json','deadline-observation.json','log-observation.json']:
+    for pattern in ['readiness-*.json','proxy-active-*.caddy','shared-dns.json','postgres-wrapper.json','postgres-diagnostic.json','postgres-initial.json','apparmor-boundary.json','deadline-observation.json','log-observation.json','task-deadline.json']:
         for path in list(ROOT.glob(pattern))[:16]:
             if path.is_file() and not path.is_symlink() and path.stat().st_size<=65536:files[path.name]=path.read_text()
     operations=[]

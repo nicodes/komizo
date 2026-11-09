@@ -7,6 +7,8 @@ restoration and product application journeys remain separately scoped proofs.
 import hashlib
 import json
 from pathlib import Path
+import subprocess
+import time
 
 from acceptance import ROOT, BINARY, run, write
 import fixture_runtime as runtime
@@ -97,9 +99,65 @@ def capture_postgres(report):
     report['checks']['protected_postgresql_encrypted_capture']='passed'
 
 
+def interrupted_deadline(report):
+    # This reviewed synthetic program deliberately ignores TERM and gives its
+    # child a new session. Only the task's native cgroup is the complete boundary.
+    program=ROOT/'task-deadline.py'
+    payload=b'''#!/usr/bin/python3
+import json,pathlib,signal,subprocess,sys,time
+request=json.load(sys.stdin)
+assert request['kind']=='komizo.backup-request' and request['application']=='secretbox'
+root=pathlib.Path('/root/native-host');identity=request['operation_id']
+signal.signal(signal.SIGTERM,signal.SIG_IGN)
+subprocess.Popen([sys.executable,'-I','-B','-c','import pathlib,signal,time,sys;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(12);pathlib.Path(sys.argv[1]).write_text("late")',str(root/(identity+'-late'))],start_new_session=True)
+(root/(identity+'-entered')).write_text('entered')
+time.sleep(600)
+'''
+    write(program,payload,0o700)
+    path=Path('/etc/komizo/apps/secretbox.json');saved=path.read_bytes();policy=json.loads(saved)
+    policy['backup']={'program':str(program),'sha256':registry.digest(payload),'timeout_seconds':90,
+        'max_export_bytes':1<<20,'services':['db']}
+    write(path,policy)
+    release=runtime.installed('secretbox')['release_digest']
+    body=runtime.request('secretbox','backup',release,timeout_seconds=8)
+    operation=hashlib.sha256(('komizo-operation-v1\0secretbox\0production\0'+body['nonce']).encode()).hexdigest()[:32]
+    entered=ROOT/(operation+'-entered');late=ROOT/(operation+'-late')
+    child=subprocess.Popen([BINARY,'submit'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+    child.stdin.write(registry.canonical(body));child.stdin.close();began=time.monotonic()
+    unit='komizo-backup-'+operation+'.service'
+    try:
+        runtime.until(entered.exists,seconds=7)
+        # Keep the controller absent until the deadline passes; its independent
+        # task must terminate without startup reconciliation doing that work.
+        run(['systemctl','stop','komizo-controller.service'])
+        if run(['systemctl','is-active','komizo-controller.service'],ok=False).stdout.strip()!=b'inactive':
+            raise ValueError('task deadline fixture did not stop its controller')
+        def quiescent():
+            if run(['systemctl','is-active',unit],ok=False).stdout.strip() not in {b'inactive',b'failed'}:return False
+            value=run(['systemctl','show',unit,'--property=ControlGroup','--value']).stdout.decode().strip()
+            if not value:return True
+            events=Path('/sys/fs/cgroup')/value.removeprefix('/')/'cgroup.events'
+            return not events.exists() or 'populated 0' in events.read_text().splitlines()
+        runtime.until(quiescent,seconds=12)
+        elapsed=time.monotonic()-began
+        write(ROOT/'task-deadline.json',{'timeout_seconds':8,'elapsed_seconds':elapsed,
+            'controller_absent_at_expiry':True,'task_cgroup_quiescent':quiescent(),'late_write_present':late.exists()})
+        if elapsed>13 or late.exists():raise ValueError('protected task or new-session descendant exceeded its absolute operation lifetime')
+        report['checks'].update({'protected_task_absolute_deadline':'passed',
+            'protected_task_survives_controller_death':'passed','protected_task_descendant_deadline':'passed'})
+    finally:
+        write(path,saved)
+        run(['systemctl','start','komizo-controller.service'])
+        runtime.until(lambda:run(['systemctl','is-active','komizo-controller.service'],ok=False).stdout.strip()==b'active')
+        try:child.wait(timeout=10)
+        except subprocess.TimeoutExpired:child.kill();child.wait(timeout=5)
+        child.stdout.close();child.stderr.close()
+
+
 def prepare(report):
     capture('secretbox',report,'synthetic-volume-json')
     if runtime.count('secretbox')!=1:raise ValueError('protected capture changed retained data')
+    interrupted_deadline(report)
     # The deliberately stopped instance must never be started for capture.
     stopped=runtime.submit(runtime.request('mailroom','backup',runtime.installed('mailroom')['release_digest']))
     if stopped.get('ok') is not False or runtime.count('mailroom')!=1:raise ValueError('routine stopped capture changed data or claimed a backup')

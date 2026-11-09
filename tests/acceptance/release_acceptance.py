@@ -30,6 +30,7 @@ REQUIRED_STEPS={
     'preview_full_postgresql_namespace','preview_data_independence','preview_credential_independence',
     'preview_real_ttl_expiry','preview_owned_cleanup','preview_removed_start_refused','preview_fresh_graph_after_expiry','preview_reopen_initialization_once','failed_preview_scoped_remove','failed_preview_fresh_redeploy','protected_postgresql_encrypted_capture','encrypted_pair_integrity',
     'owner_postgresql_encrypted_restore','owner_side_exact_framed_exports','recovery_private_key_outside_capture_host',
+    'protected_task_absolute_deadline','protected_task_survives_controller_death','protected_task_descendant_deadline',
     'application_pid_stress','application_memory_stress','other_application_survives_stress',
     'registry_offline_reboot','stopped_reboot_no_replay','uncertain_job_reboot_no_replay','real_reboot',
 }
