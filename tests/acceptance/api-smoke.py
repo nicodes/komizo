@@ -36,7 +36,7 @@ def alive(pid):
 with tempfile.TemporaryDirectory(prefix='komizo-api-smoke-') as scratch:
     root = Path(scratch)
     ssh = root / 'ssh'
-    ssh.write_text("#!/usr/bin/python3\nimport json,sys\nfrom pathlib import Path\n"
+    ssh.write_text(f"#!{sys.executable}\nimport json,sys\nfrom pathlib import Path\n"
                    f"root=Path({scratch!r})\n"
                    "assert sys.argv[-2:] == ['root@host.example.test','komizo-box status']\n"
                    "with (root/'calls').open('a') as stream:stream.write(json.dumps(sys.argv[1:])+'\\n')\n"
@@ -69,8 +69,12 @@ with tempfile.TemporaryDirectory(prefix='komizo-api-smoke-') as scratch:
                     if time.monotonic() > deadline:
                         raise
                     time.sleep(.05)
-            with urllib.request.urlopen(base + '/api/status', timeout=2) as response:
-                status = json.load(response)
+            try:
+                with urllib.request.urlopen(base + '/api/status', timeout=2) as response:
+                    status = json.load(response)
+            except OSError as error:
+                raise AssertionError({'status_error':type(error).__name__,'fake_ssh_entered':(root/'calls').exists(),
+                                      'owner_alive':process.poll() is None,'owned_children':children(process.pid)}) from error
             assert status['kind'] == 'komizo.ui.status'
             assert status['host'] == 'host.example.test'
             assert status['status'] == {'kind': 'komizo.status', 'version': 1, 'instances': []}

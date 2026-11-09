@@ -18,6 +18,25 @@ pub fn normalize_id(value: &str) -> String {
     }
 }
 
+pub fn workload_profile(value: &Value) -> Result<()> {
+    ensure!(
+        value["AppArmorProfile"] == super::bootstrap::WORKLOAD_PROFILE,
+        "native workload is outside its protected AppArmor profile"
+    );
+    Ok(())
+}
+
+pub fn workload_label(label: &str) -> Result<()> {
+    let profile = super::bootstrap::WORKLOAD_PROFILE;
+    ensure!(
+        label == format!("{profile} (enforce)")
+            || label == format!("{profile}//&crun (enforce)")
+            || label == format!("{profile}//&crun (mixed)"),
+        "native workload has an unexpected or non-enforcing kernel AppArmor label"
+    );
+    Ok(())
+}
+
 impl Engine {
     fn capture(&self, arguments: &[&str]) -> Result<crate::process::Captured> {
         let remaining = self.deadline.saturating_duration_since(Instant::now());
@@ -103,7 +122,8 @@ impl Engine {
         ensure!(
             host["cgroupVersion"] == "v2"
                 && host["cgroupManager"] == "systemd"
-                && host["security"]["rootless"] == false,
+                && host["security"]["rootless"] == false
+                && host["security"]["apparmorEnabled"] == true,
             "native engine has an unsupported authority or cgroup configuration"
         );
         let controllers = host["cgroupControllers"]
@@ -152,6 +172,24 @@ impl Engine {
             array.len() == 1,
             "native engine inspection did not select one object"
         );
+        if kind == "container" {
+            workload_profile(&array[0])?;
+            if array[0]["State"]["Running"] == true {
+                let pid = array[0]["State"]["Pid"]
+                    .as_u64()
+                    .filter(|pid| *pid > 0 && *pid <= i32::MAX as u64)
+                    .ok_or_else(|| anyhow!("live workload has no native PID"))?;
+                let base = std::path::PathBuf::from(format!("/proc/{pid}/attr"));
+                let named = base.join("apparmor/current");
+                let path = if named.try_exists()? {
+                    named
+                } else {
+                    base.join("current")
+                };
+                let label = std::fs::read_to_string(path)?;
+                workload_label(label.trim())?;
+            }
+        }
         Ok(array[0].clone())
     }
     pub fn image(&self, reference: &str, config_digest: &str) -> Result<()> {

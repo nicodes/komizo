@@ -189,6 +189,7 @@ fn owned(
     config: &str,
 ) -> Result<serde_json::Value> {
     let actual = runtime.inspect("container", &receipt.container_name)?;
+    super::engine::workload_profile(&actual)?;
     let labels = &actual["Config"]["Labels"];
     ensure!(
         hex(&receipt.container_id, 64)
@@ -921,6 +922,7 @@ mod tests {
                     }
                     let mut value = json!({"Id":"d".repeat(64),"Name":receipt.container_name,
                         "Image":format!("sha256:{}","c".repeat(64)),"Config":{"Labels":labels},
+                        "AppArmorProfile":super::super::bootstrap::WORKLOAD_PROFILE,
                         "State":{"Running":false,"Status":"configured","ExitCode":0,"FinishedAt":"0001-01-01T00:00:00Z"},
                         "Mounts":[{"Type":"volume","Name":"kmz-owned-data","Destination":"/var/lib/app","RW":true}]});
                     if self.corrupt_mount {

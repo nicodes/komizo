@@ -327,6 +327,7 @@ impl Native {
         Engine { deadline }.preflight()?;
         super::bootstrap::dns_guard()?;
         super::bootstrap::dns_configuration_guard()?;
+        super::bootstrap::apparmor_guard()?;
         let capacity = capacity::read(Path::new("/etc/komizo/capacity.json"))?;
         system::reconcile_framework_units(store, "platform", "capacity")?;
         system::host_pools(store, &System { deadline }, &capacity)?;

@@ -62,6 +62,10 @@ pub fn options(service: &str, value: &Container, bindings: &Bindings<'_>) -> Res
         "--read-only-tmpfs=false".into(),
         "--cap-drop=all".into(),
         "--security-opt=no-new-privileges".into(),
+        format!(
+            "--security-opt=apparmor={}",
+            super::bootstrap::WORKLOAD_PROFILE
+        ),
         "--http-proxy=false".into(),
         "--restart=no".into(),
         "--image-volume=ignore".into(),

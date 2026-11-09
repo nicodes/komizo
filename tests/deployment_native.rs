@@ -244,3 +244,34 @@ fn retained_mount_evidence_binds_the_target_and_write_authority() {
         assert!(engine::service_mounts(&changed, &record, &container).is_err());
     }
 }
+
+#[test]
+fn workload_confinement_requires_the_fixed_enforcing_profile_and_reviewed_crun_stack() {
+    use komizo::deployment::{bootstrap, engine};
+    let profile = bootstrap::WORKLOAD_PROFILE;
+    engine::workload_profile(&json!({"AppArmorProfile":profile})).unwrap();
+    for wrong in [
+        json!({}),
+        json!({"AppArmorProfile":"unconfined"}),
+        json!({"AppArmorProfile":"foreign"}),
+    ] {
+        assert!(engine::workload_profile(&wrong).is_err());
+    }
+    for accepted in [
+        format!("{profile} (enforce)"),
+        format!("{profile}//&crun (enforce)"),
+        format!("{profile}//&crun (mixed)"),
+    ] {
+        engine::workload_label(&accepted).unwrap();
+    }
+    for refused in [
+        "unconfined".to_owned(),
+        format!("{profile} (complain)"),
+        format!("{profile} (mixed)"),
+        format!("{profile}//&unconfined (enforce)"),
+        format!("{profile}//&other (enforce)"),
+        "foreign (enforce)".to_owned(),
+    ] {
+        assert!(engine::workload_label(&refused).is_err());
+    }
+}
