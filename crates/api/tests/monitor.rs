@@ -22,7 +22,7 @@ impl Fixture {
         let binary = root.join("owner");
         let script = format!(
             r#"#!/usr/bin/python3
-import hashlib,json,os,signal,subprocess,sys,time
+import hashlib,json,os,sys
 from pathlib import Path
 root=Path({root})
 args=sys.argv[1:]
@@ -30,12 +30,6 @@ with (root/'calls').open('a') as f:f.write(json.dumps(args)+'\n')
 options=dict(zip(args[1::2],args[2::2]))
 assert options['--host']=='host.example.test'
 if args[0]=='status':
- if (root/'hold').exists():
-  signal.signal(signal.SIGTERM,signal.SIG_IGN)
-  child=subprocess.Popen(['/usr/bin/python3','-I','-c','import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(60)'])
-  (root/'pids.pending').write_text(str(os.getpid())+' '+str(child.pid))
-  os.replace(root/'pids.pending',root/'pids')
-  time.sleep(60)
  if (root/'offline').exists():sys.exit(3)
  print(json.dumps({{'kind':'komizo.status','version':1,'instances':[{{'application':'mailroom','instance':'production','release_digest':'sha256:'+'a'*64,'desired_running':True,'operation_id':'c'*32,'services':{{'web':{{'state':'running','health':'healthy'}}}}}}]}}))
 elif args[0]=='request':
@@ -392,7 +386,22 @@ async fn failed_confirmed_receipt_is_preserved_without_retry_or_reclassification
 #[tokio::test]
 async fn shutdown_reaps_owned_client_and_stops_its_pipe_holding_descendant() {
     let f = Fixture::new();
-    std::fs::write(f.root.join("hold"), b"hold").unwrap();
+    // Test process ownership directly, without a cold interpreter startup inside
+    // the handshake deadline. Both native processes retain the command's pipes.
+    let root = f.root.to_str().unwrap().replace('\'', "'\\''");
+    let script = format!(
+        r#"#!/bin/sh
+set -eu
+root='{root}'
+trap '' TERM
+/bin/sleep 60 &
+child=$!
+printf '%s %s\n' "$$" "$child" > "$root/pids.pending"
+/bin/mv "$root/pids.pending" "$root/pids"
+wait "$child"
+"#
+    );
+    std::fs::write(f.root.join("owner"), script).unwrap();
     let ui = f.ui.clone();
     let observation =
         tokio::spawn(async move { call(&ui, "GET", "/api/status", &[], Value::Null).await });
@@ -413,6 +422,9 @@ async fn shutdown_reaps_owned_client_and_stops_its_pipe_holding_descendant() {
         2,
         "fixture must publish both complete process IDs"
     );
+    for pid in &pids {
+        assert_eq!(unsafe { libc::getpgid(*pid) }, pids[0]);
+    }
     tokio::time::timeout(std::time::Duration::from_secs(5), f.ui.shutdown())
         .await
         .unwrap();
