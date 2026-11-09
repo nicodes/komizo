@@ -1,6 +1,7 @@
 """Keep source, artifact, platform and independent signer fences at release."""
 import copy
 import io
+import importlib.util
 import json
 from pathlib import Path
 import struct
@@ -8,8 +9,14 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 import native_release as release
+
+_lifecycle_spec = importlib.util.spec_from_file_location(
+    'cold_lifecycle_control', Path(__file__).with_name('cold-lifecycle-acceptance.py'))
+lifecycle = importlib.util.module_from_spec(_lifecycle_spec)
+_lifecycle_spec.loader.exec_module(lifecycle)
 
 
 def elf(machine,label):
@@ -105,6 +112,41 @@ class NativeRelease(unittest.TestCase):
             changed=copy.deepcopy(row);changed['verificationResult']['signature']['certificate'][field]=value
             with self.assertRaises(ValueError):release.attestation([changed],'fixture','b'*64,self.source)
         with self.assertRaises(ValueError):json.loads('{"source":"a","source":"b"}',object_pairs_hook=release.unique)
+
+    def test_each_native_trial_rechecks_virtualization_within_original_deadline(self):
+        clock=[0];timeouts=[]
+        def prepare():clock[0]+=10
+        def execute(arguments,**options):
+            timeouts.append(options['timeout'])
+            self.assertNotIn('GH_TOKEN',options['env'])
+            profile=arguments[arguments.index('--profile')+1]
+            output=Path(arguments[arguments.index('--output')+1]);output.mkdir()
+            (output/'report.json').write_text(json.dumps({
+                'ok':True,'profile':profile,'source':{'revision':self.source},'checks':{}}))
+        with mock.patch.object(lifecycle,'virtualization',side_effect=prepare) as prerequisite, \
+                mock.patch.object(lifecycle.time,'monotonic',side_effect=lambda:clock[0]), \
+                mock.patch.object(lifecycle.subprocess,'run',side_effect=execute), \
+                mock.patch.dict(lifecycle.os.environ,{'GH_TOKEN':'synthetic-do-not-forward'}):
+            for profile in ('functional','bounded'):
+                result=lifecycle.native_run(Path('host'),Path('proxy'),Path('receipt'),Path('cli'),
+                    profile,self.root/profile,self.source,50)
+                self.assertEqual(result['profile'],profile)
+            self.assertEqual(prerequisite.call_count,2)
+        self.assertEqual(timeouts,[40,30])
+
+    def test_native_trial_refuses_before_start_without_kvm_or_original_budget(self):
+        with mock.patch.object(lifecycle.subprocess,'run') as execute:
+            with mock.patch.object(lifecycle,'virtualization',side_effect=ValueError('KVM unavailable')):
+                with self.assertRaisesRegex(ValueError,'KVM unavailable'):
+                    lifecycle.native_run(Path('host'),Path('proxy'),Path('receipt'),Path('cli'),
+                        'bounded',self.root/'refused',self.source,50)
+            with mock.patch.object(lifecycle,'virtualization'), \
+                    mock.patch.object(lifecycle.time,'monotonic',return_value=51):
+                with self.assertRaisesRegex(ValueError,'original aggregate deadline'):
+                    lifecycle.native_run(Path('host'),Path('proxy'),Path('receipt'),Path('cli'),
+                        'bounded',self.root/'refused',self.source,50)
+            execute.assert_not_called()
+        self.assertFalse((self.root/'refused').exists())
 
 
 if __name__=='__main__':unittest.main()

@@ -32,7 +32,6 @@ def main():
     spec=importlib.util.spec_from_file_location('native_lifecycle',Path(__file__).with_name('cold-lifecycle-acceptance.py'))
     lifecycle=importlib.util.module_from_spec(spec);spec.loader.exec_module(lifecycle)
     deadline=time.monotonic()+1740
-    lifecycle.virtualization()
     with tempfile.TemporaryDirectory(prefix='komizo-source-observations-') as temporary:
         observations=Path(temporary);outputs=[];profiles={}
         try:

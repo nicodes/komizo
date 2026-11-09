@@ -28,6 +28,9 @@ def virtualization():
 
 
 def native_run(binary,proxy,receipt,cli,profile,output,source,deadline):
+    # Device ACLs can be refreshed between independent guest lifetimes.
+    # Re-establish this trial's actual KVM precondition within the same deadline.
+    virtualization()
     remaining=min(1000,deadline-time.monotonic())
     if remaining<=0:raise ValueError('native release acceptance exhausted its original aggregate deadline')
     environment={key:value for key,value in os.environ.items() if key not in {'GH_TOKEN','GITHUB_TOKEN','MISE_GITHUB_TOKEN','SSH_AUTH_SOCK'}}
@@ -63,7 +66,6 @@ def main():
     args.output.mkdir(mode=0o700,parents=True);outputs=[]
     try:
         publication=verify(args.release_dir,args.source,args.release,deadline=time.monotonic()+300)
-        virtualization()
         with tempfile.TemporaryDirectory(prefix='komizo-cold-owner-') as temporary:
             cli=Path(temporary)/'komizo';cli.write_bytes(cli_binary(args.release_dir/'komizo_Linux_x86_64.tar.gz'));cli.chmod(0o700)
             profiles={}
