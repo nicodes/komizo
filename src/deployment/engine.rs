@@ -364,7 +364,14 @@ pub fn service_mounts(
         })
         .collect::<Result<std::collections::BTreeSet<_>>>()?;
     ensure!(
-        actual == expected,
+        actual == expected
+            && value["Mounts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|mount| mount["Type"] == "volume")
+                .count()
+                == expected.len(),
         "native retained mount targets or access differ from the installed descriptor"
     );
     Ok(())

@@ -196,6 +196,12 @@ fn retained_mount_evidence_binds_the_target_and_write_authority() {
     };
     let actual = json!({"Mounts":[{"Type":"volume","Name":"owned-files","Destination":"/app/files","RW":false}]});
     engine::service_mounts(&actual, &record, &container).unwrap();
+    let mut duplicate = actual.clone();
+    duplicate["Mounts"]
+        .as_array_mut()
+        .unwrap()
+        .push(actual["Mounts"][0].clone());
+    assert!(engine::service_mounts(&duplicate, &record, &container).is_err());
     for (key, value) in [
         ("Destination", json!("/app/database")),
         ("RW", json!(true)),

@@ -381,7 +381,30 @@ pub fn status() -> Result<Value> {
             .ok();
         let resources = group.as_ref().map(|path| cgroup_resources(path));
         let mut services = BTreeMap::new();
-        for (name, record) in &installed.resources.containers {
+        ensure!(
+            installed.resources.containers.keys().all(|name| document
+                .release
+                .workload
+                .services
+                .contains_key(name)),
+            "protected service record escaped the installed descriptor"
+        );
+        for (name, container) in &document.release.workload.services {
+            let Some(record) = installed.resources.containers.get(name) else {
+                let physical = format!(
+                    "{}-{name}",
+                    super::units::namespace(&installed.application, &installed.instance)?
+                );
+                ensure!(
+                    !engine.exists("container", &physical)?,
+                    "unrecorded service requires owner reconciliation"
+                );
+                services.insert(
+                    name,
+                    json!({"container_id":null,"state":"absent","health":null,"resources":null}),
+                );
+                continue;
+            };
             let path = std::path::Path::new(super::system::QUADLETS).join(format!(
                 "{}-{name}.container",
                 super::units::namespace(&installed.application, &installed.instance)?
@@ -399,6 +422,9 @@ pub fn status() -> Result<Value> {
                 &installed.instance,
                 name,
             )?;
+            if let Some(value) = &value {
+                super::engine::service_mounts(value, record, container)?;
+            }
             let mut service_resources = None;
             if let Some(value) = &value
                 && let Some(pid) = value["State"]["Pid"]
