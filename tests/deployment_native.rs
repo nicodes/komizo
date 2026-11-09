@@ -131,10 +131,7 @@ fn dependency_order_places_successful_jobs_before_their_consuming_services() {
 
 #[test]
 fn interrupted_object_adoption_requires_the_exact_protected_token_and_isolated_network() {
-    let physical = format!(
-        "{}-n-app",
-        komizo::deployment::units::namespace("mailroom", "production").unwrap()
-    );
+    let physical = units::object_name("mailroom", "production", "network", "app").unwrap();
     let mut intent = native::ObjectIntent {
         kind: "komizo.object-intent".into(),
         version: 1,
@@ -160,4 +157,21 @@ fn interrupted_object_adoption_requires_the_exact_protected_token_and_isolated_n
     assert!(native::object_evidence(&intent, &wrong).is_err());
     intent.identity = Some("5".repeat(64));
     assert!(native::object_evidence(&intent, &value).is_err());
+}
+
+#[test]
+fn full_length_logical_object_names_produce_bounded_distinct_native_names() {
+    let logical = "a".repeat(63);
+    let network = units::object_name("mailroom", "production", "network", &logical).unwrap();
+    let volume = units::object_name("mailroom", "production", "volume", &logical).unwrap();
+    assert!(validation::name(&network) && validation::name(&volume));
+    assert_ne!(network, volume);
+    assert_ne!(
+        network,
+        units::object_name("mailroom", "pr-1", "network", &logical).unwrap()
+    );
+    assert_ne!(
+        network,
+        units::object_name("mailroom", "production", "network", &"b".repeat(63)).unwrap()
+    );
 }

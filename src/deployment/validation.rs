@@ -854,8 +854,7 @@ impl Policy {
                     && (!grant.services.is_empty() || !grant.jobs.is_empty())
                     && grant.services.iter().chain(&grant.jobs).all(|s| name(s))
                     && (grant.environment_file || grant.mount)
-                    && safe_text(&grant.generation, 128)
-                    && !grant.generation.is_empty(),
+                    && hex(&grant.generation, 32),
                 "invalid service secret grant"
             );
         }

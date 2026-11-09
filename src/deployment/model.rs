@@ -503,8 +503,6 @@ pub struct PreviewPolicy {
     pub readiness: Vec<Readiness>,
     #[serde(default)]
     pub prepare: Option<ProtectedTask>,
-    #[serde(default)]
-    pub retain_data_on_remove: bool,
 }
 fn default_preview_environment() -> String {
     "preview".into()
@@ -544,8 +542,8 @@ pub struct Request {
     pub registry: Option<RegistryCredential>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release_proof: Option<ReleaseProof>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secret_update: Option<SecretUpdate>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secret_updates: Vec<SecretUpdate>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub export_name: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

@@ -14,7 +14,7 @@ fn policy() -> Policy {
         "artifact_prefixes":["ghcr.io/example/mailroom"],
         "hostnames":["mail.example","api.mail.example"],
         "limits":{"memory_bytes":268435456,"memory_swap_bytes":268435456,"milli_cpus":500,"pids":256},
-        "secrets":{"runtime":{"path":"/etc/komizo/secrets/mailroom/runtime.env","services":["api"],"environment_file":true,"generation":"1"}},
+        "secrets":{"runtime":{"path":"/etc/komizo/secrets/mailroom/runtime.env","services":["api"],"environment_file":true,"generation":"11111111111111111111111111111111"}},
         "readiness":[{"url":"https://api.mail.example/readyz","status":200,"revision_field":"revision"}]
     })).unwrap()
 }

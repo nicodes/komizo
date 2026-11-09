@@ -45,7 +45,7 @@ fn policy() -> Policy {
     "authority":{"kind":"github","repository":"example/mailroom","repository_id":"123","workflows":{"deploy":"example/mailroom/.github/workflows/cd.yml@refs/heads/main","preview-deploy":"example/mailroom/.github/workflows/preview.yml@refs/heads/main","backup":"example/mailroom/.github/workflows/backup.yml@refs/heads/main"},"reference":"refs/heads/main","environment":"production","publisher_workflows":{"deploy":format!("example/publisher/.github/workflows/deliver.yml@{}","d".repeat(40)),"preview-deploy":format!("example/publisher/.github/workflows/preview.yml@{}","d".repeat(40))}},
     "artifact_prefixes":["ghcr.io/example/mailroom"],"hostnames":["mail.example","api.mail.example"],
     "limits":{"memory_bytes":268435456,"memory_swap_bytes":268435456,"milli_cpus":500,"pids":256},
-    "secrets":{"runtime":{"path":"/etc/komizo/secrets/runtime.env","services":["api"],"environment_file":true,"generation":"1"}},
+    "secrets":{"runtime":{"path":"/etc/komizo/secrets/runtime.env","services":["api"],"environment_file":true,"generation":"11111111111111111111111111111111"}},
     "readiness":[{"url":"https://mail.example/","status":200}]
 })).unwrap()
 }
@@ -154,7 +154,7 @@ fn current_is_only_a_read_selector_and_secret_updates_are_owner_only() {
     assert!(admit(&r, &policy(), 1000).is_err());
     r["action"] = json!("secret-set");
     r["release_digest"] = request()["release_digest"].clone();
-    r["secret_update"] = json!({"reference":"runtime","expected_generation":"1","format":"environment-file","value":"PASSWORD=secret"});
+    r["secret_updates"] = json!([{"reference":"runtime","expected_generation":"11111111111111111111111111111111","format":"environment-file","value":"PASSWORD=secret"}]);
     r["proof"] = json!(sign(&claims(&r)));
     assert!(admit(&r, &policy(), 1000).is_err());
 }

@@ -135,10 +135,10 @@ impl Coordinator {
                                 }
                             }
                         }
-                        if let Some(update) = &job.request.secret_update
-                            && !update.value.is_empty()
-                        {
-                            context = context.replace(&update.value, "[redacted]");
+                        for update in &job.request.secret_updates {
+                            if !update.value.is_empty() {
+                                context = context.replace(&update.value, "[redacted]");
+                            }
                         }
                         if let Ok(Some(installed)) =
                             worker_store.installed(&job.request.application, &job.request.instance)

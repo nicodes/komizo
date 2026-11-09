@@ -7,6 +7,19 @@ pub fn namespace(application: &str, instance: &str) -> Result<String> {
     let hash = document_digest(format!("{application}\0{instance}").as_bytes());
     Ok(format!("kmz-{}", &hash[7..27]))
 }
+pub fn object_name(application: &str, instance: &str, kind: &str, logical: &str) -> Result<String> {
+    ensure!(
+        name(logical) && ["network", "volume"].contains(&kind),
+        "invalid retained object scope"
+    );
+    let hash = document_digest(format!("{kind}\0{logical}").as_bytes());
+    Ok(format!(
+        "{}-{}-{}",
+        namespace(application, instance)?,
+        if kind == "network" { "n" } else { "v" },
+        &hash[7..27]
+    ))
+}
 pub fn slice(application: &str, instance: &str) -> Result<String> {
     Ok(format!(
         "komizo-{}-i{}.slice",

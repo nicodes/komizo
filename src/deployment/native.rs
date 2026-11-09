@@ -55,18 +55,14 @@ pub fn object_evidence(intent: &ObjectIntent, value: &serde_json::Value) -> Resu
             && hex(&intent.ownership, 32),
         "invalid protected object creation intent"
     );
-    let letter = match intent.object_kind.as_str() {
-        "network" => "n",
-        "volume" => "v",
-        _ => return Err(anyhow!("invalid retained object kind")),
-    };
     ensure!(
         intent.name
-            == format!(
-                "{}-{letter}-{}",
-                units::namespace(&intent.application, &intent.instance)?,
-                intent.logical
-            ),
+            == units::object_name(
+                &intent.application,
+                &intent.instance,
+                &intent.object_kind,
+                &intent.logical
+            )?,
         "object creation intent escaped its namespace"
     );
     let labels = value
@@ -126,11 +122,7 @@ fn create_object(
     logical: &str,
     internal: Option<bool>,
 ) -> Result<ObjectRecord> {
-    let letter = if kind == "network" { "n" } else { "v" };
-    let physical = format!(
-        "{}-{letter}-{logical}",
-        units::namespace(&installed.application, &installed.instance)?
-    );
+    let physical = units::object_name(&installed.application, &installed.instance, kind, logical)?;
     ensure!(
         !engine.exists(kind, &physical)?,
         "unrecorded native object cannot be adopted"
@@ -465,7 +457,12 @@ fn stage(store: &Store, policy: &Policy, document: &ReleaseDocument, job: &Job) 
     proxy::seal_assets(store, document)
 }
 
-fn prepare_preview(store: &Store, policy: &Policy, job: &Job) -> Result<()> {
+fn prepare_preview(
+    store: &Store,
+    policy: &Policy,
+    job: &Job,
+    operation: &mut Operation,
+) -> Result<()> {
     if job.request.instance == "production" {
         return Ok(());
     }
@@ -514,6 +511,7 @@ fn prepare_preview(store: &Store, policy: &Policy, job: &Job) -> Result<()> {
     let input = canonical(
         &json!({"kind":"komizo.preview-request","version":1,"application":policy.application,"instance":job.request.instance,"operation_id":job.operation_id,"app_origin":format!("https://{}.{}",job.request.instance,preview.hostname_suffix),"secrets":preview.secrets,"deadline_unix":controller::now()?+deadline.saturating_duration_since(Instant::now()).as_secs() as i64}),
     )?;
+    advance(store, operation, "jobs")?;
     run_task(
         store,
         &job.operation_id,
@@ -1069,6 +1067,12 @@ fn backup(
     let input = canonical(
         &json!({"kind":"komizo.backup-request","version":1,"application":installed.application,"instance":installed.instance,"release_digest":installed.release_digest,"operation_id":operation.operation_id,"output_directory":directory,"deadline_unix":unix}),
     )?;
+    if operation.phase == "admitted" {
+        advance(store, operation, "staging")?;
+    }
+    if operation.phase == "staging" {
+        advance(store, operation, "jobs")?;
+    }
     run_task(
         store,
         &operation.operation_id,
@@ -1188,13 +1192,8 @@ fn require_backup(store: &Store, installed: &Installed) -> Result<()> {
     Ok(())
 }
 
-fn needs_backup(policy: &Policy, instance: &str, document: &ReleaseDocument) -> bool {
-    !document.release.workload.volumes.is_empty()
-        && (instance == "production"
-            || policy
-                .previews
-                .as_ref()
-                .is_some_and(|p| p.retain_data_on_remove))
+fn needs_backup(_policy: &Policy, instance: &str, document: &ReleaseDocument) -> bool {
+    !document.release.workload.volumes.is_empty() && instance == "production"
 }
 
 impl Backend for Native {
@@ -1226,7 +1225,7 @@ impl Backend for Native {
                     retained_topology(&store.release(&previous.release_digest)?, &document)?;
                 }
                 stage(store, policy, &document, job)?;
-                prepare_preview(store, policy, job)?;
+                prepare_preview(store, policy, job, operation)?;
                 let snapshots = secrets::stage(&store.root, &document, policy, instance)?;
                 if let Some(previous) = &previous
                     && !previous.desired_running
@@ -1264,7 +1263,9 @@ impl Backend for Native {
                     if needs_backup(policy, instance, &document) {
                         require_backup(store, &previous)?;
                     }
-                    advance(store, operation, "jobs")?;
+                    if operation.phase == "staging" {
+                        advance(store, operation, "jobs")?;
+                    }
                     stop_services(store, &mut previous, &engine, &system, true)?;
                     resources = previous.resources;
                     // activation's jobs transition is entered below; the stop
@@ -1353,6 +1354,7 @@ impl Backend for Native {
                         // Bring up only the previous release's data services;
                         // its exact installed descriptor remains authoritative
                         // throughout capture, before any new migration runs.
+                        advance(store, operation, "jobs")?;
                         installed.desired_running = true;
                         store.save_installed(&installed)?;
                         for name in order(&old_document)? {
@@ -1371,7 +1373,9 @@ impl Backend for Native {
                         }
                         backup(store, policy, &installed, operation, job.deadline)?;
                     }
-                    advance(store, operation, "jobs")?;
+                    if operation.phase == "staging" {
+                        advance(store, operation, "jobs")?;
+                    }
                     stop_services(store, &mut installed, &engine, &system, true)?;
                     next.resources = installed.resources;
                     next.operation_id = job.operation_id.clone();
@@ -1383,18 +1387,15 @@ impl Backend for Native {
                     policy.admit(&document.release, instance)?;
                     let capacity = capacity::read(Path::new("/etc/komizo/capacity.json"))?;
                     capacity::reserve(store, &capacity, policy, &document, instance, true)?;
+                    advance(store, operation, "jobs")?;
                     system::instance_slice(store, &system, policy, instance)?;
                     if job.request.action == "restart" {
-                        advance(store, operation, "jobs")?;
                         stop_services(store, &mut installed, &engine, &system, false)?;
                     }
                     installed.desired_running = true;
                     installed.operation_id = job.operation_id.clone();
                     store.save_installed(&installed)?;
                     wanted(store, &mut installed, true, &system)?;
-                    if operation.phase == "staging" {
-                        advance(store, operation, "jobs")?;
-                    }
                     for name in order(&document)? {
                         if document.release.workload.services.contains_key(&name) {
                             start_service(
@@ -1430,18 +1431,11 @@ impl Backend for Native {
                 advance(store, operation, "staging")?;
                 advance(store, operation, "installing")?;
                 stop_services(store, &mut installed, &engine, &system, true)?;
-                let retain = policy
-                    .previews
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("preview authority missing"))?
-                    .retain_data_on_remove;
-                if !retain {
-                    for record in installed.resources.volumes.values() {
-                        engine.owned_object("volume", record)?;
-                        engine.run(&["volume", "rm", &record.name])?;
-                    }
-                    installed.resources.volumes.clear();
+                for record in installed.resources.volumes.values() {
+                    engine.owned_object("volume", record)?;
+                    engine.run(&["volume", "rm", &record.name])?;
                 }
+                installed.resources.volumes.clear();
                 for record in installed.resources.networks.values() {
                     engine.owned_object("network", record)?;
                     engine.run(&["network", "rm", &record.name])?;
@@ -1464,10 +1458,7 @@ impl Backend for Native {
                 secrets::rotate(
                     &Path::new(observation::POLICIES).join(format!("{application}.json")),
                     &mut policy,
-                    job.request
-                        .secret_update
-                        .as_ref()
-                        .ok_or_else(|| anyhow!("secret update missing"))?,
+                    &job.request.secret_updates,
                     &store.root,
                 )?;
                 advance(store, operation, "ready")

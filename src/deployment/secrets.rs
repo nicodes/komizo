@@ -212,32 +212,60 @@ pub fn mount_snapshot(
 pub fn rotate(
     policy_path: &Path,
     policy: &mut Policy,
-    update: &SecretUpdate,
+    updates: &[SecretUpdate],
     root: &Path,
-) -> Result<String> {
-    let grant = policy
-        .secrets
-        .get_mut(&update.reference)
-        .ok_or_else(|| anyhow!("unknown owner secret reference"))?;
+) -> Result<BTreeMap<String, String>> {
     ensure!(
-        grant.generation == update.expected_generation
-            && ((update.format == "environment-file" && grant.environment_file)
-                || (update.format == "opaque" && grant.mount)),
-        "secret generation or delivery format changed"
+        !updates.is_empty() && updates.len() <= 32,
+        "invalid owner secret batch size"
     );
-    if update.format == "environment-file" {
-        environment_file(update.value.as_bytes())?;
+    let mut next = policy.clone();
+    let mut versions = BTreeMap::new();
+    let mut files = Vec::new();
+    for update in updates {
+        ensure!(
+            name(&update.reference)
+                && hex(&update.expected_generation, 32)
+                && !update.value.is_empty()
+                && update.value.len() <= 128 << 10
+                && !versions.contains_key(&update.reference),
+            "invalid or duplicate owner secret reference"
+        );
+        let grant = next
+            .secrets
+            .get_mut(&update.reference)
+            .ok_or_else(|| anyhow!("unknown owner secret reference"))?;
+        ensure!(
+            grant.generation == update.expected_generation
+                && ((update.format == "environment-file" && grant.environment_file)
+                    || (update.format == "opaque" && grant.mount)),
+            "secret generation or delivery format changed"
+        );
+        if update.format == "environment-file" {
+            environment_file(update.value.as_bytes())?;
+        }
+        let generation = super::store::identity()?;
+        let path: PathBuf = root
+            .join("operator-secrets")
+            .join(&policy.application)
+            .join(&update.reference)
+            .join(&generation);
+        grant.path = path
+            .to_str()
+            .ok_or_else(|| anyhow!("invalid private secret path"))?
+            .to_owned();
+        grant.generation = generation.clone();
+        versions.insert(update.reference.clone(), generation);
+        files.push((path, update.value.as_bytes()));
     }
-    let generation = super::store::identity()?;
-    let path: PathBuf = root
-        .join("operator-secrets")
-        .join(&policy.application)
-        .join(&update.reference)
-        .join(&generation);
-    atomic(&path, update.value.as_bytes(), 0o600)?;
-    grant.path = path.to_str().unwrap().to_owned();
-    grant.generation = generation.clone();
-    policy.validate()?;
-    atomic(policy_path, &serde_json::to_vec(policy)?, 0o600)?;
-    Ok(generation)
+    next.validate()?;
+    // Versions are immutable and unreferenced until the single policy commit.
+    // A failed write leaves the previous complete credential set authoritative.
+    for (path, body) in files {
+        ensure!(!path.try_exists()?, "secret version already exists");
+        atomic(&path, body, 0o600)?;
+    }
+    atomic(policy_path, &serde_json::to_vec(&next)?, 0o600)?;
+    *policy = next;
+    Ok(versions)
 }

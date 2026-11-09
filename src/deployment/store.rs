@@ -121,7 +121,7 @@ impl Operation {
             ]
             .contains(&phase),
             "staging" => ["jobs", "installing", "failed", "needs_reconciliation"].contains(&phase),
-            "jobs" => ["installing", "failed", "needs_reconciliation"].contains(&phase),
+            "jobs" => ["installing", "ready", "failed", "needs_reconciliation"].contains(&phase),
             "installing" => [
                 "activating",
                 "prepared_stopped",

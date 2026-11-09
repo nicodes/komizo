@@ -307,15 +307,21 @@ pub fn admit(
         "release proof is only valid for deployment"
     );
     ensure!(
-        (request.action == "secret-set") == request.secret_update.is_some(),
+        (request.action == "secret-set") == !request.secret_updates.is_empty(),
         "secret update requires the owner secret operation"
     );
-    if let Some(update) = &request.secret_update {
+    ensure!(
+        request.secret_updates.len() <= 32,
+        "too many owner secret updates"
+    );
+    let mut references = std::collections::BTreeSet::new();
+    for update in &request.secret_updates {
         ensure!(
             request.authority == "owner"
                 && request.instance == "production"
                 && name(&update.reference)
-                && safe_text(&update.expected_generation, 128)
+                && hex(&update.expected_generation, 32)
+                && references.insert(&update.reference)
                 && !update.value.is_empty()
                 && update.value.len() <= 128 << 10
                 && ["environment-file", "opaque"].contains(&update.format.as_str()),
@@ -413,7 +419,7 @@ pub fn admit(
         }
         "github" => {
             ensure!(
-                request.secret_update.is_none() && request.action != "recover",
+                request.secret_updates.is_empty() && request.action != "recover",
                 "GitHub cannot update host secrets or approve owner recovery"
             );
             let Authority::Github {
