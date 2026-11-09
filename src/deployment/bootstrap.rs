@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs::{self, OpenOptions},
-    io::Read,
+    io::{Read, Seek, SeekFrom},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::Path,
     process::Command,
@@ -134,7 +134,28 @@ pub fn proxy_guard() -> Result<()> {
             && machine == if platform == "linux/amd64" { 62 } else { 183 },
         "installed proxy is not the declared native Linux executable"
     );
-    hash.update(header);
+    let offset = u64::from_le_bytes(header[32..40].try_into().unwrap());
+    let size = u16::from_le_bytes(header[54..56].try_into().unwrap());
+    let count = u16::from_le_bytes(header[56..58].try_into().unwrap());
+    ensure!(
+        size == 56
+            && (1..=128).contains(&count)
+            && offset >= 64
+            && offset
+                .checked_add(u64::from(size) * u64::from(count))
+                .is_some_and(|end| end <= before.len()),
+        "installed proxy has invalid bounded ELF program metadata"
+    );
+    let mut programs = vec![0; usize::from(size) * usize::from(count)];
+    binary.seek(SeekFrom::Start(offset))?;
+    binary.read_exact(&mut programs)?;
+    ensure!(
+        programs
+            .chunks_exact(56)
+            .all(|entry| u32::from_le_bytes(entry[..4].try_into().unwrap()) != 3),
+        "installed proxy requires an unapproved host interpreter"
+    );
+    binary.seek(SeekFrom::Start(0))?;
     let mut buffer = [0u8; 65536];
     loop {
         let count = binary.read(&mut buffer)?;
