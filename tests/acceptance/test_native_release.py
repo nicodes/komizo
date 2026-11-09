@@ -3,11 +3,15 @@ import copy
 import io
 import importlib.util
 import json
+import os
 from pathlib import Path
+import shutil
 import struct
 import subprocess
 import tarfile
 import tempfile
+import sys
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -147,6 +151,28 @@ class NativeRelease(unittest.TestCase):
                         'bounded',self.root/'refused',self.source,50)
             execute.assert_not_called()
         self.assertFalse((self.root/'refused').exists())
+
+    @unittest.skipUnless(sys.platform=='linux' and os.geteuid()!=0 and shutil.which('sudo'),
+                         'actual independent-UID control runs on the Linux CI runner')
+    def test_isolated_owner_enters_private_home_after_the_uid_switch(self):
+        spec=importlib.util.spec_from_file_location('native_owner_control',
+            Path(__file__).resolve().parents[1]/'support/native_host_vm.py')
+        native=importlib.util.module_from_spec(spec);spec.loader.exec_module(native)
+        guest=self.root/'guest';guest.mkdir(mode=0o700)
+        for name in ('owner.key','recipient.key','known_hosts'):
+            (guest/name).write_text('synthetic-private-control-input\n');(guest/name).chmod(0o600)
+        fixture=SimpleNamespace(directory=guest,key=guest/'owner.key',arguments=[])
+        with native.IsolatedOwner(fixture,Path('/usr/bin/pwd')) as owner:
+            # The orchestrator cannot enter the client home; env changes into
+            # it only after sudo has selected the independently verified UID.
+            with self.assertRaises(PermissionError):
+                list(owner.home.iterdir())
+            response=native.run([*owner.prefix,str(owner.executable)],
+                env={'PATH':'/usr/bin:/bin','LANG':'C.UTF-8'},capture_output=True)
+            self.assertEqual(response.stdout.decode().strip(),str(owner.home))
+            actual=native.run([*owner.prefix,'/usr/bin/id','-u'],capture_output=True)
+            self.assertEqual(int(actual.stdout),owner.uid)
+            self.assertNotEqual(owner.uid,os.getuid())
 
 
 if __name__=='__main__':unittest.main()

@@ -247,7 +247,7 @@ class IsolatedOwner:
             run(['sudo','-n','chmod','0440',str(pins)],capture_output=True)
             run(['sudo','-n','chmod','0400',str(private)],capture_output=True)
             run(['sudo','-n','chmod','0710',str(self.directory)],capture_output=True)
-            self.prefix=['sudo','-n','--user='+self.name,'--','/usr/bin/env','-i','HOME='+str(self.home),
+            self.prefix=['sudo','-n','--user='+self.name,'--','/usr/bin/env','-i','--chdir='+str(self.home),'HOME='+str(self.home),
                 'PATH='+str(tools)+':/usr/bin:/bin','LANG=C.UTF-8']
             # Scrubbing environment variables alone cannot isolate another process
             # with the same UID. Prove the kernel denies the orchestrator's Env.
@@ -278,7 +278,7 @@ def cold_owner(guest,directory,cli,isolated):
     observed=[]
     def command(action,*flags,timeout=120):
         began=time.monotonic()
-        response=run([*isolated.prefix,str(isolated.executable),action,*flags],cwd=isolated.home,
+        response=run([*isolated.prefix,str(isolated.executable),action,*flags],
             env={'PATH':'/usr/bin:/bin','LANG':'C.UTF-8'},capture_output=True,timeout=timeout)
         observed.append({'action':action,'seconds':time.monotonic()-began})
         value=json.loads(response.stdout)
