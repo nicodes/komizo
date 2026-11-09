@@ -34,15 +34,21 @@ def main():
     deadline=time.monotonic()+1740
     lifecycle.virtualization()
     with tempfile.TemporaryDirectory(prefix='komizo-source-observations-') as temporary:
-        observations=Path(temporary);guest=observations/'guest'
-        report=lifecycle.native_run(args.host.absolute(),args.proxy_binary.absolute(),args.proxy_receipt.absolute(),args.binary.absolute(),
-            'functional',guest,args.source,deadline)
-        result={'source':args.source,'accepted':True,'signed_release_acceptance':False,'github_credentials_present':False,
-            'candidate_cli':{'authenticated':False,'sha256':hashlib.sha256(read(args.binary)).hexdigest()},
-            'host_sha256':hashlib.sha256(read(args.host)).hexdigest(),'proxy_sha256':hashlib.sha256(read(args.proxy_binary)).hexdigest(),'profile':report}
-        (observations/'candidate-deployment.json').write_text(json.dumps(result,sort_keys=True)+'\n')
-        (observations/'cleanup.json').write_bytes((guest/'cleanup.json').read_bytes())
+        observations=Path(temporary);outputs=[];profiles={}
+        try:
+            for name in ['functional','bounded']:
+                guest=observations/name;outputs.append(guest)
+                profiles[name]=lifecycle.native_run(args.host.absolute(),args.proxy_binary.absolute(),args.proxy_receipt.absolute(),args.binary.absolute(),
+                    name,guest,args.source,deadline)
+            result={'source':args.source,'accepted':True,'signed_release_acceptance':False,'github_credentials_present':False,
+                'candidate_cli':{'authenticated':False,'sha256':hashlib.sha256(read(args.binary)).hexdigest()},
+                'host_sha256':hashlib.sha256(read(args.host)).hexdigest(),'proxy_sha256':hashlib.sha256(read(args.proxy_binary)).hexdigest(),'profiles':profiles}
+            (observations/'candidate-deployment.json').write_text(json.dumps(result,sort_keys=True)+'\n')
+            for name in ['performance','onboarding']:
+                (observations/(name+'.json')).write_bytes((observations/'bounded'/(name+'.json')).read_bytes())
+        finally:lifecycle.cleanup(outputs,observations)
         export(observations,output,args.source)
+
 
 
 if __name__=='__main__':main()

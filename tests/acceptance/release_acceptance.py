@@ -71,16 +71,20 @@ def validate(native,cleanup,performance,onboarding,release,source,budget):
     if any(profiles['functional']['checks'].get(name)!='passed' for name in REQUIRED_STEPS):raise ValueError('functional source controls are incomplete')
     if profiles['bounded']['checks'].get('bounded_full_postgresql_offline_reboot')!='passed' or profiles['bounded']['checks'].get('fixed_budget_performance')!='passed':
         raise ValueError('bounded PostgreSQL boot or measured performance evidence is missing')
+    return validate_measurements(performance,onboarding,native,budget)
+
+
+def validate_measurements(performance,onboarding,identities,budget):
     if set(performance)!={'version','accepted','budget','budget_sha256','metrics','scope'}:raise ValueError('performance observation exposes unapproved fields')
     if type(performance['version']) is not int or performance['version']!=1 or performance['scope']!=SCOPE or not re.fullmatch('[a-f0-9]{64}',performance['budget_sha256']):raise ValueError('performance schema, scope or source identity differs')
     if performance.get('accepted') is not True or performance.get('budget')!=budget:raise ValueError('reviewed fixed performance budget differs')
     evaluate(performance['metrics'],budget)
     for row in performance['metrics']['control_processes']:
-        expected={'controller':native['host_sha256'],'proxy':native['proxy_sha256']}.get(row['role'])
+        expected={'controller':identities['host_sha256'],'proxy':identities['proxy_sha256']}.get(row['role'])
         if expected is not None and row['executable_sha256']!=expected:raise ValueError('running native executable differs from accepted standalone bytes')
     if (onboarding.get('accepted') is not True or onboarding.get('mode')!='deterministic_public_cli' or onboarding.get('human_interventions')!=0
             or onboarding.get('provider_credentials_in_task') is not False or onboarding.get('source_checkout_in_task') is not False
-            or onboarding.get('cli_sha256')!=native['cli_sha256'] or type(onboarding.get('seconds')) not in (int,float) or not math.isfinite(onboarding['seconds']) or onboarding['seconds']<=0 or type(onboarding.get('commands')) is not int or not 4<=onboarding['commands']<=48
+            or onboarding.get('cli_sha256')!=identities['cli_sha256'] or type(onboarding.get('seconds')) not in (int,float) or not math.isfinite(onboarding['seconds']) or onboarding['seconds']<=0 or type(onboarding.get('commands')) is not int or not 4<=onboarding['commands']<=48
             or not re.fullmatch('[a-f0-9]{64}',onboarding.get('public_readme_sha256',''))):
         raise ValueError('source-free cold public owner observations are incomplete')
     return True

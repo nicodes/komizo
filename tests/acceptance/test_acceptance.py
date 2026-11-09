@@ -12,7 +12,7 @@ import unittest
 
 import native_release
 import test_native_release as fixtures
-from candidate_evidence import CANDIDATE_STEPS, export
+from candidate_evidence import CANDIDATE_STEPS, BOUNDED_STEPS, export
 from performance_acceptance import SCOPE, evaluate
 from release_acceptance import REQUIRED_STEPS, validate, validate_bundle
 
@@ -166,30 +166,45 @@ class AcceptanceGuards(unittest.TestCase):
             with self.subTest(mutate=mutate), self.assertRaises(ValueError):
                 validate(*args)
 
-    def test_candidate_export_retains_source_scope_and_exact_cleanup_without_a_release_claim(self):
+    def test_candidate_export_retains_both_profiles_and_fixed_budget_without_a_release_claim(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); observations = root / 'private'; observations.mkdir()
             result = {'source': self.source, 'accepted': True, 'signed_release_acceptance': False,
                 'github_credentials_present': False, 'candidate_cli': {'authenticated': False, 'sha256': self.native['cli_sha256']},
                 'host_sha256': self.native['host_sha256'], 'proxy_sha256': self.native['proxy_sha256'],
-                'profile': {'ok': True, 'profile': 'functional', 'source': {'revision': self.source, 'binary_sha256': self.native['host_sha256']},
-                    'checks': {name: 'passed' for name in CANDIDATE_STEPS}}, 'private_diagnostic': 'never-export'}
+                'profiles': {profile: {'ok': True, 'profile': profile,
+                    'source': {'revision': self.source, 'binary_sha256': self.native['host_sha256']},
+                    'checks': {name: 'passed' for name in required}} for profile,required in [('functional',CANDIDATE_STEPS),('bounded',BOUNDED_STEPS)]},
+                'private_diagnostic': 'never-export'}
             result['candidate_cli']['private_key'] = 'never-export'
-            result['profile']['private_path'] = 'never-export'
-            result['profile']['checks']['private_diagnostic'] = 'never-export'
+            result['profiles']['functional']['private_path'] = 'never-export'
+            result['profiles']['functional']['checks']['private_diagnostic'] = 'never-export'
             (observations / 'candidate-deployment.json').write_text(json.dumps(result))
+            (observations / 'performance.json').write_text(json.dumps(self.performance))
+            (observations / 'onboarding.json').write_text(json.dumps(self.onboarding | {'private_key':'never-export'}))
             (observations / 'cleanup.json').write_text(json.dumps(CLEANUP)); (observations / 'private-key').write_text('never-export')
             output = root / 'export'; export(observations, output, self.source)
-            self.assertEqual({p.name for p in output.iterdir()}, {'candidate-deployment.json', 'cleanup.json'})
+            self.assertEqual({p.name for p in output.iterdir()}, {'candidate-deployment.json','candidate-performance.json','candidate-onboarding.json','cleanup.json'})
             self.assertNotIn('never-export', ''.join(p.read_text() for p in output.iterdir()))
             self.assertEqual(json.loads((output / 'candidate-deployment.json').read_bytes())['source'], self.source)
             for mutate in [lambda r: r.update(signed_release_acceptance=True),
                     lambda r: r['candidate_cli'].update(authenticated=True),
-                    lambda r: r['profile']['source'].update(binary_sha256='f' * 64),
-                    lambda r: r['profile']['checks'].pop('owner_postgresql_encrypted_restore')]:
+                    lambda r: r['profiles']['functional']['source'].update(binary_sha256='f' * 64),
+                    lambda r: r['profiles']['functional']['checks'].pop('owner_postgresql_encrypted_restore'),
+                    lambda r: r['profiles'].pop('bounded'),
+                    lambda r: r['profiles']['bounded']['checks'].pop('fixed_budget_performance'),
+                    lambda r: r['profiles']['bounded']['source'].update(revision='f'*40)]:
                 bad = copy.deepcopy(result); mutate(bad); (observations / 'candidate-deployment.json').write_text(json.dumps(bad))
                 with self.subTest(mutate=mutate), self.assertRaises(ValueError):
                     export(observations, root / 'refused', self.source)
+            (observations / 'candidate-deployment.json').write_text(json.dumps(result))
+            for mutate in [lambda p: p['metrics'].update(guest_memory_bytes=2<<30),
+                    lambda p: p['metrics'].update(guest_milli_cpus=2000),
+                    lambda p: p['metrics'].update(oom_events_unchanged=False),
+                    lambda p: p.update(budget_sha256='f'*64)]:
+                bad=copy.deepcopy(self.performance);mutate(bad)
+                (observations/'performance.json').write_text(json.dumps(bad))
+                with self.subTest(mutate=mutate),self.assertRaises(ValueError):export(observations,root/'refused',self.source)
             with self.assertRaises(ValueError): export(observations, root / 'foreign', 'b' * 40)
 
 

@@ -48,7 +48,7 @@ def cleanup(outputs,destination):
         path=directory/'cleanup.json'
         if path.is_file() and not path.is_symlink():results.append(json.loads(path.read_bytes()))
     required={'version':1,'owned_guest_removed':True,'private_storage_removed':True,'shared_images_removed':False}
-    accepted=bool(results) and len(results)==len(outputs) and all(row==required for row in results)
+    accepted=bool(results) and len(results)==len(outputs) and all(type(row.get('version')) is int and row==required for row in results)
     result=required if accepted else {**required,'owned_guest_removed':False,'private_storage_removed':False}
     (destination/'cleanup.json').write_text(json.dumps(result,sort_keys=True)+'\n')
 
