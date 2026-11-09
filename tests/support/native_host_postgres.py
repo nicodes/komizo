@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import secrets
+import time
 import tarfile
 
 from acceptance import ROOT, MiB, run, write
@@ -85,7 +86,9 @@ def prepare(report):
         'command':['psql','-h','postgres','-U','fixture','-d','postgres','--no-psqlrc','--set=ON_ERROR_STOP=1',
             '--command',"CREATE TABLE evidence(value text NOT NULL); INSERT INTO evidence VALUES ('retained native row');"]}}
     workload['services']['api']['needs']={'initialize':'completed'}
-    _,receipt=runtime.deploy(release,seconds=300)
+    started=time.monotonic()
+    _,receipt=runtime.deploy(release,seconds=120)
+    write(ROOT/'timings.json',{'deployment_seconds':time.monotonic()-started})
     if not receipt.get('ok') or query('SELECT value FROM evidence')!=b'retained native row':
         raise ValueError('real PostgreSQL native DAG did not retain its initialized row: '+json.dumps(receipt))
     runtime.fetch('pgbox',receipt['release_digest'])

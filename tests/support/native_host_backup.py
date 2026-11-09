@@ -69,7 +69,7 @@ def capture(app,report,format):
     if not (ROOT/'recipient.crt').is_file() or (ROOT/'recipient.key').exists():
         raise ValueError('capture host must receive only the owner public recipient certificate')
     path=Path('/etc/komizo/apps/'+app+'.json');policy=json.loads(path.read_text())
-    policy['backup']={'program':str(program),'sha256':registry.digest(CAPTURE),'timeout_seconds':30,'max_export_bytes':1<<20}
+    policy['backup']={'program':str(program),'sha256':registry.digest(CAPTURE),'timeout_seconds':30,'max_export_bytes':1<<20,'services':['postgres' if app=='pgbox' else 'db']}
     write(path,policy)
     capture=runtime.submit(runtime.request(app,'backup',release))
     if (not capture.get('ok') or capture.get('backup',{}).get('status')!='ready'

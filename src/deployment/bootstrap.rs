@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs::{self, OpenOptions},
-    io::{Read, Seek, SeekFrom},
+    io::{Read, Seek, SeekFrom, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::Path,
     process::Command,
@@ -27,6 +27,14 @@ const CONFIG: &str = "/etc/komizo";
 const LEDGER: &str = "/etc/komizo/bootstrap.json";
 const KEYS: &str = "/etc/ssh/komizo-submit/authorized_keys";
 const CLI: &str = "/usr/local/bin/komizo-box";
+const DNS_BINARY: &str = "/usr/lib/podman/aardvark-dns";
+const DNS_CONFIG: &str = "/run/containers/networks/aardvark-dns";
+const DNS_SERVICE: &str = "komizo-dns.service";
+const DNS_HELPER: &str = "/usr/local/libexec/komizo-network/aardvark-dns";
+const ENGINE_CONFIG: &str = "/etc/containers/containers.conf.d/80-komizo-network.conf";
+const DNS_WRAPPER: &str = "#!/bin/sh\nexec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C.UTF-8 /usr/local/bin/komizo-box dns \"$@\"\n";
+const ENGINE_NETWORK: &str = "[engine]\nhelper_binaries_dir=[\"/usr/local/libexec/komizo-network\",\"/usr/lib/podman\"]\n[network]\nnetwork_backend=\"netavark\"\ndns_bind_port=53\n";
+
 pub const PROXY_RECEIPT: &str = "/etc/komizo-proxy/binary.json";
 const PROXY_BINARY: &str = "/usr/local/bin/caddy";
 
@@ -186,6 +194,210 @@ exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C.UTF-8 /usr/local/bin/komizo-box s
 "#;
 
 const SSH_CONFIG: &str = "# Managed native submission boundary. Owner root SSH remains separate.\nMatch User komizo-submit\n    AuthenticationMethods publickey\n    AuthorizedKeysFile /etc/ssh/komizo-submit/authorized_keys\n    PasswordAuthentication no\n    KbdInteractiveAuthentication no\n    PermitTTY no\n    DisableForwarding yes\n    AllowAgentForwarding no\n    AllowTcpForwarding no\n    X11Forwarding no\n    PermitTunnel no\n    PermitUserRC no\n    ForceCommand /usr/local/libexec/komizo-submit-shell\nMatch all\n";
+
+pub fn dns_unit() -> &'static str {
+    "[Unit]\nDescription=Komizo shared container DNS\n[Service]\nType=forking\nUser=root\nGroup=root\nUMask=0077\nPIDFile=/run/containers/networks/aardvark-dns/aardvark.pid\nExecStartPre=/usr/local/bin/komizo-box dns-guard\nExecStart=/usr/lib/podman/aardvark-dns --config /run/containers/networks/aardvark-dns -p 53 run\nSlice=komizo-control.slice\nRestart=on-failure\nRestartSec=2\nTimeoutStartSec=20\nTimeoutStopSec=10\nKillMode=control-group\nNoNewPrivileges=yes\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\nProtectSystem=strict\nProtectHome=yes\nPrivateTmp=yes\nPrivateDevices=yes\nProtectKernelTunables=yes\nProtectKernelModules=yes\nProtectKernelLogs=yes\nProtectControlGroups=yes\nRestrictSUIDSGID=yes\nLockPersonality=yes\nReadWritePaths=/run/containers/networks/aardvark-dns\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX\n"
+}
+
+fn dns_arguments(args: &[String]) -> Result<()> {
+    ensure!(
+        args.iter().map(String::as_str).collect::<Vec<_>>()
+            == ["--config", DNS_CONFIG, "-p", "53", "run"],
+        "container DNS helper accepts only its fixed rootful configuration and port"
+    );
+    Ok(())
+}
+
+fn recorded_dns_files() -> Result<()> {
+    let ledger: Ledger = serde_json::from_slice(&protected_file(Path::new(LEDGER), 65536)?)?;
+    ensure!(
+        ledger.kind == "komizo.bootstrap" && ledger.version == 1,
+        "native bootstrap identity missing"
+    );
+    for path in [
+        DNS_HELPER.to_owned(),
+        ENGINE_CONFIG.to_owned(),
+        format!("{}/{DNS_SERVICE}", system::UNITS),
+    ] {
+        let identity = ledger
+            .files
+            .get(&path)
+            .ok_or_else(|| anyhow!("container DNS boundary is not owner installed"))?;
+        ensure!(
+            document_digest(&protected_file(Path::new(&path), 65536)?) == identity.sha256
+                && fs::symlink_metadata(&path)?.mode() & 0o7777 == identity.mode,
+            "container DNS boundary changed after installation"
+        );
+    }
+    Ok(())
+}
+
+/// Refuse an unrecorded shared DNS daemon; never move or stop foreign scopes.
+pub fn dns_guard() -> Result<()> {
+    ensure!(
+        unsafe { libc::geteuid() } == 0,
+        "container DNS guard requires the host owner identity"
+    );
+    let binary = public_root_file(Path::new(DNS_BINARY), 64 << 20, 0o755)?;
+    let expected = binary.metadata()?;
+    let pidfile = Path::new(DNS_CONFIG).join("aardvark.pid");
+    let pid = match fs::symlink_metadata(&pidfile) {
+        Ok(_) => {
+            let body = protected_file(&pidfile, 32)?;
+            let text = std::str::from_utf8(&body)?;
+            ensure!(
+                text.bytes().all(|value| value.is_ascii_digit()) && !text.is_empty(),
+                "invalid rootful DNS process identity"
+            );
+            let pid = text.parse::<u32>()?;
+            ensure!(pid > 1, "invalid rootful DNS process identity");
+            Some(pid)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    // Inspect all actual instances, including a live daemon with a missing or
+    // stale pidfile. Selection uses its real executable, never process text.
+    let host_namespace = fs::read_link("/proc/self/ns/net")?;
+    let mut observed = false;
+    for entry in fs::read_dir("/proc")? {
+        let entry = entry?;
+        let Some(number) = entry
+            .file_name()
+            .to_str()
+            .and_then(|value| value.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let executable = entry.path().join("exe");
+        let Ok(target) = fs::read_link(&executable) else {
+            continue;
+        };
+        if target
+            .file_name()
+            .is_none_or(|name| !name.to_string_lossy().starts_with("aardvark-dns"))
+        {
+            continue;
+        }
+        let Ok(namespace) = fs::read_link(entry.path().join("ns/net")) else {
+            continue;
+        };
+        // An application's private network namespace cannot supply this host's
+        // shared rootful DNS. Do not classify its process name as host authority.
+        if namespace != host_namespace {
+            continue;
+        }
+        ensure!(
+            pid == Some(number) && target == Path::new(DNS_BINARY),
+            "unknown existing container DNS daemon requires owner reconciliation"
+        );
+        observed = true;
+        let actual = fs::metadata(&executable)?;
+        ensure!(
+            actual.dev() == expected.dev()
+                && actual.ino() == expected.ino()
+                && fs::metadata(entry.path())?.uid() == 0,
+            "existing container DNS executable identity differs"
+        );
+        let argv = fs::read(entry.path().join("cmdline"))?;
+        let expected_argv = format!("{DNS_BINARY}\0--config\0{DNS_CONFIG}\0-p\053\0run\0");
+        ensure!(
+            argv == expected_argv.as_bytes(),
+            "existing container DNS argv differs"
+        );
+        ensure!(
+            fs::read_link(entry.path().join("ns/net"))? == fs::read_link("/proc/self/ns/net")?,
+            "container DNS uses a foreign network namespace"
+        );
+        let group = fs::read_to_string(entry.path().join("cgroup"))?;
+        ensure!(
+            group.trim() == "0::/komizo.slice/komizo-control.slice/komizo-dns.service",
+            "shared container DNS is outside its protected budget"
+        );
+        recorded_dns_files()?;
+        let main = command(
+            "/usr/bin/systemctl",
+            &["show", DNS_SERVICE, "--property=MainPID", "--value"],
+            Instant::now() + Duration::from_secs(5),
+        )?;
+        ensure!(
+            std::str::from_utf8(&main)?.trim() == number.to_string(),
+            "container DNS is not supervised by its recorded service"
+        );
+    }
+    ensure!(
+        observed || pid.is_none_or(|number| !Path::new(&format!("/proc/{number}")).exists()),
+        "container DNS pidfile selects an unrelated live process"
+    );
+    Ok(())
+}
+
+/// The installed helper must be the one Podman actually selects after all
+/// system and owner configuration layers have been applied.
+pub fn dns_configuration_guard() -> Result<()> {
+    ensure!(
+        unsafe { libc::geteuid() } == 0,
+        "container DNS configuration requires the host owner identity"
+    );
+    recorded_dns_files()?;
+    let info = Engine {
+        deadline: Instant::now() + Duration::from_secs(15),
+    }
+    .json(&["info", "--format=json"])?;
+    ensure!(
+        info["host"]["networkBackendInfo"]["backend"] == "netavark"
+            && info["host"]["networkBackendInfo"]["dns"]["path"] == DNS_HELPER
+            && info["host"]["networkBackendInfo"]["path"] == "/usr/lib/podman/netavark",
+        "Podman bypassed the owner-installed container network helper"
+    );
+    Ok(())
+}
+
+/// Netavark's helper transport can request only the fixed distro DNS service.
+pub fn dns(args: &[String], output: &mut dyn Write) -> Result<()> {
+    ensure!(
+        unsafe { libc::geteuid() } == 0,
+        "container DNS helper requires the host owner identity"
+    );
+    if args == ["--version"] {
+        public_root_file(Path::new(DNS_BINARY), 64 << 20, 0o755)?;
+        output.write_all(&command(
+            DNS_BINARY,
+            &["--version"],
+            Instant::now() + Duration::from_secs(5),
+        )?)?;
+        return Ok(());
+    }
+    dns_arguments(args)?;
+    dns_guard()?;
+    recorded_dns_files()?;
+    for path in Path::new(DNS_CONFIG).ancestors() {
+        let info = fs::symlink_metadata(path)?;
+        ensure!(
+            info.is_dir()
+                && !info.file_type().is_symlink()
+                && info.uid() == 0
+                && info.mode() & 0o022 == 0,
+            "container DNS configuration crosses an unsafe directory"
+        );
+    }
+    command(
+        "/usr/bin/systemctl",
+        &["start", DNS_SERVICE],
+        Instant::now() + Duration::from_secs(25),
+    )?;
+    let main = command(
+        "/usr/bin/systemctl",
+        &["show", DNS_SERVICE, "--property=MainPID", "--value"],
+        Instant::now() + Duration::from_secs(5),
+    )?;
+    let pid = std::str::from_utf8(&main)?.trim().parse::<u32>()?;
+    ensure!(
+        pid > 1 && fs::read_link(format!("/proc/{pid}/exe"))? == Path::new(DNS_BINARY),
+        "shared container DNS did not become ready"
+    );
+    dns_guard()
+}
 
 pub fn controller_unit() -> &'static str {
     "[Unit]\nDescription=Komizo native controller\nWants=network-online.target komizo-proxy.service\nAfter=network-online.target komizo-proxy.service\nRequiresMountsFor=/var/lib/komizo /var/lib/containers\nStartLimitIntervalSec=60\nStartLimitBurst=5\n[Service]\nType=notify\nNotifyAccess=main\nUser=root\nGroup=root\nUMask=0077\nWorkingDirectory=/var/lib/komizo\nEnvironment=HOME=/root\nEnvironment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nExecStart=/usr/local/bin/komizo-box daemon\nRestart=on-failure\nRestartSec=2\nTimeoutStartSec=120\nTimeoutStopSec=30\nKillMode=process\nSlice=komizo-control.slice\nDelegate=yes\n[Install]\nWantedBy=multi-user.target\n"
@@ -448,6 +660,7 @@ pub fn install(public_keys: &Path) -> Result<()> {
     let keys = authorized_keys(&protected_file(public_keys, 65536)?)?;
     protected_file(Path::new(CLI), 128 << 20)?;
     proxy_guard()?;
+    dns_guard()?;
     let deadline = Instant::now() + Duration::from_secs(180);
     Engine { deadline }.preflight()?;
     let capacity: Capacity = serde_json::from_value(crate::strict::value(
@@ -466,6 +679,9 @@ pub fn install(public_keys: &Path) -> Result<()> {
         ("/var/lib/komizo-assets", 0o755),
         ("/etc/komizo-proxy", 0o755),
         ("/usr/local/libexec", 0o755),
+        ("/usr/local/libexec/komizo-network", 0o755),
+        ("/etc/containers", 0o755),
+        ("/etc/containers/containers.conf.d", 0o755),
     ] {
         directory(path, mode)?;
     }
@@ -485,6 +701,8 @@ pub fn install(public_keys: &Path) -> Result<()> {
         ledger.kind == "komizo.bootstrap" && ledger.version == 1,
         "invalid native bootstrap ownership record"
     );
+    managed(&mut ledger, DNS_HELPER, DNS_WRAPPER.as_bytes(), 0o755)?;
+    managed(&mut ledger, ENGINE_CONFIG, ENGINE_NETWORK.as_bytes(), 0o644)?;
     managed(&mut ledger, SHELL, SUBMISSION_SHELL.as_bytes(), 0o755)?;
     let gid = account("komizo-submit", "/nonexistent", SHELL, deadline)?;
     account(
@@ -512,6 +730,7 @@ pub fn install(public_keys: &Path) -> Result<()> {
     for (name, body) in [
         (CONTROLLER, controller_unit()),
         (PROXY, proxy_unit()),
+        (DNS_SERVICE, dns_unit()),
         ("komizo-expire.service", EXPIRE_SERVICE),
         ("komizo-expire.timer", EXPIRE_TIMER),
     ] {
@@ -578,6 +797,32 @@ mod tests {
             assert!(authorized_keys(invalid.as_bytes()).is_err());
         }
     }
+    #[test]
+    fn dns_helper_cannot_select_another_program_path_port_or_mode() {
+        let valid = ["--config", DNS_CONFIG, "-p", "53", "run"]
+            .map(str::to_owned)
+            .to_vec();
+        assert!(dns_arguments(&valid).is_ok());
+        for (index, replacement) in [
+            (0, "--shell"),
+            (1, "/tmp/foreign"),
+            (1, "/run/user/1000/aardvark-dns"),
+            (3, "5353"),
+            (4, "version"),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[index] = replacement.into();
+            assert!(dns_arguments(&invalid).is_err());
+        }
+        let mut extra = valid.clone();
+        extra.push("/bin/sh".into());
+        assert!(dns_arguments(&extra).is_err());
+        assert!(dns_arguments(&[]).is_err());
+        assert!(dns_unit().contains("Slice=komizo-control.slice"));
+        assert!(!dns_unit().contains("Requires=komizo-controller"));
+        assert!(!dns_unit().contains("WantedBy="));
+    }
+
     #[test]
     fn proxy_has_read_only_public_access_and_no_controller_authority() {
         for value in [

@@ -119,6 +119,11 @@ pub fn run(args: &[String], input: &mut dyn Read, output: &mut dyn Write) -> Res
     };
     match mode.as_str() {
         "release" | "application" => commands::offline(args, output),
+        "dns" => bootstrap::dns(flags, output),
+        "dns-guard" => {
+            ensure!(flags.is_empty(), "DNS guard does not accept arguments");
+            bootstrap::dns_guard()
+        }
         "install" => {
             ensure!(
                 flags.len() == 2 && flags[0] == "--authorized-keys",

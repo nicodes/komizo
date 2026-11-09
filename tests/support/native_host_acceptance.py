@@ -137,6 +137,16 @@ def prepare():
         if refused.returncode==0 or refused.stdout:raise ValueError('unprivileged proxy guard accepted changed executable provenance')
     finally:write(proxy_receipt,accepted_receipt,0o644)
     run(['runuser','-u','komizo-proxy','--',BINARY,'proxy-guard'])
+    dns=Path('/run/containers/networks/aardvark-dns');dns.mkdir(mode=0o700,parents=True,exist_ok=True)
+    pidfile=dns/'aardvark.pid'
+    write(pidfile,str(os.getpid()).encode())
+    try:
+        if run([BINARY,'dns-guard'],ok=False).returncode==0:raise ValueError('DNS helper accepted an unrelated live process from a stale pidfile')
+    finally:pidfile.unlink()
+    for arguments in [['--config','/tmp/foreign','-p','53','run'],['--config',str(dns),'-p','5353','run'],['--config',str(dns),'-p','53','run','/bin/sh']]:
+        if run([BINARY,'dns',*arguments],ok=False).returncode==0:raise ValueError('DNS helper accepted an unbounded configuration, port or command')
+    if run(['runuser','-u','komizo-submit','--',BINARY,'dns','--config',str(dns),'-p','53','run'],ok=False).returncode==0:
+        raise ValueError('submission UID acquired shared DNS startup authority')
     write('/etc/komizo/apps/mailroom.json',policy())
     write('/var/lib/komizo/private-acceptance',b'private fixture bytes')
     write('/var/lib/komizo-assets/public-acceptance',b'public fixture bytes',0o644)
@@ -169,14 +179,16 @@ def prepare():
         raise ValueError('reviewed managed bootstrap update did not replace the accepted key set')
     run([BINARY,'install','--authorized-keys',str(ROOT/'submission.pub')],timeout=240)
     if hashlib.sha256(ledger.read_bytes()).hexdigest()!=prior:raise ValueError('reviewed key restoration changed unrelated bootstrap ownership')
+    network=json.loads(run(['podman','--remote=false','info','--format=json']).stdout)['host']['networkBackendInfo']
+    if network['dns']['path']!='/usr/local/libexec/komizo-network/aardvark-dns':raise ValueError('Podman bypassed the protected typed DNS helper')
     report={'kind':'komizo.native-host-acceptance','version':1,'ok':False,
         'scope':'bootstrap, peer boundary, proxy isolation, actual kernel limits, real reboot',
         'profile':json.loads((ROOT/'profile.json').read_text())['profile'],
-        'runtime_acceptance':False,'baseline':baseline,
+        'runtime_acceptance':False,'baseline':baseline,'network_backend':network,
         'checks':{'supported_host':'passed','root_peer':'passed','forged_owner_peer':'passed','proxy_uid':'passed',
             'proxy_mount_write_refusal':'passed','proxy_process_metadata_isolation':'passed','secret_isolation':'passed',
             'kernel_limits':'passed','unsafe_filesystem':'passed','idempotent_install':'passed','managed_bootstrap_upgrade':'passed','foreign_bootstrap_bytes_refused':'passed',
-            'native_proxy_source_receipt':'passed','unprivileged_proxy_digest_guard':'passed'}}
+            'typed_dns_helper_refusal':'passed','native_proxy_source_receipt':'passed','unprivileged_proxy_digest_guard':'passed'}}
     write(ROOT/'report.json',report)
 
 

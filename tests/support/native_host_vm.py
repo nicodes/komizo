@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Boot one pinned disposable Debian guest and collect native host acceptance."""
 import argparse
+import ctypes
 import hashlib
 import json
 import os
@@ -9,8 +10,11 @@ import shutil
 import signal
 import secrets
 import selectors
+import shlex
+import tomllib
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
@@ -39,6 +43,13 @@ def download(record, target):
         raise ValueError('pinned fixture download differs from reviewed bytes')
 
 
+def parent_lifetime(parent):
+    # An aggregate timeout/crash of the driver must not leave its owned KVM
+    # process running. No other guest or host process is selected by this hook.
+    if ctypes.CDLL(None,use_errno=True).prctl(1,signal.SIGKILL)!=0:raise OSError(ctypes.get_errno(),'cannot bind owned guest lifetime')
+    if os.getppid()!=parent:os.kill(os.getpid(),signal.SIGKILL)
+
+
 def key(directory, name):
     path = directory / name
     run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(path)])
@@ -49,6 +60,26 @@ def port():
     with socket.socket() as listener:
         listener.bind(('127.0.0.1', 0))
         return listener.getsockname()[1]
+
+
+class OwnedDirectory:
+    """The evidence records cleanup of this guest, never shared host objects."""
+    def __init__(self,output):self.output=output;self.process=None
+    def __enter__(self):
+        self.temporary=tempfile.TemporaryDirectory(prefix='komizo-native-host-')
+        self.path=Path(self.temporary.__enter__())
+        return self
+    def __exit__(self,kind,error,traceback):
+        if self.process is not None and self.process.poll() is None:
+            os.killpg(self.process.pid,signal.SIGTERM)
+            try:self.process.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                os.killpg(self.process.pid,signal.SIGKILL);self.process.wait(timeout=5)
+        self.temporary.__exit__(kind,error,traceback)
+        cleanup={'version':1,'owned_guest_removed':self.process is None or self.process.poll() is not None,
+            'private_storage_removed':not self.path.exists(),'shared_images_removed':False}
+        (self.output/'cleanup.json').write_text(json.dumps(cleanup,sort_keys=True)+'\n')
+        if not cleanup['owned_guest_removed'] or not cleanup['private_storage_removed']:raise ValueError('owned disposable guest cleanup remains incomplete')
 
 
 class Guest:
@@ -86,7 +117,7 @@ class Guest:
     def submission_boundary(self, keyfile):
         arguments = self.arguments.copy()
         arguments[1] = str(keyfile)
-        for command in ['id', 'sh', 'podman ps', 'komizo-box daemon']:
+        for command in ['id', 'sh', 'podman ps', 'komizo-box daemon','komizo-box dns --config /run/containers/networks/aardvark-dns -p 53 run']:
             result = subprocess.run(['ssh', *arguments, 'komizo-submit@127.0.0.1', command],
                 input=b'', capture_output=True, timeout=15)
             if result.returncode == 0 or result.stdout:
@@ -143,6 +174,63 @@ class Guest:
         return payload
 
 
+def cold_owner(guest,directory,cli):
+    tools=directory/'client-bin';tools.mkdir(mode=0o700)
+    wrapper=tools/'ssh'
+    wrapper.write_text('#!/bin/sh\nexec /usr/bin/ssh '+shlex.join(guest.arguments)+' "$@"\n');wrapper.chmod(0o700)
+    home=directory/'client-home';home.mkdir(mode=0o700)
+    environment={'HOME':str(home),'PATH':str(tools)+':/usr/bin:/bin','LANG':'C.UTF-8'}
+    observed=[]
+    def command(action,*flags,timeout=120):
+        began=time.monotonic()
+        response=run([str(cli),action,*flags],env=environment,capture_output=True,timeout=timeout)
+        observed.append({'action':action,'seconds':time.monotonic()-began})
+        value=json.loads(response.stdout)
+        if not isinstance(value,dict):raise ValueError('cold owner client did not return a typed record')
+        return value
+    capabilities=command('capabilities')
+    if capabilities.get('kind')!='komizo.capabilities' or capabilities.get('host')!={'os':'debian','version':'13','engine':'podman','rootful':True}:
+        raise ValueError('shipping owner client capability contract differs')
+    flags=['--host','127.0.0.1','--application','pgbox','--instance','production']
+    if command('status','--host','127.0.0.1').get('kind')!='komizo.status':raise ValueError('cold owner inventory failed')
+    current=command('inspect',*flags);digest=current['installed']['release_digest']
+    if not current['installed']['desired_running']:raise ValueError('cold owner initial state differs')
+    stopped=command('stop',*flags)
+    if not stopped.get('ok') or stopped.get('phase')!='prepared_stopped':raise ValueError('cold public owner Stop did not preserve intent')
+    if command('inspect',*flags)['installed']['desired_running']:raise ValueError('cold owner inspection did not observe Stop')
+    started=command('start',*flags)
+    if not started.get('ok') or started.get('phase')!='ready' or started.get('release_digest')!=digest:raise ValueError('cold public owner Start changed accepted source')
+    if command('logs',*flags,'--service','api').get('kind')!='komizo.logs':raise ValueError('cold owner logs did not retain typed scope')
+    report={'accepted':True,'mode':'deterministic_public_cli','commands':len(observed),'seconds':sum(row['seconds'] for row in observed),
+        'human_interventions':0,'provider_credentials_in_task':False,'source_checkout_in_task':False,
+        'public_readme_sha256':hashlib.sha256((ROOT/'README.md').read_bytes()).hexdigest(),
+        'observed':observed,'cli_sha256':hashlib.sha256(cli.read_bytes()).hexdigest()}
+    return command,flags,report
+
+
+def performance(guest,directory,cli,setup_seconds):
+    budget_path=ROOT/'tests/acceptance/acceptance-budgets.toml'
+    budget=tomllib.loads(budget_path.read_text())
+    command,flags,onboarding=cold_owner(guest,directory,cli)
+    guest.command('python3 /root/native-host/fixture_performance.py start '+shlex.quote(json.dumps(budget)),timeout=30)
+    routes=[];operators=[]
+    for _ in range(budget['samples']):
+        began=time.monotonic()
+        guest.command("cd /root/native-host && python3 -I -B -c "+shlex.quote("import sys;sys.path.insert(0,'.');import fixture_runtime as r;r.fetch('pgbox',r.installed('pgbox')['release_digest'])"),timeout=budget['route_seconds'])
+        routes.append(time.monotonic()-began)
+        began=time.monotonic();observed=command('inspect',*flags,timeout=budget['operator_seconds']);operators.append(time.monotonic()-began)
+        if observed.get('kind')!='komizo.instance' or not observed['installed']['desired_running']:raise ValueError('owner read under load lost exact running scope')
+    metrics=json.loads(guest.command('python3 /root/native-host/fixture_performance.py finish '+shlex.quote(json.dumps(budget)),timeout=budget['load_seconds']+20,capture_output=True).stdout)
+    timings=json.loads(guest.command('cat /root/native-host/timings.json',capture_output=True).stdout)
+    metrics.update(setup_seconds=setup_seconds,deployment_seconds=timings['deployment_seconds'],route_seconds=routes,operator_seconds=operators)
+    sys.path.insert(0,str(ROOT/'tests/acceptance'))
+    from performance_acceptance import evaluate, SCOPE
+    accepted=evaluate(metrics,budget)
+    report={'version':1,'accepted':accepted,'budget':budget,'budget_sha256':hashlib.sha256(budget_path.read_bytes()).hexdigest(),
+        'metrics':metrics,'scope':SCOPE}
+    return report,onboarding
+
+
 def owner_recovery(guest, directory, key):
     report=json.loads(guest.command('cat /root/native-host/report.json',capture_output=True).stdout)
     checks={}
@@ -184,8 +272,10 @@ def main():
     parser.add_argument('--proxy-binary', required=True, type=Path)
     parser.add_argument('--proxy-receipt', required=True, type=Path)
     parser.add_argument('--profile',choices=['functional','bounded'],default='functional')
+    parser.add_argument('--cli',type=Path,help='exact shipping cold owner executable; required for the bounded profile')
     parser.add_argument('--output', type=Path, default=ROOT / '.artifacts/native-host')
     args = parser.parse_args()
+    if args.profile=='bounded' and (args.cli is None or args.cli.is_symlink() or not args.cli.is_file()):raise ValueError('bounded native acceptance requires its exact cold owner client')
     binary = args.binary.absolute()
     if not binary.is_file() or binary.is_symlink():
         raise ValueError('native host acceptance requires its exact regular compiled binary')
@@ -204,8 +294,8 @@ def main():
             or proxy_build['binary_sha256']!='sha256:'+hashlib.sha256(caddy.read_bytes()).hexdigest()):
         raise ValueError('native proxy bytes differ from their reviewed source receipt')
     args.output.mkdir(parents=True, mode=0o700, exist_ok=False)
-    with tempfile.TemporaryDirectory(prefix='komizo-native-host-') as temporary:
-        directory = Path(temporary)
+    with OwnedDirectory(args.output) as disposable:
+        directory = disposable.path
         owner = key(directory, 'owner')
         submit = key(directory, 'submission')
         host = key(directory, 'host')
@@ -238,16 +328,19 @@ def main():
         with console.open('wb') as log:
             # Debian GRUB needs the default console/video device model even
             # with a hidden display (Debian bug 1111240); the image stays exact.
+            owner_pid=os.getpid()
             process = subprocess.Popen(['qemu-system-x86_64', '-no-user-config', '-display', 'none',
                 '-machine', 'q35,accel=kvm', '-cpu', 'host', '-m', '1024' if args.profile=='bounded' else '2048', '-smp', '1' if args.profile=='bounded' else '2',
                 '-drive', 'file=' + str(overlay) + ',if=virtio,format=qcow2',
                 '-drive', 'file=' + str(seed) + ',if=virtio,format=raw,readonly=on',
                 '-netdev', 'user,id=net0,hostfwd=tcp:127.0.0.1:' + str(ssh_port) + '-:22',
                 '-device', 'virtio-net-pci,netdev=net0', '-serial', 'stdio', '-monitor', 'none',
-                '-device', 'virtio-rng-pci'], stdout=log, stderr=log, start_new_session=True)
+                '-device', 'virtio-rng-pci'], stdout=log, stderr=log, start_new_session=True,preexec_fn=lambda:parent_lifetime(owner_pid))
+            disposable.process=process
             try:
                 print('Booting the disposable guest and waiting for its bounded cloud setup',flush=True)
                 guest.ready(process, time.monotonic() + 600)
+                setup_started=time.monotonic()
                 print('Guest setup completed; installing the exact compiled native controller',flush=True)
                 guest.copy(binary, '/usr/local/bin/komizo-box')
                 binary_sha=hashlib.sha256(binary.read_bytes()).hexdigest()
@@ -267,13 +360,19 @@ def main():
                 guest.copy(ROOT / 'tests/support/native_host_backup.py', '/root/native-host/fixture_backup.py')
                 guest.copy(ROOT / 'tests/support/native_host_postgres.py', '/root/native-host/fixture_postgres.py')
                 guest.copy(ROOT / 'tests/support/native_host_preview.py', '/root/native-host/fixture_preview.py')
+                guest.copy(ROOT / 'tests/support/native_host_performance.py','/root/native-host/fixture_performance.py')
                 guest.copy(FIXTURES / 'baseline.json', '/root/native-host/baseline.json')
                 print('Running native bootstrap and authority boundaries',flush=True)
                 guest.command('chmod 755 /usr/local /usr/local/bin /usr/local/bin/komizo-box /usr/local/bin/caddy; chmod 600 /root/native-host/submission.pub; python3 /root/native-host/acceptance.py bootstrap', timeout=300)
+                setup_seconds=time.monotonic()-setup_started
                 guest.submission_boundary(submit)
                 print('Running exact native workload effects and protected recovery fixtures',flush=True)
                 guest.command('python3 /root/native-host/acceptance.py runtime', timeout=600)
                 owner_checks=owner_recovery(guest,directory,recovery_key)
+                if args.profile=='bounded':
+                    measured,onboarding=performance(guest,directory,args.cli.absolute(),setup_seconds)
+                    (args.output/'performance.json').write_text(json.dumps(measured,sort_keys=True)+'\n')
+                    (args.output/'onboarding.json').write_text(json.dumps(onboarding,sort_keys=True)+'\n')
                 before = guest.command('cat /proc/sys/kernel/random/boot_id', capture_output=True).stdout.strip()
                 print('Rebooting the real guest with the artifact registry offline',flush=True)
                 guest.command('systemctl reboot', timeout=15)
@@ -291,6 +390,8 @@ def main():
                 accepted['checks']['ssh_forced_submission'] = 'passed'
                 accepted['checks']['ssh_forwarding_refused'] = 'passed'
                 accepted['checks'].update(owner_checks)
+                if args.profile=='bounded':
+                    accepted['checks']['fixed_budget_performance']='passed';accepted['remaining']=[]
                 (args.output / 'report.json').write_text(json.dumps(accepted,sort_keys=True)+'\n')
                 if not accepted.get('ok'):
                     raise ValueError('native guest acceptance failed')
