@@ -141,6 +141,17 @@ def runtime():
     fixture_runtime.prepare()
 
 
+def evidence():
+    files={}
+    for pattern in ['readiness-*.json','proxy-active-*.caddy']:
+        for path in list(ROOT.glob(pattern))[:16]:
+            if path.is_file() and not path.is_symlink() and path.stat().st_size<=65536:files[path.name]=path.read_text()
+    assets={}
+    for path in list(Path('/var/lib/komizo-assets').rglob('*'))[:128]:
+        stat=path.lstat();assets[str(path)]={'mode':oct(stat.st_mode&0o7777),'uid':stat.st_uid,'gid':stat.st_gid,'size':stat.st_size}
+    print(json.dumps({'kind':'komizo.native-fixture-evidence','version':1,'files':files,'assets':assets},sort_keys=True))
+
+
 def verify_reboot():
     expected=json.loads(Path('/etc/komizo/capacity.json').read_text())
     actual_boundaries(expected)
@@ -155,4 +166,4 @@ def verify_reboot():
 
 
 if __name__=='__main__':
-    {'bootstrap':prepare,'runtime':runtime,'verify-reboot':verify_reboot}[sys.argv[1]]()
+    {'bootstrap':prepare,'runtime':runtime,'evidence':evidence,'verify-reboot':verify_reboot}[sys.argv[1]]()

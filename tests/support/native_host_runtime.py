@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import secrets
 import subprocess
+import threading
 import time
 import urllib.request
 
@@ -30,8 +31,38 @@ def until(check, seconds=30):
 
 
 def submit(body):
-    value=run([BINARY,'submit'],input=registry.canonical(body),ok=False,timeout=body['timeout_seconds']+35)
-    return json.loads(value.stdout)
+    stop=threading.Event();worker=None
+    if body['action']=='deploy':
+        def sample():
+            observations=[];previous=None
+            operation=hashlib.sha256(('komizo-operation-v1\0'+body['application']+'\0'+body['instance']+'\0'+body['nonce']).encode()).hexdigest()[:32]
+            operation_path=Path('/var/lib/komizo/operations/'+operation+'.json')
+            url=body['release']['workload']['readiness'][0]['url']
+            while not stop.is_set():
+                try:
+                    phase=json.loads(operation_path.read_text()).get('phase') if operation_path.exists() else 'not_admitted'
+                    try:
+                        with urllib.request.urlopen(url,timeout=2) as response:
+                            observed={'phase':phase,'status':response.status,'release_digest':response.headers.get('X-Komizo-Release'),
+                                'body':response.read(256).decode(errors='replace')}
+                    except urllib.error.HTTPError as error:
+                        observed={'phase':phase,'status':error.code,'release_digest':error.headers.get('X-Komizo-Release')}
+                    except OSError as error:observed={'phase':phase,'error':str(error)[:256]}
+                    if observed!=previous and len(observations)<8:
+                        observations.append(observed);previous=observed
+                        write(ROOT/('readiness-'+body['application']+'.json'),{'url':url,'observations':observations})
+                    if phase=='readiness':
+                        path=ROOT/('proxy-active-'+body['application']+'.caddy')
+                        if not path.exists():write(path,Path('/etc/komizo-proxy/Caddyfile').read_bytes())
+                except (OSError,ValueError):pass
+                stop.wait(1)
+        worker=threading.Thread(target=sample,daemon=True);worker.start()
+    try:
+        value=run([BINARY,'submit'],input=registry.canonical(body),ok=False,timeout=body['timeout_seconds']+35)
+        return json.loads(value.stdout)
+    finally:
+        stop.set()
+        if worker is not None:worker.join(timeout=3)
 
 
 def request(app,action,identity='current',**fields):
@@ -141,6 +172,23 @@ def container(record):
     return json.loads(run(['podman','--remote=false','container','inspect',record['name']]).stdout)[0]
 
 
+def cross_network_refused(source,target,service,port,*,source_instance='production',target_instance='production'):
+    def selected(app,instance):return json.loads(Path('/var/lib/komizo/instances/'+app+'--'+instance+'.json').read_text())
+    origin=selected(source,source_instance)['resources']['containers']['api']['name']
+    destination=container(selected(target,target_instance)['resources']['containers'][service])
+    if not destination['State']['Running']:raise ValueError('network isolation test needs a live destination')
+    addresses=[network['IPAddress'] for network in destination['NetworkSettings']['Networks'].values() if network.get('IPAddress')]
+    if not addresses:raise ValueError('network isolation test destination has no actual private address')
+    def probe(address,port):
+        return run(['podman','--remote=false','exec',origin,'/bin/busybox','timeout','4','/bin/busybox','sh','-c',
+            'printf "GET / HTTP/1.0\\r\\n\\r\\n" | /bin/busybox nc -w 2 '+address+' '+str(port)],ok=False,timeout=8)
+    positive=probe('127.0.0.1',8080)
+    if positive.returncode or b'a'*40 not in positive.stdout:raise ValueError('positive TCP control failed inside the source application')
+    for address in addresses:
+        result=probe(address,port)
+        if result.returncode==0:raise ValueError('application or preview established an ungranted cross-network TCP connection')
+
+
 def application_limits(app):
     record=installed(app)['resources']['containers']['api'];actual=container(record)
     pid=actual['State']['Pid']
@@ -242,9 +290,13 @@ def prepare():
     if submit(mutation).get('kind')!='komizo.error' or count('mailroom')!=1:raise ValueError('accepted mutation replay executed again')
     _,live=deploy(release('livebox','a'*40,dynamic=True,graph=False))
     if not live.get('ok'):raise ValueError('independent supervised service did not activate')
+    cross_network_refused('livebox','mailroom','db',8080)
+    cross_network_refused('mailroom','livebox','api',8080)
     records=installed('mailroom')['resources']['containers'];before={name:container(value)['Id'] for name,value in records.items()}
     api=records['api']['name'];db=records['db']['name']
     run(['podman','--remote=false','exec',api,'/bin/busybox','nslookup',db])
+    if b'a'*40 not in run(['podman','--remote=false','exec',api,'/bin/busybox','wget','-q','-O-','http://db:8080/']).stdout:
+        raise ValueError('same-network service TCP traffic was not preserved')
     run(['systemctl','kill','--signal=KILL','--kill-whom=main','komizo-controller.service'])
     until(lambda:run(['systemctl','is-active','komizo-controller.service'],ok=False).stdout.strip()==b'active')
     if before!={name:container(value)['Id'] for name,value in installed('mailroom')['resources']['containers'].items()}:
@@ -263,11 +315,13 @@ def prepare():
     report['checks'].update({'static_archive':'passed','service_job_dag':'passed','mutation_replay':'passed',
         'source_bound_https':'passed','forwarded_ip_refused':'passed','controller_death':'passed',
         'dns_after_controller_death':'passed','dns_after_other_application_stop':'passed','stopped_candidate_no_jobs':'passed','application_kernel_limits':'passed',
-        'application_uid_capabilities':'passed','application_read_only_root':'passed','no_published_application_ports':'passed'})
+        'application_uid_capabilities':'passed','application_read_only_root':'passed','no_published_application_ports':'passed',
+        'cross_application_tcp_refused':'passed','same_network_tcp_allowed':'passed'})
     import fixture_postgres
     fixture_postgres.prepare(report)
     import fixture_preview
     fixture_preview.prepare(report)
+    fixture_postgres.stop()
     failures(report)
     import fixture_secrets
     fixture_secrets.prepare(report)

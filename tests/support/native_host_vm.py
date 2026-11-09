@@ -8,6 +8,7 @@ from pathlib import Path
 import shutil
 import signal
 import secrets
+import selectors
 import socket
 import subprocess
 import tarfile
@@ -105,6 +106,68 @@ class Guest:
         if result.returncode == 0 or b'remote port forwarding failed' not in result.stderr:
             raise ValueError('submission SSH identity permits network forwarding')
 
+    def encrypted_export(self, record, metadata):
+        now=int(time.time())
+        body={'kind':'komizo.request','version':1,'authority':'owner','application':record['application'],'instance':record['instance'],
+            'action':'export','release_digest':record['release_digest'],'operation':record['operation_id'],'export_name':metadata['name'],
+            'nonce':secrets.token_hex(16),'issued_at':now,'expires_at':now+120,'timeout_seconds':60}
+        if type(metadata['size_bytes']) is not int or not 0<metadata['size_bytes']<=1<<20:raise ValueError('owner export exceeds fixture policy')
+        process=subprocess.Popen(['ssh',*self.arguments,'root@127.0.0.1','komizo-box submit'],
+            stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+        output=bytearray();errors=0;deadline=time.monotonic()+60
+        try:
+            process.stdin.write(json.dumps(body,separators=(',',':')).encode());process.stdin.close()
+            with selectors.DefaultSelector() as selector:
+                for stream in [process.stdout,process.stderr]:
+                    os.set_blocking(stream.fileno(),False);selector.register(stream,selectors.EVENT_READ)
+                while selector.get_map():
+                    if time.monotonic()>=deadline:raise ValueError('owner ciphertext transport exceeded its deadline')
+                    for key,_ in selector.select(min(1,deadline-time.monotonic())):
+                        data=os.read(key.fileobj.fileno(),65536)
+                        if not data:selector.unregister(key.fileobj);continue
+                        if key.fileobj is process.stdout:
+                            output.extend(data)
+                            if len(output)>metadata['size_bytes']+16384:raise ValueError('owner ciphertext exceeded its framed bound')
+                        else:
+                            errors+=len(data)
+                            if errors>65536:raise ValueError('owner ciphertext diagnostics exceeded their bound')
+            if process.wait(timeout=5):raise ValueError('owner ciphertext transport did not complete')
+        finally:
+            if process.poll() is None:os.killpg(process.pid,signal.SIGKILL);process.wait(timeout=5)
+            process.stdout.close();process.stderr.close()
+        line,separator,payload=bytes(output).partition(b'\n')
+        expected={'kind':'komizo.export','version':1,'application':record['application'],'instance':record['instance'],
+            'operation_id':record['operation_id'],'release_digest':record['release_digest'],'export_name':metadata['name'],
+            'size_bytes':metadata['size_bytes'],'sha256':metadata['sha256']}
+        if not separator or len(line)>16384 or json.loads(line)!=expected or len(payload)!=metadata['size_bytes'] or 'sha256:'+hashlib.sha256(payload).hexdigest()!=metadata['sha256']:
+            raise ValueError('owner ciphertext framing or source identity differs from capture')
+        return payload
+
+
+def owner_recovery(guest, directory, key):
+    report=json.loads(guest.command('cat /root/native-host/report.json',capture_output=True).stdout)
+    checks={}
+    records=report.get('owner_exports')
+    if not isinstance(records,list) or {value['application'] for value in records}!={'secretbox'}:
+        raise ValueError('owner recovery lacks its expected captured synthetic instance')
+    for record in records:
+        if len(record['files'])!=2 or {metadata['name'] for metadata in record['files']}!={'snapshot.cms','receipt.json'}:
+            raise ValueError('owner capture has an invalid encrypted file inventory')
+        pair={metadata['name']:guest.encrypted_export(record,metadata) for metadata in record['files']}
+        if set(pair)!={'snapshot.cms','receipt.json'}:raise ValueError('owner received an unexpected encrypted pair')
+        receipt=json.loads(pair['receipt.json'])
+        if receipt['deployment']['application']!=record['application'] or receipt['deployment']['release_digest']!=record['release_digest'] or receipt['ciphertext_sha256']!=hashlib.sha256(pair['snapshot.cms']).hexdigest():
+            raise ValueError('owner backup receipt lost captured source or ciphertext identity')
+        encrypted=directory/(record['application']+'.cms');encrypted.write_bytes(pair['snapshot.cms']);encrypted.chmod(0o600)
+        plaintext=run(['openssl','cms','-decrypt','-binary','-inform','DER','-in',str(encrypted),'-inkey',str(key)],capture_output=True).stdout
+        if record['format']=='synthetic-volume-json':
+            if json.loads(plaintext)!={'application':record['application'],'release_digest':record['release_digest'],'count':'accepted\n'}:
+                raise ValueError('owner synthetic decryption changed retained data or source identity')
+            checks['synthetic_owner_decryption']='passed'
+        else:raise ValueError('owner received an unsupported synthetic recovery format')
+    checks['owner_side_exact_framed_exports']='passed';checks['recovery_private_key_outside_capture_host']='passed'
+    return checks
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -136,6 +199,10 @@ def main():
                 raise ValueError('reviewed Caddy archive lacks its bounded executable')
             caddy.write_bytes(package.extractfile(entries[0]).read())
         caddy.chmod(0o755)
+        recovery_key=directory/'recipient.key';recipient=directory/'recipient.crt'
+        run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(recovery_key),
+            '-out',str(recipient),'-days','2','-subj','/CN=disposable-native-owner'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        recovery_key.chmod(0o600)
         user_data = {'disable_root': False, 'ssh_pwauth': False,
             'users': [{'name': 'root', 'ssh_authorized_keys': [owner.with_suffix('.pub').read_text().strip()]}],
             'ssh_keys': {'ed25519_private': host.read_text(), 'ed25519_public': host.with_suffix('.pub').read_text().strip()},
@@ -174,6 +241,7 @@ def main():
                     raise ValueError('guest native binary differs from the exact compiled source artifact')
                 guest.copy(caddy, '/usr/local/bin/caddy')
                 guest.copy(submit.with_suffix('.pub'), '/root/native-host/submission.pub')
+                guest.copy(recipient, '/root/native-host/recipient.crt')
                 guest.copy(ROOT / 'tests/support/native_host_acceptance.py', '/root/native-host/acceptance.py')
                 guest.copy(ROOT / 'tests/support/native_host_runtime.py', '/root/native-host/fixture_runtime.py')
                 guest.copy(ROOT / 'tests/support/native_host_registry.py', '/root/native-host/fixture_registry.py')
@@ -187,6 +255,7 @@ def main():
                 guest.submission_boundary(submit)
                 print('Running exact native workload effects and protected recovery fixtures',flush=True)
                 guest.command('python3 /root/native-host/acceptance.py runtime', timeout=600)
+                owner_checks=owner_recovery(guest,directory,recovery_key)
                 before = guest.command('cat /proc/sys/kernel/random/boot_id', capture_output=True).stdout.strip()
                 print('Rebooting the real guest with the artifact registry offline',flush=True)
                 guest.command('systemctl reboot', timeout=15)
@@ -202,6 +271,7 @@ def main():
                 accepted['source']={'revision':os.environ.get('NATIVE_HOST_SOURCE'),'binary_sha256':binary_sha}
                 accepted['checks']['ssh_forced_submission'] = 'passed'
                 accepted['checks']['ssh_forwarding_refused'] = 'passed'
+                accepted['checks'].update(owner_checks)
                 (args.output / 'report.json').write_text(json.dumps(accepted,sort_keys=True)+'\n')
                 if not accepted.get('ok'):
                     raise ValueError('native guest acceptance failed')
@@ -213,6 +283,8 @@ def main():
                         (args.output / 'journal.log').write_bytes(evidence)
                         status=guest.command('/usr/local/bin/komizo-box status',timeout=30,capture_output=True).stdout
                         (args.output/'status.json').write_bytes(status)
+                        runtime_evidence=guest.command('python3 /root/native-host/acceptance.py evidence',timeout=15,capture_output=True).stdout
+                        (args.output/'runtime-evidence.json').write_bytes(runtime_evidence)
                         if not (args.output/'report.json').exists():
                             report=guest.command('cat /root/native-host/report.json',timeout=10,capture_output=True).stdout
                             partial=json.loads(report);partial['source']={'revision':os.environ.get('NATIVE_HOST_SOURCE'),'binary_sha256':binary_sha}

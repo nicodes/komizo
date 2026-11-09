@@ -58,9 +58,8 @@ def export(app, release, operation, metadata):
 def prepare(report):
     app='secretbox';installed=runtime.installed(app);release=installed['release_digest']
     program=ROOT/'capture.py';write(program,CAPTURE,0o700)
-    run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(ROOT/'recipient.key'),
-        '-out',str(ROOT/'recipient.crt'),'-days','2','-subj','/CN=disposable-native-owner'])
-    (ROOT/'recipient.key').chmod(0o600)
+    if not (ROOT/'recipient.crt').is_file() or (ROOT/'recipient.key').exists():
+        raise ValueError('capture host must receive only the owner public recipient certificate')
     path=Path('/etc/komizo/apps/'+app+'.json');policy=json.loads(path.read_text())
     policy['backup']={'program':str(program),'sha256':registry.digest(CAPTURE),'timeout_seconds':30,'max_export_bytes':1<<20}
     write(path,policy)
@@ -73,11 +72,9 @@ def prepare(report):
     receipt=json.loads(pair['receipt.json'])
     if receipt['deployment']['release_digest']!=release or receipt['ciphertext_sha256']!=hashlib.sha256(pair['snapshot.cms']).hexdigest():
         raise ValueError('encrypted pair lost installed source or integrity binding')
-    encrypted=ROOT/'synthetic-export.cms';write(encrypted,pair['snapshot.cms'])
-    plaintext=run(['openssl','cms','-decrypt','-binary','-inform','DER','-in',str(encrypted),'-inkey',str(ROOT/'recipient.key')]).stdout
-    restored=json.loads(plaintext)
-    if restored!={'application':app,'release_digest':release,'count':'accepted\n'} or runtime.count(app)!=1:
-        raise ValueError('owner-only synthetic encrypted recovery changed original data or source identity')
+    if runtime.count(app)!=1:raise ValueError('protected capture changed retained data')
+    report.setdefault('owner_exports',[]).append({'application':app,'instance':'production','release_digest':release,
+        'operation_id':capture['operation_id'],'files':metadata,'format':'synthetic-volume-json'})
     unit='komizo-backup-'+capture['operation_id']+'.service'
     properties=run(['systemctl','show',unit,'--property=Slice,KillMode,ActiveState,ExecMainStatus']).stdout.decode().splitlines()
     if set(properties)!={'Slice=komizo-control.slice','KillMode=control-group','ActiveState=inactive','ExecMainStatus=0'}:
@@ -97,5 +94,5 @@ def prepare(report):
         if denied.get('ok') is not False:raise ValueError('orphan data masqueraded as an empty installation')
     finally:run(['podman','--remote=false','volume','rm',orphan])
     report['checks'].update({'protected_encrypted_capture':'passed','exact_export_framing':'passed','encrypted_pair_integrity':'passed',
-        'installed_source_backup_binding':'passed','synthetic_owner_decryption':'passed','backup_task_group_deadline':'passed',
+        'installed_source_backup_binding':'passed','capture_host_has_no_recovery_private_key':'passed','backup_task_group_deadline':'passed',
         'stopped_backup_refused':'passed','namespace_absence_proof':'passed','orphan_data_absence_refused':'passed'})

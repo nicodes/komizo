@@ -50,6 +50,9 @@ def prepare(report):
         raise ValueError('preview acquired the production credential snapshot')
     if postgres.query('SELECT value FROM evidence',instance)!=b'retained native row':raise ValueError('preview did not initialize its separate database')
     postgres.query("UPDATE evidence SET value='preview-only row'",instance)
+    if postgres.query('SELECT value FROM evidence')!=b'retained native row':raise ValueError('preview changed the production database')
+    runtime.cross_network_refused('pgbox','pgbox','postgres',5432,source_instance=instance)
+    runtime.cross_network_refused('pgbox','pgbox','postgres',5432,target_instance=instance)
     with urllib.request.urlopen('https://pr-7.preview.localhost/',timeout=5) as response:
         if response.headers.get('X-Komizo-Release')!=identity:raise ValueError('preview readiness used production release authority')
     other=projected(document,'pr-8')
@@ -67,7 +70,8 @@ def prepare(report):
         'volume':preview_volume['name'],'network_names':[record['name'] for record in value['resources']['networks'].values()],
         'production_volume':production_volume['name'],'foreign_volume':foreign}
     report['checks'].update({'preview_full_postgresql_namespace':'passed','preview_data_independence':'passed','preview_credential_independence':'passed',
-        'preview_protected_readiness':'passed','preview_instance_limit_refused':'passed','preview_hostname_authority':'passed'})
+        'preview_protected_readiness':'passed','preview_instance_limit_refused':'passed','preview_hostname_authority':'passed',
+        'preview_production_tcp_refused':'passed'})
 
 
 def expire(report):

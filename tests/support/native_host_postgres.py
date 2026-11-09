@@ -99,11 +99,14 @@ def prepare(report):
         raise ValueError('host alias provisioning changed initialized PostgreSQL credentials or rows')
     if runtime.container(old_record['resources']['containers']['postgres'])['Id']!=before:
         raise ValueError('owner alias rotation silently restarted PostgreSQL')
-    stopped=runtime.submit(runtime.request('pgbox','stop',receipt['release_digest']))
-    if stopped.get('phase')!='prepared_stopped':raise ValueError('real PostgreSQL stop intent was not preserved')
     report['postgres']={'release_digest':receipt['release_digest'],'base_reference':BASE,'image':artifact['config_digest']}
     report['checks'].update({'real_postgresql_api_dag':'passed','immutable_postgresql_base':'passed',
         'postgresql_rows_preserved_by_secret_rotation':'passed','initialized_postgresql_credentials_unchanged':'passed'})
+
+
+def stop():
+    stopped=runtime.submit(runtime.request('pgbox','stop',runtime.installed('pgbox')['release_digest']))
+    if stopped.get('phase')!='prepared_stopped':raise ValueError('real PostgreSQL stop intent was not preserved')
 
 
 def verify_reboot(report):
