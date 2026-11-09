@@ -450,6 +450,9 @@ fn run_task(
     );
     let system = System { deadline };
     system.reload()?;
+    if kind != "reconcile" {
+        super::bootstrap::apparmor_guard()?;
+    }
     system.start(&unit)?;
     let status = system.run(&["show", "--property=ExecMainStatus", "--value", &unit])?;
     ensure!(
