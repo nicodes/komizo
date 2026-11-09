@@ -407,7 +407,12 @@ fn protected_file(path: &Path, maximum: usize) -> Result<Vec<u8>> {
 }
 
 fn managed(ledger: &mut Ledger, path: &str, body: &[u8], mode: u32) -> Result<()> {
-    if Path::new(path).try_exists()? {
+    let exists = match fs::symlink_metadata(path) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error.into()),
+    };
+    if exists {
         let old = ledger
             .files
             .get(path)
@@ -415,7 +420,7 @@ fn managed(ledger: &mut Ledger, path: &str, body: &[u8], mode: u32) -> Result<()
         let bytes = protected_file(Path::new(path), 65536)?;
         ensure!(
             document_digest(&bytes) == old.sha256
-                && fs::symlink_metadata(path)?.mode() & 0o777 == old.mode,
+                && fs::symlink_metadata(path)?.mode() & 0o7777 == old.mode,
             "bootstrap file differs from its recorded identity"
         );
     } else {

@@ -94,7 +94,7 @@ def prepare(report):
     new_password=secrets.token_hex(24)
     update={'reference':'postgres-owner','expected_generation':'a'*32,'format':'environment-file',
         'value':'PGUSER=fixture\nPGPASSWORD='+new_password+'\n'}
-    rotated=runtime.submit(runtime.request('pgbox','secret-set',receipt['release_digest'],secret_update=update))
+    rotated=runtime.submit(runtime.request('pgbox','secret-set',receipt['release_digest'],secret_updates=[update]))
     if not rotated.get('ok') or query("SELECT rolpassword FROM pg_authid WHERE rolname='fixture'")!=role or query('SELECT count(*) FROM evidence')!=b'1':
         raise ValueError('host alias provisioning changed initialized PostgreSQL credentials or rows')
     if runtime.container(old_record['resources']['containers']['postgres'])['Id']!=before:

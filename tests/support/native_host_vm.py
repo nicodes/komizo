@@ -147,7 +147,8 @@ def owner_recovery(guest, directory, key):
     report=json.loads(guest.command('cat /root/native-host/report.json',capture_output=True).stdout)
     checks={}
     records=report.get('owner_exports')
-    if not isinstance(records,list) or {value['application'] for value in records}!={'secretbox','pgbox'}:
+    applications={'pgbox'} if report['profile']=='bounded' else {'secretbox','pgbox'}
+    if not isinstance(records,list) or {value['application'] for value in records}!=applications:
         raise ValueError('owner recovery lacks its expected captured synthetic instance')
     for record in records:
         if len(record['files'])!=2 or {metadata['name'] for metadata in record['files']}!={'snapshot.cms','receipt.json'}:
@@ -182,6 +183,7 @@ def main():
     parser.add_argument('--binary', required=True, type=Path)
     parser.add_argument('--proxy-binary', required=True, type=Path)
     parser.add_argument('--proxy-receipt', required=True, type=Path)
+    parser.add_argument('--profile',choices=['functional','bounded'],default='functional')
     parser.add_argument('--output', type=Path, default=ROOT / '.artifacts/native-host')
     args = parser.parse_args()
     binary = args.binary.absolute()
@@ -214,6 +216,7 @@ def main():
         run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(recovery_key),
             '-out',str(recipient),'-days','2','-subj','/CN=disposable-native-owner'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         recovery_key.chmod(0o600)
+        profile=directory/'profile.json';profile.write_text(json.dumps({'profile':args.profile}))
         user_data = {'disable_root': False, 'ssh_pwauth': False,
             'users': [{'name': 'root', 'ssh_authorized_keys': [owner.with_suffix('.pub').read_text().strip()]}],
             'ssh_keys': {'ed25519_private': host.read_text(), 'ed25519_public': host.with_suffix('.pub').read_text().strip()},
@@ -236,7 +239,7 @@ def main():
             # Debian GRUB needs the default console/video device model even
             # with a hidden display (Debian bug 1111240); the image stays exact.
             process = subprocess.Popen(['qemu-system-x86_64', '-no-user-config', '-display', 'none',
-                '-machine', 'q35,accel=kvm', '-cpu', 'host', '-m', '2048', '-smp', '2',
+                '-machine', 'q35,accel=kvm', '-cpu', 'host', '-m', '1024' if args.profile=='bounded' else '2048', '-smp', '1' if args.profile=='bounded' else '2',
                 '-drive', 'file=' + str(overlay) + ',if=virtio,format=qcow2',
                 '-drive', 'file=' + str(seed) + ',if=virtio,format=raw,readonly=on',
                 '-netdev', 'user,id=net0,hostfwd=tcp:127.0.0.1:' + str(ssh_port) + '-:22',
@@ -256,6 +259,7 @@ def main():
                 guest.command('chmod 644 /etc/komizo-proxy/binary.json')
                 guest.copy(submit.with_suffix('.pub'), '/root/native-host/submission.pub')
                 guest.copy(recipient, '/root/native-host/recipient.crt')
+                guest.copy(profile,'/root/native-host/profile.json')
                 guest.copy(ROOT / 'tests/support/native_host_acceptance.py', '/root/native-host/acceptance.py')
                 guest.copy(ROOT / 'tests/support/native_host_runtime.py', '/root/native-host/fixture_runtime.py')
                 guest.copy(ROOT / 'tests/support/native_host_registry.py', '/root/native-host/fixture_registry.py')

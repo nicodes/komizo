@@ -123,13 +123,56 @@ def release(app,revision,*,dynamic=False,unsafe=False,job_command=None,graph=Tru
         'artifacts':artifacts,'workload':workload}
 
 
+def enroll_empty(document):
+    """The synthetic owner explicitly accepts only a never-started empty graph."""
+    app=document['application'];identity=registry.digest(registry.canonical(document))
+    record=Path('/var/lib/komizo/instances/'+app+'--production.json')
+    if not document['workload']['volumes'] or record.exists():return False
+    refused=submit(request(app,'deploy',identity,release=document))
+    if refused.get('ok') or record.exists():raise ValueError('unenrolled production data reached ordinary deployment effects')
+    prepared=submit(request(app,'data-prepare',identity,release=document))
+    if prepared.get('phase')!='prepared_stopped' or not prepared.get('ok'):
+        raise ValueError('explicit owner data preparation failed: '+json.dumps(prepared))
+    resources=installed(app)['resources']
+    for value in resources['containers'].values():
+        if run(['podman','--remote=false','container','exists',value['name']],ok=False).returncode==0:
+            raise ValueError('owner data preparation started a native service')
+    for value in resources['volumes'].values():
+        native=json.loads(run(['podman','--remote=false','volume','inspect',value['name']]).stdout)[0]
+        if any(Path(native['Mountpoint']).iterdir()):raise ValueError('fresh synthetic owner enrollment found existing data')
+    evidence={'kind':'komizo.data-evidence','version':1,'application':app,'instance':'production','release_digest':identity,
+        'volumes':resources['volumes'],'created_at':int(time.time()),
+        'source':{'kind':'empty','confirmation':'initialize-new-empty-application'}}
+    body=registry.canonical(evidence)
+    write('/var/lib/komizo/data-evidence/'+app+'--production.json',body)
+    wrong=submit(request(app,'data-accept',identity,data_evidence='sha256:'+'0'*64))
+    if wrong.get('ok'):raise ValueError('owner data evidence hash was not enforced')
+    # A valid empty assertion must also fail against native nonempty storage.
+    first=next(iter(resources['volumes'].values()))
+    native=json.loads(run(['podman','--remote=false','volume','inspect',first['name']]).stdout)[0]
+    marker=Path(native['Mountpoint'])/'unaccepted-owner-data';marker.write_bytes(b'preserve')
+    try:
+        nonempty=submit(request(app,'data-accept',identity,data_evidence=registry.digest(body)))
+        if nonempty.get('ok') or marker.read_bytes()!=b'preserve':
+            raise ValueError('empty initialization accepted or modified existing native data')
+    finally:marker.unlink()
+    accepted=submit(request(app,'data-accept',identity,data_evidence=registry.digest(body)))
+    if not accepted.get('ok'):raise ValueError('explicit empty native data acceptance failed: '+json.dumps(accepted))
+    return True
+
+
 def deploy(document,*,seconds=180):
     identity=registry.digest(registry.canonical(document))
     file=ROOT/('candidate-'+document['application']+'.json');write(file,document)
     validated=json.loads(run([BINARY,'release','validate',str(file)]).stdout)
     if validated!={'ok':True,'release_digest':identity}:raise ValueError('offline release validation changed exact candidate identity')
+    fresh=enroll_empty(document)
     body=request(document['application'],'deploy',identity,release=document,timeout_seconds=seconds)
     result=submit(body)
+    if fresh and result.get('ok'):
+        if result.get('phase')!='prepared_stopped':raise ValueError('fresh owner enrollment silently activated production')
+        body=request(document['application'],'start',identity,timeout_seconds=seconds)
+        result=submit(body)
     return body,result
 
 
@@ -231,7 +274,10 @@ def failures(report):
     _,refused=deploy(bad)
     if refused.get('kind')!='komizo.error' or count('badjob')!=1:raise ValueError('failed data job was replayed')
     hanging=release('hungjob','a'*40,dynamic=True,job_command='echo accepted >> /data/count; /bin/busybox sleep 600')
-    body=request('hungjob','deploy',registry.digest(registry.canonical(hanging)),release=hanging)
+    enroll_empty(hanging)
+    _,staged=deploy(hanging)
+    if staged.get('phase')!='prepared_stopped':raise ValueError('interruption fixture did not stage its enrolled stopped source')
+    body=request('hungjob','start',registry.digest(registry.canonical(hanging)))
     child=subprocess.Popen([BINARY,'submit'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     child.stdin.write(registry.canonical(body));child.stdin.close()
     try:
@@ -288,7 +334,23 @@ def resource_stress(report):
         'other_application_survives_stress':'passed','oversized_release_refused_before_effects':'passed'})
 
 
+def bounded_prepare():
+    setup_registry();host_policy('staticbox')
+    _,receipt=deploy(release('staticbox','a'*40))
+    if not receipt.get('ok'):raise ValueError('bounded static activation failed: '+json.dumps(receipt))
+    report=json.loads((ROOT/'report.json').read_text())
+    import fixture_postgres
+    fixture_postgres.prepare(report)
+    if not shared_dns('bounded-full-postgresql-workload'):raise ValueError('bounded shared DNS escaped infrastructure accounting')
+    report['installed']={'static':receipt['release_digest']}
+    report['runtime_acceptance']=False
+    report['remaining']=['bounded performance and owner-client observations']
+    write(ROOT/'report.json',report)
+    run(['systemctl','stop','native-fixture-registry.service'])
+
+
 def prepare():
+    if json.loads((ROOT/'profile.json').read_text())['profile']=='bounded':return bounded_prepare()
     setup_registry()
     for app in ['staticbox','mailroom','livebox','badjob','hungjob','deadline','unsafe']:host_policy(app)
     static=release('staticbox','a'*40)
@@ -336,7 +398,7 @@ def prepare():
     if prepared.get('phase')!='prepared_stopped' or count('mailroom')!=1:raise ValueError('stopped preparation executed jobs or changed retained data')
     if installed('mailroom')['release_digest']!=ready['release_digest']:raise ValueError('prepared candidate silently replaced installed identity')
     report=json.loads((ROOT/'report.json').read_text())
-    report['checks'].update({'static_archive':'passed','service_job_dag':'passed','mutation_replay':'passed',
+    report['checks'].update({'static_archive':'passed','service_job_dag':'passed','owner_empty_data_enrollment':'passed','nonempty_data_initialization_refused':'passed','unenrolled_production_refused':'passed','mutation_replay':'passed',
         'source_bound_https':'passed','forwarded_ip_refused':'passed','controller_death':'passed',
         'dns_after_controller_death':'passed','dns_after_other_application_stop':'passed','shared_dns_control_budget':'passed',
         'stopped_candidate_no_jobs':'passed','application_kernel_limits':'passed',
@@ -365,6 +427,16 @@ def prepare():
 
 def verify_reboot():
     report=json.loads((ROOT/'report.json').read_text());accepted=report['installed']
+    if report['profile']=='bounded':
+        import fixture_postgres
+        until(lambda:b'a'*40 in fetch('staticbox',accepted['static']),seconds=60)
+        until(lambda:b'a'*40 in fetch('pgbox',report['postgres']['release_digest']),seconds=60)
+        until(lambda:fixture_postgres.query('SELECT value FROM evidence')==b'retained native row',seconds=60)
+        if fixture_postgres.query('SELECT count(*) FROM evidence')!=b'1':raise ValueError('bounded initialized PostgreSQL job replayed at boot')
+        if not shared_dns('bounded-offline-reboot'):raise ValueError('bounded reboot lost shared DNS accounting')
+        if run(['systemctl','is-active','native-fixture-registry.service'],ok=False).stdout.strip()==b'active':raise ValueError('bounded reboot unexpectedly started registry')
+        report['checks'].update({'bounded_full_postgresql_offline_reboot':'passed','postgresql_initialization_not_replayed':'passed'})
+        write(ROOT/'report.json',report);return
     if run(['systemctl','is-active','native-fixture-registry.service'],ok=False).stdout.strip()==b'active':raise ValueError('fixture registry must remain offline after reboot')
     if b'a'*40 not in fetch('staticbox',accepted['static']):raise ValueError('static release did not survive offline reboot')
     until(lambda:b'a'*40 in fetch('livebox',accepted['running']),seconds=60)

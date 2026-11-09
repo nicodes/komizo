@@ -31,7 +31,7 @@ def prepare(report):
     policy['previews']={'environment':'preview','hostname_suffix':'preview.localhost','max_instances':1,'max_ttl_seconds':120,
         'limits':runtime.limits(192,500,128),'secrets':{'postgres-owner':{'path':'/etc/komizo/pgbox-{instance}-owner.env',
             'services':['postgres'],'jobs':['initialize'],'environment_file':True,'mount':False,'generation':'b'*32}},
-        'readiness':[{'url':'https://{instance}.preview.localhost/','status':200,'contains':'a'*40}],'retain_data_on_remove':False}
+        'readiness':[{'url':'https://{instance}.preview.localhost/','status':200,'contains':'a'*40}]}
     write(path,policy)
     write('/etc/komizo/pgbox-pr-7-owner.env',('PGUSER=fixture\nPGPASSWORD='+secrets.token_hex(24)+'\n').encode())
     with Path('/etc/hosts').open('a') as output:output.write('127.0.0.1 pr-7.preview.localhost pr-8.preview.localhost\n')

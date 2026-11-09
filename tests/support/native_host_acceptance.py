@@ -41,7 +41,15 @@ def capacity():
     cpus = len(os.sched_getaffinity(0)) * 1000
     def limits(memory, cpu, pids):return {'memory_bytes':memory*MiB,'memory_swap_bytes':memory*MiB,'milli_cpus':cpu,'pids':pids}
     def infrastructure(memory, low, cpu, pids):
-        return {'limits':limits(memory,cpu,pids),'controls':{'memory_low_bytes':low*MiB,'memory_high_bytes':192*MiB}}
+        return {'limits':limits(memory,cpu,pids),'controls':{'memory_low_bytes':low*MiB,'memory_high_bytes':(96 if memory==128 else 192)*MiB}}
+    profile=json.loads((ROOT/'profile.json').read_text())['profile']
+    if profile=='bounded':
+        return {'kind':'komizo.capacity','version':1,'physical_memory_bytes':physical,'os_reserve_bytes':256*MiB,
+            'physical_milli_cpus':cpus,'os_reserve_milli_cpus':100,
+            'limits':{'memory_bytes':physical-256*MiB,'memory_swap_bytes':physical-256*MiB,'milli_cpus':cpus-100,'pids':512},
+            'production':limits(512,700,256),'previews':limits(128,100,64),
+            'control':infrastructure(128,32,300,128),'proxy':infrastructure(128,32,100,64),
+            'infrastructure_reserve_bytes':128*MiB,'startup_memory_bytes':64*MiB,'disk_reserve_bytes':512*MiB,'max_instances':4}
     return {'kind':'komizo.capacity','version':1,'physical_memory_bytes':physical,'os_reserve_bytes':512*MiB,
         'physical_milli_cpus':cpus,'os_reserve_milli_cpus':250,
         'limits':{'memory_bytes':physical-512*MiB,'memory_swap_bytes':physical-512*MiB,'milli_cpus':cpus-250,'pids':1024},
@@ -143,12 +151,31 @@ def prepare():
     if hashlib.sha256(ledger.read_bytes()).hexdigest()!=prior:raise ValueError('unsafe bootstrap input caused protected effects')
     run([BINARY,'install','--authorized-keys',str(ROOT/'submission.pub')],timeout=240)
     if hashlib.sha256(ledger.read_bytes()).hexdigest()!=prior:raise ValueError('identical bootstrap did not preserve its ownership ledger')
+    managed=Path('/usr/local/libexec/komizo-submit-shell');original=managed.read_bytes()
+    try:
+        write(managed,original+b'\n# foreign bytes\n',0o755)
+        if run([BINARY,'install','--authorized-keys',str(ROOT/'submission.pub')],ok=False).returncode==0:
+            raise ValueError('recorded bootstrap bytes changed without owner review')
+        if hashlib.sha256(ledger.read_bytes()).hexdigest()!=prior:raise ValueError('foreign bootstrap bytes changed the ownership ledger')
+    finally:write(managed,original,0o755)
+    # Only the declared root-provided key set changes. Reinstall must prove its
+    # previous ledger identity before admitting the replacement and restoring it.
+    extra=ROOT/'upgrade-key'
+    run(['ssh-keygen','-q','-t','ed25519','-N','','-f',str(extra)])
+    replacement=ROOT/'replacement-keys.pub'
+    write(replacement,(ROOT/'submission.pub').read_bytes()+extra.with_suffix('.pub').read_bytes())
+    run([BINARY,'install','--authorized-keys',str(replacement)],timeout=240)
+    if extra.with_suffix('.pub').read_text().split()[1] not in Path('/etc/ssh/komizo-submit/authorized_keys').read_text():
+        raise ValueError('reviewed managed bootstrap update did not replace the accepted key set')
+    run([BINARY,'install','--authorized-keys',str(ROOT/'submission.pub')],timeout=240)
+    if hashlib.sha256(ledger.read_bytes()).hexdigest()!=prior:raise ValueError('reviewed key restoration changed unrelated bootstrap ownership')
     report={'kind':'komizo.native-host-acceptance','version':1,'ok':False,
         'scope':'bootstrap, peer boundary, proxy isolation, actual kernel limits, real reboot',
+        'profile':json.loads((ROOT/'profile.json').read_text())['profile'],
         'runtime_acceptance':False,'baseline':baseline,
         'checks':{'supported_host':'passed','root_peer':'passed','forged_owner_peer':'passed','proxy_uid':'passed',
             'proxy_mount_write_refusal':'passed','proxy_process_metadata_isolation':'passed','secret_isolation':'passed',
-            'kernel_limits':'passed','unsafe_filesystem':'passed','idempotent_install':'passed',
+            'kernel_limits':'passed','unsafe_filesystem':'passed','idempotent_install':'passed','managed_bootstrap_upgrade':'passed','foreign_bootstrap_bytes_refused':'passed',
             'native_proxy_source_receipt':'passed','unprivileged_proxy_digest_guard':'passed'}}
     write(ROOT/'report.json',report)
 
