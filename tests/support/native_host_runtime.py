@@ -413,16 +413,31 @@ def resource_stress(report):
     group=run(['systemctl','show',unit,'--property=ControlGroup','--value']).stdout.decode().strip()
     path=Path('/sys/fs/cgroup')/group.removeprefix('/')
     def event(file,key):return int(dict(line.split() for line in (path/file).read_text().splitlines())[key])
+    actual=container(record)
+    leaf=Path('/sys/fs/cgroup')/actual['State']['CgroupPath'].removeprefix('/')
+    baseline_pids=int((leaf/'pids.current').read_text())
     previous=event('pids.events','max')
     # Sleeping children have a finite lifetime even when the shell cannot fork
     # another process. The stress stays below this application's PID ceiling.
     run(['podman','--remote=false','exec',record['name'],'/bin/busybox','sh','-c',
         'i=0; while [ "$i" -lt 80 ]; do /bin/busybox sleep 2 & i=$((i+1)); done; wait'],ok=False,timeout=20)
     if event('pids.events','max')<=previous:raise ValueError('actual application PID ceiling did not refuse excess children')
-    previous=event('memory.events','oom_kill')
-    result=run(['podman','--remote=false','exec',record['name'],'/bin/busybox','awk',
-        'BEGIN {x="0123456789"; for (i=0;i<9;i++) x=x x; while (1) a[++n]=x n}'],ok=False,timeout=30)
-    if result.returncode==0 or event('memory.events','oom_kill')<=previous:
+    # A shell refused another fork can exit while its finite children remain.
+    # Finish the PID experiment before asking a new exec to allocate memory.
+    until(lambda:int((leaf/'pids.current').read_text())<=baseline_pids,seconds=10)
+    def counters(stream):
+        stream.seek(0);return {key:int(value) for key,value in (line.split() for line in stream.read().splitlines())}
+    # Observe the actual bounded container. An already-open event fd also
+    # survives native cgroup teardown if the whole container is the OOM victim.
+    with (leaf/'memory.events').open() as events:
+        before=counters(events)
+        result=run(['podman','--remote=false','exec',record['name'],'/bin/busybox','awk',
+            'BEGIN {x="0123456789"; for (i=0;i<9;i++) x=x x; while (1) a[++n]=x n}'],ok=False,timeout=30)
+        after=counters(events)
+    write(ROOT/'resource-stress.json',{'container_id':actual['Id'],'container_cgroup':str(leaf),
+        'baseline_pids':baseline_pids,'before_memory_events':before,'after_memory_events':after,
+        'exit_code':result.returncode,'stderr':result.stderr.decode(errors='replace')[:2048]})
+    if result.returncode==0 or after.get('oom_kill',0)<=before.get('oom_kill',0):
         raise ValueError('actual application memory ceiling did not isolate excess allocation')
     until(lambda:b'a'*40 in fetch(app,installed(app)['release_digest']),seconds=30)
     fetch('staticbox',installed('staticbox')['release_digest'])
