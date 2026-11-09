@@ -160,7 +160,7 @@ def runtime():
 
 def evidence():
     files={}
-    for pattern in ['readiness-*.json','proxy-active-*.caddy']:
+    for pattern in ['readiness-*.json','proxy-active-*.caddy','shared-dns.json']:
         for path in list(ROOT.glob(pattern))[:16]:
             if path.is_file() and not path.is_symlink() and path.stat().st_size<=65536:files[path.name]=path.read_text()
     assets={}

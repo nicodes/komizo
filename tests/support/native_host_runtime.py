@@ -172,6 +172,21 @@ def container(record):
     return json.loads(run(['podman','--remote=false','container','inspect',record['name']]).stdout)[0]
 
 
+def shared_dns(stage):
+    rows=[]
+    for process in Path('/proc').iterdir():
+        if not process.name.isdecimal():continue
+        try:
+            executable=(process/'exe').resolve()
+            if executable.name!='aardvark-dns':continue
+            group=next(line[3:] for line in (process/'cgroup').read_text().splitlines() if line.startswith('0::'))
+            rows.append({'pid':int(process.name),'cgroup':group,'executable_sha256':hashlib.sha256(executable.read_bytes()).hexdigest()})
+        except (OSError,StopIteration):continue
+    path=ROOT/'shared-dns.json';observations=json.loads(path.read_text()) if path.exists() else []
+    observations.append({'stage':stage,'processes':rows});write(path,observations)
+    return bool(rows) and all(row['cgroup'].startswith('/komizo.slice/komizo-control.slice/') for row in rows)
+
+
 def cross_network_refused(source,target,service,port,*,source_instance='production',target_instance='production'):
     def selected(app,instance):return json.loads(Path('/var/lib/komizo/instances/'+app+'--'+instance+'.json').read_text())
     origin=selected(source,source_instance)['resources']['containers']['api']['name']
@@ -298,12 +313,14 @@ def prepare():
     cross_network_refused('livebox','mailroom','db',8080)
     cross_network_refused('mailroom','livebox','api',8080)
     records=installed('mailroom')['resources']['containers'];before={name:container(value)['Id'] for name,value in records.items()}
+    dns_accounted=shared_dns('before-controller-death')
     api=records['api']['name'];db=records['db']['name']
     run(['podman','--remote=false','exec',api,'/bin/busybox','nslookup',db])
     if b'a'*40 not in run(['podman','--remote=false','exec',api,'/bin/busybox','wget','-q','-O-','http://db:8080/']).stdout:
         raise ValueError('same-network service TCP traffic was not preserved')
     run(['systemctl','kill','--signal=KILL','--kill-whom=main','komizo-controller.service'])
     until(lambda:run(['systemctl','is-active','komizo-controller.service'],ok=False).stdout.strip()==b'active')
+    dns_accounted=shared_dns('after-controller-death') and dns_accounted
     if before!={name:container(value)['Id'] for name,value in installed('mailroom')['resources']['containers'].items()}:
         raise ValueError('controller death replaced supervised application containers')
     run(['podman','--remote=false','exec',api,'/bin/busybox','nslookup',db])
@@ -311,7 +328,9 @@ def prepare():
     stop=submit(request('mailroom','stop',ready['release_digest']))
     if stop.get('phase')!='prepared_stopped':raise ValueError('stop intent was not retained')
     live_api=installed('livebox')['resources']['containers']['api']['name']
+    dns_accounted=shared_dns('after-first-application-stop') and dns_accounted
     run(['podman','--remote=false','exec',live_api,'/bin/busybox','nslookup',live_api])
+    if not dns_accounted:raise ValueError('actual shared DNS process escaped its protected control budget; see shared-dns.json')
     next_release=release('mailroom','b'*40,dynamic=True)
     _,prepared=deploy(next_release)
     if prepared.get('phase')!='prepared_stopped' or count('mailroom')!=1:raise ValueError('stopped preparation executed jobs or changed retained data')
@@ -319,7 +338,8 @@ def prepare():
     report=json.loads((ROOT/'report.json').read_text())
     report['checks'].update({'static_archive':'passed','service_job_dag':'passed','mutation_replay':'passed',
         'source_bound_https':'passed','forwarded_ip_refused':'passed','controller_death':'passed',
-        'dns_after_controller_death':'passed','dns_after_other_application_stop':'passed','stopped_candidate_no_jobs':'passed','application_kernel_limits':'passed',
+        'dns_after_controller_death':'passed','dns_after_other_application_stop':'passed','shared_dns_control_budget':'passed',
+        'stopped_candidate_no_jobs':'passed','application_kernel_limits':'passed',
         'application_uid_capabilities':'passed','application_read_only_root':'passed','no_published_application_ports':'passed',
         'cross_application_tcp_refused':'passed','same_network_tcp_allowed':'passed','installed_asset_proxy_uid_read':'passed',
         'installed_asset_proxy_uid_write_refused':'passed'})
