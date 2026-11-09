@@ -8,7 +8,7 @@ import secrets
 import time
 import urllib.request
 
-from acceptance import ROOT, BINARY, run, write
+from acceptance import ROOT, BINARY, run, write, show
 import fixture_postgres as postgres
 import fixture_registry as registry
 import fixture_runtime as runtime
@@ -27,6 +27,14 @@ def projected(document,instance):
 
 
 def prepare(report):
+    # Owner-controlled orphan refusal/repair below must not race the independent
+    # periodic expiry service for the same nonblocking instance lock. Exercise
+    # that shipped scheduler separately on the final fresh preview.
+    if show('komizo-expire.timer','ActiveState')!='active':
+        raise ValueError('installed preview expiry timer is not active')
+    run(['systemctl','stop','komizo-expire.timer','komizo-expire.service'])
+    if any(show(unit,'ActiveState') not in {'inactive','failed'} for unit in ['komizo-expire.timer','komizo-expire.service']):
+        raise ValueError('scheduled expiry did not quiesce before the owner-controlled preview fixture')
     instance='pr-7';path=Path('/etc/komizo/apps/pgbox.json');policy=json.loads(path.read_text())
     policy['previews']={'environment':'preview','hostname_suffix':'preview.localhost','max_instances':1,'max_ttl_seconds':120,
         'limits':runtime.limits(192,500,128),'secrets':{'postgres-owner':{'path':'/var/lib/komizo/preview-secrets/pgbox/{instance}/postgres-owner.env',
@@ -117,9 +125,18 @@ def expire(report):
     while int(time.time())<=preview['expires_at']:
         if time.monotonic()>deadline:raise ValueError('preview did not reach its bounded real TTL')
         time.sleep(1)
+    operations=Path('/var/lib/komizo/operations');before=set(operations.glob('*.json'))
     refused=run([BINARY,'expire'],timeout=60,ok=False)
     if refused.returncode==0 or installed(preview['instance']).get('removed'):
         raise ValueError('unknown reserved-namespace storage was silently treated as absent')
+    fresh=set(operations.glob('*.json'))-before
+    if len(fresh)!=1:raise ValueError('orphan refusal did not execute one admitted expiry operation')
+    operation=json.loads(fresh.pop().read_bytes())
+    failure=json.loads((Path('/var/lib/komizo/journal')/operation['operation_id']/'failure.json').read_bytes())
+    if (operation.get('application')!='pgbox' or operation.get('instance')!=preview['instance']
+            or operation.get('phase')!='needs_reconciliation' or operation.get('ok') is not False
+            or 'unreconciled instance resources prevent an absence assertion' not in failure.get('context','')):
+        raise ValueError('expiry refused before proving the deliberate unrecorded resource')
     orphan=json.loads(run(['podman','--remote=false','volume','inspect',preview['namespace_orphan']]).stdout)[0]
     if orphan['CreatedAt']!=preview['orphan_created_at']:
         raise ValueError('preview expiry changed an unrecorded namespace volume')
@@ -171,7 +188,21 @@ def expire(report):
     identity,repaired=deploy(document)
     if not repaired.get('ok') or repaired.get('phase')!='ready' or postgres.query('SELECT count(*) FROM evidence',preview['instance'])!=b'1':
         raise ValueError('scoped failed-preview removal did not release its data and reconciliation fences: '+json.dumps(repaired))
-    remove(identity)
+    expires=installed(preview['instance'])['expires_at']
+    run(['systemctl','start','komizo-expire.timer'])
+    if show('komizo-expire.timer','ActiveState')!='active':
+        raise ValueError('shipped preview expiry timer did not resume')
+    deadline=time.monotonic()+125
+    while not (installed(preview['instance']).get('removed') and show('komizo-expire.service','ActiveState')=='inactive'):
+        if time.monotonic()>=deadline:raise ValueError('scheduled preview expiry exceeded its real TTL and timer interval')
+        time.sleep(.5)
+    removed=installed(preview['instance'])
+    if (int(time.time())<expires or removed['desired_running'] or removed['expires_at'] is not None
+            or removed['resources']['volumes'] or removed['resources']['networks'] or removed['resources']['containers']):
+        raise ValueError('scheduled preview expiry did not remove only the expired owned graph')
+    if show('komizo-expire.service','Result')!='success' or show('komizo-expire.service','ExecMainStatus')!='0':
+        raise ValueError('scheduled expiry did not complete through the shipped service')
     run(['podman','--remote=false','volume','inspect',preview['production_volume']])
     report['checks'].update({'preview_removed_start_refused':'passed','preview_fresh_graph_after_expiry':'passed',
-        'preview_reopen_initialization_once':'passed','failed_preview_scoped_remove':'passed','failed_preview_fresh_redeploy':'passed'})
+        'preview_reopen_initialization_once':'passed','failed_preview_scoped_remove':'passed','failed_preview_fresh_redeploy':'passed',
+        'preview_scheduled_ttl_expiry':'passed'})

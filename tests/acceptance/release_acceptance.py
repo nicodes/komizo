@@ -29,7 +29,7 @@ REQUIRED_STEPS={
     'no_secret_values_in_public_outputs_or_argv','known_secret_log_redaction','owner_observation_uid_boundary',
     'preview_full_postgresql_namespace','preview_data_independence','preview_credential_independence',
     'capacity_refusal_before_preview_credentials',
-    'preview_real_ttl_expiry','preview_owned_cleanup','preview_unknown_namespace_refuses_absence','preview_removed_start_refused','preview_fresh_graph_after_expiry','preview_reopen_initialization_once','failed_preview_scoped_remove','failed_preview_fresh_redeploy','protected_postgresql_encrypted_capture','encrypted_pair_integrity',
+    'preview_real_ttl_expiry','preview_scheduled_ttl_expiry','preview_owned_cleanup','preview_unknown_namespace_refuses_absence','preview_removed_start_refused','preview_fresh_graph_after_expiry','preview_reopen_initialization_once','failed_preview_scoped_remove','failed_preview_fresh_redeploy','protected_postgresql_encrypted_capture','encrypted_pair_integrity',
     'owner_postgresql_encrypted_restore','owner_side_exact_framed_exports','recovery_private_key_outside_capture_host',
     'source_bound_authenticated_snapshot',
     'protected_task_absolute_deadline','protected_task_survives_controller_death','protected_task_descendant_deadline','protected_task_native_helper_deadline','protected_task_preserves_shared_control_helper',
