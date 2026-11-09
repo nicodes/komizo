@@ -15,7 +15,11 @@ SOURCES=('caddy.go.mod','caddy.go.sum','caddy-build.sh')
 
 
 def run(arguments,**options):
-    return subprocess.run(arguments,check=True,capture_output=True,timeout=options.pop('timeout',30),**options).stdout
+    result=subprocess.run(arguments,capture_output=True,timeout=options.pop('timeout',30),**options)
+    if result.returncode:
+        error=result.stderr if isinstance(result.stderr,str) else result.stderr.decode(errors='replace')
+        raise ValueError('proxy build command failed: '+arguments[0]+'\n'+error[-8192:])
+    return result.stdout
 
 
 def identity(info):
