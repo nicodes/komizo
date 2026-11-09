@@ -5,12 +5,14 @@ import ctypes
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import shutil
 import signal
 import secrets
 import selectors
+import re
 import shlex
 import tomllib
 import socket
@@ -309,6 +311,32 @@ def performance(guest,directory,cli,setup_seconds):
         return isolated_performance(guest,directory,cli,setup_seconds,isolated)
 
 
+def performance_metrics(guest,budget):
+    response=guest.command('python3 /root/native-host/fixture_performance.py finish '+shlex.quote(json.dumps(budget)),
+        timeout=budget['load_seconds']+20,capture_output=True,check=False)
+    if response.returncode:
+        # Never forward arbitrary guest stderr or an exception path. These fixed
+        # facts distinguish collection failures without exporting private state.
+        stderr=response.stderr[-8192:] if isinstance(response.stderr,bytes) else b''
+        classes=re.findall(rb'^([A-Za-z]+Error):',stderr,re.MULTILINE)
+        allowed={b'ValueError',b'RuntimeError',b'FileNotFoundError',b'PermissionError',b'KeyError',b'OSError',b'JSONDecodeError'}
+        kind=classes[-1].decode() if classes and classes[-1] in allowed else 'unclassified'
+        raise ValueError(json.dumps({'phase':'bounded_performance_collection','exit_code':response.returncode,
+            'exception_class':kind,'missing_cpu_stat':kind=='FileNotFoundError' and b'cpu.stat' in stderr},sort_keys=True))
+    return json.loads(response.stdout)
+
+
+def public_performance_observation(metrics):
+    fields={'guest_memory_bytes','guest_milli_cpus','setup_seconds','deployment_seconds','idle_control_pss_bytes',
+        'route_seconds','operator_seconds','load_hot_bytes','load_cpu_usec','oom_events_unchanged','owned_load_removed'}
+    selected={key:metrics[key] for key in sorted(fields)}
+    for key,value in selected.items():
+        samples=value if isinstance(value,list) else [value]
+        if not samples or len(samples)>32 or any(type(v) not in (bool,int,float) or abs(v)>2**64 or not math.isfinite(v) for v in samples):
+            raise ValueError('invalid public performance measurement: '+key)
+    return selected
+
+
 def isolated_performance(guest,directory,cli,setup_seconds,isolated):
     budget_path=ROOT/'tests/acceptance/acceptance-budgets.toml'
     budget=tomllib.loads(budget_path.read_text())
@@ -321,9 +349,10 @@ def isolated_performance(guest,directory,cli,setup_seconds,isolated):
         routes.append(time.monotonic()-began)
         began=time.monotonic();observed=command('inspect',*flags,timeout=budget['operator_seconds']);operators.append(time.monotonic()-began)
         if observed.get('kind')!='komizo.instance' or not observed['installed']['desired_running']:raise ValueError('owner read under load lost exact running scope')
-    metrics=json.loads(guest.command('python3 /root/native-host/fixture_performance.py finish '+shlex.quote(json.dumps(budget)),timeout=budget['load_seconds']+20,capture_output=True).stdout)
+    metrics=performance_metrics(guest,budget)
     timings=json.loads(guest.command('cat /root/native-host/timings.json',capture_output=True).stdout)
     metrics.update(setup_seconds=setup_seconds,deployment_seconds=timings['deployment_seconds'],route_seconds=routes,operator_seconds=operators)
+    print(json.dumps({'bounded_performance_observation':public_performance_observation(metrics)},sort_keys=True),flush=True)
     sys.path.insert(0,str(ROOT/'tests/acceptance'))
     from performance_acceptance import evaluate, SCOPE
     accepted=evaluate(metrics,budget)

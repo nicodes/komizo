@@ -3,6 +3,7 @@
 import hashlib
 import json
 from pathlib import Path
+import re
 import secrets
 import sys
 import time
@@ -53,10 +54,11 @@ def start(budget):
         'end=time.monotonic()+'+str(budget['load_seconds'])+'\nwhile time.monotonic()<end:\n for p in range(0,len(hot),4096):hot[p]=(hot[p]+1)&255\n')
     before=oom()
     run(['systemd-run','--unit='+unit,'--slice=komizo-production.slice','--uid=nobody','--gid=nogroup',
-        '--property=Type=exec','--property=RemainAfterExit=yes','--property=MemoryMax=96M','--property=MemorySwapMax=0',
+        '--property=Type=exec','--property=RemainAfterExit=yes','--property=CPUAccounting=yes','--property=MemoryMax=96M','--property=MemorySwapMax=0',
         '--property=TasksMax=8','--property=CPUQuota='+str(budget['load_milli_cpus']//10)+'%',
         '--property=RuntimeMaxSec='+str(budget['load_seconds']+15),'--property=StandardOutput=file:'+output,
         '/usr/bin/python3','-I','-B','-c',program])
+    if show(unit,'CPUAccounting')!='yes':raise ValueError('owned finite load CPU accounting is not enabled')
     group=show(unit,'ControlGroup');path=CGROUP/group.removeprefix('/')
     if not group.startswith('/komizo.slice/komizo-production.slice/') or (path/'memory.max').read_text().strip()!=str(96<<20) or (path/'memory.swap.max').read_text().strip()!='0' or (path/'pids.max').read_text().strip()!='8':
         raise ValueError('owned performance load escaped its protected limits')
@@ -82,7 +84,13 @@ def finish(budget):
             if time.monotonic()>=end:raise ValueError('owned finite load exceeded its deadline')
             time.sleep(.1)
         if show(unit,'Result')!='success' or show(unit,'ExecMainStatus')!='0':raise ValueError('owned finite load failed')
-        metrics['load_cpu_usec']=int(dict(line.split() for line in (path/'cpu.stat').read_text().splitlines())['usage_usec'])
+        if show(unit,'CPUAccounting')!='yes':raise ValueError('owned finite load CPU accounting is not enabled')
+        # An exited RemainAfterExit service can have its empty cgroup pruned.
+        # The manager caches its actual final CPU counter before that removal.
+        usage=show(unit,'CPUUsageNSec')
+        if not isinstance(usage,str) or not re.fullmatch('[1-9][0-9]{0,19}',usage) or not 1000<=int(usage)<(1<<64)-1:
+            raise ValueError('owned finite load CPU accounting is missing or invalid')
+        metrics['load_cpu_usec']=int(usage)//1000
         after=oom()
         # Ignore only the load's newly created event file; it must also show no OOM.
         metrics['oom_events_unchanged']=all(after.get(name)==value for name,value in state['before'].items()) and all(

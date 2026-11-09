@@ -182,6 +182,16 @@ path = "tests/acceptance"
 pattern = "test_native_root.py"
 
 [[tests.unit]]
+runner = "python-unittest"
+path = "tests/acceptance"
+pattern = "test_native_performance*.py"
+
+[[tests.unit]]
+runner = "python-unittest"
+path = "tests/acceptance"
+pattern = "test_native_sdk.py"
+
+[[tests.unit]]
 runner = "python"
 path = "tests/acceptance/native-root-tests.py"
 timeout = 900
