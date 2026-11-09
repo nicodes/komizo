@@ -224,7 +224,14 @@ def shared_dns(stage):
             executable=(process/'exe').resolve()
             if executable.name!='aardvark-dns':continue
             group=next(line[3:] for line in (process/'cgroup').read_text().splitlines() if line.startswith('0::'))
-            private_unreadable=all(run(['nsenter','--target',process.name,'--mount','--','test','-r',private],ok=False).returncode!=0
+            constrained=['nsenter','--target',process.name,'--mount','--','setpriv','--bounding-set=-all','--inh-caps=-all',
+                '--ambient-caps=-all','--no-new-privs','--']
+            # Observe the DNS sandbox without the outer fixture root's DAC
+            # override. NET_BIND_SERVICE adds no filesystem read authority.
+            run([*constrained,'test','-r','/etc/resolv.conf'])
+            status=dict(line.split(':',1) for line in (process/'status').read_text().splitlines() if ':' in line)
+            if int(status['CapEff'].strip(),16)&~(1<<10):raise ValueError('shared DNS has capabilities beyond low-port binding')
+            private_unreadable=all(run([*constrained,'test','-r',private],ok=False).returncode!=0
                 for private in ['/var/lib/komizo/private-acceptance','/etc/komizo/controller.json','/etc/shadow'])
             rows.append({'pid':int(process.name),'cgroup':group,'executable_sha256':hashlib.sha256(executable.read_bytes()).hexdigest(),
                 'private_state_unreadable':private_unreadable})
@@ -396,7 +403,7 @@ def prepare():
     live_api=installed('livebox')['resources']['containers']['api']['name']
     dns_accounted=shared_dns('after-first-application-stop') and dns_accounted
     run(['podman','--remote=false','exec',live_api,'/bin/busybox','nslookup',live_api])
-    if not dns_accounted:raise ValueError('actual shared DNS process escaped its protected control budget; see shared-dns.json')
+    if not dns_accounted:raise ValueError('actual shared DNS budget or private-state boundary differs; see shared-dns.json')
     next_release=release('mailroom','b'*40,dynamic=True)
     _,prepared=deploy(next_release)
     if prepared.get('phase')!='prepared_stopped' or count('mailroom')!=1:raise ValueError('stopped preparation executed jobs or changed retained data')
