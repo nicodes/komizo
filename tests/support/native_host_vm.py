@@ -357,6 +357,7 @@ def owner_recovery(guest, directory, key, sources):
         if record['format']=='synthetic-sqlite-package-v2':
             with sqlite3.connect('file:'+str(payload/'data.db')+'?mode=ro',uri=True) as database:
                 retained=database.execute('SELECT application,release_digest,value FROM evidence').fetchall()
+            database.close()
             if retained != [(record['application'],record['release_digest'],'accepted\n')]:
                 raise ValueError('owner synthetic decryption changed retained data or source identity')
             checks['synthetic_owner_decryption']='passed'

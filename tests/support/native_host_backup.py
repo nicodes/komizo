@@ -50,6 +50,7 @@ with tempfile.TemporaryDirectory(prefix='native-backup-',dir='/root/native-host'
     with sqlite3.connect(database) as connection:
         connection.executescript('CREATE TABLE _collections(name TEXT); CREATE TABLE _migrations(name TEXT); CREATE TABLE evidence(application TEXT,release_digest TEXT,value TEXT);')
         connection.execute('INSERT INTO evidence VALUES (?,?,?)',(app,request['release_digest'],count.decode()))
+    connection.close()
     database.chmod(0o600)
     archive=package/'data.tar.gz'
     with tarfile.open(archive,'x:gz') as bundle:bundle.add(database,arcname='data.db',recursive=False)
