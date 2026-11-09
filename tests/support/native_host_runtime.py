@@ -477,17 +477,24 @@ def prepare():
         'cross_application_tcp_refused':'passed','same_network_tcp_allowed':'passed','installed_asset_proxy_uid_read':'passed',
         'installed_asset_proxy_uid_write_refused':'passed'})
     apparmor_boundary('livebox',report)
+    write(ROOT/'report.json',report)
     import fixture_postgres
     fixture_postgres.prepare(report)
+    write(ROOT/'report.json',report)
     import fixture_preview
     fixture_preview.prepare(report)
+    write(ROOT/'report.json',report)
     fixture_postgres.stop()
     failures(report)
+    write(ROOT/'report.json',report)
     import fixture_secrets
     fixture_secrets.prepare(report)
+    write(ROOT/'report.json',report)
     import fixture_backup
     fixture_backup.prepare(report)
+    write(ROOT/'report.json',report)
     resource_stress(report)
+    write(ROOT/'report.json',report)
     fixture_preview.expire(report)
     run(['systemctl','stop','native-fixture-registry.service'])
     report['runtime_acceptance']=False

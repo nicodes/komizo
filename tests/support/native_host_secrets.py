@@ -102,6 +102,11 @@ def prepare(report):
     text=observed['text']
     if old in text or '[redacted]' not in text or '"application":"forged"' not in text:
         raise ValueError('known secret redaction or application-text preservation differs')
+    fixture_lines=[line for line in text.splitlines() if line.startswith('bounded-line-') and line.removeprefix('bounded-line-').isdecimal()]
+    write(ROOT/'log-observation.json',{'size_bytes':len(text.encode()),'lines':len(text.splitlines()),
+        'first_fixture_line':fixture_lines[0] if fixture_lines else None,
+        'last_fixture_line':fixture_lines[-1] if fixture_lines else None,
+        'contains_initial_line':'bounded-line-0\n' in text,'container_id':before})
     if len(text.encode())>256<<10 or len(text.splitlines())>200 or 'bounded-line-0\n' in text:
         raise ValueError('native log tail exceeded its count or byte bound')
     for user in ['komizo-submit','komizo-proxy']:
