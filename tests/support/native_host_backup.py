@@ -134,7 +134,11 @@ while time.monotonic()<end:
             assert actual['Config']['Timeout']==0
             current=pathlib.Path('/proc/'+str(actual['State']['Pid'])+'/cgroup').read_text().strip()
             assert current.startswith('0::'+parent+'/') and current!='0::'+parent+'/runner'
+            conmon=actual['State']['ConmonPid']
+            conmon_group=pathlib.Path('/proc/'+str(conmon)+'/cgroup').read_text().strip()
+            assert conmon>0 and conmon_group.startswith('0::'+parent+'/')
             (root/(identity+'-helper.json')).write_text(json.dumps({'id':actual['Id'],'name':name,'pid':actual['State']['Pid'],
+                'conmon_pid':conmon,'conmon_cgroup':conmon_group[3:],
                 'parent':parent,'cgroup':current[3:],'native_timeout_seconds':actual['Config']['Timeout'],'volume':volume}))
             break
     time.sleep(.05)
@@ -225,7 +229,8 @@ time.sleep(600)
                                 'state':{key:state.get(key) for key in ['Status','Running','Pid','ConmonPid','ExitCode','Error']}})
                             if (current['Id']!=identity or current['Config']['Labels'].get('io.komizo.fixture.operation')!=operation
                                     or not empty or state['Running'] is not False or state['Pid']!=0
-                                    or state['ConmonPid']!=0 or state['ExitCode']!=-1
+                                    # Native5.4.2 inspect omits integer zero.
+                                    or state.get('ConmonPid',0)!=0 or state['ExitCode']!=-1
                                     or state['Error']!='conmon died without writing exit file, container exit code could not be retrieved'):
                                 raise ValueError('dead native helper lacks its exact quiescent unknown-exit cleanup state')
                             run([*engine,'rm',identity])
