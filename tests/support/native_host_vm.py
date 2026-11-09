@@ -458,7 +458,7 @@ def main():
             finally:
                 if process.poll() is None:
                     try:
-                        guest.command("journalctl -b -u komizo-controller -u komizo-proxy -u 'kmz-*' -n 500 --no-pager > /root/native-host/journal.log", timeout=20)
+                        guest.command("journalctl -b -u komizo-controller -u komizo-proxy -u 'kmz-*' -u 'komizo-backup-*' -u 'komizo-prepare-*' -u 'komizo-reconcile-*' -n 500 --no-pager > /root/native-host/journal.log", timeout=20)
                         evidence = guest.command('cat /root/native-host/journal.log', timeout=20, capture_output=True).stdout
                         (args.output / 'journal.log').write_bytes(evidence)
                         status=guest.command('/usr/local/bin/komizo-box status',timeout=30,capture_output=True,check=False)

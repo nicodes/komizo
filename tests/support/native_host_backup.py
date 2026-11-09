@@ -7,6 +7,7 @@ restoration and product application journeys remain separately scoped proofs.
 import hashlib
 import json
 from pathlib import Path
+import secrets
 import subprocess
 import time
 
@@ -109,14 +110,16 @@ import json,pathlib,re,signal,subprocess,sys,time
 request=json.load(sys.stdin)
 assert request['kind']=='komizo.backup-request' and request['application']=='secretbox'
 root=pathlib.Path('/root/native-host');identity=request['operation_id']
+(root/(identity+'-program-entered')).write_text('entered')
 signal.signal(signal.SIGTERM,signal.SIG_IGN)
 subprocess.Popen([sys.executable,'-I','-B','-c','import pathlib,signal,time,sys;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(12);pathlib.Path(sys.argv[1]).write_text("late")',str(root/(identity+'-late'))],start_new_session=True)
 group=pathlib.Path('/proc/self/cgroup').read_text().strip()
 expected='0::/komizo.slice/komizo-control.slice/komizo-backup-'+identity+'.service/runner'
 assert group==expected
 parent=group[3:].removesuffix('/runner')
-resource=json.loads(subprocess.check_output(['/usr/local/bin/komizo-box','resource','--application','secretbox','--instance','production','--service','db']))
-volume=resource['volumes']['data']['name']
+resource=json.loads((root/(identity+'-helper-source.json')).read_text())
+assert resource['release_digest']==request['release_digest']
+volume=resource['volume']
 name='native-task-'+identity;cidfile=root/(identity+'-helper.cid')
 subprocess.Popen(['podman','--remote=false','--cgroup-manager=cgroupfs','run','--name='+name,'--cidfile='+str(cidfile),
     '--pull=never','--timeout=0','--cgroup-parent='+parent,'--image-volume=ignore','--http-proxy=false','--network=none',
@@ -154,8 +157,14 @@ time.sleep(600)
         'max_export_bytes':1<<20,'services':['db']}
     write(path,policy)
     release=runtime.installed('secretbox')['release_digest']
-    body=runtime.request('secretbox','backup',release,timeout_seconds=8)
-    operation=hashlib.sha256(('komizo-operation-v1\0secretbox\0production\0'+body['nonce']).encode()).hexdigest()[:32]
+    source=json.loads(run([BINARY,'resource','--application','secretbox','--instance','production','--service','db']).stdout)
+    if source['release_digest']!=release:raise ValueError('task helper source changed before its isolated deadline probe')
+    nonce=secrets.token_hex(16)
+    operation=hashlib.sha256(('komizo-operation-v1\0secretbox\0production\0'+nonce).encode()).hexdigest()[:32]
+    write(ROOT/(operation+'-helper-source.json'),{'release_digest':release,
+        'image_config_digest':source['image_config_digest'],'volume':source['volumes']['data']['name']})
+    # Only data-only resource preparation is outside the negative probe. Its
+    # real native create/start and all effects still share the same eight seconds.
     dns_pid=int(run(['systemctl','show','komizo-dns.service','--property=MainPID','--value']).stdout)
     if dns_pid<=0:raise ValueError('task isolation proof lacks its shared control helper')
     dns_executable=Path('/proc')/str(dns_pid)/'exe'
@@ -165,9 +174,11 @@ time.sleep(600)
         raise ValueError('unrelated task isolation helper is outside the shared control budget')
     entered=ROOT/(operation+'-entered');late=ROOT/(operation+'-late')
     helper_record=ROOT/(operation+'-helper.json');helper_cid=ROOT/(operation+'-helper.cid')
+    body=runtime.request('secretbox','backup',release,timeout_seconds=8,nonce=nonce)
     child=subprocess.Popen([BINARY,'submit'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     child.stdin.write(registry.canonical(body));child.stdin.close();began=time.monotonic()
     unit='komizo-backup-'+operation+'.service'
+    write(ROOT/'task-start-observation.json',{'operation_id':operation,'program_entered':False,'helper_entered':False})
     try:
         runtime.until(entered.exists,seconds=7)
         helper=json.loads(helper_record.read_text())
@@ -248,6 +259,16 @@ time.sleep(600)
             runtime.until(lambda:run(['systemctl','is-active','komizo-controller.service'],ok=False).stdout.strip()==b'active')
             try:child.wait(timeout=10)
             except subprocess.TimeoutExpired:child.kill();child.wait(timeout=5)
+            response=child.stdout.read(16385)
+            receipt=None
+            if len(response)<=16384:
+                try:
+                    value=json.loads(response)
+                    receipt={key:value[key] for key in ['kind','version','operation_id','phase','ok','reconciliation_required'] if key in value}
+                except ValueError:pass
+            write(ROOT/'task-start-observation.json',{'operation_id':operation,
+                'program_entered':(ROOT/(operation+'-program-entered')).exists(),'helper_entered':entered.exists(),
+                'transport_exit_code':child.returncode,'receipt':receipt})
             child.stdout.close();child.stderr.close()
 
 
