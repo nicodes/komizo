@@ -149,7 +149,7 @@ arch = "x86_64"
 extension = "tar.gz"
 
 [[package.native_targets]]
-runner = "macos-15"
+runner = "macos-26"
 timeout_minutes = 45
 second_wave_timeout_minutes = 35
 target = "aarch64-apple-darwin"
