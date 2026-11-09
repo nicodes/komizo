@@ -138,9 +138,10 @@ pub fn run(args: &[String], input: &mut dyn Read, output: &mut dyn Write) -> Res
             );
             bootstrap::install(Path::new(&flags[1]))
         }
-        "guard" | "health" | "resource" | "logs" => {
+        "fence" | "guard" | "health" | "resource" | "logs" => {
             let (application, instance, service) = scope(flags)?;
             match mode.as_str() {
+                "fence" => observation::fence(application, instance, service),
                 "guard" => observation::guard(application, instance, service),
                 "health" => observation::health(application, instance, service),
                 "logs" => {

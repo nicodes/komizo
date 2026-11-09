@@ -108,6 +108,17 @@ pub fn resource(application: &str, instance: &str, service: &str) -> Result<Valu
 }
 
 pub fn guard(application: &str, instance: &str, service: &str) -> Result<()> {
+    guard_with(application, instance, service, true)
+}
+
+/// Durable lifecycle/authority fences skip a native unit without entering its
+/// failure restart loop. Transient service dependencies remain in the startup
+/// guard, where supervision may retry them as their dependencies become ready.
+pub fn fence(application: &str, instance: &str, service: &str) -> Result<()> {
+    guard_with(application, instance, service, false)
+}
+
+fn guard_with(application: &str, instance: &str, service: &str, dependencies: bool) -> Result<()> {
     ensure!(
         unsafe { libc::geteuid() } == 0,
         "service guard requires protected owner execution"
@@ -178,6 +189,9 @@ pub fn guard(application: &str, instance: &str, service: &str) -> Result<()> {
                 "required one-shot job has not completed"
             ),
             Condition::Started | Condition::Healthy => {
+                if !dependencies {
+                    continue;
+                }
                 let record = installed
                     .resources
                     .containers

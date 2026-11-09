@@ -267,9 +267,12 @@ pub fn quadlet(
     }
     writeln!(
         out,
-        "[Service]\nSlice={}\nRestart=on-failure\nRestartSec=3\nTimeoutStartSec=300\nTimeoutStopSec={}\nExecStartPre=/usr/local/bin/komizo-box guard --application {} --instance {} --service {}\n[Install]",
+        "[Service]\nSlice={}\nRestart=on-failure\nRestartSec=3\nTimeoutStartSec=300\nTimeoutStopSec={}\nExecCondition=/usr/local/bin/komizo-box fence --application {} --instance {} --service {}\nExecStartPre=/usr/local/bin/komizo-box guard --application {} --instance {} --service {}\n[Install]",
         slice(bindings.application, bindings.instance)?,
         value.stop_timeout_seconds + 30,
+        bindings.application,
+        bindings.instance,
+        service,
         bindings.application,
         bindings.instance,
         service
