@@ -300,8 +300,8 @@ def apparmor_boundary(app,report):
         '--label=io.komizo.fixture=signal-boundary','--entrypoint=/bin/busybox']
     # Different LSM profile, but deliberately the same PID namespace and UID:
     # the denial must not rely solely on namespace or UID separation.
-    run([*prefix,'--pid=container:'+actual['Id'],actual['Image'],'sh','-ec',
-        'test -r /proc/1/status; if kill -URG 1; then exit 9; fi'])
+    foreign=run([*prefix,'--pid=container:'+actual['Id'],actual['Image'],'sh','-ec',
+        'cat /proc/self/attr/current; test -r /proc/1/status; if kill -URG 1; then exit 9; fi'])
     victim=subprocess.Popen(['setpriv','--reuid=10001','--regid=10001','--clear-groups','--no-new-privs','/bin/sleep','30'],
         env={'PATH':'/usr/bin:/bin'},stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     try:
@@ -315,7 +315,7 @@ def apparmor_boundary(app,report):
         victim.terminate()
         try:victim.wait(timeout=5)
         except subprocess.TimeoutExpired:victim.kill();victim.wait(timeout=5)
-    write(ROOT/'apparmor-boundary.json',{'service_label':label,'no_new_privileges':True,'same_uid_host_signal_baseline':'passed',
+    write(ROOT/'apparmor-boundary.json',{'service_label':label,'foreign_profile_label':foreign.stdout.decode().strip(),'no_new_privileges':True,'same_uid_host_signal_baseline':'passed',
         'same_profile_sigurg':'passed','foreign_profile_refused':'passed','host_signal_refused':'passed'})
     report['checks'].update({'apparmor_signal_delivery':'passed','apparmor_stacked_profile_enforced':'passed',
         'apparmor_foreign_profile_signal_refused':'passed','apparmor_host_signal_refused':'passed'})
