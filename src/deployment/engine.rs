@@ -20,7 +20,11 @@ pub fn normalize_id(value: &str) -> String {
 
 impl Engine {
     fn capture(&self, arguments: &[&str]) -> Result<crate::process::Captured> {
-        let mut command = Command::new("/usr/bin/podman");
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        ensure!(!remaining.is_zero(), "native engine deadline expired");
+        // The independent watchdog also survives controller death. Otherwise
+        // an interrupted import could outlive the worker's userspace deadline.
+        let mut command = Command::new("/usr/bin/timeout");
         command
             .env_clear()
             .env(
@@ -29,6 +33,9 @@ impl Engine {
             )
             .env("HOME", "/root")
             .env("LANG", "C.UTF-8")
+            .args(["--signal=TERM", "--kill-after=5s"])
+            .arg(format!("{:.3}s", remaining.as_secs_f64().max(0.001)))
+            .arg("/usr/bin/podman")
             .arg("--remote=false")
             .args(arguments);
         crate::process::capture(&mut command, None, 4 << 20, self.deadline, || false)

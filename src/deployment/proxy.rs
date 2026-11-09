@@ -164,7 +164,22 @@ pub fn refresh(store: &Store, deadline: Instant) -> Result<()> {
         let Ok(upstreams) = upstreams(&engine, &installed, &document) else {
             continue;
         };
-        verify_assets(store, &document)?;
+        // The cache is root-owned and the proxy has read-only access. Full
+        // byte verification happens at staging and controller startup; route
+        // refreshes only check the protected accepted-tree inventory.
+        if !document.release.workload.assets.is_empty() {
+            let record = store
+                .root
+                .join("assets")
+                .join(format!("{}.json", &document.digest[7..]));
+            let recorded: BTreeMap<String, String> =
+                serde_json::from_slice(&store::read_protected(&record, 1 << 20)?)?;
+            ensure!(
+                recorded.keys().eq(document.release.workload.assets.keys())
+                    && recorded.values().all(|hash| digest(hash)),
+                "public asset inventory differs from installed ownership"
+            );
+        }
         body.push_str(&render::sites(
             &document,
             asset_root(&document).to_str().unwrap(),

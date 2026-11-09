@@ -264,6 +264,16 @@ pub fn admit(
         "invalid operation identity"
     );
     ensure!(
+        request
+            .recovery_evidence
+            .as_deref()
+            .is_none_or(|hash| request.authority == "owner"
+                && request.action == "recover"
+                && request.operation.is_some()
+                && digest(hash)),
+        "data recovery evidence requires an exact owner recovery request"
+    );
+    ensure!(
         request.instance == "production"
             || request
                 .instance

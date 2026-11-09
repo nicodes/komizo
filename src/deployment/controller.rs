@@ -224,7 +224,7 @@ impl Coordinator {
         store::atomic(
             &journal.join("admission.json"),
             &serde_json::to_vec(
-                &json!({"kind":"komizo.admission","version":1,"operation_id":id,"policy_digest":policy_digest,"evidence":evidence}),
+                &json!({"kind":"komizo.admission","version":1,"operation_id":id,"action":request.action,"policy_digest":policy_digest,"evidence":evidence}),
             )?,
             0o600,
         )?;

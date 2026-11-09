@@ -21,11 +21,59 @@ use std::{
     io::Read,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    process::Command,
     time::{Duration, Instant},
 };
 
 pub struct Native;
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecoveryEvidence {
+    pub kind: String,
+    pub version: u32,
+    pub application: String,
+    pub instance: String,
+    pub operation_id: String,
+    pub release_digest: String,
+    pub action: String,
+    pub schema_version: u64,
+    pub data_revision: String,
+    pub credential_revision: String,
+    pub created_at: i64,
+}
+
+pub fn verify_forward_evidence(
+    evidence: &RecoveryEvidence,
+    installed: &Installed,
+    document: &ReleaseDocument,
+    operation_id: &str,
+    now: i64,
+) -> Result<()> {
+    let contract = document
+        .release
+        .stateful_contract
+        .as_ref()
+        .ok_or_else(|| anyhow!("forward recovery requires an installed data contract"))?;
+    ensure!(
+        evidence.kind == "komizo.recovery-evidence"
+            && evidence.version == 1
+            && evidence.application == installed.application
+            && evidence.instance == installed.instance
+            && evidence.operation_id == operation_id
+            && evidence.release_digest == document.digest
+            && evidence.action == "forward"
+            && contract.recovery_action == RecoveryAction::ForwardOnly
+            && evidence.schema_version >= contract.schema.minimum
+            && evidence.schema_version <= contract.schema.maximum
+            && evidence.data_revision == contract.data_revision
+            && evidence.credential_revision == contract.credential_revision
+            && now
+                .checked_sub(evidence.created_at)
+                .is_some_and(|age| (0..=86400).contains(&age)),
+        "owner recovery evidence differs from the installed data and credential authority"
+    );
+    Ok(())
+}
 impl Native {
     pub fn new() -> Result<Self> {
         Ok(Self)
@@ -37,6 +85,9 @@ impl Native {
         system::host_pools(store, &System { deadline }, &capacity)?;
         store.reconcile_interrupted()?;
         proxy::globals()?;
+        for installed in proxy::instances(store)? {
+            proxy::verify_assets(store, &store.release(&installed.release_digest)?)?;
+        }
         Ok(())
     }
 }
@@ -46,6 +97,92 @@ fn prepared_path(store: &Store, application: &str, instance: &str) -> Result<Pat
         "{}.json",
         Store::instance_key(application, instance)?
     )))
+}
+
+fn run_task(
+    store: &Store,
+    operation_id: &str,
+    kind: &str,
+    program: &ProtectedTask,
+    input: &[u8],
+    environment: &BTreeMap<String, String>,
+    deadline: Instant,
+) -> Result<()> {
+    ensure!(
+        hex(operation_id, 32) && ["backup", "prepare"].contains(&kind),
+        "invalid protected task scope"
+    );
+    ensure!(
+        document_digest(&store::read_protected(
+            Path::new(&program.program),
+            32 << 20
+        )?) == program.sha256,
+        "protected executable bundle bytes changed"
+    );
+    let remaining = deadline
+        .saturating_duration_since(Instant::now())
+        .as_secs()
+        .min(u64::from(program.timeout_seconds));
+    ensure!(remaining > 0, "protected task deadline expired");
+    let scope = bounded_value(input, MAX_DOCUMENT_BYTES)?;
+    let application = scope["application"]
+        .as_str()
+        .ok_or_else(|| anyhow!("protected task application missing"))?;
+    let instance = scope["instance"]
+        .as_str()
+        .ok_or_else(|| anyhow!("protected task instance missing"))?;
+    ensure!(
+        name(application) && name(instance),
+        "invalid protected task identity"
+    );
+    let unit = format!("komizo-{kind}-{operation_id}.service");
+    let journal = store.root.join("journal").join(operation_id);
+    let request_path = journal.join(format!("{kind}-request.json"));
+    store::atomic(&request_path, input, 0o600)?;
+    let mut body = format!(
+        "[Unit]\nDescription=Komizo protected {kind} task\nRequiresMountsFor=/var/lib/komizo\n[Service]\nType=oneshot\nUser=root\nGroup=root\nSlice=komizo-control.slice\nUMask=0077\nNoNewPrivileges=yes\nKillMode=control-group\nTimeoutStartSec={remaining}s\nTimeoutStopSec=5s\nRemainAfterExit=yes\nStandardInput=file:{}\nStandardOutput=null\nStandardError=journal\nExecStart={}\n",
+        request_path.display(),
+        units::word(&program.program)
+    );
+    for (key, value) in environment {
+        ensure!(
+            key.starts_with("KOMIZO_") || ["PATH", "HOME", "LANG"].contains(&key.as_str()),
+            "unsupported protected task environment"
+        );
+        body.push_str(&format!(
+            "Environment={}\n",
+            units::word(&format!("{key}={value}"))
+        ));
+    }
+    let path = Path::new(system::UNITS).join(&unit);
+    let hash = system::install(store, &path, application, instance, body.as_bytes())?;
+    store::atomic(
+        &journal.join(format!("{kind}-task.json")),
+        &canonical(
+            &json!({"kind":"komizo.task","version":1,"unit":unit,"unit_sha256":hash,"program_sha256":program.sha256,"operation_id":operation_id}),
+        )?,
+        0o600,
+    )?;
+    let system = System { deadline };
+    system.reload()?;
+    system.start(&unit)?;
+    let status = system.run(&["show", "--property=ExecMainStatus", "--value", &unit])?;
+    ensure!(
+        std::str::from_utf8(&status)?.trim() == "0",
+        "protected task exit evidence differs"
+    );
+    // Stop the owned group even after a successful leader exit, so background
+    // children cannot outlive a supposedly completed capture.
+    system.stop(&unit)?;
+    ensure!(
+        !system.active(&unit)?,
+        "protected task remained active after cleanup"
+    );
+    store::atomic(
+        &journal.join(format!("{kind}-completed.json")),
+        &canonical(&json!({"unit_sha256":hash,"exit_code":0}))?,
+        0o600,
+    )
 }
 
 /// Ordinary releases cannot silently rename a database mount or bind an empty
@@ -207,19 +344,22 @@ fn prepare_preview(store: &Store, policy: &Policy, job: &Job) -> Result<()> {
     let deadline = job
         .deadline
         .min(Instant::now() + Duration::from_secs(u64::from(task.timeout_seconds)));
-    let mut command = Command::new(&task.program);
-    command
-        .env_clear()
-        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-        .env("LANG", "C.UTF-8");
     let input = canonical(
         &json!({"kind":"komizo.preview-request","version":1,"application":policy.application,"instance":job.request.instance,"operation_id":job.operation_id,"app_origin":format!("https://{}.{}",job.request.instance,preview.hostname_suffix),"secrets":preview.secrets,"deadline_unix":controller::now()?+deadline.saturating_duration_since(Instant::now()).as_secs() as i64}),
     )?;
-    let output = crate::process::capture(&mut command, Some(&input), 65536, deadline, || false)?;
-    ensure!(
-        output.status.success(),
-        "protected preview credential preparation failed"
-    );
+    run_task(
+        store,
+        &job.operation_id,
+        "prepare",
+        task,
+        &input,
+        &BTreeMap::from([
+            ("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into()),
+            ("HOME".into(), "/root".into()),
+            ("LANG".into(), "C.UTF-8".into()),
+        ]),
+        deadline,
+    )?;
     store::atomic(&marker, &expected, 0o600)
 }
 
@@ -759,23 +899,35 @@ fn backup(
         deadline.min(Instant::now() + Duration::from_secs(u64::from(task.timeout_seconds)));
     let unix =
         controller::now()? + deadline.saturating_duration_since(Instant::now()).as_secs() as i64;
-    let mut command = Command::new(&task.program);
-    command
-        .env_clear()
-        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
-        .env("HOME", "/root")
-        .env("LANG", "C.UTF-8")
-        .env("KOMIZO_APPLICATION", &installed.application)
-        .env("KOMIZO_INSTANCE", &installed.instance)
-        .env("KOMIZO_RELEASE_DIGEST", &installed.release_digest)
-        .env("KOMIZO_OPERATION_ID", &operation.operation_id)
-        .env("KOMIZO_OUTPUT_DIRECTORY", &directory)
-        .env("KOMIZO_DEADLINE_UNIX", unix.to_string());
+    let environment = BTreeMap::from([
+        ("PATH".into(), "/usr/local/bin:/usr/bin:/bin".into()),
+        ("HOME".into(), "/root".into()),
+        ("LANG".into(), "C.UTF-8".into()),
+        ("KOMIZO_APPLICATION".into(), installed.application.clone()),
+        ("KOMIZO_INSTANCE".into(), installed.instance.clone()),
+        (
+            "KOMIZO_RELEASE_DIGEST".into(),
+            installed.release_digest.clone(),
+        ),
+        ("KOMIZO_OPERATION_ID".into(), operation.operation_id.clone()),
+        (
+            "KOMIZO_OUTPUT_DIRECTORY".into(),
+            directory.to_str().unwrap().into(),
+        ),
+        ("KOMIZO_DEADLINE_UNIX".into(), unix.to_string()),
+    ]);
     let input = canonical(
         &json!({"kind":"komizo.backup-request","version":1,"application":installed.application,"instance":installed.instance,"release_digest":installed.release_digest,"operation_id":operation.operation_id,"output_directory":directory,"deadline_unix":unix}),
     )?;
-    let result = crate::process::capture(&mut command, Some(&input), 65536, deadline, || false)?;
-    ensure!(result.status.success(), "protected encrypted backup failed");
+    run_task(
+        store,
+        &operation.operation_id,
+        "backup",
+        task,
+        &input,
+        &environment,
+        deadline,
+    )?;
     ensure!(
         fs::read_dir(&directory)?.count() == 2,
         "backup emitted an unrecognized export"
@@ -798,9 +950,19 @@ fn backup(
         1 << 20,
     )?;
     ensure!(
-        receipt["application"] == installed.application
-            && receipt["instance"] == installed.instance
-            && receipt["release_digest"] == installed.release_digest,
+        receipt["deployment"]["application"] == installed.application
+            && receipt["deployment"]["release_digest"] == installed.release_digest
+            && receipt["deployment"]["source"]
+                == serde_json::to_value(store.release(&installed.release_digest)?.release.source)?
+            && receipt["deployment"]["provider"]
+                == serde_json::to_value(
+                    store.release(&installed.release_digest)?.release.providers
+                )?
+            && receipt["ciphertext_sha256"].as_str().is_some_and(|hash| {
+                files.iter().any(|file| {
+                    file.name == "snapshot.cms" && file.sha256 == format!("sha256:{hash}")
+                })
+            }),
         "backup receipt differs from installed source authority"
     );
     operation.backup = Some(store::Backup {
@@ -867,6 +1029,15 @@ fn require_backup(store: &Store, installed: &Installed) -> Result<()> {
     Ok(())
 }
 
+fn needs_backup(policy: &Policy, instance: &str, document: &ReleaseDocument) -> bool {
+    !document.release.workload.volumes.is_empty()
+        && (instance == "production"
+            || policy
+                .previews
+                .as_ref()
+                .is_some_and(|p| p.retain_data_on_remove))
+}
+
 impl Backend for Native {
     fn maintenance(&self, store: &Store) -> Result<()> {
         proxy::refresh(store, Instant::now() + Duration::from_secs(20))
@@ -931,7 +1102,7 @@ impl Backend for Native {
                 capacity::reserve(store, &capacity, policy, &document, instance, true)?;
                 let mut resources = Resources::default();
                 if let Some(mut previous) = previous {
-                    if !document.release.workload.volumes.is_empty() {
+                    if needs_backup(policy, instance, &document) {
                         require_backup(store, &previous)?;
                     }
                     advance(store, operation, "jobs")?;
@@ -1001,7 +1172,7 @@ impl Backend for Native {
                     retained_topology(&old_document, &document)?;
                     let capacity = capacity::read(Path::new("/etc/komizo/capacity.json"))?;
                     capacity::reserve(store, &capacity, policy, &document, instance, true)?;
-                    if !document.release.workload.volumes.is_empty() {
+                    if needs_backup(policy, instance, &document) {
                         // Bring up only the previous release's data services;
                         // its exact installed descriptor remains authoritative
                         // throughout capture, before any new migration runs.
@@ -1028,9 +1199,8 @@ impl Backend for Native {
                     next.resources = installed.resources;
                     next.operation_id = job.operation_id.clone();
                     store.save_installed(&next)?;
-                    activate(store, policy, &mut next, &document, job, operation)?;
                     fs::remove_file(prepared)?;
-                    Ok(())
+                    activate(store, policy, &mut next, &document, job, operation)
                 } else {
                     let document = store.release(&installed.release_digest)?;
                     policy.admit(&document.release, instance)?;
@@ -1139,11 +1309,44 @@ impl Backend for Native {
                     "recovery target is outside this uncertain instance"
                 );
                 let document = store.release(&installed.release_digest)?;
-                jobs::reconcile(store, &document, &installed, target, job.deadline)?;
+                ensure!(
+                    job.request.release_digest == installed.release_digest,
+                    "owner recovery target differs from the installed release"
+                );
+                let allow_failed = if let Some(expected) = &job.request.recovery_evidence {
+                    let path = store
+                        .root
+                        .join("recovery-evidence")
+                        .join(format!("{target}.json"));
+                    let body = store::read_protected(&path, 16384)?;
+                    ensure!(
+                        document_digest(&body) == *expected,
+                        "owner recovery evidence bytes changed"
+                    );
+                    let evidence: RecoveryEvidence =
+                        serde_json::from_value(bounded_value(&body, 16384)?)?;
+                    verify_forward_evidence(
+                        &evidence,
+                        &installed,
+                        &document,
+                        target,
+                        controller::now()?,
+                    )?;
+                    true
+                } else {
+                    false
+                };
+                jobs::reconcile_with_evidence(
+                    store,
+                    &document,
+                    &installed,
+                    target,
+                    job.deadline,
+                    allow_failed,
+                )?;
                 for (name, record) in &installed.resources.containers {
                     engine.owned_container(record, application, instance, name)?;
                 }
-                advance(store, operation, "ready")?;
                 store::atomic(
                     &store
                         .root
@@ -1151,7 +1354,8 @@ impl Backend for Native {
                         .join(format!("{target}.json")),
                     &canonical(&json!({"resolved_by":operation.operation_id}))?,
                     0o600,
-                )
+                )?;
+                advance(store, operation, "ready")
             }
             _ => Err(anyhow!("unsupported native effect")),
         }
