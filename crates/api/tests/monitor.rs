@@ -14,7 +14,10 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("komizo-local-ui-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("komizo-local-ui-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&root).unwrap();
         let binary = root.join("owner");
         let script = format!(
