@@ -132,6 +132,7 @@ while time.monotonic()<end:
         actual=json.loads(result.stdout)[0]
         if actual['State']['Running']:
             assert actual['Config']['Timeout']==0
+            assert actual['HostConfig']['CgroupParent']==parent
             current=pathlib.Path('/proc/'+str(actual['State']['Pid'])+'/cgroup').read_text().strip()
             assert current.startswith('0::'+parent+'/') and current!='0::'+parent+'/runner'
             conmon=actual['State']['ConmonPid']
@@ -139,7 +140,8 @@ while time.monotonic()<end:
             assert conmon>0 and conmon_group.startswith('0::'+parent+'/')
             (root/(identity+'-helper.json')).write_text(json.dumps({'id':actual['Id'],'name':name,'pid':actual['State']['Pid'],
                 'conmon_pid':conmon,'conmon_cgroup':conmon_group[3:],
-                'parent':parent,'cgroup':current[3:],'native_timeout_seconds':actual['Config']['Timeout'],'volume':volume}))
+                'parent':parent,'configured_parent':actual['HostConfig']['CgroupParent'],
+                'cgroup':current[3:],'native_timeout_seconds':actual['Config']['Timeout'],'volume':volume}))
             break
     time.sleep(.05)
 else:raise RuntimeError('native delegated helper did not start')
@@ -226,11 +228,15 @@ time.sleep(600)
                             scope=Path('/sys/fs/cgroup/komizo.slice/komizo-control.slice')/unit/'cgroup.events'
                             empty=not scope.exists() or 'populated 0' in scope.read_text().splitlines()
                             write(ROOT/'task-helper-cleanup.json',{'container_id':identity,'parent_quiescent':empty,
+                                'configured_parent':current['HostConfig']['CgroupParent'],
                                 'state':{key:state.get(key) for key in ['Status','Running','Pid','ConmonPid','ExitCode','Error']}})
                             if (current['Id']!=identity or current['Config']['Labels'].get('io.komizo.fixture.operation')!=operation
+                                    or current['HostConfig']['CgroupParent']!='/komizo.slice/komizo-control.slice/'+unit
+                                    or state['Status']!='exited' or type(state['Pid']) is not int
                                     or not empty or state['Running'] is not False or state['Pid']!=0
                                     # Native5.4.2 inspect omits integer zero.
-                                    or state.get('ConmonPid',0)!=0 or state['ExitCode']!=-1
+                                    or type(state.get('ConmonPid',0)) is not int or state.get('ConmonPid',0)!=0
+                                    or type(state['ExitCode']) is not int or state['ExitCode']!=-1
                                     or state['Error']!='conmon died without writing exit file, container exit code could not be retrieved'):
                                 raise ValueError('dead native helper lacks its exact quiescent unknown-exit cleanup state')
                             run([*engine,'rm',identity])
