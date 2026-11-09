@@ -122,6 +122,14 @@ pub fn guard(application: &str, instance: &str, service: &str) -> Result<()> {
     );
     let document = store.release(&installed.release_digest)?;
     policy.admit(&document.release, instance)?;
+    super::data::require(
+        &store,
+        &installed,
+        &document,
+        &Engine {
+            deadline: Instant::now() + Duration::from_secs(20),
+        },
+    )?;
     let container = document
         .release
         .workload

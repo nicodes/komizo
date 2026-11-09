@@ -10,6 +10,7 @@ pub mod capacity;
 pub mod commands;
 pub mod controller;
 pub mod daemon;
+pub mod data;
 pub mod engine;
 pub mod jobs;
 pub mod model;

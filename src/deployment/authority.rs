@@ -254,6 +254,8 @@ pub fn admit(
             "backup",
             "remove",
             "secret-set",
+            "data-prepare",
+            "data-accept",
             "export"
         ]
         .contains(&request.action.as_str()),
@@ -263,6 +265,17 @@ pub fn admit(
         request.operation.as_deref().is_none_or(|id| hex(id, 32)),
         "invalid operation identity"
     );
+    ensure!(
+        (request.action == "data-accept") == request.data_evidence.is_some()
+            && request.data_evidence.as_deref().is_none_or(digest),
+        "data acceptance requires exact protected evidence"
+    );
+    if ["data-prepare", "data-accept"].contains(&request.action.as_str()) {
+        ensure!(
+            request.authority == "owner" && request.instance == "production",
+            "retained data enrollment requires the production owner"
+        );
+    }
     ensure!(
         request
             .recovery_evidence
@@ -299,15 +312,15 @@ pub fn admit(
         );
     }
     ensure!(
-        (request.action == "deploy") == request.release.is_some(),
-        "only deployment submits a release body"
+        ["deploy", "data-prepare"].contains(&request.action.as_str()) == request.release.is_some(),
+        "only deployment or owner data preparation submits a release body"
     );
     ensure!(
         request.action == "deploy" || request.release_proof.is_none(),
         "release proof is only valid for deployment"
     );
     ensure!(
-        (request.action == "secret-set") == !request.secret_updates.is_empty(),
+        (request.action == "secret-set") != request.secret_updates.is_empty(),
         "secret update requires the owner secret operation"
     );
     ensure!(

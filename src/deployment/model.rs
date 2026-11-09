@@ -539,6 +539,8 @@ pub struct Request {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovery_evidence: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_evidence: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry: Option<RegistryCredential>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release_proof: Option<ReleaseProof>,

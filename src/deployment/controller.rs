@@ -215,7 +215,7 @@ impl Coordinator {
         let installed = self
             .store
             .installed(&request.application, &request.instance)?;
-        if request.action != "deploy" && request.action != "recover" {
+        if !["deploy", "recover", "data-prepare"].contains(&request.action.as_str()) {
             let target = if request.action == "start"
                 && installed.as_ref().is_some_and(|r| !r.desired_running)
             {

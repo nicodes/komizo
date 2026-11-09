@@ -158,3 +158,26 @@ fn current_is_only_a_read_selector_and_secret_updates_are_owner_only() {
     r["proof"] = json!(sign(&claims(&r)));
     assert!(admit(&r, &policy(), 1000).is_err());
 }
+
+#[test]
+fn retained_data_preparation_and_acceptance_require_the_kernel_owner_and_exact_evidence() {
+    let p = policy();
+    let mut r = request();
+    r.as_object_mut().unwrap().remove("release_proof");
+    r["action"] = json!("data-prepare");
+    r["authority"] = json!("owner");
+    assert!(admit(&r, &p, 0).is_ok());
+    assert!(admit(&r, &p, 1000).is_err());
+    r["authority"] = json!("github");
+    r["proof"] = json!(sign(&claims(&r)));
+    assert!(admit(&r, &p, 1000).is_err());
+    r["authority"] = json!("owner");
+    r.as_object_mut().unwrap().remove("proof");
+    r["action"] = json!("data-accept");
+    r.as_object_mut().unwrap().remove("release");
+    assert!(admit(&r, &p, 0).is_err());
+    r["data_evidence"] = json!(format!("sha256:{}", "a".repeat(64)));
+    assert!(admit(&r, &p, 0).is_ok());
+    r["action"] = json!("stop");
+    assert!(admit(&r, &p, 0).is_err());
+}

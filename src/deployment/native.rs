@@ -2,6 +2,7 @@
 use super::{
     capacity,
     controller::{self, Backend, Job, advance},
+    data,
     engine::{Engine, volume_identity},
     jobs,
     model::*,
@@ -25,6 +26,21 @@ use std::{
 };
 
 pub struct Native;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaskIntent {
+    kind: String,
+    version: u32,
+    application: String,
+    instance: String,
+    operation_id: String,
+    task: String,
+    unit: String,
+    unit_sha256: String,
+    program_sha256: String,
+    request_sha256: String,
+}
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -314,14 +330,27 @@ fn run_task(
         ));
     }
     let path = Path::new(system::UNITS).join(&unit);
-    let hash = system::install(store, &path, application, instance, body.as_bytes())?;
+    let hash = document_digest(body.as_bytes());
     store::atomic(
         &journal.join(format!("{kind}-task.json")),
-        &canonical(
-            &json!({"kind":"komizo.task","version":1,"unit":unit,"unit_sha256":hash,"program_sha256":program.sha256,"operation_id":operation_id}),
-        )?,
+        &serde_json::to_vec(&TaskIntent {
+            kind: "komizo.task".into(),
+            version: 1,
+            application: application.into(),
+            instance: instance.into(),
+            operation_id: operation_id.into(),
+            task: kind.into(),
+            unit: unit.clone(),
+            unit_sha256: hash.clone(),
+            program_sha256: program.sha256.clone(),
+            request_sha256: document_digest(input),
+        })?,
         0o600,
     )?;
+    ensure!(
+        system::install(store, &path, application, instance, body.as_bytes())? == hash,
+        "protected task unit identity changed"
+    );
     let system = System { deadline };
     system.reload()?;
     system.start(&unit)?;
@@ -333,15 +362,149 @@ fn run_task(
     // Stop the owned group even after a successful leader exit, so background
     // children cannot outlive a supposedly completed capture.
     system.stop(&unit)?;
-    ensure!(
-        !system.active(&unit)?,
-        "protected task remained active after cleanup"
-    );
+    task_quiescent(&system, &unit)?;
     store::atomic(
         &journal.join(format!("{kind}-completed.json")),
         &canonical(&json!({"unit_sha256":hash,"exit_code":0}))?,
         0o600,
     )
+}
+
+fn task_quiescent(system: &System, unit: &str) -> Result<()> {
+    let state = system.run(&["show", "--property=ActiveState", "--value", unit])?;
+    ensure!(
+        ["inactive", "failed"].contains(&std::str::from_utf8(&state)?.trim()),
+        "protected task group is not inactive"
+    );
+    let group = system.run(&["show", "--property=ControlGroup", "--value", unit])?;
+    let group = std::str::from_utf8(&group)?.trim();
+    if !group.is_empty() {
+        ensure!(
+            absolute(group) && group != "/",
+            "protected task cgroup is ambiguous"
+        );
+        let events = Path::new("/sys/fs/cgroup")
+            .join(group.trim_start_matches('/'))
+            .join("cgroup.events");
+        if events.try_exists()? {
+            ensure!(
+                fs::read_to_string(events)?
+                    .lines()
+                    .any(|line| line == "populated 0"),
+                "protected task still has live descendants"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn reconcile_tasks(store: &Store, operation: &Operation, system: &System) -> Result<()> {
+    let journal = store.root.join("journal").join(&operation.operation_id);
+    for kind in ["backup", "prepare"] {
+        let path = journal.join(format!("{kind}-task.json"));
+        if !path.try_exists()? {
+            continue;
+        }
+        let intent: TaskIntent =
+            serde_json::from_value(bounded_value(&store::read_protected(&path, 16384)?, 16384)?)?;
+        ensure!(
+            intent.kind == "komizo.task"
+                && intent.version == 1
+                && intent.application == operation.application
+                && intent.instance == operation.instance
+                && intent.operation_id == operation.operation_id
+                && intent.task == kind
+                && intent.unit == format!("komizo-{kind}-{}.service", operation.operation_id)
+                && digest(&intent.unit_sha256)
+                && digest(&intent.program_sha256)
+                && digest(&intent.request_sha256),
+            "protected task intent differs from the interrupted operation"
+        );
+        let request = store::read_protected(
+            &journal.join(format!("{kind}-request.json")),
+            MAX_DOCUMENT_BYTES,
+        )?;
+        ensure!(
+            document_digest(&request) == intent.request_sha256,
+            "protected task input identity changed"
+        );
+        let scope = bounded_value(&request, MAX_DOCUMENT_BYTES)?;
+        ensure!(
+            scope["application"] == operation.application
+                && scope["instance"] == operation.instance
+                && scope["operation_id"] == operation.operation_id,
+            "protected task input escaped the interrupted scope"
+        );
+        let unit = Path::new(system::UNITS).join(&intent.unit);
+        if unit.try_exists()? {
+            system::verify_unit(
+                store,
+                &unit,
+                &operation.application,
+                &operation.instance,
+                &intent.unit_sha256,
+            )?;
+            system.stop(&intent.unit)?;
+        } else {
+            let state = system.run(&["show", "--property=LoadState", "--value", &intent.unit])?;
+            ensure!(
+                std::str::from_utf8(&state)?.trim() == "not-found",
+                "missing task unit remains loaded and requires explicit repair"
+            );
+        }
+        task_quiescent(system, &intent.unit)?;
+        store::atomic(
+            &journal.join(format!("{kind}-reconciled.json")),
+            &canonical(
+                &json!({"unit_sha256":intent.unit_sha256,"request_sha256":intent.request_sha256,"inactive":true}),
+            )?,
+            0o600,
+        )?;
+    }
+    Ok(())
+}
+
+fn reconcile_container_ids(
+    store: &Store,
+    installed: &mut Installed,
+    document: &ReleaseDocument,
+    engine: &Engine,
+) -> Result<()> {
+    let namespace = units::namespace(&installed.application, &installed.instance)?;
+    for (name, record) in &mut installed.resources.containers {
+        ensure!(
+            document.release.workload.services.contains_key(name)
+                && record.name == format!("{namespace}-{name}"),
+            "container recovery escaped its installed service"
+        );
+        let path = Path::new(system::QUADLETS).join(format!("{namespace}-{name}.container"));
+        system::verify_unit(
+            store,
+            &path,
+            &installed.application,
+            &installed.instance,
+            &record.unit_sha256,
+        )?;
+        if record.id.is_empty() && engine.exists("container", &record.name)? {
+            let value = engine.inspect("container", &record.name)?;
+            let mut candidate = record.clone();
+            candidate.id = value["Id"]
+                .as_str()
+                .filter(|id| hex(id, 64))
+                .ok_or_else(|| anyhow!("created service has no native ID"))?
+                .into();
+            engine.owned_container(
+                &candidate,
+                &installed.application,
+                &installed.instance,
+                name,
+            )?;
+            *record = candidate;
+        } else {
+            engine.owned_container(record, &installed.application, &installed.instance, name)?;
+        }
+    }
+    store.save_installed(installed)
 }
 
 /// Ordinary releases cannot silently rename a database mount or bind an empty
@@ -893,6 +1056,7 @@ fn activate(
     }
     system::instance_slice(store, &system, policy, &installed.instance)?;
     retained(store, installed, document, &engine)?;
+    data::require(store, installed, document, &engine)?;
     install_units(store, installed, document, &system)?;
     installed.desired_running = true;
     store.save_installed(installed)?;
@@ -1217,10 +1381,65 @@ impl Backend for Native {
         };
         let previous = store.installed(application, instance)?;
         match job.request.action.as_str() {
+            "data-prepare" => {
+                ensure!(
+                    previous.is_none(),
+                    "owner data preparation requires an unenrolled instance"
+                );
+                let document = store.release(&job.request.release_digest)?;
+                ensure!(
+                    !document.release.workload.volumes.is_empty(),
+                    "data preparation requires retained volumes"
+                );
+                policy.admit(&document.release, instance)?;
+                advance(store, operation, "staging")?;
+                let snapshots = secrets::stage(&store.root, &document, policy, instance)?;
+                let mut installed = Installed {
+                    kind: "komizo.installed".into(),
+                    version: 1,
+                    application: application.clone(),
+                    instance: instance.clone(),
+                    release_digest: document.digest.clone(),
+                    operation_id: operation.operation_id.clone(),
+                    desired_running: false,
+                    expires_at: None,
+                    resources: Resources::default(),
+                    secret_snapshots: snapshots,
+                };
+                advance(store, operation, "jobs")?;
+                store.save_installed(&installed)?;
+                retained(store, &mut installed, &document, &engine)?;
+                install_units(store, &mut installed, &document, &system)?;
+                advance(store, operation, "installing")?;
+                advance(store, operation, "prepared_stopped")
+            }
+            "data-accept" => {
+                let installed = previous.ok_or_else(|| anyhow!("data preparation is required"))?;
+                data::accept(
+                    store,
+                    &installed,
+                    job.request
+                        .data_evidence
+                        .as_deref()
+                        .ok_or_else(|| anyhow!("owner data evidence missing"))?,
+                    &operation.operation_id,
+                    controller::now()?,
+                    &engine,
+                )?;
+                advance(store, operation, "ready")
+            }
             "deploy" => {
                 advance(store, operation, "staging")?;
                 let document = store.release(&job.request.release_digest)?;
                 policy.admit(&document.release, instance)?;
+                if instance == "production" && !document.release.workload.volumes.is_empty() {
+                    let enrolled = previous.as_ref().ok_or_else(|| {
+                        anyhow!(
+                            "stateful production requires owner data preparation and acceptance"
+                        )
+                    })?;
+                    data::require(store, enrolled, &document, &engine)?;
+                }
                 if let Some(previous) = &previous {
                     retained_topology(&store.release(&previous.release_digest)?, &document)?;
                 }
@@ -1348,9 +1567,12 @@ impl Backend for Native {
                     let document = store.release(&next.release_digest)?;
                     policy.admit(&document.release, instance)?;
                     retained_topology(&old_document, &document)?;
+                    data::require(store, &installed, &document, &engine)?;
                     let capacity = capacity::read(Path::new("/etc/komizo/capacity.json"))?;
                     capacity::reserve(store, &capacity, policy, &document, instance, true)?;
-                    if needs_backup(policy, instance, &document) {
+                    if needs_backup(policy, instance, &document)
+                        && !data::fresh_empty(store, &installed, &engine)?
+                    {
                         // Bring up only the previous release's data services;
                         // its exact installed descriptor remains authoritative
                         // throughout capture, before any new migration runs.
@@ -1385,6 +1607,7 @@ impl Backend for Native {
                 } else {
                     let document = store.release(&installed.release_digest)?;
                     policy.admit(&document.release, instance)?;
+                    data::require(store, &installed, &document, &engine)?;
                     let capacity = capacity::read(Path::new("/etc/komizo/capacity.json"))?;
                     capacity::reserve(store, &capacity, policy, &document, instance, true)?;
                     advance(store, operation, "jobs")?;
@@ -1464,7 +1687,6 @@ impl Backend for Native {
                 advance(store, operation, "ready")
             }
             "recover" => {
-                let installed = previous.ok_or_else(|| anyhow!("instance absent"))?;
                 let target =
                     job.request.operation.as_deref().ok_or_else(|| {
                         anyhow!("recovery requires its exact uncertain operation")
@@ -1476,44 +1698,111 @@ impl Backend for Native {
                         && uncertain.reconciliation_required,
                     "recovery target is outside this uncertain instance"
                 );
-                let document = store.release(&installed.release_digest)?;
-                ensure!(
-                    job.request.release_digest == installed.release_digest,
-                    "owner recovery target differs from the installed release"
-                );
-                let allow_failed = if let Some(expected) = &job.request.recovery_evidence {
-                    let path = store
-                        .root
-                        .join("recovery-evidence")
-                        .join(format!("{target}.json"));
-                    let body = store::read_protected(&path, 16384)?;
-                    ensure!(
-                        document_digest(&body) == *expected,
-                        "owner recovery evidence bytes changed"
-                    );
-                    let evidence: RecoveryEvidence =
-                        serde_json::from_value(bounded_value(&body, 16384)?)?;
-                    verify_forward_evidence(
-                        &evidence,
-                        &installed,
-                        &document,
-                        target,
-                        controller::now()?,
-                    )?;
-                    true
-                } else {
-                    false
-                };
-                jobs::reconcile_with_evidence(
-                    store,
-                    &document,
-                    &installed,
-                    target,
-                    job.deadline,
-                    allow_failed,
+                let admission = bounded_value(
+                    &store::read_protected(
+                        &store
+                            .root
+                            .join("journal")
+                            .join(target)
+                            .join("admission.json"),
+                        MAX_DOCUMENT_BYTES,
+                    )?,
+                    MAX_DOCUMENT_BYTES,
                 )?;
-                for (name, record) in &installed.resources.containers {
-                    engine.owned_container(record, application, instance, name)?;
+                ensure!(
+                    admission["kind"] == "komizo.admission"
+                        && admission["version"] == 1
+                        && admission["operation_id"] == target,
+                    "interrupted admission identity differs"
+                );
+                let action = admission["action"]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("interrupted action missing"))?;
+                ensure!(
+                    [
+                        "deploy",
+                        "start",
+                        "restart",
+                        "stop",
+                        "backup",
+                        "remove",
+                        "data-prepare",
+                        "data-accept",
+                        "secret-set"
+                    ]
+                    .contains(&action),
+                    "interrupted action has no reviewed recovery path"
+                );
+                reconcile_tasks(store, &uncertain, &system)?;
+                if let Some(mut installed) = previous {
+                    let document = store.release(&installed.release_digest)?;
+                    ensure!(
+                        job.request.release_digest == installed.release_digest,
+                        "owner recovery target differs from installed source"
+                    );
+                    reconcile_container_ids(store, &mut installed, &document, &engine)?;
+                    let staged_jobs = ["deploy", "start", "restart"].contains(&action)
+                        && installed.operation_id == target;
+                    let allow_failed = if let Some(expected) = &job.request.recovery_evidence {
+                        ensure!(
+                            staged_jobs,
+                            "owner data evidence does not select a staged job operation"
+                        );
+                        let body = store::read_protected(
+                            &store
+                                .root
+                                .join("recovery-evidence")
+                                .join(format!("{target}.json")),
+                            16384,
+                        )?;
+                        ensure!(
+                            document_digest(&body) == *expected,
+                            "owner recovery evidence bytes changed"
+                        );
+                        let evidence: RecoveryEvidence =
+                            serde_json::from_value(bounded_value(&body, 16384)?)?;
+                        verify_forward_evidence(
+                            &evidence,
+                            &installed,
+                            &document,
+                            target,
+                            controller::now()?,
+                        )?;
+                        true
+                    } else {
+                        false
+                    };
+                    if staged_jobs {
+                        jobs::reconcile_with_evidence(
+                            store,
+                            &document,
+                            &installed,
+                            target,
+                            job.deadline,
+                            allow_failed,
+                        )?;
+                    }
+                    for volume in installed.resources.volumes.values() {
+                        engine.owned_object("volume", volume)?;
+                    }
+                    for network in installed.resources.networks.values() {
+                        engine.owned_object("network", network)?;
+                    }
+                    if action == "stop" {
+                        ensure!(
+                            !installed.desired_running,
+                            "interrupted stop has not persisted stop intent"
+                        );
+                        stop_services(store, &mut installed, &engine, &system, false)?;
+                        capacity::release(store, application, instance)?;
+                    }
+                } else {
+                    ensure!(
+                        job.request.release_digest == uncertain.release_digest
+                            && job.request.recovery_evidence.is_none(),
+                        "uninstalled recovery source differs from interrupted admission"
+                    );
+                    engine.prove_absent(&units::namespace(application, instance)?)?;
                 }
                 store::atomic(
                     &store
