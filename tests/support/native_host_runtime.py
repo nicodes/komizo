@@ -280,6 +280,11 @@ def prepare():
     body,result=deploy(static)
     if result.get('phase')!='ready' or not result.get('ok'):raise ValueError('actual static archive release failed: '+json.dumps(result))
     if b'a'*40 not in fetch('staticbox',result['release_digest']):raise ValueError('static source bytes differ')
+    public=Path('/var/lib/komizo-assets')/result['release_digest'][7:]/'web'/'index.html'
+    if b'a'*40 not in run(['runuser','-u','komizo-proxy','--','cat',str(public)]).stdout:
+        raise ValueError('unprivileged proxy UID cannot read exact installed asset bytes')
+    if run(['runuser','-u','komizo-proxy','--','test','-w',str(public)],ok=False).returncode==0:
+        raise ValueError('unprivileged proxy UID can change accepted public assets')
     app=release('mailroom','a'*40,dynamic=True)
     mutation,ready=deploy(app)
     if ready.get('phase')!='ready' or not ready.get('ok'):raise ValueError('actual API/job release failed: '+json.dumps(ready))
@@ -316,7 +321,8 @@ def prepare():
         'source_bound_https':'passed','forwarded_ip_refused':'passed','controller_death':'passed',
         'dns_after_controller_death':'passed','dns_after_other_application_stop':'passed','stopped_candidate_no_jobs':'passed','application_kernel_limits':'passed',
         'application_uid_capabilities':'passed','application_read_only_root':'passed','no_published_application_ports':'passed',
-        'cross_application_tcp_refused':'passed','same_network_tcp_allowed':'passed'})
+        'cross_application_tcp_refused':'passed','same_network_tcp_allowed':'passed','installed_asset_proxy_uid_read':'passed',
+        'installed_asset_proxy_uid_write_refused':'passed'})
     import fixture_postgres
     fixture_postgres.prepare(report)
     import fixture_preview
