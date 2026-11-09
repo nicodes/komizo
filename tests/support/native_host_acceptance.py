@@ -36,8 +36,30 @@ def show(unit, field):
     return run(['systemctl','show',unit,'--property='+field,'--value']).stdout.decode().strip()
 
 
+def measured_memory():
+    return int(next(line.split()[1] for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemTotal:'))) * 1024
+
+
+def memory_ceiling(physical):
+    # Kernel reservations can vary across an otherwise identical real boot.
+    # Keep an explicit margin before rounding, even just above a boundary.
+    if type(physical) is not int or physical<=32*MiB:
+        raise ValueError('fixture physical memory measurement is invalid')
+    return (physical-16*MiB)//(16*MiB)*(16*MiB)
+
+
+def record_capacity(expected,phase):
+    path=ROOT/'capacity-observation.json'
+    observations=json.loads(path.read_bytes()) if path.exists() else {'version':1,'observations':[]}
+    observations['observations'].append({'phase':phase,'boot_id':Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+        'actual_memtotal_bytes':measured_memory(),'selected_ceiling_bytes':expected['physical_memory_bytes'],
+        'parent_memory_bytes':expected['limits']['memory_bytes'],'os_reserve_bytes':expected['os_reserve_bytes'],
+        'headroom_bytes':16*MiB,'rounding_bytes':16*MiB})
+    write(path,observations)
+
+
 def capacity():
-    physical = int(next(line.split()[1] for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith('MemTotal:'))) * 1024
+    physical = memory_ceiling(measured_memory())
     cpus = len(os.sched_getaffinity(0)) * 1000
     def limits(memory, cpu, pids):return {'memory_bytes':memory*MiB,'memory_swap_bytes':memory*MiB,'milli_cpus':cpu,'pids':pids}
     def infrastructure(memory, low, cpu, pids):
@@ -80,7 +102,8 @@ def inspect(body=None, user=None):
     except ValueError:raise ValueError('native submission did not return one typed response') from None
 
 
-def actual_boundaries(expected):
+def actual_boundaries(expected,*,phase='bootstrap'):
+    record_capacity(expected,phase)
     for unit, allocation in [(CONTROLLER,expected['control']),(PROXY,expected['proxy'])]:
         if show(unit,'ActiveState')!='active':raise ValueError('native service is not active')
         group=show(unit,'ControlGroup')
@@ -213,7 +236,7 @@ def runtime():
 
 def evidence():
     files={}
-    for pattern in ['readiness-*.json','proxy-active-*.caddy','shared-dns.json','postgres-wrapper.json','postgres-diagnostic.json','postgres-initial.json','apparmor-boundary.json','deadline-observation.json','interrupted-deadline-observation.json','log-observation.json','task-deadline.json','task-helper-cleanup.json','task-start-observation.json','resource-stress.json']:
+    for pattern in ['capacity-observation.json','readiness-*.json','proxy-active-*.caddy','shared-dns.json','postgres-wrapper.json','postgres-diagnostic.json','postgres-initial.json','apparmor-boundary.json','deadline-observation.json','interrupted-deadline-observation.json','log-observation.json','task-deadline.json','task-helper-cleanup.json','task-start-observation.json','resource-stress.json']:
         for path in list(ROOT.glob(pattern))[:16]:
             if path.is_file() and not path.is_symlink() and path.stat().st_size<=65536:files[path.name]=path.read_text()
     operations=[]
@@ -245,7 +268,7 @@ def evidence():
 
 def verify_reboot():
     expected=json.loads(Path('/etc/komizo/capacity.json').read_text())
-    actual_boundaries(expected)
+    actual_boundaries(expected,phase='post-reboot')
     import fixture_runtime
     fixture_runtime.verify_reboot()
     report=json.loads((ROOT/'report.json').read_text())
