@@ -90,6 +90,12 @@ def actual_boundaries(expected):
     statuses=dict(line.split(':',1) for line in Path('/proc/'+str(pid)+'/status').read_text().splitlines() if ':' in line)
     if uid==0 or set(map(int,statuses['Uid'].split()))!={uid}:raise ValueError('proxy is not running as its actual unprivileged UID')
     if int(statuses['CapEff'].strip(),16) & ~(1 << 10):raise ValueError('proxy effective capabilities exceed low-port binding')
+    controller=int(show(CONTROLLER,'MainPID'))
+    for name in ['cmdline','environ']:
+        response=run(['nsenter','--target',str(pid),'--mount','--','runuser','-u','komizo-proxy','--',
+            'cat','/proc/'+str(controller)+'/'+name],ok=False)
+        if response.returncode==0 or response.stdout:raise ValueError('actual proxy service can read another UID process metadata')
+    run(['nsenter','--target',str(pid),'--mount','--','runuser','-u','komizo-proxy','--','test','-r','/proc/self/status'])
     if show(CONTROLLER,'KillMode')!='process' or show(CONTROLLER,'Type')!='notify':raise ValueError('controller supervision contract differs')
     for path in ['/var/lib/komizo/private-acceptance','/etc/komizo/controller.json']:
         if run(['runuser','-u','komizo-proxy','--','test','-r',path],ok=False).returncode==0:raise ValueError('proxy can read protected controller state')
@@ -132,7 +138,8 @@ def prepare():
         'scope':'bootstrap, peer boundary, proxy isolation, actual kernel limits, real reboot',
         'runtime_acceptance':False,'baseline':baseline,
         'checks':{'supported_host':'passed','root_peer':'passed','forged_owner_peer':'passed','proxy_uid':'passed',
-            'proxy_mount_write_refusal':'passed','secret_isolation':'passed','kernel_limits':'passed','unsafe_filesystem':'passed','idempotent_install':'passed'}}
+            'proxy_mount_write_refusal':'passed','proxy_process_metadata_isolation':'passed','secret_isolation':'passed',
+            'kernel_limits':'passed','unsafe_filesystem':'passed','idempotent_install':'passed'}}
     write(ROOT/'report.json',report)
 
 
