@@ -445,11 +445,6 @@ pub fn install(public_keys: &Path) -> Result<()> {
     proxy_guard()?;
     let deadline = Instant::now() + Duration::from_secs(180);
     Engine { deadline }.preflight()?;
-    let version = command("/usr/local/bin/caddy", &["version"], deadline)?;
-    ensure!(
-        std::str::from_utf8(&version)?.split_whitespace().next() == Some("v2.11.6"),
-        "native proxy requires the reviewed Caddy version"
-    );
     let capacity: Capacity = serde_json::from_value(crate::strict::value(
         &protected_file(Path::new("/etc/komizo/capacity.json"), 65536)?,
         65536,

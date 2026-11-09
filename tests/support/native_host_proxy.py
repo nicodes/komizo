@@ -27,13 +27,14 @@ def identity(info):
     if not lines or lines[0].split()[-1]!='go1.27.3':raise ValueError('proxy compiler build identity differs')
     rows=[line.strip().split('\t') for line in lines[1:]]
     if [row for row in rows if row[0]=='path']!=[['path','github.com/caddyserver/caddy/v2/cmd/caddy']]:raise ValueError('proxy entrypoint differs')
-    modules=[row for row in rows if row[:2]==['dep','github.com/caddyserver/caddy/v2']]
+    modules=[row for row in rows if len(row)>=2 and row[0] in {'mod','dep'} and row[1]=='github.com/caddyserver/caddy/v2']
     if len(modules)!=1 or len(modules[0])!=4 or modules[0][2]!='v2.11.6' or not modules[0][3].startswith('h1:'):
         raise ValueError('proxy upstream module differs')
     if any(row[0]=='=>' for row in rows):raise ValueError('proxy module replacements are forbidden')
     flags=[row[1] for row in rows if len(row)==2 and row[0]=='build']
     for key,value in {'GOOS':'linux','GOARCH':'amd64','CGO_ENABLED':'0','-trimpath':'true'}.items():
         if [flag for flag in flags if flag.split('=',1)[0]==key]!=[key+'='+value]:raise ValueError('proxy target/compiler settings differ')
+    return modules[0][0]=='mod'
 
 
 def main():
@@ -70,8 +71,9 @@ def main():
         offset=int.from_bytes(raw[32:40],'little');size=int.from_bytes(raw[54:56],'little');count=int.from_bytes(raw[56:58],'little')
         if size!=56 or not 0<count<=128 or offset<64 or offset+size*count>len(raw) or any(int.from_bytes(raw[offset+i*size:offset+i*size+4],'little')==3 for i in range(count)):
             raise ValueError('proxy requires static bounded ELF program metadata')
-        identity(run([str(compiler),'version','-m',str(binary)],text=True,cwd=root,env=environment))
-        if run([str(binary),'version'],text=True,cwd=root,env=environment).split()[0]!='v2.11.6':raise ValueError('proxy version differs')
+        main_layout=identity(run([str(compiler),'version','-m',str(binary)],text=True,cwd=root,env=environment))
+        reported=run([str(binary),'version'],text=True,cwd=root,env=environment).strip()
+        if not (reported.split()[0]=='v2.11.6' or main_layout and reported=='unknown'):raise ValueError('proxy version differs from its verified upstream layout')
         report=run([scanner,'-mode=binary','-json',str(binary)],cwd=root,env=environment,timeout=600)
         if len(report)>16<<20:raise ValueError('proxy binary audit exceeds metadata bound')
         spec=importlib.util.spec_from_file_location('accepted_proxy_scanner',tools/'helpers'/'scan-image.py')
