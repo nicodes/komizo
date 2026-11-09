@@ -1,5 +1,6 @@
 """Refuse weakened, substituted or privately scoped native release evidence."""
 import copy
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -11,6 +12,7 @@ import tempfile
 import tomllib
 import unittest
 from unittest.mock import Mock, patch
+from types import SimpleNamespace
 
 import native_release
 import test_native_release as fixtures
@@ -261,6 +263,60 @@ class NativeBootGuards(unittest.TestCase):
         process.poll.return_value = 1
         with self.assertRaisesRegex(ValueError, 'stopped before SSH readiness'):
             guest.ready(process, driver.time.monotonic() + 1)
+
+
+class NativeCaptureGuards(unittest.TestCase):
+    def adapter(self, failure=None):
+        path = ENGINE.parent / 'fixtures/native_host/pg-capture.py'
+        spec = importlib.util.spec_from_file_location('native_pg_capture', path)
+        adapter = importlib.util.module_from_spec(spec); spec.loader.exec_module(adapter)
+        state = {'committed': False, 'cleaned': False}
+        record = {'image_ref': 'ghcr.io/example/postgres@sha256:' + 'a' * 64,
+                  'image_config_digest': 'sha256:' + 'b' * 64}
+        deployment = {'release': {'source': {'repository': 'nicodes/komizo'}}}
+        resources = SimpleNamespace(query=lambda *args: record,
+            metadata=lambda _: ('a' * 40, {}, deployment), unchanged=lambda _: None)
+        class Session:
+            def __enter__(self):return self
+            def __exit__(self, *_):pass
+            def begin(self):pass
+            def query(self, sql):return '180006' if 'server_version_num' in sql else 'fixture'
+            def export_snapshot(self):return '00000003-0000001A-1'
+            def verify_snapshot(self):
+                if failure == 'witness':raise ValueError('changed transaction witness')
+            def commit(self):
+                if failure == 'commit':raise ValueError('unacknowledged commit')
+                state['committed'] = True
+        class Client:
+            def version(self):return 'pg_dump (PostgreSQL) 18.6'
+            def session(self):return Session()
+            def dump(self, _, output):output.write_bytes(b'PGDMPsynthetic-unit-data')
+        @contextlib.contextmanager
+        def client(*args, **options):
+            yield Client()
+            if failure == 'cleanup':raise ValueError('owned helper remains')
+            state['cleaned'] = True
+        helpers = {'installed_resource': resources, 'postgres_client': SimpleNamespace(context=client)}
+        adapter.helper = helpers.__getitem__
+        return adapter, state
+
+    def test_capture_completion_requires_snapshot_commit_and_client_cleanup(self):
+        adapter, state = self.adapter()
+        with tempfile.TemporaryDirectory(prefix='.export-') as temporary:
+            root = Path(temporary); target = adapter.capture(root)
+            self.assertTrue(state['committed'] and state['cleaned'])
+            evidence = json.loads((target / 'capture.json').read_text())
+            self.assertEqual(evidence['files']['database.dump']['sha256'], sha(target / 'database.dump'))
+            self.assertEqual(json.loads((root / 'images.json').read_text())['engine']['image_id'], 'sha256:' + 'b' * 64)
+
+    def test_changed_snapshot_unacknowledged_commit_or_retained_helper_cannot_emit_capture(self):
+        for failure in ['witness', 'commit', 'cleanup']:
+            adapter, _ = self.adapter(failure)
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory(prefix='.export-') as temporary:
+                root = Path(temporary)
+                with self.assertRaises(ValueError):adapter.capture(root)
+                self.assertFalse((root / 'capture').exists())
+                self.assertFalse((root / 'images.json').exists())
 
 
 if __name__ == '__main__':
