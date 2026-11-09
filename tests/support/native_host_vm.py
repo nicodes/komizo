@@ -104,16 +104,55 @@ class Guest:
         run(['scp', '-q', *arguments, str(source), 'root@127.0.0.1:' + target], timeout=120)
 
     def ready(self, process, deadline):
+        observation = {'state': 'no authenticated SSH response'}
         while time.monotonic() < deadline:
             if process.poll() is not None:
                 raise ValueError('disposable guest stopped before SSH readiness')
             try:
-                self.command('test -f /root/native-host/cloud-ready && cloud-init status --wait', timeout=15,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return
+                result = self.command('test -f /root/native-host/cloud-ready && cloud-init status --wait',
+                    timeout=max(.01, min(15, deadline - time.monotonic())), capture_output=True, check=False)
+                observation = {'returncode': result.returncode}
+                if result.returncode == 0:
+                    return
+            except subprocess.TimeoutExpired:
+                observation = {'state': 'cloud setup or SSH command timed out'}
             except (subprocess.SubprocessError, OSError):
-                time.sleep(1)
-        raise ValueError('disposable guest readiness deadline expired')
+                observation = {'state': 'SSH transport unavailable'}
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(1, remaining))
+        raise ValueError('disposable guest readiness deadline expired: ' + json.dumps(observation, sort_keys=True))
+
+    def boot_diagnostics(self):
+        # Fixed read-only boot observations contain no process argv, environment
+        # or private controller state. Each command and its exported bytes are
+        # bounded independently, even when the OS has pending start jobs.
+        script = '''import json, pathlib, subprocess, tempfile
+commands = {
+    'cloud_init': ['cloud-init', 'status', '--long', '--format=json'],
+    'pending_jobs': ['systemctl', 'list-jobs', '--no-pager', '--full'],
+    'system_state': ['systemctl', 'is-system-running'],
+    'boot_units': ['systemctl', 'show', 'cloud-init-local.service', 'cloud-init.service',
+        'cloud-config.service', 'cloud-final.service', 'multi-user.target',
+        '--property=Id,ActiveState,SubState,Result,Job'],
+    'cloud_journal': ['journalctl', '-b', '-u', 'cloud-init-local', '-u', 'cloud-init',
+        '-u', 'cloud-config', '-u', 'cloud-final', '-n', '120', '--no-pager', '-o', 'short-monotonic'],
+}
+record = {'version': 1, 'boot_id': pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip(), 'observations': {}}
+for name, argv in commands.items():
+    with tempfile.TemporaryFile() as output:
+        try:
+            result = subprocess.run(argv, stdout=output, stderr=subprocess.STDOUT, timeout=5, check=False)
+            item = {'returncode': result.returncode}
+        except subprocess.TimeoutExpired:
+            item = {'timed_out': True}
+        output.seek(0)
+        data = output.read(32769)
+        item.update(text=data[:32768].decode(errors='replace'), truncated=len(data) > 32768)
+        record['observations'][name] = item
+print(json.dumps(record, sort_keys=True))
+'''
+        return self.command('python3 -I -B -c ' + shlex.quote(script), timeout=35, capture_output=True).stdout
 
     def submission_boundary(self, keyfile):
         arguments = self.arguments.copy()
@@ -429,6 +468,9 @@ def main():
                 print('Running exact native workload effects and protected recovery fixtures',flush=True)
                 guest.command('python3 /root/native-host/acceptance.py runtime', timeout=600)
                 owner_checks=owner_recovery(guest,directory,recovery_key)
+                (args.output / 'owner-recovery.json').write_text(json.dumps({'version': 1,
+                    'source': {'revision': os.environ.get('NATIVE_HOST_SOURCE'), 'binary_sha256': binary_sha},
+                    'checks': owner_checks}, sort_keys=True) + '\n')
                 if args.profile=='bounded':
                     measured,onboarding=performance(guest,directory,args.cli.absolute(),setup_seconds)
                     (args.output/'performance.json').write_text(json.dumps(measured,sort_keys=True)+'\n')
@@ -457,6 +499,10 @@ def main():
                     raise ValueError('native guest acceptance failed')
             finally:
                 if process.poll() is None:
+                    try:
+                        (args.output / 'boot.json').write_bytes(guest.boot_diagnostics())
+                    except (OSError, subprocess.SubprocessError):
+                        pass
                     try:
                         guest.command("journalctl -b -u komizo-controller -u komizo-proxy -u 'kmz-*' -u 'komizo-backup-*' -u 'komizo-prepare-*' -u 'komizo-reconcile-*' -n 500 --no-pager > /root/native-host/journal.log", timeout=20)
                         evidence = guest.command('cat /root/native-host/journal.log', timeout=20, capture_output=True).stdout

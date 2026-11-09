@@ -1,6 +1,7 @@
 """Refuse weakened, substituted or privately scoped native release evidence."""
 import copy
 import hashlib
+import importlib.util
 import json
 import math
 from pathlib import Path
@@ -9,6 +10,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
+from unittest.mock import Mock, patch
 
 import native_release
 import test_native_release as fixtures
@@ -17,6 +19,9 @@ from performance_acceptance import SCOPE, evaluate
 from release_acceptance import REQUIRED_STEPS, validate, validate_bundle
 
 ENGINE = Path(__file__).parent
+_driver_spec = importlib.util.spec_from_file_location('native_host_vm', ENGINE.parent / 'support/native_host_vm.py')
+driver = importlib.util.module_from_spec(_driver_spec)
+_driver_spec.loader.exec_module(driver)
 CLEANUP = {'version': 1, 'owned_guest_removed': True, 'private_storage_removed': True, 'shared_images_removed': False}
 
 
@@ -206,6 +211,33 @@ class AcceptanceGuards(unittest.TestCase):
                 (observations/'performance.json').write_text(json.dumps(bad))
                 with self.subTest(mutate=mutate),self.assertRaises(ValueError):export(observations,root/'refused',self.source)
             with self.assertRaises(ValueError): export(observations, root / 'foreign', 'b' * 40)
+
+
+class NativeBootGuards(unittest.TestCase):
+    def test_cloud_setup_refusal_cannot_become_readiness_or_extend_its_deadline(self):
+        guest = object.__new__(driver.Guest)
+        process = Mock(); process.poll.return_value = None
+        clock = [0.0]; bounds = []
+        def command(argv, *, timeout, **options):
+            bounds.append(timeout); clock[0] += timeout
+            return subprocess.CompletedProcess(argv, 2, b'degraded', b'')
+        guest.command = command
+        with patch.object(driver.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(driver.time, 'sleep', side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
+            with self.assertRaisesRegex(ValueError, 'readiness deadline expired.*returncode.*2'):
+                guest.ready(process, 20)
+        self.assertEqual(bounds, [15, 4])
+        self.assertEqual(clock[0], 20)
+
+    def test_success_requires_cloud_completion_and_a_live_owned_guest(self):
+        guest = object.__new__(driver.Guest)
+        guest.command = Mock(return_value=subprocess.CompletedProcess([], 0, b'done', b''))
+        process = Mock(); process.poll.return_value = None
+        guest.ready(process, driver.time.monotonic() + 1)
+        self.assertIn('cloud-init status --wait', guest.command.call_args.args[0])
+        process.poll.return_value = 1
+        with self.assertRaisesRegex(ValueError, 'stopped before SSH readiness'):
+            guest.ready(process, driver.time.monotonic() + 1)
 
 
 if __name__ == '__main__':
