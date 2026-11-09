@@ -13,7 +13,7 @@ HELPERS = ('snapshot.py', 'postgres-recovery.py')
 def git(root, *arguments):
     return subprocess.check_output(['/usr/bin/git', '--no-replace-objects', '-c', 'core.hooksPath=/dev/null',
         '-c', 'core.fsmonitor=false', '-C', str(root), *arguments],
-        env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'}, timeout=30)
+        env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'GIT_OPTIONAL_LOCKS': '0'}, timeout=30)
 
 
 def selected(root, repository, revision):
@@ -68,7 +68,7 @@ class Sources:
             '__import__("pathlib").Path(sys.argv[3]),__import__("pathlib").Path(sys.argv[4]))')
         subprocess.run([sys.executable, '-I', '-B', '-c', script, str(self.cookbook / 'cookbook'),
             str(self.root), str(recipient), str(program)], check=True, timeout=60,
-            env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'HOME': str(home), 'TOOLS_ROOT': str(self.tools)})
+            env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'HOME': str(home), 'TOOLS_ROOT': str(self.tools), 'GIT_OPTIONAL_LOCKS': '0'})
         return program
 
     def snapshot(self):
