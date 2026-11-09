@@ -58,11 +58,24 @@ fn concurrent_atomic_observation_keeps_complete_records_and_refuses_hardlinks() 
         }
     });
     barrier.wait();
+    let mut complete_reads = 0;
     for _ in 0..2048 {
-        let body = read_protected(&path, 4096).unwrap();
-        assert!(body == first || body == second);
+        match read_protected(&path, 4096) {
+            Ok(body) => {
+                assert!(body == first || body == second);
+                complete_reads += 1;
+            }
+            // Continuous replacement can exhaust the bounded reopen loop.
+            // That refusal is safe; incomplete or linked records are not.
+            Err(error) => assert_eq!(
+                error.to_string(),
+                "protected file was repeatedly replaced while opening"
+            ),
+        }
     }
     writer.join().unwrap();
+    assert!(complete_reads > 0);
+    assert_eq!(read_protected(&path, 4096).unwrap(), first);
     let linked = dir.path().join("linked");
     fs::hard_link(&path, &linked).unwrap();
     assert!(read_protected(&path, 4096).is_err());
