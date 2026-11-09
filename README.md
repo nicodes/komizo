@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 4d6ed93b668447250bab88317735cfff2f1d64eab71477195727b4d605899853 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 0dd58541dc64f253705a46c549af5b81ce731c81dde18b2c90a5021ce9ab99f3 -->
 
 # komizo
 
@@ -46,7 +46,7 @@ Request files can contain credentials. Keep them private. Requests travel over S
 
 ## Prepare the host
 
-The supported host baseline is Debian 13, distro Podman 5.4.2 or newer, systemd and a unified cgroup v2 hierarchy. The executor requires enforced memory, CPU and PID controllers. Capacity policy accounts for measured RAM, CPU, storage, operating-system reserve, application pools, shared helpers and ingress.
+The supported host baseline is Debian 13, distro Podman 5.4.2 or newer, systemd, a unified cgroup v2 hierarchy and enabled AppArmor. Komizo installs and requires its reviewed enforcing workload profile. The executor requires enforced memory, CPU and PID controllers. Capacity policy accounts for measured RAM, CPU, storage, operating-system reserve, application pools, shared helpers and ingress.
 
 Install the verified `komizo-box` and native Caddy artifacts at their protected paths, including the matching Caddy build receipt. Prepare root-owned capacity, proxy and application policies under `/etc/komizo`. Then the owner installs the restricted submission boundary:
 
