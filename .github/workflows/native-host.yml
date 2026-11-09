@@ -16,16 +16,21 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
+      MISE_GITHUB_TOKEN: ${{ github.token }}
       NATIVE_HOST_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db
-        with:
-          install: false
-          version: 2026.10.17
+      - name: Verify the pinned SDK transport boundary
+        timeout-minutes: 1
+        run: python3 -I -B tests/acceptance/test_native_sdk.py
+      - name: Authenticate the exact SDK through the official asset API
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I -B tests/support/native_host_sdk.py
       - name: Build the exact native controller source
         env:
           CARGO_PROFILE_DEV_DEBUG: '0'

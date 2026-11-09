@@ -98,7 +98,7 @@ def release(app,revision,*,dynamic=False,unsafe=False,job_command=None,graph=Tru
     workload={'services':{},'jobs':{},'assets':{},'networks':{},'volumes':{},'routes':[],
         'readiness':[{'url':'https://'+app+'.localhost/','status':200,'contains':revision}]}
     if dynamic:
-        base={'artifact':'api','user':'10001:10001','limits':limits(),'networks':['app'],
+        base={'artifact':'api','user':'10001:10001','limits':limits(),'networks':['app'],'stop_timeout_seconds':2,
             'command':['httpd','-f','-p','8080','-h','/www'],
             'health':{'command':['/bin/busybox','wget','-q','-O-','http://127.0.0.1:8080/'],'interval_seconds':2,'timeout_seconds':2,'retries':3}}
         workload['networks']={'app':{}}
@@ -362,8 +362,13 @@ def failures(report):
         except subprocess.TimeoutExpired:child.kill();child.wait(timeout=5)
         child.stdout.close();child.stderr.close()
     deadline=release('deadline','a'*40,dynamic=True,job_command='/bin/busybox sleep 600')
-    started=time.monotonic();_,bounded=deploy(deadline,seconds=8)
-    if time.monotonic()-started>40 or bounded.get('ok') is not False:raise ValueError('admitted worker exceeded its original end-to-end deadline')
+    enroll_empty(deadline)
+    _,staged=deploy(deadline)
+    if staged.get('phase')!='prepared_stopped':raise ValueError('deadline fixture did not finish its separate owner preparation')
+    body=request('deadline','start',registry.digest(registry.canonical(deadline)),timeout_seconds=8)
+    started=time.monotonic();bounded=submit(body);elapsed=time.monotonic()-started
+    write(ROOT/'deadline-observation.json',{'timeout_seconds':8,'elapsed_seconds':elapsed,'receipt':bounded})
+    if elapsed>40 or bounded.get('ok') is not False:raise ValueError('admitted worker exceeded its original end-to-end deadline: '+json.dumps({'elapsed_seconds':elapsed,'receipt':bounded}))
     _,unsafe=deploy(release('unsafe','a'*40,unsafe=True))
     if unsafe.get('phase')!='failed' or unsafe.get('ok') is not False:raise ValueError('unsafe archive reached activation')
     report['checks'].update({'failed_job_no_replay':'passed','interrupted_job_no_replay':'passed','worker_deadline':'passed','unsafe_archive':'passed'})
