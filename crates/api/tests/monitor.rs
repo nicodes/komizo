@@ -436,8 +436,7 @@ async fn shutdown_reaps_owned_client_and_stops_its_pipe_holding_descendant() {
             let absent = unsafe { libc::kill(pid, 0) } == -1
                 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
             assert!(
-                absent
-                    || (output.status.success() && !state.is_empty() && state.starts_with('Z')),
+                absent || (output.status.success() && !state.is_empty() && state.starts_with('Z')),
                 "owned child still running: {pid}, state: {state:?}"
             );
         }
