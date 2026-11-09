@@ -28,7 +28,7 @@ fn archive(entries: &[(&str, &[u8], tar::EntryType)], trailer: bool) -> Vec<u8> 
 
 #[test]
 fn static_bytes_are_exact_and_archive_metadata_cannot_choose_host_permissions() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let source = dir.path().join("web.gz");
     let target = dir.path().join("web");
     let bytes = archive(
@@ -72,7 +72,7 @@ fn public_asset_permissions_survive_the_private_controller_umask() {
     unsafe {
         libc::umask(0o077);
     }
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let source = dir.path().join("web.gz");
     let target = dir.path().join("web");
     fs::write(
@@ -110,14 +110,14 @@ fn archive_links_duplicates_expansion_and_trailing_payload_refuse_before_install
         ),
         archive(&[("index.html", b"ok", tar::EntryType::Regular)], true),
     ] {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let source = dir.path().join("web.gz");
         let target = dir.path().join("web");
         fs::write(&source, bytes).unwrap();
         assert!(assets::extract(&source, &target, &policy()).is_err());
         assert!(!target.exists());
     }
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let source = dir.path().join("web.gz");
     let target = dir.path().join("web");
     let mut bytes = archive(&[("index.html", b"ok", tar::EntryType::Regular)], false);

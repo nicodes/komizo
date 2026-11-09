@@ -783,7 +783,8 @@ mod tests {
     }
     impl Fixture {
         fn new() -> Self {
-            let directory = tempfile::tempdir().unwrap();
+            let directory =
+                tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
             let store = Store::new(directory.path().join("state")).unwrap();
             let mut release: Value =
                 serde_json::from_str(include_str!("../../tests/fixtures/deployment/release.json"))

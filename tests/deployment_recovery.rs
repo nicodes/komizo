@@ -54,7 +54,7 @@ fn object(intent: &ObjectIntent) -> Value {
     }
 }
 fn store() -> (tempfile::TempDir, Store) {
-    let d = tempfile::tempdir().unwrap();
+    let d = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let s = Store::new(d.path().join("state")).unwrap();
     (d, s)
 }

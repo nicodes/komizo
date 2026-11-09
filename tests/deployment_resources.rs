@@ -106,7 +106,7 @@ fn shared_parent_bounds_bursts_while_admission_counts_real_reservations() {
 
 #[test]
 fn kernel_evidence_must_enforce_memory_cpu_pids_reservation_and_io() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let l = limits(192);
     let controls = ResourceControls {
         memory_low_bytes: 80 << 20,

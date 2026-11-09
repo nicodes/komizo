@@ -8,7 +8,7 @@ fn request() -> Request {
 
 #[test]
 fn interrupted_atomic_writes_do_not_become_operations_and_committed_ids_cannot_be_overwritten() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let store = Store::new(dir.path().join("state")).unwrap();
     let pending = store.root.join("operations/.komizo-pending-Ab12Cd");
     fs::write(&pending, b"{partial").unwrap();
@@ -58,7 +58,7 @@ fn operation() -> Operation {
 
 #[test]
 fn replay_and_concurrency_are_fenced_and_journal_never_stores_credentials() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let s = Store::new(directory.path().join("state")).unwrap();
     let guard = s.lock("mailroom", "production").unwrap();
     assert!(s.lock("mailroom", "production").is_err());
@@ -91,7 +91,7 @@ fn replay_and_concurrency_are_fenced_and_journal_never_stores_credentials() {
 
 #[test]
 fn interrupted_effect_is_retained_as_reconciliation_and_cannot_automatically_retry_jobs() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let s = Store::new(directory.path().join("state")).unwrap();
     let mut o = operation();
     o.transition("staging").unwrap();
@@ -106,7 +106,7 @@ fn interrupted_effect_is_retained_as_reconciliation_and_cannot_automatically_ret
 
 #[test]
 fn protected_store_refuses_linked_and_other_writable_records() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let s = Store::new(directory.path().join("state")).unwrap();
     let o = operation();
     let path = s
@@ -191,7 +191,7 @@ fn native_units_escape_manager_expansion_and_do_not_publish_ports_or_repull() {
 
 #[test]
 fn removed_preview_state_cannot_retain_data_or_be_confused_with_a_deliberate_stop() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let store = Store::new(dir.path().join("state")).unwrap();
     let mut installed = Installed {
         kind: "komizo.installed".into(),
@@ -247,4 +247,18 @@ fn removed_preview_state_cannot_retain_data_or_be_confused_with_a_deliberate_sto
     );
     fs::set_permissions(&pending, fs::Permissions::from_mode(0o644)).unwrap();
     assert!(komizo::deployment::proxy::instances(&store).is_err());
+}
+
+#[test]
+fn protected_state_refuses_a_symbolic_ancestor_even_when_its_target_is_private() {
+    use std::os::unix::fs::symlink;
+    let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+    let direct = directory.path().join("direct");
+    fs::create_dir(&direct).unwrap();
+    fs::set_permissions(&direct, fs::Permissions::from_mode(0o700)).unwrap();
+    let alias = directory.path().join("alias");
+    symlink(&direct, &alias).unwrap();
+    assert!(Store::new(alias.join("state")).is_err());
+    assert!(!direct.join("state").exists());
+    assert!(Store::new(direct.join("state")).is_ok());
 }

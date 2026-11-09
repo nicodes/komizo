@@ -55,7 +55,7 @@ fn setup(
     Arc<AtomicUsize>,
     Value,
 ) {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let policies = dir.path().join("policies");
     fs::create_dir(&policies).unwrap();
     let policy = json!({"kind":"komizo.policy","version":1,"application":"mailroom","authority":{"kind":"owner"},"artifact_prefixes":["ghcr.io/example/mailroom"],"hostnames":["mail.example","api.mail.example"],"limits":{"memory_bytes":268435456,"memory_swap_bytes":268435456,"milli_cpus":500,"pids":256},"readiness":[{"url":"https://mail.example/","status":200}],"secrets":{"runtime":{"path":"/etc/komizo/runtime.env","services":["api"],"environment_file":true,"generation":"11111111111111111111111111111111"}}});

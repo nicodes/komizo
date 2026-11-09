@@ -3,7 +3,7 @@ use std::{fs, os::unix::fs::PermissionsExt};
 
 #[test]
 fn secret_generations_are_immutable_and_rotation_does_not_rewrite_installed_snapshots() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let source = dir.path().join("runtime.env");
     fs::write(&source, b"PASSWORD=first\n").unwrap();
     fs::set_permissions(&source, fs::Permissions::from_mode(0o600)).unwrap();
@@ -65,7 +65,7 @@ fn environment_secret_format_preserves_literal_values_and_refuses_ambiguous_assi
 
 #[test]
 fn coupled_secret_versions_commit_together_and_invalid_batches_preserve_all_authority() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let mut policy: Policy = serde_json::from_value(serde_json::json!({
         "kind":"komizo.policy","version":1,"application":"mailroom","authority":{"kind":"owner"},
         "artifact_prefixes":["ghcr.io/example/mailroom"],"hostnames":["mail.example","api.mail.example"],

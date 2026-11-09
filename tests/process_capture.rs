@@ -75,7 +75,7 @@ fn streaming_progress_reaches_the_caller_before_child_completion_and_retains_onl
             Ok(())
         }
     }
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let mut progress = Progress {
         bytes: 0,
         ack: root.path().join("ack"),

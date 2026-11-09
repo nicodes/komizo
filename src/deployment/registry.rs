@@ -743,7 +743,7 @@ mod image_tests {
         blobs: BTreeMap<String, Vec<u8>>,
     }
     fn private_root() -> tempfile::TempDir {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
         directory
     }

@@ -41,7 +41,7 @@ fn copy_tree(source: &Path, destination: &Path, budget: &mut u64) -> anyhow::Res
 }
 #[test]
 fn private_source_copy_refuses_links_and_oversized_inputs() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let source = dir.path().join("source");
     fs::create_dir(&source).unwrap();
     fs::write(source.join("ok"), b"reviewed").unwrap();
@@ -60,7 +60,7 @@ fn private_source_copy_refuses_links_and_oversized_inputs() {
 fn exact_source_build_contains_and_supervises_its_axum_api() {
     let deadline = Instant::now() + Duration::from_secs(14 * 60);
     let original = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let private = tempfile::tempdir().unwrap();
+    let private = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let root = private.path();
     fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
     let mut budget = 128 << 20;

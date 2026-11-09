@@ -416,7 +416,7 @@ mod tests {
     use super::*;
     #[test]
     fn logs_remain_untrusted_text_and_secret_redaction_is_bounded_and_checks_exact_bytes() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let path = directory.path().join("runtime.env");
         let body = b"PRIVATE_TOKEN=private-token-value\nSECOND_TOKEN=private-token\n";
         store::atomic(&path, body, 0o600).unwrap();

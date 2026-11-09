@@ -180,7 +180,7 @@ mod tests {
     use std::{fs, io::Cursor, os::unix::fs::symlink};
 
     fn selected() -> (tempfile::TempDir, Vec<String>, Value) {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let value = json!({
             "kind":"komizo.policy","version":1,"application":"mailroom","authority":{"kind":"owner"},
             "artifact_prefixes":["ghcr.io/example/mailroom"],"hostnames":["mail.example","api.mail.example"],
