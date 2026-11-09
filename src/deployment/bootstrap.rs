@@ -34,7 +34,7 @@ set -eu
 exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C.UTF-8 /usr/local/bin/komizo-box submit
 "#;
 
-const SSH_CONFIG: &str = "# Managed native submission boundary. Owner root SSH remains separate.\nMatch User komizo-submit\n    AuthenticationMethods publickey\n    AuthorizedKeysFile /etc/ssh/komizo-submit/authorized_keys\n    PasswordAuthentication no\n    KbdInteractiveAuthentication no\n    PermitTTY no\n    DisableForwarding yes\n    AllowAgentForwarding no\n    AllowTcpForwarding no\n    X11Forwarding no\n    PermitTunnel no\n    PermitUserEnvironment no\n    ForceCommand /usr/local/libexec/komizo-submit-shell\nMatch all\n";
+const SSH_CONFIG: &str = "# Managed native submission boundary. Owner root SSH remains separate.\nMatch User komizo-submit\n    AuthenticationMethods publickey\n    AuthorizedKeysFile /etc/ssh/komizo-submit/authorized_keys\n    PasswordAuthentication no\n    KbdInteractiveAuthentication no\n    PermitTTY no\n    DisableForwarding yes\n    AllowAgentForwarding no\n    AllowTcpForwarding no\n    X11Forwarding no\n    PermitTunnel no\n    PermitUserRC no\n    ForceCommand /usr/local/libexec/komizo-submit-shell\nMatch all\n";
 
 pub fn controller_unit() -> &'static str {
     "[Unit]\nDescription=Komizo native controller\nWants=network-online.target komizo-proxy.service\nAfter=network-online.target komizo-proxy.service\nRequiresMountsFor=/var/lib/komizo /var/lib/containers\nStartLimitIntervalSec=60\nStartLimitBurst=5\n[Service]\nType=notify\nNotifyAccess=main\nUser=root\nGroup=root\nUMask=0077\nWorkingDirectory=/var/lib/komizo\nEnvironment=HOME=/root\nEnvironment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nExecStart=/usr/local/bin/komizo-box daemon\nRestart=on-failure\nRestartSec=2\nTimeoutStartSec=120\nTimeoutStopSec=30\nKillMode=process\nSlice=komizo-control.slice\nDelegate=yes\n[Install]\nWantedBy=multi-user.target\n"
@@ -116,7 +116,14 @@ fn command(program: &str, arguments: &[&str], deadline: Instant) -> Result<Vec<u
         .env("LANG", "C.UTF-8")
         .args(arguments);
     let output = crate::process::capture(&mut process, None, 65536, deadline, || false)?;
-    ensure!(output.status.success(), "native bootstrap command failed");
+    ensure!(
+        output.status.success(),
+        "native bootstrap command {program} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+            .chars()
+            .take(2048)
+            .collect::<String>()
+    );
     Ok(output.stdout)
 }
 

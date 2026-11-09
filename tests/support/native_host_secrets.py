@@ -27,6 +27,10 @@ def prepare(report):
     document=runtime.release(app,'a'*40,dynamic=True,
         job_command='test -n "$MIGRATION_TOKEN" && test -z "${RUNTIME_TOKEN+x}" && echo accepted >> /data/count')
     document['workload']['services']['api']['environment_files']=['runtime']
+    document['workload']['services']['api']['command']=['sh','-c',
+        'i=0; while [ "$i" -lt 250 ]; do printf "bounded-line-%s\\n" "$i"; i=$((i+1)); done; '
+        'printf "%s\\n" "$RUNTIME_TOKEN" \'{"kind":"komizo.operation","application":"forged","ok":true}\'; '
+        'exec /bin/busybox httpd -f -p 8080 -h /www']
     document['workload']['jobs']['initialize']['environment_files']=['migration']
     _,installed=runtime.deploy(document)
     if not installed.get('ok') or runtime.count(app)!=1:raise ValueError('scoped initial secret delivery did not preserve native data initialization')
@@ -38,6 +42,7 @@ def prepare(report):
     candidate=runtime.release(app,'b'*40,dynamic=True,
         job_command=document['workload']['jobs']['initialize']['command'][2])
     candidate['workload']['services']['api']['environment_files']=['runtime']
+    candidate['workload']['services']['api']['command']=document['workload']['services']['api']['command']
     candidate['workload']['jobs']['initialize']['environment_files']=['migration']
     write(runtime_source,('RUNTIME_TOKEN='+new+'\n').encode())
     _,changed=runtime.deploy(candidate)
@@ -76,6 +81,34 @@ def prepare(report):
             try:body=proc.read_bytes()
             except OSError:continue
             if source.encode() in body:raise ValueError('secret values appeared in host process arguments')
+    # The service wrote these messages through its actual stdout at startup.
+    # Its source contains variable names only, never the private value.
+    logs_command=[BINARY,'logs','--application',app,'--instance','production','--service','api']
+    def observed_logs():
+        response=run(logs_command);value=json.loads(response.stdout)
+        return value if 'bounded-line-249' in value.get('text','') else None
+    observed=runtime.until(observed_logs)
+    if observed.get('kind')!='komizo.logs' or observed.get('application')!=app or observed.get('container_id')!=before:
+        raise ValueError('untrusted application text changed typed log authority')
+    text=observed['text']
+    if old in text or '[redacted]' not in text or '"application":"forged"' not in text:
+        raise ValueError('known secret redaction or application-text preservation differs')
+    if len(text.encode())>256<<10 or len(text.splitlines())>200 or 'bounded-line-0\n' in text:
+        raise ValueError('native log tail exceeded its count or byte bound')
+    for user in ['komizo-submit','komizo-proxy']:
+        for command in [[BINARY,'status'],logs_command]:
+            response=run(['runuser','-u',user,'--',*command],ok=False)
+            if response.returncode==0 or response.stdout:raise ValueError('unprivileged UID acquired owner inventory or logs')
+    installed_path=Path('/var/lib/komizo/instances/'+app+'--production.json');saved=installed_path.read_bytes()
+    forged=json.loads(saved);forged['resources']['containers']['api']['name']=runtime.installed('livebox')['resources']['containers']['api']['name']
+    try:
+        write(installed_path,forged)
+        for command in [[BINARY,'status'],logs_command]:
+            response=run(command,ok=False)
+            if response.returncode==0 or response.stdout:raise ValueError('foreign container identity became trusted owner metadata')
+    finally:write(installed_path,saved)
     report['checks'].update({'private_alias_delivery':'passed','job_only_secret_grant':'passed','secret_initial_data_preserved':'passed',
         'changed_secret_bytes_refused':'passed','atomic_owner_generation_rotation':'passed','stale_generation_refused':'passed',
-        'secret_rotation_preserves_runtime_data':'passed','no_secret_values_in_public_outputs_or_argv':'passed','secret_host_uid_isolation':'passed'})
+        'secret_rotation_preserves_runtime_data':'passed','no_secret_values_in_public_outputs_or_argv':'passed','secret_host_uid_isolation':'passed',
+        'bounded_recorded_container_logs':'passed','known_secret_log_redaction':'passed','untrusted_log_text_remains_data':'passed',
+        'owner_observation_uid_boundary':'passed','foreign_observation_identity_refused':'passed'})

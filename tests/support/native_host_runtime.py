@@ -259,6 +259,8 @@ def prepare():
         'source_bound_https':'passed','forwarded_ip_refused':'passed','controller_death':'passed',
         'dns_after_controller_death':'passed','dns_after_other_application_stop':'passed','stopped_candidate_no_jobs':'passed','application_kernel_limits':'passed',
         'application_uid_capabilities':'passed','application_read_only_root':'passed','no_published_application_ports':'passed'})
+    import fixture_postgres
+    fixture_postgres.prepare(report)
     failures(report)
     import fixture_secrets
     fixture_secrets.prepare(report)
@@ -267,7 +269,7 @@ def prepare():
     resource_stress(report)
     run(['systemctl','stop','native-fixture-registry.service'])
     report['runtime_acceptance']=False
-    report['remaining']=['real PostgreSQL initialized-data and recovery controls']
+    report['remaining']=['installed PostgreSQL encrypted recovery','isolated preview lifecycle','small-host capacity acceptance']
     report['installed']={'static':result['release_digest'],'mailroom':ready['release_digest'],'prepared':prepared['release_digest'],
         'running':live['release_digest'],'containers':before}
     write(ROOT/'report.json',report)
@@ -292,4 +294,6 @@ def verify_reboot():
                 raise ValueError('API bypassed its failed or interrupted job dependency during reboot')
         report['checks']['uncertain_job_reboot_no_replay']='passed'
     report['checks']['registry_offline_reboot']='passed';report['checks']['stopped_reboot_no_replay']='passed'
+    import fixture_postgres
+    fixture_postgres.verify_reboot(report)
     write(ROOT/'report.json',report)

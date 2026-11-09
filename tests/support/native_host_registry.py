@@ -8,6 +8,7 @@ import io
 import json
 from pathlib import Path
 import re
+import shutil
 import ssl
 import tarfile
 
@@ -67,10 +68,10 @@ def serve(root, certificate, key, port):
             match=re.fullmatch(r'/v2/example/[a-z][a-z0-9-]*/(manifests|blobs)/(sha256:[a-f0-9]{64})',self.path)
             path=root/'blobs'/match[2][7:] if match else None
             if path is None or not path.is_file():self.send_error(404);return
-            data=path.read_bytes()
-            self.send_response(200);self.send_header('Content-Length',str(len(data)))
+            self.send_response(200);self.send_header('Content-Length',str(path.stat().st_size))
             self.send_header('Docker-Content-Digest',match[2]);self.send_header('Content-Type',MANIFEST if match[1]=='manifests' else 'application/octet-stream')
-            self.end_headers();self.wfile.write(data)
+            self.end_headers()
+            with path.open('rb') as stream:shutil.copyfileobj(stream,self.wfile,1<<16)
         def log_message(self,*_):pass
     server=http.server.ThreadingHTTPServer(('127.0.0.1',port),Handler)
     context=ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER);context.load_cert_chain(certificate,key)
