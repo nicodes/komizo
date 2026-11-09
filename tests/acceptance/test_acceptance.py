@@ -267,6 +267,24 @@ class NativeBootGuards(unittest.TestCase):
 
 
 class NativeCaptureGuards(unittest.TestCase):
+    def test_actual_source_identity_reaches_pinned_postgres_build_without_engine_side_effects(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            identity = {'repository': 'nicodes/komizo', 'repository_id': '1315697543', 'revision': 'c' * 40}
+            (root / 'profile.json').write_text(json.dumps({'source': identity}))
+            run = Mock(side_effect=RuntimeError('immutable engine reached'))
+            spec = importlib.util.spec_from_file_location('native_pg_fixture', ENGINE.parent / 'support/native_host_postgres.py')
+            fixture = importlib.util.module_from_spec(spec)
+            with patch.dict(sys.modules, {'acceptance': SimpleNamespace(ROOT=root, MiB=1 << 20, run=run, write=Mock()),
+                    'fixture_registry': SimpleNamespace(), 'fixture_runtime': SimpleNamespace()}):
+                spec.loader.exec_module(fixture)
+                with self.assertRaisesRegex(RuntimeError, 'immutable engine reached'):
+                    fixture.postgres_artifact()
+            run.assert_called_once_with(['podman', '--remote=false', 'pull', fixture.BASE], timeout=300)
+            recipe = (root / 'postgres-build/Containerfile').read_text()
+            self.assertIn('https://github.com/' + identity['repository'], recipe)
+            self.assertIn(identity['revision'], recipe)
+
     def adapter(self, failure=None):
         path = ENGINE.parent / 'fixtures/native_host/pg-capture.py'
         spec = importlib.util.spec_from_file_location('native_pg_capture', path)

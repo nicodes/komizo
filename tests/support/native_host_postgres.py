@@ -43,9 +43,9 @@ def postgres_artifact():
         for member in package.getmembers():
             if not member.name.startswith('blobs/sha256/') or not member.isfile():continue
             identity=member.name.removeprefix('blobs/sha256/')
-            target=blobroot/identity;source=package.extractfile(member);value=hashlib.sha256();size=0
+            target=blobroot/identity;incoming=package.extractfile(member);value=hashlib.sha256();size=0
             with target.open('wb') as output:
-                while body:=source.read(1<<16):value.update(body);size+=len(body);output.write(body)
+                while body:=incoming.read(1<<16):value.update(body);size+=len(body);output.write(body)
             if value.hexdigest()!=identity or size!=member.size:raise ValueError('PostgreSQL fixture archive blob changed')
         manifest=json.loads((blobroot/descriptor['digest'][7:]).read_bytes())
         config=json.loads((blobroot/manifest['config']['digest'][7:]).read_bytes())
