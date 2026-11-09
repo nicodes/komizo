@@ -36,7 +36,7 @@ def alive(pid):
     return bool(state.stdout.strip()) and not state.stdout.strip().startswith('Z')
 
 
-with tempfile.TemporaryDirectory(prefix='komizo-api-smoke-') as scratch:
+with tempfile.TemporaryDirectory(prefix='komizo-api-smoke-', dir=Path(tempfile.gettempdir()).resolve()) as scratch:
     root = Path(scratch)
     ssh = root / 'ssh'
     ssh.write_text(f"#!{sys.executable}\nimport json,sys\nfrom pathlib import Path\n"
