@@ -190,6 +190,36 @@ def failures(report):
     report['checks'].update({'failed_job_no_replay':'passed','interrupted_job_no_replay':'passed','worker_deadline':'passed','unsafe_archive':'passed'})
 
 
+def resource_stress(report):
+    app='livebox';record=installed(app)['resources']['containers']['api']
+    namespace=hashlib.sha256(b'livebox\0production').hexdigest()[:20]
+    unit='komizo-production-i'+namespace+'.slice'
+    group=run(['systemctl','show',unit,'--property=ControlGroup','--value']).stdout.decode().strip()
+    path=Path('/sys/fs/cgroup')/group.removeprefix('/')
+    def event(file,key):return int(dict(line.split() for line in (path/file).read_text().splitlines())[key])
+    previous=event('pids.events','max')
+    # Sleeping children have a finite lifetime even when the shell cannot fork
+    # another process. The stress stays below this application's PID ceiling.
+    run(['podman','--remote=false','exec',record['name'],'/bin/busybox','sh','-c',
+        'i=0; while [ "$i" -lt 80 ]; do /bin/busybox sleep 2 & i=$((i+1)); done; wait'],ok=False,timeout=20)
+    if event('pids.events','max')<=previous:raise ValueError('actual application PID ceiling did not refuse excess children')
+    previous=event('memory.events','oom_kill')
+    result=run(['podman','--remote=false','exec',record['name'],'/bin/busybox','awk',
+        'BEGIN {x="0123456789"; for (i=0;i<9;i++) x=x x; while (1) a[++n]=x n}'],ok=False,timeout=30)
+    if result.returncode==0 or event('memory.events','oom_kill')<=previous:
+        raise ValueError('actual application memory ceiling did not isolate excess allocation')
+    until(lambda:b'a'*40 in fetch(app,installed(app)['release_digest']),seconds=30)
+    fetch('staticbox',installed('staticbox')['release_digest'])
+    prior=Path('/var/lib/komizo/instances/livebox--production.json').read_bytes()
+    candidate=release(app,'b'*40,dynamic=True,graph=False)
+    candidate['workload']['services']['api']['limits']=limits(128)
+    _,denied=deploy(candidate)
+    if denied.get('kind')!='komizo.error' or Path('/var/lib/komizo/instances/livebox--production.json').read_bytes()!=prior:
+        raise ValueError('oversized release reached installation effects')
+    report['checks'].update({'application_pid_stress':'passed','application_memory_stress':'passed',
+        'other_application_survives_stress':'passed','oversized_release_refused_before_effects':'passed'})
+
+
 def prepare():
     setup_registry()
     for app in ['staticbox','mailroom','livebox','badjob','hungjob','deadline','unsafe']:host_policy(app)
@@ -230,9 +260,14 @@ def prepare():
         'dns_after_controller_death':'passed','dns_after_other_application_stop':'passed','stopped_candidate_no_jobs':'passed','application_kernel_limits':'passed',
         'application_uid_capabilities':'passed','application_read_only_root':'passed','no_published_application_ports':'passed'})
     failures(report)
+    import fixture_secrets
+    fixture_secrets.prepare(report)
+    import fixture_backup
+    fixture_backup.prepare(report)
+    resource_stress(report)
     run(['systemctl','stop','native-fixture-registry.service'])
     report['runtime_acceptance']=False
-    report['remaining']=['protected backup/export','complete resource stress']
+    report['remaining']=['real PostgreSQL initialized-data and recovery controls']
     report['installed']={'static':result['release_digest'],'mailroom':ready['release_digest'],'prepared':prepared['release_digest'],
         'running':live['release_digest'],'containers':before}
     write(ROOT/'report.json',report)

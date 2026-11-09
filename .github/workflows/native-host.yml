@@ -27,6 +27,8 @@ jobs:
           install: false
           version: 2026.10.17
       - name: Build the exact native controller source
+        env:
+          CARGO_PROFILE_DEV_DEBUG: '0'
         run: |
           set -euo pipefail
           mise install rust@1.94.0

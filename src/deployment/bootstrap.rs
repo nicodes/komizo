@@ -242,7 +242,8 @@ fn protected_file(path: &Path, maximum: usize) -> Result<Vec<u8>> {
             && info.nlink() == 1
             && info.mode() & 0o022 == 0
             && info.len() <= maximum as u64,
-        "bootstrap input is not a protected ordinary file"
+        "bootstrap input {} is not a protected ordinary file within {maximum} bytes",
+        path.display()
     );
     store::read_protected(path, maximum)
 }

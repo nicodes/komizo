@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Exercise private aliases, immutable generations and container scope in the VM."""
+import hashlib
+import json
+from pathlib import Path
+import secrets
+
+from acceptance import ROOT, BINARY, run, write
+import fixture_runtime as runtime
+import fixture_registry as registry
+
+
+def rejected(value):return value.get('ok') is False or value.get('kind')=='komizo.error'
+
+
+def prepare(report):
+    app='secretbox'
+    with Path('/etc/hosts').open('a') as output:output.write('127.0.0.1 secretbox.localhost\n')
+    old='runtime-'+secrets.token_hex(16);new='runtime-'+secrets.token_hex(16);migration='migration-'+secrets.token_hex(16)
+    runtime_source=Path('/etc/komizo/secretbox-runtime.env');migration_source=Path('/etc/komizo/secretbox-migration.env')
+    write(runtime_source,('RUNTIME_TOKEN='+old+'\n').encode());write(migration_source,('MIGRATION_TOKEN='+migration+'\n').encode())
+    policy=runtime.host_policy(app)
+    policy['secrets']={
+        'runtime':{'path':str(runtime_source),'services':['api'],'jobs':[],'environment_file':True,'mount':False,'generation':'a'*32},
+        'migration':{'path':str(migration_source),'services':[],'jobs':['initialize'],'environment_file':True,'mount':False,'generation':'b'*32}}
+    path=Path('/etc/komizo/apps/'+app+'.json');write(path,policy)
+    document=runtime.release(app,'a'*40,dynamic=True,
+        job_command='test -n "$MIGRATION_TOKEN" && test -z "${RUNTIME_TOKEN+x}" && echo accepted >> /data/count')
+    document['workload']['services']['api']['environment_files']=['runtime']
+    document['workload']['jobs']['initialize']['environment_files']=['migration']
+    _,installed=runtime.deploy(document)
+    if not installed.get('ok') or runtime.count(app)!=1:raise ValueError('scoped initial secret delivery did not preserve native data initialization')
+    record=runtime.installed(app)['resources']['containers']['api'];before=runtime.container(record)['Id']
+    def value_hash():
+        return run(['podman','--remote=false','exec',record['name'],'/bin/busybox','sh','-c',
+            'test -z "${MIGRATION_TOKEN+x}" && printf %s "$RUNTIME_TOKEN" | /bin/busybox sha256sum']).stdout.decode().split()[0]
+    if value_hash()!=hashlib.sha256(old.encode()).hexdigest():raise ValueError('runtime container did not receive its exact private alias')
+    candidate=runtime.release(app,'b'*40,dynamic=True,
+        job_command=document['workload']['jobs']['initialize']['command'][2])
+    candidate['workload']['services']['api']['environment_files']=['runtime']
+    candidate['workload']['jobs']['initialize']['environment_files']=['migration']
+    write(runtime_source,('RUNTIME_TOKEN='+new+'\n').encode())
+    _,changed=runtime.deploy(candidate)
+    if not rejected(changed) or runtime.container(record)['Id']!=before or runtime.count(app)!=1:
+        raise ValueError('changed bytes bypassed the installed operator generation')
+    write(runtime_source,('RUNTIME_TOKEN='+old+'\n').encode())
+    update={'reference':'runtime','expected_generation':'a'*32,'format':'environment-file','value':'RUNTIME_TOKEN='+new+'\n'}
+    body=runtime.request(app,'secret-set',installed['release_digest'],secret_update=update)
+    rotated=runtime.submit(body)
+    if not rotated.get('ok'):raise ValueError('root owner rotation failed')
+    current=json.loads(path.read_text());generation=current['secrets']['runtime']['generation']
+    if generation=='a'*32 or len(generation)!=32:raise ValueError('owner rotation did not create an independent generation')
+    if value_hash()!=hashlib.sha256(old.encode()).hexdigest() or runtime.container(record)['Id']!=before or runtime.count(app)!=1:
+        raise ValueError('rotating an alias silently changed running processes or retained data')
+    protected=path.read_bytes()
+    stale=runtime.submit(runtime.request(app,'secret-set',installed['release_digest'],secret_update=update))
+    if not rejected(stale) or path.read_bytes()!=protected:raise ValueError('stale rotation changed the protected grant')
+    mismatch=runtime.request(app,'deploy',registry.digest(registry.canonical(candidate)),release=candidate,
+        expected_secret_generations={'runtime':'a'*32})
+    if not rejected(runtime.submit(mismatch)) or runtime.count(app)!=1:raise ValueError('stale expected generation reached data effects')
+    forbidden=runtime.release(app,'c'*40,dynamic=True)
+    forbidden['workload']['services']['api']['environment_files']=['migration']
+    _,denied=runtime.deploy(forbidden)
+    if not rejected(denied):raise ValueError('runtime service acquired a job-only credential grant')
+    for user in ['komizo-submit','komizo-proxy']:
+        for source in [runtime_source,migration_source,Path(current['secrets']['runtime']['path'])]:
+            if run(['runuser','-u',user,'--','test','-r',str(source)],ok=False).returncode==0:
+                raise ValueError('unprivileged host identity acquired application secret bytes')
+    status=run([BINARY,'status']).stdout
+    public_files=[status]
+    for directory in [Path('/var/lib/komizo/journal'),Path('/var/lib/komizo/operations')]:
+        public_files.extend(path.read_bytes() for path in directory.rglob('*.json'))
+    for source in [old,new,migration]:
+        if any(source.encode() in body for body in public_files):raise ValueError('secret values leaked into status, operation receipts or audit journals')
+        for proc in Path('/proc').glob('[0-9]*/cmdline'):
+            try:body=proc.read_bytes()
+            except OSError:continue
+            if source.encode() in body:raise ValueError('secret values appeared in host process arguments')
+    report['checks'].update({'private_alias_delivery':'passed','job_only_secret_grant':'passed','secret_initial_data_preserved':'passed',
+        'changed_secret_bytes_refused':'passed','atomic_owner_generation_rotation':'passed','stale_generation_refused':'passed',
+        'secret_rotation_preserves_runtime_data':'passed','no_secret_values_in_public_outputs_or_argv':'passed','secret_host_uid_isolation':'passed'})
