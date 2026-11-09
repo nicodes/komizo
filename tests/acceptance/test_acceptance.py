@@ -214,6 +214,29 @@ class AcceptanceGuards(unittest.TestCase):
 
 
 class NativeBootGuards(unittest.TestCase):
+    def test_bounded_reboot_verifies_its_own_graph_without_a_functional_only_application(self):
+        spec = importlib.util.spec_from_file_location('native_fixture_acceptance', ENGINE.parent / 'support/native_host_acceptance.py')
+        acceptance = importlib.util.module_from_spec(spec); spec.loader.exec_module(acceptance)
+        runtime = Mock()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = {'profile': 'bounded', 'installed': {'static': 'sha256:' + 'a' * 64}, 'checks': {}, 'ok': False}
+            (root / 'report.json').write_text(json.dumps(original))
+            read_text = Path.read_text
+            def selected_file(path, *args, **options):
+                if str(path) == '/etc/komizo/capacity.json':
+                    return '{}'
+                return read_text(path, *args, **options)
+            with patch.object(acceptance, 'ROOT', root), patch.object(acceptance, 'actual_boundaries') as boundaries, \
+                    patch.object(acceptance, 'inspect', side_effect=AssertionError('bounded profile has no mailroom')), \
+                    patch.dict(sys.modules, {'fixture_runtime': runtime}), patch.object(Path, 'read_text', selected_file):
+                acceptance.verify_reboot()
+            runtime.verify_reboot.assert_called_once_with()
+            boundaries.assert_called_once_with({})
+            result = json.loads((root / 'report.json').read_text())
+            self.assertTrue(result['ok'])
+            self.assertEqual(result['checks'], {'real_reboot': 'passed'})
+
     def test_cloud_setup_refusal_cannot_become_readiness_or_extend_its_deadline(self):
         guest = object.__new__(driver.Guest)
         process = Mock(); process.poll.return_value = None
