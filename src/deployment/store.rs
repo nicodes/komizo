@@ -433,7 +433,9 @@ pub fn open_protected(path: &Path, maximum: u64) -> Result<File> {
         // Reopen the named successor and apply every check again; never accept
         // an unlinked descriptor or a multiply linked protected file.
     }
-    Err(anyhow!("protected file was repeatedly replaced while opening"))
+    Err(anyhow!(
+        "protected file was repeatedly replaced while opening"
+    ))
 }
 
 pub fn read_protected(path: &Path, maximum: usize) -> Result<Vec<u8>> {
