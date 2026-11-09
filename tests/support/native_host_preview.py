@@ -67,10 +67,16 @@ def prepare(report):
     if refused.get('kind')!='komizo.error':raise ValueError('preview selected an unapproved route hostname')
     # A similarly named but unrecorded object is never included in owned expiry.
     namespace='kmz-'+hashlib.sha256(b'pgbox\0pr-7').hexdigest()[:20]
-    foreign=namespace+'-foreign';run(['podman','--remote=false','volume','create',foreign])
+    foreign='borrowed-'+namespace+'-foreign';orphan=namespace+'-unrecorded'
+    for name in [foreign,orphan]:
+        if run(['podman','--remote=false','volume','exists',name],ok=False).returncode==0:
+            raise ValueError('preview fixture cannot borrow an existing foreign volume')
+        run(['podman','--remote=false','volume','create',name])
+    orphan_record=json.loads(run(['podman','--remote=false','volume','inspect',orphan]).stdout)[0]
     report['preview']={'instance':instance,'release_digest':identity,'expires_at':value['expires_at'],
         'volume':preview_volume['name'],'volume_record':preview_volume,'network_names':[record['name'] for record in value['resources']['networks'].values()],
-        'production_volume':production_volume['name'],'foreign_volume':foreign}
+        'production_volume':production_volume['name'],'foreign_volume':foreign,
+        'namespace_orphan':orphan,'orphan_created_at':orphan_record['CreatedAt']}
     report['checks'].update({'preview_full_postgresql_namespace':'passed','preview_data_independence':'passed','preview_credential_independence':'passed',
         'preview_protected_readiness':'passed','preview_instance_limit_refused':'passed','preview_hostname_authority':'passed',
         'preview_production_tcp_refused':'passed'})
@@ -81,6 +87,17 @@ def expire(report):
     while int(time.time())<=preview['expires_at']:
         if time.monotonic()>deadline:raise ValueError('preview did not reach its bounded real TTL')
         time.sleep(1)
+    refused=run([BINARY,'expire'],timeout=60,ok=False)
+    if refused.returncode==0 or installed(preview['instance']).get('removed'):
+        raise ValueError('unknown reserved-namespace storage was silently treated as absent')
+    orphan=json.loads(run(['podman','--remote=false','volume','inspect',preview['namespace_orphan']]).stdout)[0]
+    if orphan['CreatedAt']!=preview['orphan_created_at']:
+        raise ValueError('preview expiry changed an unrecorded namespace volume')
+    run(['podman','--remote=false','volume','inspect',preview['foreign_volume']])
+    run(['podman','--remote=false','volume','inspect',preview['production_volume']])
+    # The fixture owner removes only the orphan it deliberately created. A fresh
+    # scoped expiry can then finish; the runtime never deletes unknown storage.
+    run(['podman','--remote=false','volume','rm',preview['namespace_orphan']])
     run([BINARY,'expire'],timeout=60)
     value=installed(preview['instance'])
     if not value.get('removed') or value['desired_running'] or value['expires_at'] is not None or value['resources']['volumes']:
@@ -94,6 +111,7 @@ def expire(report):
     run(['podman','--remote=false','volume','inspect',preview['foreign_volume']])
     run(['podman','--remote=false','volume','rm',preview['foreign_volume']])
     report['checks'].update({'preview_real_ttl_expiry':'passed','preview_owned_cleanup':'passed',
+        'preview_unknown_namespace_refuses_absence':'passed',
         'preview_cleanup_preserves_foreign_resources':'passed','preview_cleanup_preserves_production_data':'passed'})
     refused=runtime.submit(runtime.request('pgbox','start',preview['release_digest'],instance=preview['instance']))
     if refused.get('ok') or installed(preview['instance'])['resources']['volumes']:

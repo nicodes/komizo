@@ -101,15 +101,43 @@ def capture_postgres(report):
 
 def interrupted_deadline(report):
     # This reviewed synthetic program deliberately ignores TERM and gives its
-    # child a new session. Only the task's native cgroup is the complete boundary.
+    # child a new session and starts a native helper. The delegated task parent
+    # must own all three, independently of client/conmon process groups.
     program=ROOT/'task-deadline.py'
     payload=b'''#!/usr/bin/python3
-import json,pathlib,signal,subprocess,sys,time
+import json,pathlib,re,signal,subprocess,sys,time
 request=json.load(sys.stdin)
 assert request['kind']=='komizo.backup-request' and request['application']=='secretbox'
 root=pathlib.Path('/root/native-host');identity=request['operation_id']
 signal.signal(signal.SIGTERM,signal.SIG_IGN)
 subprocess.Popen([sys.executable,'-I','-B','-c','import pathlib,signal,time,sys;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(12);pathlib.Path(sys.argv[1]).write_text("late")',str(root/(identity+'-late'))],start_new_session=True)
+group=pathlib.Path('/proc/self/cgroup').read_text().strip()
+expected='0::/komizo.slice/komizo-control.slice/komizo-backup-'+identity+'.service/runner'
+assert group==expected
+parent=group[3:].removesuffix('/runner')
+resource=json.loads(subprocess.check_output(['/usr/local/bin/komizo-box','resource','--application','secretbox','--instance','production','--service','db']))
+volume=resource['volumes']['data']['name']
+name='native-task-'+identity;cidfile=root/(identity+'-helper.cid')
+subprocess.Popen(['podman','--remote=false','--cgroup-manager=cgroupfs','run','--name='+name,'--cidfile='+str(cidfile),
+    '--pull=never','--timeout=0','--cgroup-parent='+parent,'--image-volume=ignore','--http-proxy=false','--network=none',
+    '--read-only','--read-only-tmpfs=false','--cap-drop=all','--security-opt=no-new-privileges','--user=10001:10001',
+    '--memory=16m','--memory-swap=16m','--cpu-period=1000000','--cpu-quota=100000','--pids-limit=16',
+    '--label=io.komizo.fixture.operation='+identity,'--volume='+volume+':/data:rw','--entrypoint=/bin/busybox',
+    resource['image_config_digest'],'sh','-c','trap "" TERM; echo entered > /data/task-helper-started; sleep 12; echo late > /data/task-helper-late'],
+    stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+end=time.monotonic()+5
+while time.monotonic()<end:
+    result=subprocess.run(['podman','--remote=false','--cgroup-manager=cgroupfs','container','inspect',name],capture_output=True)
+    if result.returncode==0:
+        actual=json.loads(result.stdout)[0]
+        if actual['State']['Running']:
+            current=pathlib.Path('/proc/'+str(actual['State']['Pid'])+'/cgroup').read_text().strip()
+            assert current.startswith('0::'+parent+'/') and current!='0::'+parent+'/runner'
+            (root/(identity+'-helper.json')).write_text(json.dumps({'id':actual['Id'],'name':name,'pid':actual['State']['Pid'],
+                'parent':parent,'cgroup':current[3:],'native_timeout_seconds':0,'volume':volume}))
+            break
+    time.sleep(.05)
+else:raise RuntimeError('native delegated helper did not start')
 (root/(identity+'-entered')).write_text('entered')
 time.sleep(600)
 '''
@@ -122,16 +150,25 @@ time.sleep(600)
     body=runtime.request('secretbox','backup',release,timeout_seconds=8)
     operation=hashlib.sha256(('komizo-operation-v1\0secretbox\0production\0'+body['nonce']).encode()).hexdigest()[:32]
     entered=ROOT/(operation+'-entered');late=ROOT/(operation+'-late')
+    helper_record=ROOT/(operation+'-helper.json');helper_cid=ROOT/(operation+'-helper.cid')
     child=subprocess.Popen([BINARY,'submit'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     child.stdin.write(registry.canonical(body));child.stdin.close();began=time.monotonic()
     unit='komizo-backup-'+operation+'.service'
     try:
         runtime.until(entered.exists,seconds=7)
+        helper=json.loads(helper_record.read_text())
+        if helper['parent']!='/komizo.slice/komizo-control.slice/'+unit or not helper['cgroup'].startswith(helper['parent']+'/'):
+            raise ValueError('native helper escaped its delegated protected task parent')
+        mount=Path(run(['podman','--remote=false','volume','inspect',helper['volume'],'--format={{.Mountpoint}}']).stdout.decode().strip())
+        if not (mount/'task-helper-started').exists():raise ValueError('native task helper did not enter its actual workload')
         # Keep the controller absent until the deadline passes; its independent
         # task must terminate without startup reconciliation doing that work.
         run(['systemctl','stop','komizo-controller.service'])
         if run(['systemctl','is-active','komizo-controller.service'],ok=False).stdout.strip()!=b'inactive':
             raise ValueError('task deadline fixture did not stop its controller')
+        intent=json.loads((Path('/var/lib/komizo/journal')/operation/'backup-task.json').read_text())
+        if time.monotonic_ns()>=intent['deadline_monotonic_ns']:
+            raise ValueError('controller did not become absent before the protected task deadline')
         def quiescent():
             if run(['systemctl','is-active',unit],ok=False).stdout.strip() not in {b'inactive',b'failed'}:return False
             value=run(['systemctl','show',unit,'--property=ControlGroup','--value']).stdout.decode().strip()
@@ -140,12 +177,24 @@ time.sleep(600)
             return not events.exists() or 'populated 0' in events.read_text().splitlines()
         runtime.until(quiescent,seconds=12)
         elapsed=time.monotonic()-began
+        process=Path('/proc')/str(helper['pid'])
+        helper_live=process.exists() and helper['cgroup'] in (process/'cgroup').read_text()
+        helper_late=(mount/'task-helper-late').exists()
         write(ROOT/'task-deadline.json',{'timeout_seconds':8,'elapsed_seconds':elapsed,
-            'controller_absent_at_expiry':True,'task_cgroup_quiescent':quiescent(),'late_write_present':late.exists()})
-        if elapsed>13 or late.exists():raise ValueError('protected task or new-session descendant exceeded its absolute operation lifetime')
+            'controller_absent_at_expiry':True,'task_cgroup_quiescent':quiescent(),'late_write_present':late.exists(),
+            'native_helper':helper,'helper_live_after_deadline':helper_live,'helper_late_write':helper_late})
+        if elapsed>13 or late.exists() or helper_live or helper_late:
+            raise ValueError('protected task or native/new-session descendant exceeded its absolute operation lifetime')
         report['checks'].update({'protected_task_absolute_deadline':'passed',
-            'protected_task_survives_controller_death':'passed','protected_task_descendant_deadline':'passed'})
+            'protected_task_survives_controller_death':'passed','protected_task_descendant_deadline':'passed',
+            'protected_task_native_helper_deadline':'passed'})
     finally:
+        if helper_cid.exists():
+            identity=helper_cid.read_text().strip()
+            if __import__('re').fullmatch('[a-f0-9]{64}',identity):
+                observed=run(['podman','--remote=false','--cgroup-manager=cgroupfs','container','inspect',identity],ok=False)
+                if observed.returncode==0 and json.loads(observed.stdout)[0]['Config']['Labels'].get('io.komizo.fixture.operation')==operation:
+                    run(['podman','--remote=false','--cgroup-manager=cgroupfs','rm','--force','--time=0',identity])
         write(path,saved)
         run(['systemctl','start','komizo-controller.service'])
         runtime.until(lambda:run(['systemctl','is-active','komizo-controller.service'],ok=False).stdout.strip()==b'active')
