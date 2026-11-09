@@ -389,7 +389,7 @@ async fn failed_confirmed_receipt_is_preserved_without_retry_or_reclassification
     f.ui.shutdown().await;
 }
 #[tokio::test]
-async fn shutdown_reaps_owned_client_and_its_pipe_holding_descendant() {
+async fn shutdown_reaps_owned_client_and_stops_its_pipe_holding_descendant() {
     let f = Fixture::new();
     std::fs::write(f.root.join("hold"), b"hold").unwrap();
     let ui = f.ui.clone();
@@ -411,6 +411,12 @@ async fn shutdown_reaps_owned_client_and_its_pipe_holding_descendant() {
         .await
         .unwrap();
     assert_eq!(observation.await.unwrap().0, 503);
+    assert_eq!(unsafe { libc::kill(pids[0], 0) }, -1);
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH),
+        "owned client was not reaped"
+    );
     for pid in pids {
         #[cfg(target_os = "linux")]
         assert!(
@@ -419,10 +425,21 @@ async fn shutdown_reaps_owned_client_and_its_pipe_holding_descendant() {
             "owned child still running: {pid}"
         );
         #[cfg(not(target_os = "linux"))]
-        assert_eq!(
-            unsafe { libc::kill(pid, 0) },
-            -1,
-            "owned child still running: {pid}"
-        );
+        {
+            // The orphan's system reaper may not have collected its zombie yet.
+            // As on Linux, require absence or an observed zombie, never a live task.
+            let output = std::process::Command::new("/bin/ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .unwrap();
+            let state = std::str::from_utf8(&output.stdout).unwrap().trim();
+            let absent = unsafe { libc::kill(pid, 0) } == -1
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+            assert!(
+                absent
+                    || (output.status.success() && !state.is_empty() && state.starts_with('Z')),
+                "owned child still running: {pid}, state: {state:?}"
+            );
+        }
     }
 }
