@@ -100,15 +100,17 @@ def inventory(directory,source,release):
         if name in HOSTS:
             platform,machine=HOSTS[name];host_elf(raw,machine)
             receipt=json.loads(read(directory/(name+'.json'),65536),object_pairs_hook=unique)
-            if receipt!={'schema':1,'source':source,'version':release[1:],'kind':'host','platform':platform,'dependencies':{},'sha256':expected}:
+            if (not isinstance(receipt,dict) or type(receipt.get('schema')) is not int
+                    or receipt!={'schema':1,'source':source,'version':release[1:],'kind':'host','platform':platform,'dependencies':{},'sha256':expected}):
                 raise ValueError('standalone host receipt differs from source, version, role or dependencies')
         if name in PROXIES:
             platform,machine=PROXIES[name];host_elf(raw,machine)
             receipt=json.loads(read(directory/(name+'.json'),65536),object_pairs_hook=unique)
             baseline=json.loads(read(Path(__file__).resolve().parents[1]/'fixtures/native_host/baseline.json',65536),object_pairs_hook=unique)
-            if receipt!={'kind':'komizo.proxy-build','version':1,'tools_revision':baseline['proxy_tools_revision'],
+            if (not isinstance(receipt,dict) or type(receipt.get('version')) is not int
+                    or receipt!={'kind':'komizo.proxy-build','version':1,'tools_revision':baseline['proxy_tools_revision'],
                     'platform':platform,'go_version':baseline['proxy_go_version'],'caddy_version':baseline['caddy_version'],
-                    'source_sha256':baseline['proxy_source_sha256'],'binary_sha256':'sha256:'+expected}:
+                    'source_sha256':baseline['proxy_source_sha256'],'binary_sha256':'sha256:'+expected}):
                 raise ValueError('native proxy receipt differs from the independently reviewed source closure or compiler')
     return result
 
