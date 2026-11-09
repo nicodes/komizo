@@ -56,8 +56,9 @@ def postgres_artifact():
         'digest':descriptor['digest'],'config_digest':manifest['config']['digest'],'platform':'linux/amd64'},uid+':'+gid
 
 
-def query(sql):
-    name=runtime.installed('pgbox')['resources']['containers']['postgres']['name']
+def query(sql, instance='production'):
+    installed=json.loads(Path('/var/lib/komizo/instances/pgbox--'+instance+'.json').read_text())
+    name=installed['resources']['containers']['postgres']['name']
     return run(['podman','--remote=false','exec',name,'psql','--host=127.0.0.1','--username=fixture','--dbname=postgres',
         '--no-psqlrc','--tuples-only','--no-align','--set=ON_ERROR_STOP=1','--command',sql]).stdout.strip()
 

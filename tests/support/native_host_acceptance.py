@@ -53,6 +53,7 @@ def capacity():
 def policy():
     return {'kind':'komizo.policy','version':1,'application':'mailroom','authority':{'kind':'owner'},
         'artifact_prefixes':['registry.fixture.test:5443/example/mailroom-'], 'hostnames':['mailroom.localhost'],
+        'readiness':[{'url':'https://mailroom.localhost/','status':200}],
         'limits':{'memory_bytes':256*MiB,'memory_swap_bytes':256*MiB,'milli_cpus':500,'pids':64}}
 
 
@@ -119,7 +120,7 @@ def prepare():
     actual_boundaries(expected)
     observation=inspect()
     if observation!={'kind':'komizo.instance','version':1,'application':'mailroom','instance':'production','installed':None}:
-        raise ValueError('owner peer inspection did not retain exact application scope')
+        raise ValueError('owner peer inspection did not retain exact application scope: '+json.dumps(observation))
     if inspect(user='komizo-submit').get('kind')!='komizo.error':raise ValueError('unprivileged peer selected owner authority')
     ledger=Path('/etc/komizo/bootstrap.json');prior=hashlib.sha256(ledger.read_bytes()).hexdigest()
     linked=ROOT/'linked-key';linked.symlink_to(ROOT/'submission.pub')

@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""Use the real PostgreSQL workload in a separately admitted preview namespace."""
+import copy
+import hashlib
+import json
+from pathlib import Path
+import secrets
+import time
+import urllib.request
+
+from acceptance import ROOT, BINARY, run, write
+import fixture_postgres as postgres
+import fixture_registry as registry
+import fixture_runtime as runtime
+
+
+def installed(instance):
+    return json.loads(Path('/var/lib/komizo/instances/pgbox--'+instance+'.json').read_text())
+
+
+def projected(document,instance):
+    value=copy.deepcopy(document)
+    hostname=instance+'.preview.localhost'
+    for route in value['workload']['routes']:route['host']=hostname
+    for check in value['workload']['readiness']:check['url']='https://'+hostname+'/'
+    return value
+
+
+def prepare(report):
+    instance='pr-7';path=Path('/etc/komizo/apps/pgbox.json');policy=json.loads(path.read_text())
+    policy['previews']={'environment':'preview','hostname_suffix':'preview.localhost','max_instances':1,'max_ttl_seconds':120,
+        'limits':runtime.limits(192,500,128),'secrets':{'postgres-owner':{'path':'/etc/komizo/pgbox-{instance}-owner.env',
+            'services':['postgres'],'jobs':['initialize'],'environment_file':True,'mount':False,'generation':'b'*32}},
+        'readiness':[{'url':'https://{instance}.preview.localhost/','status':200,'contains':'a'*40}],'retain_data_on_remove':False}
+    write(path,policy)
+    write('/etc/komizo/pgbox-pr-7-owner.env',('PGUSER=fixture\nPGPASSWORD='+secrets.token_hex(24)+'\n').encode())
+    with Path('/etc/hosts').open('a') as output:output.write('127.0.0.1 pr-7.preview.localhost pr-8.preview.localhost\n')
+    production=runtime.installed('pgbox')
+    document=json.loads(Path('/var/lib/komizo/releases/'+production['release_digest'][7:]+'.json').read_text())
+    document['workload']['services']['postgres']['limits']['milli_cpus']=200
+    document['workload']['services']['api']['limits']['milli_cpus']=100
+    preview=projected(document,instance);identity=registry.digest(registry.canonical(preview))
+    body=runtime.request('pgbox','deploy',identity,instance=instance,release=preview,ttl_seconds=60,timeout_seconds=180)
+    receipt=runtime.submit(body)
+    if not receipt.get('ok') or receipt.get('phase')!='ready':raise ValueError('native full PostgreSQL preview failed: '+json.dumps(receipt))
+    value=installed(instance);preview_volume=value['resources']['volumes']['postgres-data'];production_volume=production['resources']['volumes']['postgres-data']
+    if preview_volume==production_volume or value['resources']['networks']==production['resources']['networks']:
+        raise ValueError('preview reused production data or network identity')
+    if value['secret_snapshots']['postgres-owner']['sha256']==production['secret_snapshots']['postgres-owner']['sha256']:
+        raise ValueError('preview acquired the production credential snapshot')
+    if postgres.query('SELECT value FROM evidence',instance)!=b'retained native row':raise ValueError('preview did not initialize its separate database')
+    postgres.query("UPDATE evidence SET value='preview-only row'",instance)
+    with urllib.request.urlopen('https://pr-7.preview.localhost/',timeout=5) as response:
+        if response.headers.get('X-Komizo-Release')!=identity:raise ValueError('preview readiness used production release authority')
+    other=projected(document,'pr-8')
+    denied=runtime.submit(runtime.request('pgbox','deploy',registry.digest(registry.canonical(other)),instance='pr-8',
+        release=other,ttl_seconds=60))
+    if denied.get('ok') is not False:raise ValueError('preview maximum admitted another full database instance')
+    unsafe=projected(document,'pr-8');unsafe['workload']['routes'][0]['host']='unapproved.localhost'
+    refused=runtime.submit(runtime.request('pgbox','deploy',registry.digest(registry.canonical(unsafe)),instance='pr-8',
+        release=unsafe,ttl_seconds=60))
+    if refused.get('kind')!='komizo.error':raise ValueError('preview selected an unapproved route hostname')
+    # A similarly named but unrecorded object is never included in owned expiry.
+    namespace='kmz-'+hashlib.sha256(b'pgbox\0pr-7').hexdigest()[:20]
+    foreign=namespace+'-foreign';run(['podman','--remote=false','volume','create',foreign])
+    report['preview']={'instance':instance,'release_digest':identity,'expires_at':value['expires_at'],
+        'volume':preview_volume['name'],'network_names':[record['name'] for record in value['resources']['networks'].values()],
+        'production_volume':production_volume['name'],'foreign_volume':foreign}
+    report['checks'].update({'preview_full_postgresql_namespace':'passed','preview_data_independence':'passed','preview_credential_independence':'passed',
+        'preview_protected_readiness':'passed','preview_instance_limit_refused':'passed','preview_hostname_authority':'passed'})
+
+
+def expire(report):
+    preview=report['preview'];deadline=time.monotonic()+125
+    while int(time.time())<=preview['expires_at']:
+        if time.monotonic()>deadline:raise ValueError('preview did not reach its bounded real TTL')
+        time.sleep(1)
+    run([BINARY,'expire'],timeout=60)
+    value=installed(preview['instance'])
+    if value['desired_running'] or value['expires_at'] is not None or value['resources']['volumes']:
+        raise ValueError('preview expiry did not remove its recorded ephemeral data')
+    if run(['podman','--remote=false','volume','inspect',preview['volume']],ok=False).returncode==0:
+        raise ValueError('preview expiry retained an ephemeral owned volume')
+    for name in preview['network_names']:
+        if run(['podman','--remote=false','network','inspect',name],ok=False).returncode==0:
+            raise ValueError('preview expiry retained an owned network')
+    run(['podman','--remote=false','volume','inspect',preview['production_volume']])
+    run(['podman','--remote=false','volume','inspect',preview['foreign_volume']])
+    run(['podman','--remote=false','volume','rm',preview['foreign_volume']])
+    report['checks'].update({'preview_real_ttl_expiry':'passed','preview_owned_cleanup':'passed',
+        'preview_cleanup_preserves_foreign_resources':'passed','preview_cleanup_preserves_production_data':'passed'})

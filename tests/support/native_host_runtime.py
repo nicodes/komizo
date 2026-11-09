@@ -54,6 +54,7 @@ def fetch(app, release, path='/', *, headers=None):
 def host_policy(app):
     value={'kind':'komizo.policy','version':1,'application':app,'authority':{'kind':'owner'},
         'artifact_prefixes':['registry.fixture.test:5443/example/'+app+'-'],'hostnames':[app+'.localhost'],
+        'readiness':[{'url':'https://'+app+'.localhost/','status':200}],
         'limits':limits(96,500,96),'max_image_bytes':64*MiB,'max_asset_bytes':MiB,'max_asset_file_bytes':MiB,
         'startup_memory_bytes':32*MiB}
     write('/etc/komizo/apps/'+app+'.json',value)
@@ -261,15 +262,18 @@ def prepare():
         'application_uid_capabilities':'passed','application_read_only_root':'passed','no_published_application_ports':'passed'})
     import fixture_postgres
     fixture_postgres.prepare(report)
+    import fixture_preview
+    fixture_preview.prepare(report)
     failures(report)
     import fixture_secrets
     fixture_secrets.prepare(report)
     import fixture_backup
     fixture_backup.prepare(report)
     resource_stress(report)
+    fixture_preview.expire(report)
     run(['systemctl','stop','native-fixture-registry.service'])
     report['runtime_acceptance']=False
-    report['remaining']=['installed PostgreSQL encrypted recovery','isolated preview lifecycle','small-host capacity acceptance']
+    report['remaining']=['installed PostgreSQL encrypted recovery','small-host capacity acceptance']
     report['installed']={'static':result['release_digest'],'mailroom':ready['release_digest'],'prepared':prepared['release_digest'],
         'running':live['release_digest'],'containers':before}
     write(ROOT/'report.json',report)
