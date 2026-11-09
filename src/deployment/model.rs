@@ -459,7 +459,7 @@ pub enum Authority {
     Github {
         repository: String,
         repository_id: String,
-        workflows: BTreeMap<String, String>,
+        workflows: BTreeMap<String, Vec<String>>,
         reference: String,
         environment: String,
         #[serde(default)]

@@ -181,6 +181,7 @@ fn check_workflow(
     workflow: &str,
     reference: &str,
     environment: Option<&str>,
+    preview: bool,
 ) -> Result<()> {
     ensure!(
         string(claims, "repository") == repository
@@ -194,10 +195,10 @@ fn check_workflow(
                 string(claims, "runner_environment"),
                 "github-hosted" | "self-hosted"
             )
-            && matches!(
+            && (matches!(
                 string(claims, "event_name"),
                 "push" | "workflow_dispatch" | "pull_request_target" | "schedule"
-            ),
+            ) || (preview && string(claims, "event_name") == "issue_comment")),
         "request is outside approved repository and workflow authority"
     );
     if let Some(environment) = environment {
@@ -465,9 +466,14 @@ pub fn admit(
             let workflow = if request.action == "inspect" {
                 workflows
                     .values()
+                    .flatten()
                     .find(|workflow| string(&claims, "workflow_ref") == *workflow)
             } else {
-                workflows.get(&scope)
+                workflows.get(&scope).and_then(|callers| {
+                    callers
+                        .iter()
+                        .find(|workflow| string(&claims, "workflow_ref") == *workflow)
+                })
             }
             .ok_or_else(|| anyhow!("action has no approved workflow identity"))?;
             let environment = if request.instance == "production" {
@@ -486,6 +492,7 @@ pub fn admit(
                 workflow,
                 reference,
                 Some(environment),
+                request.instance != "production",
             )?;
             for field in [
                 "repository",
@@ -545,6 +552,7 @@ pub fn admit(
                         workflow,
                         reference,
                         Some(environment),
+                        request.instance != "production",
                     )?;
                     ensure!(
                         string(&publisher, "repository") == repository
