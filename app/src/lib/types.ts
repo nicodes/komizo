@@ -8,7 +8,7 @@ export type Operation = {
 export type Resources = Record<string, unknown>;
 export type Service = {container_id?: string | null; state?: string | null; health?: string | null; resources?: Resources};
 export type Instance = {
-  application: string; instance: string; release_digest: string; desired_running: boolean;
+  application: string; instance: string; release_digest: string; desired_running: boolean; removed?: boolean;
   operation_id: string; expires_at?: number | null;
   source?: {repository: string; revision: string};
   prepared?: {release_digest: string; operation_id: string; source?: {repository: string; revision: string}} | null;

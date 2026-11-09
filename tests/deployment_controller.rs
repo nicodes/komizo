@@ -1,7 +1,7 @@
 use anyhow::Result;
 use komizo::deployment::{
     controller::{self, Backend, Coordinator, Job},
-    store::{Operation, Store},
+    store::{self, Operation, Store},
     *,
 };
 use serde_json::{Value, json};
@@ -180,6 +180,7 @@ fn prepared_start_is_bound_to_the_selected_source_and_stale_installed_target_ref
         release_digest: old.digest.clone(),
         operation_id: "1".repeat(32),
         desired_running: false,
+        removed: false,
         expires_at: None,
         resources: Resources::default(),
         secret_snapshots: Default::default(),
@@ -221,4 +222,83 @@ fn prepared_start_is_bound_to_the_selected_source_and_stale_installed_target_ref
     );
     gate.send(()).unwrap();
     assert!(wait(&c.store, &id).ok);
+}
+
+#[test]
+fn terminal_acknowledgment_releases_the_instance_before_unrelated_maintenance() {
+    struct BlockingMaintenance {
+        entered: mpsc::SyncSender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+        calls: AtomicUsize,
+    }
+    impl Backend for BlockingMaintenance {
+        fn execute(
+            &self,
+            store: &Store,
+            _: &Policy,
+            _: &Job,
+            operation: &mut Operation,
+        ) -> Result<()> {
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            for phase in [
+                "staging",
+                "jobs",
+                "installing",
+                "activating",
+                "readiness",
+                "ready",
+            ] {
+                controller::advance(store, operation, phase)?;
+            }
+            Ok(())
+        }
+        fn maintenance(&self, _: &Store) -> Result<()> {
+            if self.calls.load(Ordering::Acquire) == 1 {
+                let _ = self.entered.send(());
+                self.release
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(3))?;
+            }
+            Ok(())
+        }
+    }
+    let (_dir, original, _gate, _calls, mut request) = setup(false);
+    let state = original.store.root.clone();
+    let policies = original.policies.clone();
+    drop(original);
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let backend = Arc::new(BlockingMaintenance {
+        entered: entered_tx,
+        release: Mutex::new(release_rx),
+        calls: AtomicUsize::new(0),
+    });
+    let c = Coordinator::new(state, policies, backend.clone()).unwrap();
+    let first =
+        store::operation_identity(&serde_json::from_value(request.clone()).unwrap()).unwrap();
+    drop(
+        c.admit(
+            serde_json::to_vec(&request).unwrap(),
+            0,
+            1000,
+            &mut |_| panic!(),
+        )
+        .unwrap(),
+    );
+    entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    assert!(c.store.operation(&first).unwrap().ok);
+    request["nonce"] = json!("e".repeat(32));
+    let second =
+        store::operation_identity(&serde_json::from_value(request.clone()).unwrap()).unwrap();
+    let admitted = c.admit(
+        serde_json::to_vec(&request).unwrap(),
+        0,
+        1000,
+        &mut |_| panic!(),
+    );
+    release_tx.send(()).unwrap();
+    drop(admitted.expect("a completed operation must not retain the app lease during maintenance"));
+    assert!(wait(&c.store, &second).ok);
+    assert_eq!(backend.calls.load(Ordering::Acquire), 2);
 }

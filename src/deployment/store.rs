@@ -151,9 +151,32 @@ pub struct Installed {
     pub release_digest: String,
     pub operation_id: String,
     pub desired_running: bool,
+    pub removed: bool,
     pub expires_at: Option<i64>,
     pub resources: Resources,
     pub secret_snapshots: BTreeMap<String, super::secrets::Snapshot>,
+}
+
+impl Installed {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.kind == "komizo.installed"
+                && self.version == 1
+                && name(&self.application)
+                && name(&self.instance)
+                && digest(&self.release_digest)
+                && hex(&self.operation_id, 32)
+                && (!self.removed
+                    || (self.instance != "production"
+                        && !self.desired_running
+                        && self.expires_at.is_none()
+                        && self.resources.containers.is_empty()
+                        && self.resources.networks.is_empty()
+                        && self.resources.volumes.is_empty())),
+            "invalid installed or removed instance state"
+        );
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -215,12 +238,14 @@ impl Store {
         }
         let record: Installed =
             serde_json::from_slice(&read_protected(&path, MAX_DOCUMENT_BYTES)?)?;
+        record.validate()?;
         ensure!(
             record.kind == "komizo.installed"
                 && record.version == 1
                 && record.application == application
                 && record.instance == instance
                 && !record.desired_running
+                && !record.removed
                 && digest(&record.release_digest)
                 && hex(&record.operation_id, 32),
             "prepared release has invalid instance ownership"
@@ -236,7 +261,10 @@ impl Store {
     ) -> Result<(Option<Installed>, Option<Installed>)> {
         for _ in 0..4 {
             let installed = self.installed(application, instance)?;
-            let prepared = if installed.as_ref().is_some_and(|r| !r.desired_running) {
+            let prepared = if installed
+                .as_ref()
+                .is_some_and(|r| !r.desired_running && !r.removed)
+            {
                 self.prepared(application, instance)?
             } else {
                 None
@@ -288,16 +316,15 @@ impl Store {
             "invalid operation identity"
         );
         let parent = self.root.join("operations");
-        let mut file = tempfile::Builder::new()
-            .prefix(".komizo-pending-")
-            .tempfile_in(&parent)?;
-        file.as_file()
-            .set_permissions(fs::Permissions::from_mode(0o600))?;
-        file.write_all(&serde_json::to_vec(operation)?)?;
-        file.as_file().sync_all()?;
-        file.persist_noclobber(parent.join(format!("{}.json", operation.operation_id)))
-            .map_err(|error| error.error)?;
-        File::open(parent)?.sync_all()?;
+        let _identity = self.lock("operation", &format!("o-{}", operation.operation_id))?;
+        let destination = parent.join(format!("{}.json", operation.operation_id));
+        ensure!(
+            !destination.try_exists()?,
+            "operation identity already exists"
+        );
+        // Exclusive identity admission plus atomic rename avoids a hard-link
+        // acknowledgment gap that could leave a two-link receipt after death.
+        atomic(&destination, &serde_json::to_vec(operation)?, 0o600)?;
         let path = self.root.join("history").join(format!(
             "{}.json",
             Self::instance_key(&operation.application, &operation.instance)?
@@ -409,6 +436,26 @@ pub fn read_protected(path: &Path, maximum: usize) -> Result<Vec<u8>> {
     Ok(body)
 }
 
+pub fn pending(path: &Path, maximum: u64) -> Result<bool> {
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow!("invalid private pending filename"))?;
+    let Some(tail) = filename.strip_prefix(".komizo-pending-") else {
+        return Ok(false);
+    };
+    ensure!(
+        tail.len() == 6 && tail.bytes().all(|b| b.is_ascii_alphanumeric()),
+        "unexpected private pending filename"
+    );
+    let file = open_protected(path, maximum)?;
+    ensure!(
+        file.metadata()?.mode() & 0o077 == 0,
+        "pending bytes are not privately owned"
+    );
+    Ok(true)
+}
+
 pub struct Guard(File);
 impl Drop for Guard {
     fn drop(&mut self) {
@@ -427,17 +474,7 @@ impl Store {
             let filename = filename
                 .to_str()
                 .ok_or_else(|| anyhow!("invalid operation ledger member"))?;
-            if filename
-                .strip_prefix(".komizo-pending-")
-                .is_some_and(|tail| {
-                    tail.len() == 6 && tail.bytes().all(|b| b.is_ascii_alphanumeric())
-                })
-            {
-                let pending = open_protected(&entry.path(), MAX_DOCUMENT_BYTES as u64)?;
-                ensure!(
-                    pending.metadata()?.mode() & 0o077 == 0,
-                    "pending operation bytes are not private"
-                );
+            if pending(&entry.path(), MAX_DOCUMENT_BYTES as u64)? {
                 continue;
             }
             let id = filename
@@ -588,6 +625,7 @@ impl Store {
             &read_protected(&path, MAX_DOCUMENT_BYTES)?,
             MAX_DOCUMENT_BYTES,
         )?)?;
+        record.validate()?;
         ensure!(
             record.kind == "komizo.installed"
                 && record.version == 1
@@ -600,6 +638,7 @@ impl Store {
         Ok(Some(record))
     }
     pub fn save_installed(&self, record: &Installed) -> Result<()> {
+        record.validate()?;
         let key = Self::instance_key(&record.application, &record.instance)?;
         atomic(
             &self.root.join("instances").join(format!("{key}.json")),

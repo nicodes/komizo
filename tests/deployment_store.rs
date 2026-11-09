@@ -188,3 +188,63 @@ fn native_units_escape_manager_expansion_and_do_not_publish_ports_or_repull() {
         units::namespace("mailroom", "pr-1").unwrap()
     );
 }
+
+#[test]
+fn removed_preview_state_cannot_retain_data_or_be_confused_with_a_deliberate_stop() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::new(dir.path().join("state")).unwrap();
+    let mut installed = Installed {
+        kind: "komizo.installed".into(),
+        version: 1,
+        application: "mailroom".into(),
+        instance: "pr-1".into(),
+        release_digest: format!("sha256:{}", "a".repeat(64)),
+        operation_id: "b".repeat(32),
+        desired_running: false,
+        removed: false,
+        expires_at: None,
+        resources: Resources::default(),
+        secret_snapshots: BTreeMap::new(),
+    };
+    installed.resources.volumes.insert(
+        "data".into(),
+        ObjectRecord {
+            name: "owned-data".into(),
+            id: format!("sha256:{}", "c".repeat(64)),
+        },
+    );
+    store.save_installed(&installed).unwrap();
+    assert!(
+        !store
+            .installed("mailroom", "pr-1")
+            .unwrap()
+            .unwrap()
+            .removed
+    );
+    installed.removed = true;
+    assert!(store.save_installed(&installed).is_err());
+    installed.resources = Resources::default();
+    store.save_installed(&installed).unwrap();
+    assert!(
+        store
+            .installed("mailroom", "pr-1")
+            .unwrap()
+            .unwrap()
+            .removed
+    );
+    assert!(store.view("mailroom", "pr-1").unwrap().1.is_none());
+    installed.desired_running = true;
+    assert!(installed.validate().is_err());
+    installed.desired_running = false;
+    installed.instance = "production".into();
+    assert!(installed.validate().is_err());
+    let pending = store.root.join("instances/.komizo-pending-A1b2C3");
+    fs::write(&pending, b"{partial").unwrap();
+    fs::set_permissions(&pending, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        komizo::deployment::proxy::instances(&store).unwrap().len(),
+        1
+    );
+    fs::set_permissions(&pending, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(komizo::deployment::proxy::instances(&store).is_err());
+}

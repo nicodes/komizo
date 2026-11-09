@@ -5,6 +5,7 @@ export function currentOperation(instance: Instance): Operation | undefined {
     operation.operation_id === instance.operation_id && operation.release_digest === instance.release_digest);
 }
 export function deploymentStatus(instance: Instance): string {
+  if (instance.removed) return "Removed";
   const operation = currentOperation(instance);
   if (!instance.desired_running) return instance.prepared ? "Prepared while stopped" : "Stopped by owner";
   if (!operation) return "Readiness unverified";
@@ -14,7 +15,7 @@ export function deploymentStatus(instance: Instance): string {
   return "Operation in progress";
 }
 export function actionable(instance: Instance, action: ActionName): boolean {
-  return !!instance.actions?.[action] && (instance.unresolved_operations?.length ?? 0) === 0
+  return !instance.removed && !!instance.actions?.[action] && (instance.unresolved_operations?.length ?? 0) === 0
     && (action === "start" ? !instance.desired_running : instance.desired_running);
 }
 export async function operationID(application: string, instance: string, nonce: string): Promise<string> {

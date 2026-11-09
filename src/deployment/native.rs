@@ -1048,6 +1048,17 @@ fn reconcile_container_ids(
 /// Ordinary releases cannot silently rename a database mount or bind an empty
 /// replacement volume. Data topology changes require an explicit owner transfer.
 pub fn retained_topology(previous: &ReleaseDocument, next: &ReleaseDocument) -> Result<()> {
+    if let Some(old) = &previous.release.stateful_contract {
+        let new = next
+            .release
+            .stateful_contract
+            .as_ref()
+            .ok_or_else(|| anyhow!("retained data cannot discard its stateful authority"))?;
+        ensure!(
+            new.schema.write >= old.schema.write,
+            "ordinary deployment cannot downgrade the retained schema; owner data recovery is required"
+        );
+    }
     let topology = |document: &ReleaseDocument| -> Result<Vec<u8>> {
         let mounts = document
             .release
@@ -1954,6 +1965,90 @@ fn needs_backup(_policy: &Policy, instance: &str, document: &ReleaseDocument) ->
     !document.release.workload.volumes.is_empty() && instance == "production"
 }
 
+fn finish_remove(
+    store: &Store,
+    installed: &mut Installed,
+    engine: &Engine,
+    system: &System,
+    operation_id: &str,
+) -> Result<()> {
+    ensure!(
+        installed.instance != "production",
+        "only ephemeral data may be removed"
+    );
+    let pending = store.unresolved(&installed.application, &installed.instance)?;
+    for old in pending
+        .iter()
+        .filter(|old| old.operation_id != operation_id)
+    {
+        super::recovery::reconcile_units(
+            store,
+            &installed.application,
+            &installed.instance,
+            &old.operation_id,
+        )?;
+        reconcile_tasks(store, old, system)?;
+        super::recovery::reconcile_objects(store, installed, &old.operation_id, engine)?;
+        reconcile_services(store, old, installed, engine, system)?;
+        super::recovery::reconcile_object_removals(store, installed, &old.operation_id, engine)?;
+    }
+    stop_services(store, installed, engine, system, true, operation_id)?;
+    jobs::cleanup_ephemeral(store, installed, operation_id, engine.deadline)?;
+    for (logical, record) in installed.resources.volumes.clone() {
+        remove_object(
+            store,
+            installed,
+            engine,
+            operation_id,
+            "volume",
+            &logical,
+            &record,
+        )?;
+        installed.resources.volumes.remove(&logical);
+        store.save_installed(installed)?;
+    }
+    for (logical, record) in installed.resources.networks.clone() {
+        remove_object(
+            store,
+            installed,
+            engine,
+            operation_id,
+            "network",
+            &logical,
+            &record,
+        )?;
+        installed.resources.networks.remove(&logical);
+        store.save_installed(installed)?;
+    }
+    engine.prove_absent(&units::namespace(
+        &installed.application,
+        &installed.instance,
+    )?)?;
+    let prepared = prepared_path(store, &installed.application, &installed.instance)?;
+    if prepared.try_exists()? {
+        fs::remove_file(prepared)?;
+    }
+    installed.expires_at = None;
+    installed.removed = true;
+    installed.operation_id = operation_id.into();
+    store.save_installed(installed)?;
+    capacity::release(store, &installed.application, &installed.instance)?;
+    for old in pending
+        .iter()
+        .filter(|old| old.operation_id != operation_id)
+    {
+        store::atomic(
+            &store
+                .root
+                .join("reconciliations")
+                .join(format!("{}.json", old.operation_id)),
+            &canonical(&json!({"resolved_by":operation_id,"outcome":"ephemeral_removed"}))?,
+            0o600,
+        )?;
+    }
+    Ok(())
+}
+
 impl Backend for Native {
     fn maintenance(&self, store: &Store) -> Result<()> {
         proxy::refresh(store, Instant::now() + Duration::from_secs(20))
@@ -1973,7 +2068,17 @@ impl Backend for Native {
         let system = System {
             deadline: job.deadline,
         };
-        let previous = store.installed(application, instance)?;
+        let mut previous = store.installed(application, instance)?;
+        if job.request.action == "deploy"
+            && previous.as_ref().is_some_and(|installed| installed.removed)
+        {
+            ensure!(
+                instance != "production",
+                "production cannot be an ephemeral removed instance"
+            );
+            engine.prove_absent(&units::namespace(application, instance)?)?;
+            previous = None;
+        }
         match job.request.action.as_str() {
             "data-prepare" => {
                 let document = store.release(&job.request.release_digest)?;
@@ -2010,6 +2115,7 @@ impl Backend for Native {
                     release_digest: document.digest.clone(),
                     operation_id: operation.operation_id.clone(),
                     desired_running: false,
+                    removed: false,
                     expires_at: None,
                     resources,
                     secret_snapshots: snapshots,
@@ -2075,6 +2181,7 @@ impl Backend for Native {
                         release_digest: document.digest.clone(),
                         operation_id: operation.operation_id.clone(),
                         desired_running: false,
+                        removed: false,
                         expires_at: job
                             .request
                             .ttl_seconds
@@ -2123,6 +2230,7 @@ impl Backend for Native {
                     release_digest: document.digest.clone(),
                     operation_id: operation.operation_id.clone(),
                     desired_running: false,
+                    removed: false,
                     expires_at: job
                         .request
                         .ttl_seconds
@@ -2138,6 +2246,10 @@ impl Backend for Native {
                 activate(store, policy, &mut installed, &document, job, operation)
             }
             "backup" => {
+                ensure!(
+                    instance == "production",
+                    "logical backup requires a production instance"
+                );
                 if let Some(installed) = previous {
                     ensure!(
                         installed.desired_running,
@@ -2160,6 +2272,10 @@ impl Backend for Native {
             }
             "stop" => {
                 let mut installed = previous.ok_or_else(|| anyhow!("instance absent"))?;
+                ensure!(
+                    !installed.removed,
+                    "removed preview requires a fresh admitted deployment"
+                );
                 advance(store, operation, "staging")?;
                 advance(store, operation, "installing")?;
                 stop_services(
@@ -2175,6 +2291,10 @@ impl Backend for Native {
             }
             "start" | "restart" => {
                 let mut installed = previous.ok_or_else(|| anyhow!("instance absent"))?;
+                ensure!(
+                    !installed.removed,
+                    "removed preview requires a fresh admitted deployment"
+                );
                 advance(store, operation, "staging")?;
                 let prepared = prepared_path(store, application, instance)?;
                 if prepared.try_exists()?
@@ -2316,50 +2436,7 @@ impl Backend for Native {
                 let mut installed = previous.ok_or_else(|| anyhow!("instance absent"))?;
                 advance(store, operation, "staging")?;
                 advance(store, operation, "installing")?;
-                stop_services(
-                    store,
-                    &mut installed,
-                    &engine,
-                    &system,
-                    true,
-                    &job.operation_id,
-                )?;
-                for (logical, record) in installed.resources.volumes.clone() {
-                    remove_object(
-                        store,
-                        &installed,
-                        &engine,
-                        &job.operation_id,
-                        "volume",
-                        &logical,
-                        &record,
-                    )?;
-                    installed.resources.volumes.remove(&logical);
-                    store.save_installed(&installed)?;
-                }
-                for (logical, record) in installed.resources.networks.clone() {
-                    remove_object(
-                        store,
-                        &installed,
-                        &engine,
-                        &job.operation_id,
-                        "network",
-                        &logical,
-                        &record,
-                    )?;
-                    installed.resources.networks.remove(&logical);
-                    store.save_installed(&installed)?;
-                }
-                store.save_installed(&installed)?;
-                // A retained ledger stays even after removal; absence is never
-                // inferred from a container list or a caller-supplied label.
-                installed.expires_at = None;
-                store.save_installed(&installed)?;
-                let prepared = prepared_path(store, application, instance)?;
-                if prepared.try_exists()? {
-                    fs::remove_file(prepared)?;
-                }
-                capacity::release(store, application, instance)?;
+                finish_remove(store, &mut installed, &engine, &system, &job.operation_id)?;
                 advance(store, operation, "prepared_stopped")
             }
             "secret-set" => {
@@ -2424,6 +2501,20 @@ impl Backend for Native {
                 reconcile_tasks(store, &uncertain, &system)?;
                 cleanup_captures(store, &uncertain, job, operation)?;
                 if let Some(mut installed) = previous {
+                    if action == "remove" {
+                        ensure!(
+                            job.request.release_digest == installed.release_digest,
+                            "ephemeral recovery source changed"
+                        );
+                        if operation.phase == "admitted" {
+                            advance(store, operation, "staging")?;
+                        }
+                        if operation.phase == "staging" {
+                            advance(store, operation, "jobs")?;
+                        }
+                        finish_remove(store, &mut installed, &engine, &system, &job.operation_id)?;
+                        return advance(store, operation, "ready");
+                    }
                     let document = store.release(&installed.release_digest)?;
                     ensure!(
                         job.request.release_digest == installed.release_digest,
@@ -2564,6 +2655,7 @@ mod recovery_tests {
             release_digest: document.digest.clone(),
             operation_id: "a".repeat(32),
             desired_running: false,
+            removed: false,
             expires_at: None,
             resources: Resources::default(),
             secret_snapshots: BTreeMap::new(),

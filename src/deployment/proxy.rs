@@ -63,6 +63,9 @@ pub fn instances(store: &Store) -> Result<Vec<Installed>> {
     let mut records = Vec::new();
     for entry in fs::read_dir(store.root.join("instances"))? {
         let path = entry?.path();
+        if store::pending(&path, MAX_DOCUMENT_BYTES as u64)? {
+            continue;
+        }
         let record: Installed =
             serde_json::from_slice(&store::read_protected(&path, MAX_DOCUMENT_BYTES)?)?;
         ensure!(

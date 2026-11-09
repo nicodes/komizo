@@ -488,7 +488,15 @@ pub fn status() -> Result<Value> {
             .map_or(installed.release_digest.as_str(), |p| {
                 p["release_digest"].as_str().unwrap()
             });
-        let actions = json!({"start":{"release_digest":start},"stop":{"release_digest":installed.release_digest},"restart":{"release_digest":installed.release_digest},"backup":{"release_digest":installed.release_digest}});
+        let actions = if installed.removed {
+            json!({})
+        } else {
+            json!({"start":{"release_digest":start},"stop":{"release_digest":installed.release_digest},"restart":{"release_digest":installed.release_digest},"backup":{"release_digest":installed.release_digest}})
+        };
+        let mut actions = actions;
+        if installed.instance != "production" {
+            actions.as_object_mut().unwrap().remove("backup");
+        }
         let generations = installed
             .secret_snapshots
             .iter()
@@ -502,7 +510,7 @@ pub fn status() -> Result<Value> {
             .iter()
             .map(|(alias, grant)| (alias, &grant.generation))
             .collect::<BTreeMap<_, _>>();
-        instances.push(json!({"application":installed.application,"instance":installed.instance,"release_digest":installed.release_digest,"source":document.release.source,"routes":document.release.workload.routes.iter().map(|r|json!({"host":r.host,"path":r.path})).collect::<Vec<_>>(),"desired_running":installed.desired_running,"expires_at":installed.expires_at,"operation_id":installed.operation_id,"prepared":prepared,"actions":actions,"services":services,"log_targets":document.release.workload.services.keys().chain(document.release.workload.jobs.keys()).collect::<Vec<_>>(),"resources":resources,"volumes":installed.resources.volumes,"secret_generations":generations,"available_secret_generations":available,"unresolved_operations":unresolved,"operations":operations}));
+        instances.push(json!({"application":installed.application,"instance":installed.instance,"release_digest":installed.release_digest,"source":document.release.source,"routes":document.release.workload.routes.iter().map(|r|json!({"host":r.host,"path":r.path})).collect::<Vec<_>>(),"desired_running":installed.desired_running,"removed":installed.removed,"expires_at":installed.expires_at,"operation_id":installed.operation_id,"prepared":prepared,"actions":actions,"services":services,"log_targets":document.release.workload.services.keys().chain(document.release.workload.jobs.keys()).collect::<Vec<_>>(),"resources":resources,"volumes":installed.resources.volumes,"secret_generations":generations,"available_secret_generations":available,"unresolved_operations":unresolved,"operations":operations}));
     }
     Ok(
         json!({"kind":"komizo.status","version":1,"observed_at":controller::now()?,"host":{"boot_id":bounded_text(std::path::Path::new("/proc/sys/kernel/random/boot_id")).map(|s|s.trim().to_owned()),"resources":physical_resources(),"storage":storage_resources()?,"controller_resources":system.group("komizo-control.slice").ok().map(|p|cgroup_resources(&p)),"proxy_resources":system.group("komizo-proxy.slice").ok().map(|p|cgroup_resources(&p))},"instances":instances}),

@@ -169,12 +169,15 @@ impl Coordinator {
                     }
                     Ok(operation)
                 })();
+                let response = job.response.clone();
+                // Completion means effects and their durable state are settled.
+                // Release the lease and credentials before acknowledging it;
+                // unrelated route maintenance must not reject the next request.
+                drop(job);
                 if let Ok(operation) = result {
-                    let _ = job.response.send(operation);
+                    let _ = response.send(operation);
                 }
                 let _ = backend.maintenance(&worker_store);
-                // The lease and credentials are dropped only after the worker
-                // finishes, never when its waiting SSH connection disappears.
             }
         });
         Ok(coordinator)
@@ -261,7 +264,6 @@ impl Coordinator {
             reconciliation_required: false,
             backup: None,
         };
-        self.store.create_operation(&operation)?;
         let journal = self.store.root.join("journal").join(&id);
         store::atomic(
             &journal.join("admission.json"),
@@ -282,6 +284,10 @@ impl Coordinator {
                 0o600,
             )?;
         }
+        // An operation becomes discoverable only after its complete admission
+        // and prior-state evidence is durable. Orphan pre-admission files have
+        // never been queued and cannot have executed effects.
+        self.store.create_operation(&operation)?;
         // The canonical release and audit metadata are durable. Neither bearer
         // proof nor raw request is retained in the queue or on disk.
         request.release = None;
@@ -439,6 +445,9 @@ impl Coordinator {
     }
 
     fn blocked(&self, request: &Request) -> Result<()> {
+        if request.action == "remove" && request.instance != "production" {
+            return Ok(());
+        }
         if request.authority == "owner"
             && ["recover", "stop", "secret-set"].contains(&request.action.as_str())
         {

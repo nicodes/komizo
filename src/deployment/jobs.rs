@@ -117,7 +117,7 @@ fn validate(receipt: &Receipt) -> Result<()> {
             && hex(&receipt.operation_id, 32)
             && digest(&receipt.release_digest)
             && hex(&receipt.ownership, 32)
-            && receipt.container_name == format!("{namespace}-job-{}", &receipt.identity[7..19])
+            && receipt.container_name == format!("{namespace}-job-{}", &receipt.identity[7..27])
             && (receipt.container_id.is_empty() || hex(&receipt.container_id, 64))
             && match receipt.phase.as_str() {
                 "starting" | "uncertain" => receipt.exit_code.is_none(),
@@ -223,13 +223,19 @@ fn owned(
         .volumes
         .iter()
         .map(|m| {
-            (
-                installed.resources.volumes[&m.name].name.as_str(),
+            Ok((
+                installed
+                    .resources
+                    .volumes
+                    .get(&m.name)
+                    .ok_or_else(|| anyhow!("retained job volume binding missing"))?
+                    .name
+                    .as_str(),
                 m.target.as_str(),
                 Some(!m.read_only),
-            )
+            ))
         })
-        .collect::<std::collections::BTreeSet<_>>();
+        .collect::<Result<std::collections::BTreeSet<_>>>()?;
     ensure!(
         observed == expected,
         "one-shot retained-volume mounts changed"
@@ -426,7 +432,7 @@ fn run_with(
         container_name: format!(
             "{}-job-{}",
             super::units::namespace(&installed.application, &installed.instance)?,
-            &identity[7..19]
+            &identity[7..27]
         ),
         container_id: String::new(),
         ownership: store::identity()?,
@@ -520,6 +526,116 @@ pub fn reconcile(
     deadline: std::time::Instant,
 ) -> Result<()> {
     reconcile_with_evidence(store, document, installed, operation_id, deadline, false)
+}
+
+/// A separately admitted ephemeral instance removal may cancel and remove its
+/// exact jobs. Their durable completed/failed/uncertain receipts remain intact.
+pub fn cleanup_ephemeral(
+    store: &Store,
+    installed: &Installed,
+    operation_id: &str,
+    deadline: std::time::Instant,
+) -> Result<()> {
+    cleanup_ephemeral_with(
+        store,
+        installed,
+        operation_id,
+        &super::engine::Engine { deadline },
+    )
+}
+fn cleanup_ephemeral_with(
+    store: &Store,
+    installed: &Installed,
+    operation_id: &str,
+    runtime: &impl Runtime,
+) -> Result<()> {
+    ensure!(
+        installed.instance != "production" && hex(operation_id, 32),
+        "job removal requires an admitted ephemeral instance"
+    );
+    let directory = store.root.join("jobs").join(super::units::namespace(
+        &installed.application,
+        &installed.instance,
+    )?);
+    if !directory.try_exists()? {
+        return Ok(());
+    }
+    let mut count = 0;
+    for entry in std::fs::read_dir(directory)? {
+        count += 1;
+        ensure!(
+            count <= 16384,
+            "job cleanup exceeds its bounded receipt inventory"
+        );
+        let path = entry?.path();
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| anyhow!("invalid job receipt member"))?;
+        if store::pending(&path, 64 << 10)? {
+            continue;
+        }
+        let id = filename
+            .strip_suffix(".json")
+            .filter(|id| hex(id, 64))
+            .ok_or_else(|| anyhow!("unexpected job receipt member"))?;
+        let mut receipt = read(
+            store,
+            &installed.application,
+            &installed.instance,
+            &format!("sha256:{id}"),
+        )?
+        .ok_or_else(|| anyhow!("job receipt disappeared during cleanup"))?;
+        if !runtime.exists("container", &receipt.container_name)? {
+            continue;
+        }
+        let document = store.release(&receipt.release_digest)?;
+        ensure!(
+            document.release.application == installed.application,
+            "job removal source belongs to another application"
+        );
+        let value = document
+            .release
+            .workload
+            .jobs
+            .get(&receipt.job)
+            .ok_or_else(|| anyhow!("job removal source declaration missing"))?;
+        let Artifact::Image { config_digest, .. } = &document.release.artifacts[&value.artifact]
+        else {
+            return Err(anyhow!("job removal has no immutable image authority"));
+        };
+        retained(runtime, value, installed)?;
+        if receipt.container_id.is_empty() {
+            let actual = runtime.inspect("container", &receipt.container_name)?;
+            receipt.container_id = actual["Id"]
+                .as_str()
+                .filter(|id| hex(id, 64))
+                .ok_or_else(|| anyhow!("job removal has no actual native ID"))?
+                .into();
+            owned(runtime, &receipt, value, installed, config_digest)?;
+            receipt.phase = "uncertain".into();
+            save(store, &receipt)?;
+        }
+        owned(runtime, &receipt, value, installed, config_digest)?;
+        let intent = store
+            .root
+            .join("journal")
+            .join(operation_id)
+            .join(format!("job-removal-{id}.json"));
+        store::atomic(
+            &intent,
+            &canonical(
+                &json!({"kind":"komizo.job-removal","version":1,"operation_id":operation_id,"application":installed.application,"instance":installed.instance,"receipt":receipt,"config_digest":config_digest}),
+            )?,
+            0o600,
+        )?;
+        runtime.run(&["rm", "--force", "--", &receipt.container_id])?;
+        ensure!(
+            !runtime.exists("container", &receipt.container_name)?,
+            "ephemeral job removal remains uncertain"
+        );
+    }
+    Ok(())
 }
 
 pub fn log_id(
@@ -680,6 +796,7 @@ mod tests {
             release["workload"]["jobs"]["migrate"] = job;
             release["workload"]["volumes"]["data"] = json!({});
             let document = read_release(&serde_json::to_vec(&release).unwrap()).unwrap();
+            store.save_release(&document).unwrap();
             let path = store.root.join("runtime.env");
             store::atomic(&path, b"PRIVATE_TOKEN=do-not-log-this\n", 0o600).unwrap();
             let installed = Installed {
@@ -690,6 +807,7 @@ mod tests {
                 release_digest: document.digest.clone(),
                 operation_id: "a".repeat(32),
                 desired_running: true,
+                removed: false,
                 expires_at: None,
                 resources: store::Resources {
                     networks: BTreeMap::from([(
@@ -728,7 +846,7 @@ mod tests {
             read(
                 &self.store,
                 "mailroom",
-                "production",
+                &self.installed.instance,
                 &identity(&self.document, "migrate", &self.installed).unwrap(),
             )
             .unwrap()
@@ -753,6 +871,7 @@ mod tests {
         exit: i32,
         corrupt_owner: bool,
         corrupt_mount: bool,
+        cleanup_operation: Option<String>,
     }
     impl<'a> Fake<'a> {
         fn new(fixture: &'a Fixture) -> Self {
@@ -764,6 +883,7 @@ mod tests {
                 exit: 0,
                 corrupt_owner: false,
                 corrupt_mount: false,
+                cleanup_operation: None,
             }
         }
     }
@@ -827,6 +947,26 @@ mod tests {
                     state["FinishedAt"] = json!("2026-01-01T00:00:00Z");
                     Ok(format!("{}\n", self.exit).into_bytes())
                 }
+                "rm" => {
+                    let operation = self
+                        .cleanup_operation
+                        .as_ref()
+                        .expect("only explicitly authorized ephemeral cleanup may remove jobs");
+                    assert_eq!(args, ["rm", "--force", "--", receipt.container_id.as_str()]);
+                    let path = self
+                        .fixture
+                        .store
+                        .root
+                        .join("journal")
+                        .join(operation)
+                        .join(format!("job-removal-{}.json", &receipt.identity[7..]));
+                    let intent: Value =
+                        serde_json::from_slice(&store::read_protected(&path, 64 << 10)?).unwrap();
+                    assert_eq!(intent["receipt"]["ownership"], receipt.ownership);
+                    assert_eq!(intent["receipt"]["container_id"], receipt.container_id);
+                    *self.container.borrow_mut() = None;
+                    Ok(vec![])
+                }
                 _ => panic!("unowned or destructive native operation"),
             }
         }
@@ -842,6 +982,88 @@ mod tests {
         fn retained(&self, _kind: &str, _record: &store::ObjectRecord) -> Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn ephemeral_cleanup_preserves_receipts_and_requires_actual_owned_job_identity() {
+        let mut fixture = Fixture::new();
+        fixture.installed.instance = "pr-1".into();
+        let mut runtime = Fake::new(&fixture);
+        runtime.cleanup_operation = Some("e".repeat(32));
+        fixture.run(&runtime).unwrap();
+        cleanup_ephemeral_with(
+            &fixture.store,
+            &fixture.installed,
+            &"e".repeat(32),
+            &runtime,
+        )
+        .unwrap();
+        assert!(runtime.container.borrow().is_none());
+        assert_eq!(fixture.receipt().unwrap().phase, "completed");
+        assert_eq!(fixture.receipt().unwrap().exit_code, Some(0));
+        fixture.run(&runtime).unwrap();
+        assert_eq!(
+            runtime
+                .calls
+                .borrow()
+                .iter()
+                .filter(|args| args[0] == "create")
+                .count(),
+            1
+        );
+
+        let mut foreign = Fixture::new();
+        foreign.installed.instance = "pr-2".into();
+        let mut runtime = Fake::new(&foreign);
+        runtime.cleanup_operation = Some("e".repeat(32));
+        foreign.run(&runtime).unwrap();
+        runtime.container.borrow_mut().as_mut().unwrap()["Config"]["Labels"]["io.komizo.ownership"] =
+            json!("f".repeat(32));
+        assert!(
+            cleanup_ephemeral_with(
+                &foreign.store,
+                &foreign.installed,
+                &"e".repeat(32),
+                &runtime
+            )
+            .is_err()
+        );
+        assert!(runtime.container.borrow().is_some());
+        assert!(!runtime.calls.borrow().iter().any(|args| args[0] == "rm"));
+    }
+
+    #[test]
+    fn removing_an_uncertain_preview_job_does_not_invent_an_exit_or_allow_replay() {
+        let mut fixture = Fixture::new();
+        fixture.installed.instance = "pr-1".into();
+        let mut runtime = Fake::new(&fixture);
+        runtime.fail = Some("wait");
+        runtime.cleanup_operation = Some("e".repeat(32));
+        assert!(fixture.run(&runtime).is_err());
+        assert_eq!(fixture.receipt().unwrap().phase, "uncertain");
+        cleanup_ephemeral_with(
+            &fixture.store,
+            &fixture.installed,
+            &"e".repeat(32),
+            &runtime,
+        )
+        .unwrap();
+        assert!(runtime.container.borrow().is_none());
+        assert_eq!(fixture.receipt().unwrap().phase, "uncertain");
+        assert_eq!(fixture.receipt().unwrap().exit_code, None);
+        assert!(fixture.run(&runtime).is_err());
+        let production = Fixture::new();
+        let runtime = Fake::new(&production);
+        assert!(
+            cleanup_ephemeral_with(
+                &production.store,
+                &production.installed,
+                &"e".repeat(32),
+                &runtime
+            )
+            .is_err()
+        );
+        assert!(runtime.calls.borrow().is_empty());
     }
 
     #[test]

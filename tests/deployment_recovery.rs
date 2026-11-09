@@ -23,6 +23,7 @@ fn installed() -> Installed {
         release_digest: format!("sha256:{}", "a".repeat(64)),
         operation_id: "b".repeat(32),
         desired_running: false,
+        removed: false,
         expires_at: None,
         resources: Resources::default(),
         secret_snapshots: Default::default(),

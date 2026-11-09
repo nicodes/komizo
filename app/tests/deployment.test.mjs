@@ -44,3 +44,10 @@ test('missing or invalid measurements do not become zero observations', () => {
   assert.equal(resourceNumber({memory_bytes:0},'memory_bytes'),0);
   assert.equal(resourceNumber({usage_bytes:42},'memory_bytes','usage_bytes'),42);
 });
+
+test('removed previews do not expose start or backup as stopped-owner actions', async () => {
+  const removed={...instance,instance:'pr-1',desired_running:false,removed:true};
+  assert.equal(deploymentStatus(removed),'Removed');
+  for(const action of ['start','stop','restart','backup'])assert.equal(actionable(removed,action),false);
+  await assert.rejects(propose(removed,'start'),/Refresh and inspect/);
+});

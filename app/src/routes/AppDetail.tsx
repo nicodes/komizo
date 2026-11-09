@@ -44,7 +44,7 @@ export default function AppDetail() {
     <header class="mb-5 flex items-baseline justify-between"><h1 class="text-ink text-lg font-semibold">{params.application} <span class="text-dim text-sm">{params.instance}</span></h1><A class="text-accent text-sm" href="/">all applications</A></header>
     <Show when={instance.error}><Dim>Host observation unavailable: {String(instance.error)}</Dim></Show>
     <Show when={instance()} fallback={<Dim>{instance.loading ? "Reading application…" : "This instance is unavailable."}</Dim>}>{value => <>
-      <Section title="Release"><Row label="status"><Badge word={deploymentStatus(value())}/></Row><Row label="intent">{value().desired_running ? "running" : "stopped"}</Row>
+      <Section title="Release"><Row label="status"><Badge word={deploymentStatus(value())}/></Row><Row label="intent">{value().removed ? "removed" : value().desired_running ? "running" : "stopped"}</Row>
         <Row label="release"><span class="break-all font-mono text-xs">{value().release_digest}</span></Row>
         <Show when={value().source}><Row label="source">{value().source?.repository} · {value().source?.revision.slice(0, 12)}</Row></Show>
         <Show when={value().prepared}><Row label="prepared for start"><span class="break-all font-mono text-xs">{value().prepared?.release_digest}</span></Row></Show>

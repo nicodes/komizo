@@ -432,6 +432,7 @@ mod tests {
             release_digest: document.digest.clone(),
             operation_id: "1".repeat(32),
             desired_running: true,
+            removed: false,
             expires_at: None,
             resources: store::Resources::default(),
             secret_snapshots: Default::default(),

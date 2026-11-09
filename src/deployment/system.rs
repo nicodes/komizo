@@ -178,28 +178,7 @@ fn unit_records(store: &Store) -> Result<BTreeMap<String, UnitRecord>> {
     )?)?)
 }
 fn pending_temporary(path: &Path) -> Result<bool> {
-    use std::os::unix::fs::MetadataExt;
-    let name = path.file_name().and_then(|p| p.to_str()).unwrap_or("");
-    if !name.starts_with(".komizo-pending-") {
-        return Ok(false);
-    }
-    ensure!(
-        name.len() == ".komizo-pending-".len() + 6
-            && name[".komizo-pending-".len()..]
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric()),
-        "unrecognized pending unit temporary"
-    );
-    let m = fs::symlink_metadata(path)?;
-    ensure!(
-        m.is_file()
-            && m.nlink() == 1
-            && m.uid() == unsafe { libc::geteuid() }
-            && m.mode() & 0o077 == 0
-            && m.len() <= 4 << 20,
-        "unsafe pending unit temporary"
-    );
-    Ok(true)
+    store::pending(path, 4 << 20)
 }
 fn intent_records(store: &Store) -> Result<Vec<(PathBuf, UnitIntent)>> {
     let directory = store.root.join("unit-intents");

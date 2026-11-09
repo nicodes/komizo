@@ -56,6 +56,37 @@ fn retained_data_cannot_be_silently_redirected_to_an_empty_volume() {
 }
 
 #[test]
+fn ordinary_updates_cannot_discard_the_data_contract_or_downgrade_its_schema() {
+    let mut previous = document();
+    previous.release.stateful_contract=Some(serde_json::from_value(json!({"version":1,"source_revision":previous.release.source.revision,"schema":{"minimum":1,"maximum":2,"write":2},"data_revision":"2","credential_revision":"3","migrations":[{"identity":"schema.sql","sha256":"a".repeat(64)}],"recovery_action":"forward_only"})).unwrap());
+    let mut next = previous.clone();
+    native::retained_topology(&previous, &next).unwrap();
+    next.release
+        .stateful_contract
+        .as_mut()
+        .unwrap()
+        .schema
+        .write = 1;
+    assert!(native::retained_topology(&previous, &next).is_err());
+    next.release.stateful_contract = None;
+    assert!(native::retained_topology(&previous, &next).is_err());
+    next = previous.clone();
+    next.release
+        .stateful_contract
+        .as_mut()
+        .unwrap()
+        .schema
+        .maximum = 3;
+    next.release
+        .stateful_contract
+        .as_mut()
+        .unwrap()
+        .schema
+        .write = 3;
+    native::retained_topology(&previous, &next).unwrap();
+}
+
+#[test]
 fn owner_forward_recovery_is_bound_to_exact_data_credentials_operation_and_schema() {
     let mut document = document();
     document.release.stateful_contract=Some(serde_json::from_value(json!({"version":1,"source_revision":document.release.source.revision,"schema":{"minimum":1,"maximum":2,"write":2},"data_revision":"2","credential_revision":"3","migrations":[],"recovery_action":"forward_only"})).unwrap());
@@ -67,6 +98,7 @@ fn owner_forward_recovery_is_bound_to_exact_data_credentials_operation_and_schem
         release_digest: document.digest.clone(),
         operation_id: "1".repeat(32),
         desired_running: false,
+        removed: false,
         expires_at: None,
         resources: Resources::default(),
         secret_snapshots: BTreeMap::new(),

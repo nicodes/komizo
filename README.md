@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: a7327463d637eaf76176ce0b69a0f66f053156d592d6ddc7dd9777f6f8790cf1 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 4d6ed93b668447250bab88317735cfff2f1d64eab71477195727b4d605899853 -->
 
 # komizo
 
@@ -34,7 +34,7 @@ komizo logs --host server.example --application mailroom --service migrate
 komizo ui --host server.example
 ```
 
-`--instance` selects `production` or an admitted `pr-N` preview. The UI listens on loopback and supervises its local API. It displays observed source, resources, operation history and bounded service or job logs. Actions bind the displayed release and a proposed operation identity. A failed or lost acknowledgment requires inspection before retrying.
+`--instance` selects `production` or an admitted `pr-N` preview. Logical Backup is available for production instances. The UI listens on loopback and supervises its local API. It displays observed source, resources, operation history and bounded service or job logs. Actions bind the displayed release and a proposed operation identity. A failed or lost acknowledgment requires inspection before retrying.
 
 Commands return typed JSON. Failed mutation receipts remain on stdout with a nonzero exit status; diagnostics use stderr. `inspect` accepts `--operation` with an exact operation ID and `--release` with its release digest. The owner client exposes a finite command set and a typed request-file transport:
 
@@ -67,7 +67,10 @@ A canonical `komizo.release` descriptor binds the source repository and revision
 ```sh
 komizo-box application validate deploy/application.toml
 komizo-box release validate release.json
+komizo-box policy validate policy.json release.json --instance production
 ```
+
+Policy validation reads only the explicitly supplied local documents. It checks the workload against host grants and limits without reading secret files or changing the host.
 
 Applications build and test with their own tools. [Cookbook](https://github.com/nicodes/cookbook) can generate contributor workflows and immutable release packets. [komizo-actions](https://github.com/nicodes/komizo-actions) submits bounded requests and fresh audience-bound GitHub proofs. The host independently checks the approved repository, workflow, source, action and artifact family before accepting effects. Owner-authorized applications use the separately authenticated local owner authority.
 
@@ -87,7 +90,7 @@ Secret values live in private immutable versions. Owner `secret-set` requests co
 
 Owner `recover` requests select an exact uncertain operation. Recovery verifies protected creation/removal intents, actual native IDs, complete retained mount bindings, unit hashes and task quiescence. It repairs only proven metadata and finishes only accepted cleanup; it never starts an application or replays a migration. Capture helper cleanup uses the exact original protected bundle and removes only its recorded helper containers and owned plaintext staging.
 
-Previews use the same full workload graph, private database, volumes, resource admission and lifecycle as production. They receive isolated secret grants and a bounded lifetime. Expiry removes only their owned resources. The initial preview policy supports disposable data; a host may refuse a complete preview allocation when capacity is insufficient.
+Previews use the same full workload graph, private database, volumes, resource admission and lifecycle as production. They receive isolated secret grants and a bounded lifetime. Expiry or explicit removal deletes only their owned resources, including retained one-shot job containers. The removal receipt preserves job outcomes and uncertainty. Start cannot restore a removed preview; a newly admitted deployment creates a fresh graph. Deliberately stopped instances retain their data and remain stopped when a release is staged. The initial preview policy supports disposable data; a host may refuse a complete preview allocation when capacity is insufficient.
 
 ## Contributor verification
 
