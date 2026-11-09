@@ -21,14 +21,16 @@ def postgres_artifact():
     (context/'Containerfile').write_text('FROM '+BASE+'\nLABEL org.opencontainers.image.source="https://github.com/example/pgbox" org.opencontainers.image.revision="'+REVISION+'"\n')
     run(['podman','--remote=false','pull',BASE],timeout=300)
     tag='localhost/native-pgbox:'+REVISION
-    run(['podman','--remote=false','build','--format=oci','--layers=false','--pull=never','--network=none',
+    run(['podman','--remote=false','build','--format=oci','--layers','--pull=never','--network=none',
         '--file',str(context/'Containerfile'),'--tag',tag,str(context)],timeout=180)
     # The fixture adds source labels only; compare complete functional config
     # and ordered RootFS to the immutable upstream image before accepting it.
     base,wrapped=json.loads(run(['podman','--remote=false','image','inspect',BASE,tag]).stdout)
     left=copy.deepcopy(base['Config']);right=copy.deepcopy(wrapped['Config'])
     left.pop('Labels',None);right.pop('Labels',None)
-    if left!=right or base['RootFS']!=wrapped['RootFS']:raise ValueError('source-label wrapper changed the PostgreSQL runtime')
+    changed={key:{'base':left.get(key),'wrapped':right.get(key)} for key in sorted(left.keys()|right.keys()) if left.get(key)!=right.get(key) or (key in left)!=(key in right)}
+    write(ROOT/'postgres-wrapper.json',{'base_reference':BASE,'config_differences':changed,'base_rootfs':base['RootFS'],'wrapped_rootfs':wrapped['RootFS']})
+    if left!=right or base['RootFS']!=wrapped['RootFS']:raise ValueError('source-label wrapper changed PostgreSQL runtime; changed Config keys='+repr(sorted(changed))+', RootFS_equal='+str(base['RootFS']==wrapped['RootFS']))
     archive=ROOT/'postgres.oci.tar'
     run(['podman','--remote=false','save','--format=oci-archive','--output',str(archive),tag],timeout=180)
     blobroot=ROOT/'registry'/'blobs'
