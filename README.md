@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 0dd58541dc64f253705a46c549af5b81ce731c81dde18b2c90a5021ce9ab99f3 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: ec774be067eff9249bd66d2b8d5f16cc41aaa5e6ab4d0e6f0f844ff542461ec1 -->
 
 # komizo
 
@@ -78,7 +78,7 @@ The release packet contains its exact descriptor and inventory, explicitly inven
 
 ## State, secrets and recovery
 
-Services run through protected Quadlet definitions. The controller journals effects before executing them and survives submitter disconnects. One-shot job receipts bind code, secrets, retained objects and native exit evidence. Failed or uncertain migrations never replay automatically. Native boot uses only installed artifacts and retains deliberate stop intent.
+Services run through protected Quadlet definitions. The controller journals effects before executing them and survives submitter disconnects. One-shot job receipts bind code, secrets, retained objects, native lifetime and exit evidence. Execution reserves native startup and watchdog time inside the remaining admitted deadline; a short or exhausted budget refuses Start. Failed or uncertain migrations never replay automatically. Native boot uses only installed artifacts and retains deliberate stop intent.
 
 Deploying to a stopped instance stages an accepted prepared release without starting databases, jobs or public routes. Start selects that exact prepared release. Restart, Stop and ordinary Backup select the installed release.
 
@@ -90,7 +90,7 @@ Secret values live in private immutable versions. Owner `secret-set` requests co
 
 Owner `recover` requests select an exact uncertain operation. Recovery verifies protected creation/removal intents, actual native IDs, complete retained mount bindings, unit hashes and task quiescence. It repairs only proven metadata and finishes only accepted cleanup; it never starts an application or replays a migration. Capture helper cleanup uses the exact original protected bundle and removes only its recorded helper containers and owned plaintext staging.
 
-Previews use the same full workload graph, private database, volumes, resource admission and lifecycle as production. They receive isolated secret grants and a bounded lifetime. Expiry or explicit removal deletes only their owned resources, including retained one-shot job containers. The removal receipt preserves job outcomes and uncertainty. Start cannot restore a removed preview; a newly admitted deployment creates a fresh graph. Deliberately stopped instances retain their data and remain stopped when a release is staged. The initial preview policy supports disposable data; a host may refuse a complete preview allocation when capacity is insufficient.
+Previews use the same full workload graph, private database, volumes, resource admission and lifecycle as production. They receive isolated secret grants and a bounded lifetime. Expiry or explicit removal deletes only their owned resources, including retained one-shot job containers. The removal receipt preserves job outcomes and uncertainty. Start cannot restore a removed preview; a newly admitted deployment creates a fresh graph. Deliberately stopped instances retain their data and remain stopped when a release is staged. The initial preview policy supports disposable data; a host may refuse a complete preview allocation when capacity is insufficient. Public preview routes also require a root-owned `/etc/komizo/preview-tls.json` allocation for their registered domain. Its `komizo.preview-tls` version-1 document contains `domains` entries with `registered_domain` and `max_new_names_per_seven_days` (1–40). All applications share this host allowance. Actual route names are reserved before preparation; failed attempts remain charged and expiry does not refund them. This bounds hostname growth and preserves distinct browser origins. The owner must allocate this host share from global issuer headroom, including other hosts and production; admission does not guarantee certificate issuance. Preserve Caddy certificate storage across upgrades and recovery.
 
 ## Contributor verification
 
