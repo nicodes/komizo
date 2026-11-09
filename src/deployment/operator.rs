@@ -80,12 +80,13 @@ fn exchange(
         process.args(["-i", identity]);
     }
     process.arg(format!("root@{host}")).arg(command);
+    let context = crate::runtime::signal_context();
     let output = crate::process::capture(
         &mut process,
         body,
         MAX_DOCUMENT_BYTES,
         Instant::now() + Duration::from_secs(1560),
-        || false,
+        || context.check().is_err(),
     )?;
     ensure!(
         output.status.success(),
@@ -271,7 +272,12 @@ pub fn run(args: &[String], output: &mut dyn Write) -> Result<()> {
             observed
         } else {
             let value = bounded_value(&observed, MAX_DOCUMENT_BYTES)?;
-            let release = value["installed"]["release_digest"]
+            let target = if action == "start" && value.get("prepared").is_some() {
+                "prepared"
+            } else {
+                "installed"
+            };
+            let release = value[target]["release_digest"]
                 .as_str()
                 .ok_or_else(|| anyhow!("instance is not installed"))?;
             let request = request(application, instance, action, release)?;
@@ -292,31 +298,189 @@ pub fn run(args: &[String], output: &mut dyn Write) -> Result<()> {
     Ok(())
 }
 
+fn bounded_text(path: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes = Vec::new();
+    file.take((64 << 10) + 1).read_to_end(&mut bytes).ok()?;
+    if bytes.len() > 64 << 10 {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
+}
+fn cgroup_resources(root: &std::path::Path) -> Value {
+    let number =
+        |file: &str| bounded_text(&root.join(file)).and_then(|s| s.trim().parse::<u64>().ok());
+    let cpu = bounded_text(&root.join("cpu.stat"));
+    let stat = |name: &str| {
+        cpu.as_ref().and_then(|s| {
+            s.lines().find_map(|line| {
+                let (key, value) = line.split_once(' ')?;
+                (key == name).then(|| value.parse::<u64>().ok()).flatten()
+            })
+        })
+    };
+    json!({"memory_current_bytes":number("memory.current"),"memory_max_bytes":number("memory.max"),"memory_swap_current_bytes":number("memory.swap.current"),"memory_swap_max_bytes":number("memory.swap.max"),"cpu_usage_usec":stat("usage_usec"),"cpu_throttled_usec":stat("throttled_usec"),"pids_current":number("pids.current"),"pids_max":number("pids.max"),"cpu_quota":bounded_text(&root.join("cpu.max")).map(|s|s.trim().to_owned()),"memory_pressure":bounded_text(&root.join("memory.pressure")),"io_pressure":bounded_text(&root.join("io.pressure"))})
+}
+fn physical_resources() -> Value {
+    let meminfo = bounded_text(std::path::Path::new("/proc/meminfo"));
+    let number = |name: &str| {
+        meminfo.as_ref().and_then(|s| {
+            s.lines().find_map(|line| {
+                let (key, value) = line.split_once(':')?;
+                if key != name {
+                    return None;
+                }
+                value
+                    .split_whitespace()
+                    .next()?
+                    .parse::<u64>()
+                    .ok()?
+                    .checked_mul(1024)
+            })
+        })
+    };
+    json!({"memory_total_bytes":number("MemTotal"),"memory_available_bytes":number("MemAvailable"),"swap_total_bytes":number("SwapTotal"),"swap_free_bytes":number("SwapFree")})
+}
+fn storage_resources() -> Result<Value> {
+    let path = std::ffi::CString::new("/var/lib/containers/storage")?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    ensure!(
+        unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) } == 0,
+        "native storage observation unavailable"
+    );
+    let stat = unsafe { stat.assume_init() };
+    Ok(
+        json!({"total_bytes":u128::from(stat.f_blocks)*u128::from(stat.f_frsize),"free_bytes":u128::from(stat.f_bavail)*u128::from(stat.f_frsize),"total_inodes":stat.f_files,"free_inodes":stat.f_favail}),
+    )
+}
+
 pub fn status() -> Result<Value> {
     ensure!(
         unsafe { libc::geteuid() } == 0,
         "host inventory requires the owner identity"
     );
     let store = store::Store::new(std::path::Path::new(super::observation::STATE).into())?;
-    let engine = super::engine::Engine {
-        deadline: Instant::now() + Duration::from_secs(20),
-    };
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let engine = super::engine::Engine { deadline };
+    let system = super::system::System { deadline };
     let mut instances = Vec::new();
-    for installed in super::proxy::instances(&store)? {
+    for observed in super::proxy::instances(&store)? {
+        ensure!(
+            Instant::now() < deadline,
+            "host observation deadline expired"
+        );
+        let (installed, prepared) = store.view(&observed.application, &observed.instance)?;
+        let installed = installed.ok_or_else(|| anyhow!("instance changed during observation"))?;
+        let document = store.release(&installed.release_digest)?;
+        let group = system
+            .group(&super::units::slice(
+                &installed.application,
+                &installed.instance,
+            )?)
+            .ok();
+        let resources = group.as_ref().map(|path| cgroup_resources(path));
         let mut services = BTreeMap::new();
         for (name, record) in &installed.resources.containers {
+            let path = std::path::Path::new(super::system::QUADLETS).join(format!(
+                "{}-{name}.container",
+                super::units::namespace(&installed.application, &installed.instance)?
+            ));
+            super::system::verify_unit(
+                &store,
+                &path,
+                &installed.application,
+                &installed.instance,
+                &record.unit_sha256,
+            )?;
             let value = engine.owned_container(
                 record,
                 &installed.application,
                 &installed.instance,
                 name,
             )?;
-            services.insert(name,json!({"container_id":value.as_ref().map(|v|&v["Id"]),"state":value.as_ref().map(|v|&v["State"]["Status"]),"health":value.as_ref().and_then(|v|v["State"]["Health"]["Status"].as_str())}));
+            let mut service_resources = None;
+            if let Some(value) = &value
+                && let Some(pid) = value["State"]["Pid"]
+                    .as_u64()
+                    .filter(|pid| *pid > 0 && *pid <= i32::MAX as u64)
+                && let Some(cgroup) = bounded_text(std::path::Path::new(&format!(
+                    "/proc/{pid}/cgroup"
+                )))
+                .and_then(|body| {
+                    body.lines()
+                        .find_map(|line| line.strip_prefix("0::").map(str::to_owned))
+                })
+            {
+                ensure!(absolute(&cgroup), "service cgroup observation is invalid");
+                let path =
+                    std::path::Path::new("/sys/fs/cgroup").join(cgroup.trim_start_matches('/'));
+                ensure!(
+                    group.as_ref().is_some_and(|group| path.starts_with(group)),
+                    "service process escaped its owned instance allocation"
+                );
+                service_resources = Some(cgroup_resources(&path));
+            }
+            services.insert(name,json!({"container_id":value.as_ref().map(|v|&v["Id"]),"state":value.as_ref().map(|v|&v["State"]["Status"]),"health":value.as_ref().and_then(|v|v["State"]["Health"]["Status"].as_str()),"resources":service_resources}));
+        }
+        for record in installed.resources.networks.values() {
+            engine.owned_object("network", record)?;
+        }
+        for record in installed.resources.volumes.values() {
+            engine.owned_object("volume", record)?;
+        }
+        let mut operations = Vec::new();
+        for id in store
+            .history(&installed.application, &installed.instance)?
+            .into_iter()
+            .rev()
+        {
+            let operation = store.operation(&id)?;
+            ensure!(
+                operation.application == installed.application
+                    && operation.instance == installed.instance,
+                "operation history escaped its instance"
+            );
+            let mut value = serde_json::to_value(operation)?;
+            let journal = store.root.join("journal").join(&id);
+            let admission = journal.join("admission.json");
+            if admission.try_exists()? {
+                let record = bounded_value(&store::read_protected(&admission, 16384)?, 16384)?;
+                value["action"] = record["action"].clone();
+                value["admitted_at"] = record["evidence"]["admitted_at"].clone();
+            }
+            let failure = journal.join("failure.json");
+            if failure.try_exists()? {
+                value["failure"] = bounded_value(&store::read_protected(&failure, 16384)?, 16384)?;
+            }
+            operations.push(value);
         }
         let unresolved = store.unresolved(&installed.application, &installed.instance)?;
-        instances.push(json!({"application":installed.application,"instance":installed.instance,"release_digest":installed.release_digest,"desired_running":installed.desired_running,"expires_at":installed.expires_at,"operation_id":installed.operation_id,"services":services,"unresolved_operations":unresolved}));
+        let prepared=prepared.map(|record|->Result<Value>{let source=store.release(&record.release_digest)?.release.source;Ok(json!({"release_digest":record.release_digest,"operation_id":record.operation_id,"source":source}))}).transpose()?;
+        let start = prepared
+            .as_ref()
+            .map_or(installed.release_digest.as_str(), |p| {
+                p["release_digest"].as_str().unwrap()
+            });
+        let actions = json!({"start":{"release_digest":start},"stop":{"release_digest":installed.release_digest},"restart":{"release_digest":installed.release_digest},"backup":{"release_digest":installed.release_digest}});
+        let generations = installed
+            .secret_snapshots
+            .iter()
+            .map(|(alias, snapshot)| (alias, &snapshot.generation))
+            .collect::<BTreeMap<_, _>>();
+        let (policy, _) = controller::policy(
+            std::path::Path::new(super::observation::POLICIES),
+            &installed.application,
+        )?;
+        let available = super::secrets::grants(&policy, &installed.instance)?
+            .iter()
+            .map(|(alias, grant)| (alias, &grant.generation))
+            .collect::<BTreeMap<_, _>>();
+        instances.push(json!({"application":installed.application,"instance":installed.instance,"release_digest":installed.release_digest,"source":document.release.source,"routes":document.release.workload.routes.iter().map(|r|json!({"host":r.host,"path":r.path})).collect::<Vec<_>>(),"desired_running":installed.desired_running,"expires_at":installed.expires_at,"operation_id":installed.operation_id,"prepared":prepared,"actions":actions,"services":services,"resources":resources,"volumes":installed.resources.volumes,"secret_generations":generations,"available_secret_generations":available,"unresolved_operations":unresolved,"operations":operations}));
     }
-    Ok(json!({"kind":"komizo.status","version":1,"instances":instances}))
+    Ok(
+        json!({"kind":"komizo.status","version":1,"observed_at":controller::now()?,"host":{"boot_id":bounded_text(std::path::Path::new("/proc/sys/kernel/random/boot_id")).map(|s|s.trim().to_owned()),"resources":physical_resources(),"storage":storage_resources()?,"controller_resources":system.group("komizo-control.slice").ok().map(|p|cgroup_resources(&p)),"proxy_resources":system.group("komizo-proxy.slice").ok().map(|p|cgroup_resources(&p))},"instances":instances}),
+    )
 }
 
 #[cfg(test)]

@@ -107,6 +107,7 @@ pub fn extract(path: &Path, target: &Path, policy: &Policy) -> Result<()> {
                     .mode(0o644)
                     .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
                     .open(&destination)?;
+                file.set_permissions(fs::Permissions::from_mode(0o444))?;
                 let copied = std::io::copy(&mut entry, &mut file)?;
                 ensure!(copied == size, "incomplete static archive member");
                 file.flush()?;

@@ -43,7 +43,14 @@ impl Engine {
     }
     pub fn run(&self, arguments: &[&str]) -> Result<Vec<u8>> {
         let output = self.capture(arguments)?;
-        ensure!(output.status.success(), "native engine operation refused");
+        ensure!(
+            output.status.success(),
+            "native engine operation refused: {}",
+            String::from_utf8_lossy(&output.stderr)
+                .chars()
+                .take(2048)
+                .collect::<String>()
+        );
         Ok(output.stdout)
     }
     pub fn health(&self, id: &str) -> Result<()> {

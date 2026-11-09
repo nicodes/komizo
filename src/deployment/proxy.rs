@@ -224,7 +224,7 @@ pub fn tree(path: &Path) -> Result<String> {
             }
         } else {
             ensure!(
-                info.is_file() && info.nlink() == 1,
+                info.is_file() && info.nlink() == 1 && info.mode() & 0o777 == 0o444,
                 "public assets contain a non-file or hardlink"
             );
             let digest = super::native::file_hash(fs::File::open(path)?)?;

@@ -266,6 +266,7 @@ pub fn instance_slice(
 }
 
 pub fn caddy_validate(config: &Path, deadline: Instant) -> Result<()> {
+    super::bootstrap::proxy_guard()?;
     let mut command = Command::new("/usr/local/bin/caddy");
     command.env_clear().env("PATH", "/usr/bin:/bin").args([
         "adapt",
@@ -279,12 +280,17 @@ pub fn caddy_validate(config: &Path, deadline: Instant) -> Result<()> {
     let output = crate::process::capture(&mut command, None, 256 << 10, deadline, || false)?;
     ensure!(
         output.status.success(),
-        "proxy rejected staged serving configuration"
+        "proxy rejected staged serving configuration: {}",
+        String::from_utf8_lossy(&output.stderr)
+            .chars()
+            .take(2048)
+            .collect::<String>()
     );
     Ok(())
 }
 
 pub fn caddy_reload(deadline: Instant) -> Result<()> {
+    super::bootstrap::proxy_guard()?;
     let mut command = Command::new("/usr/local/bin/caddy");
     command.env_clear().env("PATH", "/usr/bin:/bin").args([
         "reload",

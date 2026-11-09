@@ -39,6 +39,8 @@ pub struct Operation {
 #[serde(deny_unknown_fields)]
 pub struct Backup {
     pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<Export>,
 }
@@ -52,6 +54,26 @@ pub struct Export {
 
 impl Operation {
     pub fn validate(&self) -> Result<()> {
+        if let Some(backup) = &self.backup {
+            ensure!(
+                (backup.status == "absent"
+                    && backup.release_digest.is_none()
+                    && backup.files.is_empty())
+                    || (backup.status == "ready"
+                        && backup.release_digest.as_deref().is_some_and(digest)
+                        && backup.files.len() == 2
+                        && backup
+                            .files
+                            .iter()
+                            .map(|f| f.name.as_str())
+                            .collect::<std::collections::BTreeSet<_>>()
+                            == ["snapshot.cms", "receipt.json"].into_iter().collect()
+                        && backup.files.iter().all(|f| f.size_bytes > 0
+                            && f.size_bytes <= 64u64 << 30
+                            && digest(&f.sha256))),
+                "invalid captured backup identity or export inventory"
+            );
+        }
         ensure!(
             self.kind == "komizo.operation"
                 && self.version == 1
@@ -183,6 +205,52 @@ pub fn operation_identity(request: &Request) -> Result<String> {
 }
 
 impl Store {
+    pub fn prepared(&self, application: &str, instance: &str) -> Result<Option<Installed>> {
+        let path = self.root.join("prepared").join(format!(
+            "{}.json",
+            Self::instance_key(application, instance)?
+        ));
+        if !path.try_exists()? {
+            return Ok(None);
+        }
+        let record: Installed =
+            serde_json::from_slice(&read_protected(&path, MAX_DOCUMENT_BYTES)?)?;
+        ensure!(
+            record.kind == "komizo.installed"
+                && record.version == 1
+                && record.application == application
+                && record.instance == instance
+                && !record.desired_running
+                && digest(&record.release_digest)
+                && hex(&record.operation_id, 32),
+            "prepared release has invalid instance ownership"
+        );
+        self.release(&record.release_digest)?;
+        Ok(Some(record))
+    }
+
+    pub fn view(
+        &self,
+        application: &str,
+        instance: &str,
+    ) -> Result<(Option<Installed>, Option<Installed>)> {
+        for _ in 0..4 {
+            let installed = self.installed(application, instance)?;
+            let prepared = if installed.as_ref().is_some_and(|r| !r.desired_running) {
+                self.prepared(application, instance)?
+            } else {
+                None
+            };
+            let again = self.installed(application, instance)?;
+            if serde_json::to_value(&installed)? == serde_json::to_value(&again)? {
+                return Ok((installed, prepared));
+            }
+        }
+        Err(anyhow!(
+            "instance observation changed during capture; inspect its operation"
+        ))
+    }
+
     pub fn unresolved(&self, application: &str, instance: &str) -> Result<Vec<Operation>> {
         Self::instance_key(application, instance)?;
         let mut result = Vec::new();
@@ -235,7 +303,35 @@ impl Store {
         file.write_all(&serde_json::to_vec(operation)?)?;
         file.sync_all()?;
         File::open(parent)?.sync_all()?;
+        let path = self.root.join("history").join(format!(
+            "{}.json",
+            Self::instance_key(&operation.application, &operation.instance)?
+        ));
+        let mut history = self.history(&operation.application, &operation.instance)?;
+        history.push(operation.operation_id.clone());
+        if history.len() > 64 {
+            history.drain(..history.len() - 64);
+        }
+        atomic(&path, &serde_json::to_vec(&history)?, 0o600)?;
         Ok(())
+    }
+
+    pub fn history(&self, application: &str, instance: &str) -> Result<Vec<String>> {
+        let path = self.root.join("history").join(format!(
+            "{}.json",
+            Self::instance_key(application, instance)?
+        ));
+        if !path.try_exists()? {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<String> = serde_json::from_slice(&read_protected(&path, 8192)?)?;
+        ensure!(
+            ids.len() <= 64
+                && ids.iter().all(|id| hex(id, 32))
+                && ids.iter().collect::<std::collections::BTreeSet<_>>().len() == ids.len(),
+            "invalid bounded operation history"
+        );
+        Ok(ids)
     }
 }
 
@@ -336,6 +432,7 @@ impl Store {
             "locks",
             "jobs",
             "exports",
+            "history",
         ] {
             protected_directory(&root.join(name))?;
         }

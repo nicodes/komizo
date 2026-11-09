@@ -85,20 +85,19 @@ pub fn resource(application: &str, instance: &str, service: &str) -> Result<Valu
         normalize_id(value["Image"].as_str().unwrap_or("")) == *config_digest,
         "live service image differs from installed release"
     );
-    let volumes = container
+    let volumes = document
+        .release
+        .workload
         .volumes
-        .iter()
-        .map(|m| {
-            Ok((
-                m.name.clone(),
-                serde_json::to_value(
-                    installed
-                        .resources
-                        .volumes
-                        .get(&m.name)
-                        .ok_or_else(|| anyhow!("volume binding missing"))?,
-                )?,
-            ))
+        .keys()
+        .map(|logical| {
+            let record = installed
+                .resources
+                .volumes
+                .get(logical)
+                .ok_or_else(|| anyhow!("declared volume binding missing"))?;
+            engine.owned_object("volume", record)?;
+            Ok((logical.clone(), serde_json::to_value(record)?))
         })
         .collect::<Result<serde_json::Map<_, _>>>()?;
     let release = crate::strict::value(&document.canonical, MAX_DOCUMENT_BYTES)?;
@@ -331,7 +330,11 @@ pub fn logs(application: &str, instance: &str, service: &str) -> Result<Value> {
     )
 }
 
-fn redact(installed: &Installed, document: &ReleaseDocument, text: &str) -> Result<String> {
+pub(crate) fn redact(
+    installed: &Installed,
+    document: &ReleaseDocument,
+    text: &str,
+) -> Result<String> {
     let environment = document
         .release
         .workload

@@ -161,3 +161,64 @@ fn uncertain_migration_blocks_a_new_deploy_until_explicit_owner_reconciliation()
     );
     assert_eq!(calls.load(Ordering::Acquire), 1);
 }
+
+#[test]
+fn prepared_start_is_bound_to_the_selected_source_and_stale_installed_target_refuses() {
+    use komizo::deployment::store::{Installed, Resources};
+    let (_dir, c, gate, calls, request) = setup(false);
+    let old = read_release(&serde_json::to_vec(&request["release"]).unwrap()).unwrap();
+    let mut next = request["release"].clone();
+    next["source"]["revision"] = json!("f".repeat(40));
+    let next = read_release(&serde_json::to_vec(&next).unwrap()).unwrap();
+    c.store.save_release(&old).unwrap();
+    c.store.save_release(&next).unwrap();
+    let installed = Installed {
+        kind: "komizo.installed".into(),
+        version: 1,
+        application: "mailroom".into(),
+        instance: "production".into(),
+        release_digest: old.digest.clone(),
+        operation_id: "1".repeat(32),
+        desired_running: false,
+        expires_at: None,
+        resources: Resources::default(),
+        secret_snapshots: Default::default(),
+    };
+    c.store.save_installed(&installed).unwrap();
+    let mut prepared = installed.clone();
+    prepared.release_digest = next.digest.clone();
+    prepared.operation_id = "2".repeat(32);
+    komizo::deployment::store::atomic(
+        &c.store.root.join("prepared/mailroom--production.json"),
+        &serde_json::to_vec(&prepared).unwrap(),
+        0o600,
+    )
+    .unwrap();
+    let mut start = json!({"kind":"komizo.request","version":1,"authority":"owner","application":"mailroom","instance":"production","action":"start","release_digest":old.digest,"nonce":"c".repeat(32),"issued_at":1000,"expires_at":1120,"timeout_seconds":30});
+    assert!(
+        c.admit(
+            serde_json::to_vec(&start).unwrap(),
+            0,
+            1000,
+            &mut |_| panic!()
+        )
+        .is_err()
+    );
+    assert_eq!(calls.load(Ordering::Acquire), 0);
+    start["release_digest"] = json!(next.digest);
+    let id = komizo::deployment::store::operation_identity(
+        &serde_json::from_value(start.clone()).unwrap(),
+    )
+    .unwrap();
+    drop(
+        c.admit(
+            serde_json::to_vec(&start).unwrap(),
+            0,
+            1000,
+            &mut |_| panic!(),
+        )
+        .unwrap(),
+    );
+    gate.send(()).unwrap();
+    assert!(wait(&c.store, &id).ok);
+}

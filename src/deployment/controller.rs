@@ -9,7 +9,7 @@ use anyhow::{Result, anyhow, ensure};
 use serde_json::{Value, json};
 use std::{
     fs,
-    io::Write,
+    io::{Read, Seek, Write},
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
     sync::{Arc, mpsc},
@@ -123,6 +123,40 @@ impl Coordinator {
                             Ok(())
                         }));
                     if !matches!(executed, Ok(Ok(()))) {
+                        let failed_phase = operation.phase.clone();
+                        let mut context = match &executed {
+                            Ok(Err(error)) => format!("{error:#}"),
+                            _ => "native worker interrupted unexpectedly".to_owned(),
+                        };
+                        if let Some(registry) = &job.request.registry {
+                            for value in [&registry.token, &registry.username] {
+                                if !value.is_empty() {
+                                    context = context.replace(value, "[redacted]");
+                                }
+                            }
+                        }
+                        if let Some(update) = &job.request.secret_update
+                            && !update.value.is_empty()
+                        {
+                            context = context.replace(&update.value, "[redacted]");
+                        }
+                        if let Ok(Some(installed)) =
+                            worker_store.installed(&job.request.application, &job.request.instance)
+                        {
+                            context=worker_store.release(&installed.release_digest).and_then(|document|super::observation::redact(&installed,&document,&context)).unwrap_or_else(|_|"protected diagnostic unavailable because installed secret identity could not be verified".into());
+                        }
+                        let context = context.chars().take(2048).collect::<String>();
+                        store::atomic(
+                            &worker_store
+                                .root
+                                .join("journal")
+                                .join(&job.operation_id)
+                                .join("failure.json"),
+                            &serde_json::to_vec(
+                                &json!({"kind":"komizo.failure","version":1,"operation_id":job.operation_id,"phase":failed_phase,"code":format!("{failed_phase}_failed"),"context":context,"observed_at":now()?}),
+                            )?,
+                            0o600,
+                        )?;
                         if !operation.terminal() {
                             let phase =
                                 if ["admitted", "staging"].contains(&operation.phase.as_str()) {
@@ -182,8 +216,17 @@ impl Coordinator {
             .store
             .installed(&request.application, &request.instance)?;
         if request.action != "deploy" && request.action != "recover" {
+            let target = if request.action == "start"
+                && installed.as_ref().is_some_and(|r| !r.desired_running)
+            {
+                self.store
+                    .prepared(&request.application, &request.instance)?
+                    .or_else(|| installed.clone())
+            } else {
+                installed.clone()
+            };
             ensure!(
-                installed
+                target
                     .as_ref()
                     .is_some_and(|r| r.release_digest == request.release_digest)
                     || (request.action == "backup"
@@ -289,9 +332,7 @@ impl Coordinator {
             );
             return frame(serde_json::to_value(operation)?);
         }
-        let installed = self
-            .store
-            .installed(&request.application, &request.instance)?;
+        let (installed, prepared) = self.store.view(&request.application, &request.instance)?;
         ensure!(
             request.release_digest == "current"
                 || installed
@@ -300,6 +341,9 @@ impl Coordinator {
             "instance inspection target changed"
         );
         let mut response = json!({"kind":"komizo.instance","version":1,"application":request.application,"instance":request.instance,"installed":installed.map(|r|json!({"release_digest":r.release_digest,"desired_running":r.desired_running,"operation_id":r.operation_id}))});
+        if let Some(prepared) = prepared {
+            response["prepared"] = json!({"release_digest":prepared.release_digest,"operation_id":prepared.operation_id});
+        }
         if request.instance != "production" {
             let p = policy
                 .previews
@@ -322,10 +366,7 @@ impl Coordinator {
             .ok_or_else(|| anyhow!("backup operation missing"))?;
         let operation = self.store.operation(id)?;
         ensure!(
-            operation.application == request.application
-                && operation.instance == request.instance
-                && operation.release_digest == request.release_digest
-                && operation.ok,
+            operation.application == request.application && operation.instance == request.instance,
             "export is outside an accepted backup scope"
         );
         let backup = operation
@@ -333,6 +374,10 @@ impl Coordinator {
             .as_ref()
             .filter(|b| b.status == "ready")
             .ok_or_else(|| anyhow!("operation has no encrypted backup"))?;
+        ensure!(
+            backup.release_digest.as_deref() == Some(&request.release_digest),
+            "export does not select the captured installed release"
+        );
         let name = request.export_name.as_deref().unwrap();
         let metadata = backup
             .files
@@ -348,15 +393,48 @@ impl Coordinator {
             "export exceeds its protected bound"
         );
         let path = self.store.root.join("exports").join(id).join(name);
-        super::assets::verify_file(&path, &metadata.sha256, metadata.size_bytes)?;
-        let file = store::open_protected(&path, metadata.size_bytes)?;
+        let mut file = store::open_protected(&path, metadata.size_bytes)?;
+        ensure!(
+            file.metadata()?.len() == metadata.size_bytes,
+            "encrypted export size changed"
+        );
+        let remaining = request
+            .issued_at
+            .checked_add(i64::from(request.timeout_seconds))
+            .and_then(|end| end.checked_sub(now().ok()?))
+            .ok_or_else(|| anyhow!("invalid export deadline"))?;
+        ensure!(remaining > 0, "encrypted export deadline expired");
+        let deadline = Instant::now()
+            + Duration::from_secs(
+                (remaining as u64).min(u64::from(policy.operation_timeout_seconds)),
+            );
+        ensure!(
+            super::native::hash_file(&mut file, Some(deadline))? == metadata.sha256,
+            "encrypted export bytes changed"
+        );
+        file.rewind()?;
         let header = json!({"kind":"komizo.export","version":1,"operation_id":id,"application":request.application,"instance":request.instance,"release_digest":request.release_digest,"export_name":name,"size_bytes":metadata.size_bytes,"sha256":metadata.sha256});
         let size = metadata.size_bytes;
         Ok(Box::new(move |stream| {
             serde_json::to_writer(&mut *stream, &header)?;
             stream.write_all(b"\n")?;
-            let copied = std::io::copy(&mut std::io::Read::take(file, size), stream)?;
-            ensure!(copied == size, "encrypted export changed during transfer");
+            let mut remaining = size;
+            let mut buffer = [0u8; 65536];
+            while remaining > 0 {
+                ensure!(
+                    Instant::now() < deadline,
+                    "encrypted export transfer deadline expired"
+                );
+                let bound = remaining.min(buffer.len() as u64) as usize;
+                let count = file.read(&mut buffer[..bound])?;
+                ensure!(count > 0, "encrypted export shortened during transfer");
+                stream.write_all(&buffer[..count])?;
+                remaining -= count as u64;
+            }
+            ensure!(
+                file.read(&mut buffer[..1])? == 0,
+                "encrypted export grew during transfer"
+            );
             Ok(())
         }))
     }

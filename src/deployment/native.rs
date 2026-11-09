@@ -26,6 +26,172 @@ use std::{
 
 pub struct Native;
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObjectIntent {
+    pub kind: String,
+    pub version: u32,
+    pub application: String,
+    pub instance: String,
+    pub operation_id: String,
+    pub release_digest: String,
+    pub object_kind: String,
+    pub logical: String,
+    pub name: String,
+    pub ownership: String,
+    pub internal: Option<bool>,
+    pub identity: Option<String>,
+}
+
+pub fn object_evidence(intent: &ObjectIntent, value: &serde_json::Value) -> Result<ObjectRecord> {
+    ensure!(
+        intent.kind == "komizo.object-intent"
+            && intent.version == 1
+            && name(&intent.application)
+            && name(&intent.instance)
+            && name(&intent.logical)
+            && hex(&intent.operation_id, 32)
+            && digest(&intent.release_digest)
+            && hex(&intent.ownership, 32),
+        "invalid protected object creation intent"
+    );
+    let letter = match intent.object_kind.as_str() {
+        "network" => "n",
+        "volume" => "v",
+        _ => return Err(anyhow!("invalid retained object kind")),
+    };
+    ensure!(
+        intent.name
+            == format!(
+                "{}-{letter}-{}",
+                units::namespace(&intent.application, &intent.instance)?,
+                intent.logical
+            ),
+        "object creation intent escaped its namespace"
+    );
+    let labels = value
+        .get("labels")
+        .or_else(|| value.get("Labels"))
+        .ok_or_else(|| anyhow!("native object ownership labels unavailable"))?;
+    ensure!(
+        labels["io.komizo.application"] == intent.application
+            && labels["io.komizo.instance"] == intent.instance
+            && labels["io.komizo.object"] == format!("{}:{}", intent.object_kind, intent.logical)
+            && labels["io.komizo.ownership"] == intent.ownership,
+        "native object has no matching pre-effect ownership token"
+    );
+    let id = if intent.object_kind == "network" {
+        ensure!(
+            value["name"] == intent.name
+                && value["driver"] == "bridge"
+                && ["1", "true"]
+                    .iter()
+                    .any(|expected| value["options"]["isolate"] == *expected)
+                && intent
+                    .internal
+                    .is_some_and(|internal| value["internal"] == internal),
+            "native network differs from its declared topology"
+        );
+        let id = value["id"]
+            .as_str()
+            .ok_or_else(|| anyhow!("network ID missing"))?;
+        ensure!(hex(id, 64), "invalid native network ID");
+        id.to_owned()
+    } else {
+        ensure!(
+            value["Name"] == intent.name && intent.internal.is_none(),
+            "native volume differs from its creation intent"
+        );
+        volume_identity(value)?
+    };
+    ensure!(
+        intent
+            .identity
+            .as_ref()
+            .is_none_or(|expected| *expected == id),
+        "native object was replaced after creation"
+    );
+    Ok(ObjectRecord {
+        name: intent.name.clone(),
+        id,
+    })
+}
+
+fn create_object(
+    store: &Store,
+    installed: &Installed,
+    document: &ReleaseDocument,
+    engine: &Engine,
+    kind: &str,
+    logical: &str,
+    internal: Option<bool>,
+) -> Result<ObjectRecord> {
+    let letter = if kind == "network" { "n" } else { "v" };
+    let physical = format!(
+        "{}-{letter}-{logical}",
+        units::namespace(&installed.application, &installed.instance)?
+    );
+    ensure!(
+        !engine.exists(kind, &physical)?,
+        "unrecorded native object cannot be adopted"
+    );
+    let mut intent = ObjectIntent {
+        kind: "komizo.object-intent".into(),
+        version: 1,
+        application: installed.application.clone(),
+        instance: installed.instance.clone(),
+        operation_id: installed.operation_id.clone(),
+        release_digest: document.digest.clone(),
+        object_kind: kind.into(),
+        logical: logical.into(),
+        name: physical.clone(),
+        ownership: store::identity()?,
+        internal,
+        identity: None,
+    };
+    let path = store
+        .root
+        .join("journal")
+        .join(&installed.operation_id)
+        .join(format!("object-{kind}-{logical}.json"));
+    ensure!(
+        !path.try_exists()?,
+        "object creation intent already exists; explicit reconciliation is required"
+    );
+    store::atomic(&path, &serde_json::to_vec(&intent)?, 0o600)?;
+    let mut args = vec![
+        kind.to_owned(),
+        "create".into(),
+        format!(
+            "--driver={}",
+            if kind == "network" { "bridge" } else { "local" }
+        ),
+    ];
+    if kind == "network" {
+        args.extend(["--opt".into(), "isolate=1".into()]);
+    }
+    for (key, value) in [
+        ("application", installed.application.as_str()),
+        ("instance", installed.instance.as_str()),
+        ("ownership", intent.ownership.as_str()),
+    ] {
+        args.extend(["--label".into(), format!("io.komizo.{key}={value}")]);
+    }
+    args.extend([
+        "--label".into(),
+        format!("io.komizo.object={kind}:{logical}"),
+    ]);
+    if internal == Some(true) {
+        args.push("--internal".into());
+    }
+    args.push(physical);
+    engine.run(&args.iter().map(String::as_str).collect::<Vec<_>>())?;
+    let record = object_evidence(&intent, &engine.inspect(kind, &intent.name)?)?;
+    intent.identity = Some(record.id.clone());
+    store::atomic(&path, &serde_json::to_vec(&intent)?, 0o600)?;
+    Ok(record)
+}
+
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RecoveryEvidence {
@@ -80,6 +246,7 @@ impl Native {
     }
     pub fn startup(&self, store: &Store) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(90);
+        super::bootstrap::proxy_guard()?;
         Engine { deadline }.preflight()?;
         let capacity = capacity::read(Path::new("/etc/komizo/capacity.json"))?;
         system::host_pools(store, &System { deadline }, &capacity)?;
@@ -369,65 +536,39 @@ fn retained(
     document: &ReleaseDocument,
     engine: &Engine,
 ) -> Result<()> {
-    let ns = units::namespace(&installed.application, &installed.instance)?;
     for (name, network) in &document.release.workload.networks {
         if let Some(record) = installed.resources.networks.get(name) {
-            engine.owned_object("network", record)?;
-            continue;
+            let value = engine.owned_object("network", record)?;
+            ensure!(
+                value["driver"] == "bridge"
+                    && value["internal"] == network.internal
+                    && ["1", "true"]
+                        .iter()
+                        .any(|expected| value["options"]["isolate"] == *expected),
+                "retained network topology changed; owner transfer is required"
+            );
+        } else {
+            let record = create_object(
+                store,
+                installed,
+                document,
+                engine,
+                "network",
+                name,
+                Some(network.internal),
+            )?;
+            installed.resources.networks.insert(name.clone(), record);
+            store.save_installed(installed)?;
         }
-        let physical = format!("{ns}-n-{name}");
-        ensure!(
-            !engine.exists("network", &physical)?,
-            "unrecorded native network cannot be adopted"
-        );
-        let mut args = vec![
-            "network",
-            "create",
-            "--driver=bridge",
-            "--label",
-            "io.komizo.managed=true",
-        ];
-        if network.internal {
-            args.push("--internal");
-        }
-        args.push(&physical);
-        engine.run(&args)?;
-        let value = engine.inspect("network", &physical)?;
-        let id = value["id"]
-            .as_str()
-            .ok_or_else(|| anyhow!("network ID missing"))?
-            .to_owned();
-        ensure!(hex(&id, 64), "network ID invalid");
-        installed
-            .resources
-            .networks
-            .insert(name.clone(), ObjectRecord { name: physical, id });
-        store.save_installed(installed)?;
     }
     for name in document.release.workload.volumes.keys() {
         if let Some(record) = installed.resources.volumes.get(name) {
             engine.owned_object("volume", record)?;
-            continue;
+        } else {
+            let record = create_object(store, installed, document, engine, "volume", name, None)?;
+            installed.resources.volumes.insert(name.clone(), record);
+            store.save_installed(installed)?;
         }
-        let physical = format!("{ns}-v-{name}");
-        ensure!(
-            !engine.exists("volume", &physical)?,
-            "unrecorded native volume cannot be adopted"
-        );
-        engine.run(&[
-            "volume",
-            "create",
-            "--driver=local",
-            "--label",
-            "io.komizo.managed=true",
-            &physical,
-        ])?;
-        let id = volume_identity(&engine.inspect("volume", &physical)?)?;
-        installed
-            .resources
-            .volumes
-            .insert(name.clone(), ObjectRecord { name: physical, id });
-        store.save_installed(installed)?;
     }
     Ok(())
 }
@@ -821,10 +962,13 @@ fn readiness(
         .iter()
         .chain(protected.iter())
     {
+        let mut last_error = "no response observed".to_owned();
         loop {
             ensure!(
                 Instant::now() < deadline,
-                "public readiness deadline exceeded"
+                "public readiness deadline exceeded for {}: {}",
+                check.url,
+                last_error
             );
             let result = (|| -> Result<()> {
                 let response = client
@@ -837,13 +981,18 @@ fn readiness(
                     .header("Cache-Control", "no-cache")
                     .send()?;
                 ensure!(
-                    response.status().as_u16() == check.status
-                        && response
-                            .headers()
-                            .get("X-Komizo-Release")
-                            .and_then(|v| v.to_str().ok())
-                            == Some(&document.digest),
-                    "readiness is not serving the accepted release"
+                    response.status().as_u16() == check.status,
+                    "readiness HTTP status {} differs from {}",
+                    response.status().as_u16(),
+                    check.status
+                );
+                ensure!(
+                    response
+                        .headers()
+                        .get("X-Komizo-Release")
+                        .and_then(|v| v.to_str().ok())
+                        == Some(&document.digest),
+                    "readiness response has no matching accepted release header"
                 );
                 let mut body = Vec::new();
                 response.take((1 << 20) + 1).read_to_end(&mut body)?;
@@ -864,8 +1013,9 @@ fn readiness(
                 }
                 Ok(())
             })();
-            if result.is_ok() {
-                break;
+            match result {
+                Ok(()) => break,
+                Err(error) => last_error = format!("{error:#}").chars().take(768).collect(),
             }
             std::thread::sleep(Duration::from_millis(500));
         }
@@ -935,10 +1085,10 @@ fn backup(
     let mut files = Vec::new();
     for name in ["snapshot.cms", "receipt.json"] {
         let path = directory.join(name);
-        let file = store::open_protected(&path, task.max_export_bytes)?;
+        let mut file = store::open_protected(&path, task.max_export_bytes)?;
         let size = file.metadata()?.len();
         ensure!(size > 0, "backup export is empty");
-        let hash = file_hash(file)?;
+        let hash = hash_file(&mut file, Some(deadline))?;
         files.push(store::Export {
             name: name.into(),
             size_bytes: size,
@@ -967,6 +1117,7 @@ fn backup(
     );
     operation.backup = Some(store::Backup {
         status: "ready".into(),
+        release_digest: Some(installed.release_digest.clone()),
         files,
     });
     store.save_operation(operation)?;
@@ -983,10 +1134,18 @@ fn backup(
 }
 
 pub fn file_hash(mut file: fs::File) -> Result<String> {
+    hash_file(&mut file, None)
+}
+
+pub fn hash_file(file: &mut fs::File, deadline: Option<Instant>) -> Result<String> {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
     let mut buffer = [0u8; 65536];
     loop {
+        ensure!(
+            deadline.is_none_or(|end| Instant::now() < end),
+            "protected file verification deadline expired"
+        );
         let n = file.read(&mut buffer)?;
         if n == 0 {
             break;
@@ -1126,6 +1285,10 @@ impl Backend for Native {
                     resources,
                     secret_snapshots: snapshots,
                 };
+                let prepared = prepared_path(store, application, instance)?;
+                if prepared.try_exists()? {
+                    fs::remove_file(prepared)?;
+                }
                 store.save_installed(&installed)?;
                 activate(store, policy, &mut installed, &document, job, operation)
             }
@@ -1144,6 +1307,7 @@ impl Backend for Native {
                     engine.prove_absent(&units::namespace(application, instance)?)?;
                     operation.backup = Some(store::Backup {
                         status: "absent".into(),
+                        release_digest: None,
                         files: Vec::new(),
                     });
                 }
@@ -1161,11 +1325,24 @@ impl Backend for Native {
                 let mut installed = previous.ok_or_else(|| anyhow!("instance absent"))?;
                 advance(store, operation, "staging")?;
                 let prepared = prepared_path(store, application, instance)?;
-                if prepared.try_exists()? {
+                if prepared.try_exists()?
+                    && job.request.action == "start"
+                    && !installed.desired_running
+                {
                     let mut next: Installed = serde_json::from_slice(&store::read_protected(
                         &prepared,
                         MAX_DOCUMENT_BYTES,
                     )?)?;
+                    ensure!(
+                        next.release_digest == job.request.release_digest
+                            && !installed.desired_running,
+                        "prepared start target changed after admission"
+                    );
+                    let accepted = store.operation(&next.operation_id)?;
+                    ensure!(
+                        accepted.ok && accepted.phase == "prepared_stopped",
+                        "prepared source did not finish accepted staging"
+                    );
                     let old_document = store.release(&installed.release_digest)?;
                     let document = store.release(&next.release_digest)?;
                     policy.admit(&document.release, instance)?;

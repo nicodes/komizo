@@ -128,3 +128,36 @@ fn dependency_order_places_successful_jobs_before_their_consuming_services() {
         .insert("api".into(), Condition::Started);
     assert!(native::order(&document).is_err());
 }
+
+#[test]
+fn interrupted_object_adoption_requires_the_exact_protected_token_and_isolated_network() {
+    let physical = format!(
+        "{}-n-app",
+        komizo::deployment::units::namespace("mailroom", "production").unwrap()
+    );
+    let mut intent = native::ObjectIntent {
+        kind: "komizo.object-intent".into(),
+        version: 1,
+        application: "mailroom".into(),
+        instance: "production".into(),
+        operation_id: "1".repeat(32),
+        release_digest: document().digest,
+        object_kind: "network".into(),
+        logical: "app".into(),
+        name: physical.clone(),
+        ownership: "2".repeat(32),
+        internal: Some(false),
+        identity: None,
+    };
+    let value = json!({"name":physical,"id":"3".repeat(64),"driver":"bridge","internal":false,"options":{"isolate":"1"},"labels":{"io.komizo.application":"mailroom","io.komizo.instance":"production","io.komizo.object":"network:app","io.komizo.ownership":"2".repeat(32)}});
+    let record = native::object_evidence(&intent, &value).unwrap();
+    assert_eq!(record.id, "3".repeat(64));
+    let mut wrong = value.clone();
+    wrong["labels"]["io.komizo.ownership"] = json!("4".repeat(32));
+    assert!(native::object_evidence(&intent, &wrong).is_err());
+    wrong = value.clone();
+    wrong["options"]["isolate"] = json!("0");
+    assert!(native::object_evidence(&intent, &wrong).is_err());
+    intent.identity = Some("5".repeat(64));
+    assert!(native::object_evidence(&intent, &value).is_err());
+}
