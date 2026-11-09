@@ -461,8 +461,9 @@ def main():
                         guest.command("journalctl -b -u komizo-controller -u komizo-proxy -u 'kmz-*' -n 500 --no-pager > /root/native-host/journal.log", timeout=20)
                         evidence = guest.command('cat /root/native-host/journal.log', timeout=20, capture_output=True).stdout
                         (args.output / 'journal.log').write_bytes(evidence)
-                        status=guest.command('/usr/local/bin/komizo-box status',timeout=30,capture_output=True).stdout
-                        (args.output/'status.json').write_bytes(status)
+                        status=guest.command('/usr/local/bin/komizo-box status',timeout=30,capture_output=True,check=False)
+                        if status.returncode==0:(args.output/'status.json').write_bytes(status.stdout)
+                        else:(args.output/'status-error.json').write_text(json.dumps({'code':status.returncode,'stderr':status.stderr.decode(errors='replace')[:2048]},sort_keys=True)+'\n')
                         runtime_evidence=guest.command('python3 /root/native-host/acceptance.py evidence',timeout=15,capture_output=True).stdout
                         (args.output/'runtime-evidence.json').write_bytes(runtime_evidence)
                         if not (args.output/'report.json').exists():

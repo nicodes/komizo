@@ -202,10 +202,29 @@ def evidence():
     for pattern in ['readiness-*.json','proxy-active-*.caddy','shared-dns.json','postgres-wrapper.json','postgres-diagnostic.json','postgres-initial.json','apparmor-boundary.json']:
         for path in list(ROOT.glob(pattern))[:16]:
             if path.is_file() and not path.is_symlink() and path.stat().st_size<=65536:files[path.name]=path.read_text()
+    operations=[]
+    for path in sorted(Path('/var/lib/komizo/operations').glob('*.json'))[-32:]:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size>16384:continue
+        record=json.loads(path.read_bytes());identity=record.get('operation_id','')
+        if not __import__('re').fullmatch('[a-f0-9]{32}',identity):continue
+        row={key:record[key] for key in ['kind','version','operation_id','application','instance','release_digest','phase','ok','reconciliation_required'] if key in record}
+        failure=Path('/var/lib/komizo/journal')/identity/'failure.json'
+        if failure.is_file() and not failure.is_symlink() and failure.stat().st_size<=16384:
+            value=json.loads(failure.read_bytes());row['failure']={key:value[key] for key in ['kind','version','operation_id','phase','code','context','observed_at'] if key in value}
+        operations.append(row)
+    containers=[]
+    for item in json.loads(run(['podman','--remote=false','ps','--all','--format=json']).stdout)[:32]:
+        selected=json.loads(run(['podman','--remote=false','container','inspect',item.get('Id') or item.get('ID')]).stdout)[0]
+        labels=selected.get('Config',{}).get('Labels',{}) or {}
+        if not labels.get('io.komizo.application'):continue
+        pid=selected['State']['Pid'];label=Path('/proc/'+str(pid)+'/attr/current')
+        containers.append({'id':selected['Id'],'application':labels['io.komizo.application'],'instance':labels.get('io.komizo.instance'),
+            'service':labels.get('io.komizo.service'),'profile':selected.get('AppArmorProfile'),
+            'pid':pid,'state':selected['State']['Status'],'kernel_label':label.read_text().strip() if pid and label.is_file() else None})
     assets={}
     for path in list(Path('/var/lib/komizo-assets').rglob('*'))[:128]:
         stat=path.lstat();assets[str(path)]={'mode':oct(stat.st_mode&0o7777),'uid':stat.st_uid,'gid':stat.st_gid,'size':stat.st_size}
-    print(json.dumps({'kind':'komizo.native-fixture-evidence','version':1,'files':files,'assets':assets},sort_keys=True))
+    print(json.dumps({'kind':'komizo.native-fixture-evidence','version':1,'files':files,'assets':assets,'operations':operations,'containers':containers},sort_keys=True))
 
 
 def verify_reboot():
