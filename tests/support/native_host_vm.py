@@ -24,7 +24,7 @@ FIXTURES = ROOT / 'tests/fixtures/native_host'
 
 
 def run(argv, *, timeout=60, **options):
-    return subprocess.run(argv, check=True, timeout=timeout, **options)
+    return subprocess.run(argv, check=options.pop('check',True), timeout=timeout, **options)
 
 
 def download(record, target):
@@ -85,6 +85,7 @@ class OwnedDirectory:
 class Guest:
     def __init__(self, directory, keyfile, host_key, ssh_port):
         self.directory = directory
+        self.key = keyfile
         known = directory / 'known_hosts'
         known.write_text('[127.0.0.1]:' + str(ssh_port) + ' ' + host_key.read_text())
         known.chmod(0o600)
@@ -174,16 +175,59 @@ class Guest:
         return payload
 
 
-def cold_owner(guest,directory,cli):
-    tools=directory/'client-bin';tools.mkdir(mode=0o700)
-    wrapper=tools/'ssh'
-    wrapper.write_text('#!/bin/sh\nexec /usr/bin/ssh '+shlex.join(guest.arguments)+' "$@"\n');wrapper.chmod(0o700)
-    home=directory/'client-home';home.mkdir(mode=0o700)
-    environment={'HOME':str(home),'PATH':str(tools)+':/usr/bin:/bin','LANG':'C.UTF-8'}
+class IsolatedOwner:
+    """Execute the shipping client under a new UID with disposable SSH inputs."""
+    def __init__(self,guest,cli):
+        self.guest,self.cli=guest,cli
+        self.name='kmz-cold-'+secrets.token_hex(6)
+        self.directory=None;self.uid=None
+
+    def __enter__(self):
+        run(['sudo','-n','useradd','--system','--no-create-home','--shell','/usr/sbin/nologin',self.name],capture_output=True)
+        try:
+            uid=int(run(['id','-u',self.name],capture_output=True).stdout)
+            if uid in {0,os.getuid()}:raise ValueError('cold owner client must have an independent unprivileged UID')
+            self.uid=uid
+            self.directory=Path(tempfile.mkdtemp(prefix='komizo-cold-owner-'))
+            self.home=self.directory/'home';self.home.mkdir(mode=0o700)
+            tools=self.directory/'bin';tools.mkdir(mode=0o700)
+            target=tools/'komizo';shutil.copyfile(self.cli,target);target.chmod(0o700)
+            private=self.directory/'owner';shutil.copyfile(self.guest.key,private);private.chmod(0o600)
+            pins=self.directory/'known_hosts';shutil.copyfile(self.guest.directory/'known_hosts',pins);pins.chmod(0o600)
+            arguments=[str(private) if value==str(self.guest.key) else
+                'UserKnownHostsFile='+str(pins) if value.startswith('UserKnownHostsFile=') else value for value in self.guest.arguments]
+            wrapper=tools/'ssh';wrapper.write_text('#!/bin/sh\nexec /usr/bin/ssh '+shlex.join(arguments)+' "$@"\n');wrapper.chmod(0o700)
+            gid=int(run(['id','-g',self.name],capture_output=True).stdout)
+            run(['sudo','-n','chown','-R',str(self.uid)+':'+str(gid),str(self.directory)],capture_output=True)
+            self.prefix=['sudo','-n','--user='+self.name,'--','/usr/bin/env','-i','HOME='+str(self.home),
+                'PATH='+str(tools)+':/usr/bin:/bin','LANG=C.UTF-8']
+            # Scrubbing environment variables alone cannot isolate another process
+            # with the same UID. Prove the kernel denies the orchestrator's Env.
+            for protected in [Path('/proc/'+str(os.getpid())+'/environ'),self.guest.directory/'recipient.key']:
+                if not protected.exists():raise ValueError('cold owner isolation probe lacks its protected input')
+                probe=run([*self.prefix,'/usr/bin/python3','-I','-B','-c',
+                    'import pathlib,sys\ntry: pathlib.Path(sys.argv[1]).open("rb").read(1)\nexcept PermissionError: sys.exit(0)\nsys.exit(1)',
+                    str(protected)],capture_output=True)
+            self.executable=target
+            return self
+        except BaseException:
+            self.__exit__(None,None,None)
+            raise
+
+    def __exit__(self,*_):
+        if self.uid is not None:
+            run(['sudo','-n','pkill','-KILL','-u',str(self.uid)],capture_output=True,check=False)
+        if self.directory is not None:
+            run(['sudo','-n','rm','-rf','--',str(self.directory)],capture_output=True)
+        run(['sudo','-n','userdel',self.name],capture_output=True)
+
+
+def cold_owner(guest,directory,cli,isolated):
     observed=[]
     def command(action,*flags,timeout=120):
         began=time.monotonic()
-        response=run([str(cli),action,*flags],env=environment,capture_output=True,timeout=timeout)
+        response=run([*isolated.prefix,str(isolated.executable),action,*flags],cwd=isolated.home,
+            env={'PATH':'/usr/bin:/bin','LANG':'C.UTF-8'},capture_output=True,timeout=timeout)
         observed.append({'action':action,'seconds':time.monotonic()-began})
         value=json.loads(response.stdout)
         if not isinstance(value,dict):raise ValueError('cold owner client did not return a typed record')
@@ -209,9 +253,14 @@ def cold_owner(guest,directory,cli):
 
 
 def performance(guest,directory,cli,setup_seconds):
+    with IsolatedOwner(guest,cli) as isolated:
+        return isolated_performance(guest,directory,cli,setup_seconds,isolated)
+
+
+def isolated_performance(guest,directory,cli,setup_seconds,isolated):
     budget_path=ROOT/'tests/acceptance/acceptance-budgets.toml'
     budget=tomllib.loads(budget_path.read_text())
-    command,flags,onboarding=cold_owner(guest,directory,cli)
+    command,flags,onboarding=cold_owner(guest,directory,cli,isolated)
     guest.command('python3 /root/native-host/fixture_performance.py start '+shlex.quote(json.dumps(budget)),timeout=30)
     routes=[];operators=[]
     for _ in range(budget['samples']):

@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import secrets
 import time
+import threading
+import os
 import tarfile
 
 from acceptance import ROOT, MiB, run, write
@@ -74,6 +76,14 @@ def diagnostic():
         actual=runtime.container(record);identity=actual['Id']
         evidence['state']=actual['State'];evidence['exec_sessions']=actual.get('ExecIDs')
         evidence['processes']=run(['podman','--remote=false','top',identity,'hpid','pid','ppid','args'],ok=False,timeout=5).stdout.decode(errors='replace')[:16384]
+        evidence['backend_processes']={}
+        for row in evidence['processes'].splitlines()[1:32]:
+            if not row.split()[0].isdecimal():continue
+            base=Path('/proc')/row.split()[0]
+            if not base.is_dir():continue
+            evidence['backend_processes'][row.split()[0]]={key:(base/key).read_text()[:2048] for key in ['wchan','syscall','cgroup'] if (base/key).is_file()}
+        for name in ['hosts','resolv.conf']:
+            evidence[name]=run(['podman','--remote=false','exec',identity,'cat','/etc/'+name],ok=False,timeout=4).stdout.decode(errors='replace')[:2048]
         pid=actual['State']['Pid'];group=Path('/proc/'+str(pid)+'/cgroup').read_text().strip()
         evidence['cgroup']=group
         if group.startswith('0::/'):
@@ -88,6 +98,34 @@ def diagnostic():
             except (OSError,ValueError,__import__('subprocess').SubprocessError) as error:evidence[name]={'error':type(error).__name__}
     except (OSError,ValueError,KeyError,__import__('subprocess').SubprocessError) as error:evidence['collector_error']=type(error).__name__
     write(ROOT/'postgres-diagnostic.json',evidence)
+
+
+def initial_connections(stop):
+    """Observe one initial Unix login and two finite TCP handshakes."""
+    evidence={};deadline=time.monotonic()+120
+    try:
+        while not stop.is_set() and time.monotonic()<deadline:
+            try:
+                current=runtime.installed('pgbox')['resources']['containers']['postgres']
+                actual=runtime.container(current)
+                if actual['State']['Running']:
+                    identity=actual['Id']
+                    socket=run(['podman','--remote=false','exec',identity,'sh','-c','test -S /tmp/.s.PGSQL.5432'],ok=False,timeout=4)
+                    if socket.returncode==0:break
+            except (OSError,ValueError,KeyError,__import__('subprocess').SubprocessError):pass
+            stop.wait(.2)
+        else:return
+        sql="SELECT json_build_object('settings',(SELECT json_object_agg(name,setting) FROM pg_settings WHERE name IN ('ssl','ssl_library','authentication_timeout','log_hostname','log_connections','listen_addresses','shared_preload_libraries','session_preload_libraries','local_preload_libraries')),'hba',(SELECT json_agg(json_build_object('number',rule_number,'type',type,'database',database,'user',user_name,'address',address,'method',auth_method,'error',error)) FROM pg_hba_file_rules))"
+        for name,command in [
+            ('unix',['psql','-h','/tmp','-U','fixture','-d','postgres','--no-psqlrc','--tuples-only','--no-align','--command',sql]),
+            ('tcp_default',['pg_isready','-h','127.0.0.1','-U','fixture','-d','postgres','-t','2']),
+            ('tcp_without_negotiation',['psql','host=127.0.0.1 user=fixture dbname=postgres connect_timeout=2 sslmode=disable gssencmode=disable','--no-psqlrc','--tuples-only','--no-align','--command','SELECT 1'])]:
+            began=time.monotonic()
+            result=run(['timeout','--signal=TERM','--kill-after=1s','4s','podman','--remote=false','exec',identity,*command],ok=False,timeout=6)
+            evidence[name]={'code':result.returncode,'seconds':time.monotonic()-began,'stdout':result.stdout.decode(errors='replace')[:8192],'stderr':result.stderr.decode(errors='replace')[:2048]}
+            write(ROOT/'postgres-initial.json',evidence)
+    except (OSError,ValueError,__import__('subprocess').SubprocessError) as error:
+        evidence['collector_error']=type(error).__name__;write(ROOT/'postgres-initial.json',evidence)
 
 
 def prepare(report):
@@ -113,7 +151,9 @@ def prepare(report):
             '--command',"CREATE TABLE evidence(value text NOT NULL); INSERT INTO evidence VALUES ('retained native row');"]}}
     workload['services']['api']['needs']={'initialize':'completed'}
     started=time.monotonic()
-    _,receipt=runtime.deploy(release,seconds=120)
+    stop=threading.Event();observer=threading.Thread(target=initial_connections,args=(stop,),daemon=True);observer.start()
+    try:_,receipt=runtime.deploy(release,seconds=120)
+    finally:stop.set();observer.join(timeout=20)
     write(ROOT/'timings.json',{'deployment_seconds':time.monotonic()-started})
     if not receipt.get('ok') or query('SELECT value FROM evidence')!=b'retained native row':
         diagnostic()
