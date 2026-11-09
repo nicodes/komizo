@@ -224,11 +224,14 @@ def shared_dns(stage):
             executable=(process/'exe').resolve()
             if executable.name!='aardvark-dns':continue
             group=next(line[3:] for line in (process/'cgroup').read_text().splitlines() if line.startswith('0::'))
-            rows.append({'pid':int(process.name),'cgroup':group,'executable_sha256':hashlib.sha256(executable.read_bytes()).hexdigest()})
+            private_unreadable=all(run(['nsenter','--target',process.name,'--mount','--','test','-r',private],ok=False).returncode!=0
+                for private in ['/var/lib/komizo/private-acceptance','/etc/komizo/controller.json','/etc/shadow'])
+            rows.append({'pid':int(process.name),'cgroup':group,'executable_sha256':hashlib.sha256(executable.read_bytes()).hexdigest(),
+                'private_state_unreadable':private_unreadable})
         except (OSError,StopIteration):continue
     path=ROOT/'shared-dns.json';observations=json.loads(path.read_text()) if path.exists() else []
     observations.append({'stage':stage,'processes':rows});write(path,observations)
-    return bool(rows) and all(row['cgroup'].startswith('/komizo.slice/komizo-control.slice/') for row in rows)
+    return bool(rows) and all(row['cgroup'].startswith('/komizo.slice/komizo-control.slice/') and row['private_state_unreadable'] for row in rows)
 
 
 def cross_network_refused(source,target,service,port,*,source_instance='production',target_instance='production'):
