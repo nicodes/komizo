@@ -9,5 +9,10 @@
     "max_bytes": 1073741824
   },
   "proxy_tools_revision": "134237cd8f9b169c53dfc31beb4172bb481e49ec",
-  "proxy_go_version": "1.27.3"
+  "proxy_go_version": "1.27.3",
+  "proxy_source_sha256": {
+    "caddy.go.mod": "sha256:a9056233663f7ccd6ded5f1334393061cfa06bd088f67b0050758c3a2555ba3a",
+    "caddy.go.sum": "sha256:05275136107a9863d5b1fb2501e19ee43c2e181a5d50eff470f04e58113a631c",
+    "caddy-build.sh": "sha256:6c30de5fa4cdb860b39908451cac55c72f42d615e48b035246e095f59bc02d60"
+  }
 }

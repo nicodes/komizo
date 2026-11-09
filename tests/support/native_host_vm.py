@@ -198,7 +198,7 @@ def main():
     if (set(proxy_build)!=expected_keys or proxy_build['kind']!='komizo.proxy-build' or type(proxy_build['version']) is not int or proxy_build['version']!=1
             or proxy_build['tools_revision']!=baseline['proxy_tools_revision'] or proxy_build['platform']!='linux/amd64'
             or proxy_build['go_version']!=baseline['proxy_go_version'] or proxy_build['caddy_version']!=baseline['caddy_version']
-            or set(proxy_build['source_sha256'])!={'caddy.go.mod','caddy.go.sum','caddy-build.sh'}
+            or proxy_build['source_sha256']!=baseline['proxy_source_sha256']
             or proxy_build['binary_sha256']!='sha256:'+hashlib.sha256(caddy.read_bytes()).hexdigest()):
         raise ValueError('native proxy bytes differ from their reviewed source receipt')
     args.output.mkdir(parents=True, mode=0o700, exist_ok=False)
