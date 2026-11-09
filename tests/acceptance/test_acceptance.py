@@ -280,7 +280,8 @@ class NativeCaptureGuards(unittest.TestCase):
         run = Mock(side_effect=responses)
         spec = importlib.util.spec_from_file_location('network_fixture', ENGINE.parent / 'support/native_host_runtime.py')
         fixture = importlib.util.module_from_spec(spec)
-        with patch.dict(sys.modules, {'acceptance': SimpleNamespace(ROOT=Path('/fixture'), MiB=1 << 20, BINARY='/fixture/box', run=run, write=Mock()),
+        with patch.dict(sys.modules, {'acceptance': SimpleNamespace(ROOT=Path('/fixture'), MiB=1 << 20, BINARY='/fixture/box',
+                run=run, write=Mock(), actual_boundaries=Mock(), capacity=Mock()),
                 'fixture_registry': SimpleNamespace(canonical=canonical, digest=digest)}):
             spec.loader.exec_module(fixture)
         fixture.Path = lambda name: SimpleNamespace(read_text=lambda: files[name])
