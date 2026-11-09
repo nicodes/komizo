@@ -23,7 +23,7 @@ REQUIRED_STEPS={
     'mutation_replay','source_bound_https','forwarded_ip_refused','controller_death','dns_after_controller_death',
     'dns_after_other_application_stop','shared_dns_control_budget','stopped_candidate_no_jobs','application_kernel_limits',
     'cross_application_tcp_refused','same_network_tcp_allowed','installed_asset_proxy_uid_read','installed_asset_proxy_uid_write_refused',
-    'failed_job_no_replay','interrupted_job_no_replay','worker_deadline','worker_deadline_stops_job','unsafe_archive','real_postgresql_api_dag',
+    'failed_job_no_replay','interrupted_job_no_replay','interrupted_job_native_deadline','worker_deadline','worker_deadline_stops_job','unsafe_archive','real_postgresql_api_dag',
     'immutable_postgresql_base','private_alias_delivery','job_only_secret_grant','changed_secret_bytes_refused',
     'atomic_owner_generation_rotation','coupled_rotation_failure_preserves_all_aliases','stale_generation_refused',
     'no_secret_values_in_public_outputs_or_argv','known_secret_log_redaction','owner_observation_uid_boundary',

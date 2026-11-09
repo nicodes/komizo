@@ -338,11 +338,12 @@ def failures(report):
         raise ValueError('failed data job was not durably fenced')
     _,refused=deploy(bad)
     if refused.get('kind')!='komizo.error' or count('badjob')!=1:raise ValueError('failed data job was replayed')
-    hanging=release('hungjob','a'*40,dynamic=True,job_command='echo accepted >> /data/count; /bin/busybox sleep 600')
+    hanging=release('hungjob','a'*40,dynamic=True,
+        job_command='echo accepted >> /data/count; /bin/busybox sleep 12; echo late > /data/interrupted-late')
     enroll_empty(hanging)
     _,staged=deploy(hanging)
     if staged.get('phase')!='prepared_stopped':raise ValueError('interruption fixture did not stage its enrolled stopped source')
-    body=request('hungjob','start',registry.digest(registry.canonical(hanging)))
+    body=request('hungjob','start',registry.digest(registry.canonical(hanging)),timeout_seconds=8)
     child=subprocess.Popen([BINARY,'submit'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
     child.stdin.write(registry.canonical(body));child.stdin.close()
     try:
@@ -357,6 +358,13 @@ def failures(report):
         if observed.get('phase')!='needs_reconciliation' or count('hungjob')!=1:raise ValueError('interrupted data job lost its durable uncertainty fence')
         _,refused=deploy(hanging)
         if refused.get('kind')!='komizo.error' or count('hungjob')!=1:raise ValueError('interrupted data job was replayed')
+        receipts=[json.loads(path.read_text()) for path in Path('/var/lib/komizo/jobs').rglob('*.json')
+            if json.loads(path.read_text()).get('application')=='hungjob']
+        if len(receipts)!=1:raise ValueError('interrupted native job lost its exact durable creation identity')
+        until(lambda:not json.loads(run(['podman','--remote=false','container','inspect',receipts[0]['container_id']]).stdout)[0]['State']['Running'],seconds=10)
+        volume=installed('hungjob')['resources']['volumes']['data']
+        mount=Path(run(['podman','--remote=false','volume','inspect',volume['name'],'--format={{.Mountpoint}}']).stdout.decode().strip())
+        if (mount/'interrupted-late').exists():raise ValueError('controller death allowed native data effects beyond the admitted deadline')
     finally:
         try:child.wait(timeout=10)
         except subprocess.TimeoutExpired:child.kill();child.wait(timeout=5)
@@ -378,7 +386,7 @@ def failures(report):
     def stopped():
         value=json.loads(run(['podman','--remote=false','container','inspect',receipts[0]['container_id']]).stdout)[0]
         return value if value['State']['Running'] is False else None
-    try:actual=until(stopped,seconds=5)
+    try:until(stopped,seconds=5)
     finally:
         write(ROOT/'deadline-observation.json',{'timeout_seconds':8,'elapsed_seconds':elapsed,'receipt':bounded,
             'job_stopped':bool(stopped()),'entered_job':(mount/'deadline-started').exists(),
@@ -386,7 +394,7 @@ def failures(report):
     if (mount/'deadline-late').exists():raise ValueError('native job wrote retained data after its operation deadline')
     _,unsafe=deploy(release('unsafe','a'*40,unsafe=True))
     if unsafe.get('phase')!='failed' or unsafe.get('ok') is not False:raise ValueError('unsafe archive reached activation')
-    report['checks'].update({'failed_job_no_replay':'passed','interrupted_job_no_replay':'passed','worker_deadline':'passed',
+    report['checks'].update({'failed_job_no_replay':'passed','interrupted_job_no_replay':'passed','interrupted_job_native_deadline':'passed','worker_deadline':'passed',
         'worker_deadline_stops_job':'passed','unsafe_archive':'passed'})
 
 
