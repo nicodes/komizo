@@ -1,441 +1,354 @@
-use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair};
 use axum::{
     body::{Body, to_bytes},
     http::Request,
 };
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use komizo_api::{config::Authority, http::Monitor, store::Paths};
+use komizo_api::{config::Config, ui::Ui};
 use serde_json::{Value, json};
+use std::{os::unix::fs::PermissionsExt, path::PathBuf, sync::Arc};
 use tower::ServiceExt;
-fn public(key: &Ed25519KeyPair) -> [u8; 32] {
-    key.public_key().as_ref().try_into().unwrap()
+struct Fixture {
+    root: PathBuf,
+    ui: Arc<Ui>,
 }
-fn envelope(key: &Ed25519KeyPair, op: &str, id: &str, args: Value, now: i64) -> Vec<u8> {
-    let payload = serde_json::to_vec(
-        &json!({"v":1,"id":id,"srv":"fixture_box","exp":now+60,"op":op,"args":args}),
-    )
-    .unwrap();
-    serde_json::to_vec(&json!({"payload":URL_SAFE_NO_PAD.encode(&payload),"sig":URL_SAFE_NO_PAD.encode(key.sign(&payload).as_ref())})).unwrap()
+impl Fixture {
+    fn new() -> Self {
+        let root = std::env::temp_dir().join(format!("komizo-local-ui-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&root).unwrap();
+        let binary = root.join("owner");
+        let script = format!(
+            r#"#!/usr/bin/python3
+import hashlib,json,os,signal,subprocess,sys,time
+from pathlib import Path
+root=Path({root})
+args=sys.argv[1:]
+with (root/'calls').open('a') as f:f.write(json.dumps(args)+'\n')
+options=dict(zip(args[1::2],args[2::2]))
+assert options['--host']=='host.example.test'
+if args[0]=='status':
+ if (root/'hold').exists():
+  signal.signal(signal.SIGTERM,signal.SIG_IGN)
+  child=subprocess.Popen(['/usr/bin/python3','-I','-c','import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(60)'])
+  (root/'pids').write_text(str(os.getpid())+' '+str(child.pid))
+  time.sleep(60)
+ if (root/'offline').exists():sys.exit(3)
+ print(json.dumps({{'kind':'komizo.status','version':1,'instances':[{{'application':'mailroom','instance':'production','release_digest':'sha256:'+'a'*64,'desired_running':True,'operation_id':'c'*32,'services':{{'web':{{'state':'running','health':'healthy'}}}}}}]}}))
+elif args[0]=='request':
+ path=Path(options['--file']);assert path.stat().st_mode&0o777==0o600
+ request=json.loads(path.read_text())
+ assert set(request)=={{'kind','version','authority','application','instance','action','release_digest','nonce','issued_at','expires_at','timeout_seconds'}}
+ assert request['authority']=='owner' and request['timeout_seconds']==1500
+ identity=hashlib.sha256(('komizo-operation-v1\0'+request['application']+'\0'+request['instance']+'\0'+request['nonce']).encode()).hexdigest()[:32]
+ result={{'kind':'komizo.operation','version':1,'application':request['application'],'instance':request['instance'],'release_digest':request['release_digest'],'operation_id':identity,'phase':'ready','ok':True,'reconciliation_required':False}}
+ (root/'operation').write_text(json.dumps(result));(root/'request-path').write_text(str(path))
+ if (root/'failed').exists():result.update(phase='failed',ok=False)
+ if (root/'lost').exists():sys.exit(7)
+ print(json.dumps(result))
+ if (root/'failed').exists():sys.exit(1)
+elif args[0]=='inspect':
+ result=json.loads((root/'operation').read_text())
+ assert options['--operation']==result['operation_id'] and options['--release']==result['release_digest']
+ print(json.dumps(result))
+elif args[0]=='logs':
+ print(json.dumps({{'kind':'komizo.logs','version':1,'application':options['--application'],'instance':options['--instance'],'service':options['--service'],'container_id':'d'*64,'text':'<script>untrusted output</script>\n'}}))
+else:sys.exit(9)
+"#,
+            root = serde_json::to_string(&root).unwrap()
+        );
+        std::fs::write(&binary, script).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config = Config {
+            bind: "127.0.0.1".into(),
+            port: 8480,
+            host: "host.example.test".into(),
+            owner_client: binary,
+            identity: None,
+            parent_pid: None,
+        };
+        let (stop, _) = tokio::sync::watch::channel(false);
+        Self {
+            root,
+            ui: Ui::new(config, stop),
+        }
+    }
+    fn calls(&self) -> Vec<Value> {
+        std::fs::read_to_string(self.root.join("calls"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
 }
-async fn request(
-    app: &std::sync::Arc<Monitor>,
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+async fn call(
+    ui: &Arc<Ui>,
     method: &str,
     path: &str,
-    token: &str,
-    raw: Vec<u8>,
-) -> (u16, Vec<u8>) {
-    let response = app
+    headers: &[(&str, &str)],
+    body: Value,
+) -> (u16, Value) {
+    let mut request = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("host", "127.0.0.1:8480");
+    for (key, value) in headers {
+        request = request.header(*key, *value);
+    }
+    let bytes = if body.is_null() {
+        Vec::new()
+    } else {
+        serde_json::to_vec(&body).unwrap()
+    };
+    let response = ui
         .router()
-        .oneshot(
-            Request::builder()
-                .method(method)
-                .uri(path)
-                .header("authorization", format!("Bearer {token}"))
-                .body(Body::from(raw))
-                .unwrap(),
-        )
+        .oneshot(request.body(Body::from(bytes)).unwrap())
         .await
         .unwrap();
+    let status = response.status().as_u16();
+    assert_eq!(response.headers()["x-frame-options"], "DENY");
+    let bytes = to_bytes(response.into_body(), 8 << 20).await.unwrap();
     (
-        response.status().as_u16(),
-        to_bytes(response.into_body(), 8 << 20)
-            .await
-            .unwrap()
-            .to_vec(),
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     )
 }
+fn action() -> Value {
+    json!({"application":"mailroom","instance":"production","action":"restart","release_digest":format!("sha256:{}","a".repeat(64)),"nonce":"b".repeat(32)})
+}
+const WRITE: &[(&str, &str)] = &[
+    ("origin", "http://127.0.0.1:8480"),
+    ("content-type", "application/json"),
+    ("x-komizo-request", "1"),
+];
+
 #[tokio::test]
-async fn signed_http_keeps_registry_observations_separate_from_logs_and_root_inbox() {
-    let root = std::env::temp_dir().join(format!("komizo-monitor-test-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir(&root).unwrap();
-    for directory in ["results", "inbox", "logs", "apps"] {
-        std::fs::create_dir(root.join(directory)).unwrap();
+async fn local_health_and_remote_status_are_separate_and_history_is_observed_only() {
+    let f = Fixture::new();
+    std::fs::write(f.root.join("offline"), b"unavailable").unwrap();
+    assert_eq!(call(&f.ui, "GET", "/readyz", &[], Value::Null).await.0, 200);
+    assert!(f.calls().is_empty());
+    assert_eq!(
+        call(&f.ui, "GET", "/api/status", &[], Value::Null).await.0,
+        503
+    );
+    let history = call(&f.ui, "GET", "/api/history", &[], Value::Null).await.1;
+    assert!(history["samples"].as_array().unwrap().is_empty());
+    std::fs::remove_file(f.root.join("offline")).unwrap();
+    let (status, value) = call(&f.ui, "GET", "/api/status", &[], Value::Null).await;
+    assert_eq!(status, 200);
+    assert_eq!(value["status"]["kind"], "komizo.status");
+    assert_eq!(value["status"]["instances"][0]["desired_running"], true);
+    let history = call(&f.ui, "GET", "/api/history", &[], Value::Null).await.1;
+    assert_eq!(history["samples"].as_array().unwrap().len(), 1);
+    f.ui.shutdown().await;
+}
+#[tokio::test]
+async fn cross_origin_rebinding_forms_and_untrusted_methods_never_invoke_owner_client() {
+    let f = Fixture::new();
+    for headers in [
+        vec![],
+        vec![
+            ("origin", "https://attacker.example"),
+            ("content-type", "application/json"),
+            ("x-komizo-request", "1"),
+        ],
+        vec![
+            ("origin", "http://127.0.0.1:8480"),
+            ("content-type", "text/plain"),
+            ("x-komizo-request", "1"),
+        ],
+        vec![
+            ("origin", "http://127.0.0.1:8480"),
+            ("content-type", "application/json"),
+            ("x-komizo-request", "1"),
+            ("sec-fetch-site", "cross-site"),
+        ],
+    ] {
+        assert!(
+            call(&f.ui, "POST", "/api/actions", &headers, action())
+                .await
+                .0
+                >= 400
+        );
     }
-    let paths = Paths {
-        report: root.join("report.json"),
-        history: root.join("history.jsonl"),
-        metrics: root.join("metrics.json"),
-        results: root.join("results"),
-        inbox: root.join("inbox"),
-        logs: root.join("logs"),
-        apps: root.join("apps"),
-    };
-    std::fs::write(
-        &paths.report,
-        b"{\"v\":1,\"server\":{\"id\":\"fixture_box\"},\"apps\":[]}",
-    )
-    .unwrap();
-    std::fs::write(
-        paths.logs.join("web.log"),
-        b"api\tfirst\nworker\tsecond\napi\tthird\n",
-    )
-    .unwrap();
-    let registry = Ed25519KeyPair::from_seed_unchecked(&[1; 32]).unwrap();
-    let operator = Ed25519KeyPair::from_seed_unchecked(&[2; 32]).unwrap();
-    let logs = Ed25519KeyPair::from_seed_unchecked(&[3; 32]).unwrap();
-    let app = Monitor::new(
-        Authority {
-            server: "fixture_box".into(),
-            registry: public(&registry),
-            operators: vec![public(&operator)],
-            logs: vec![public(&operator), public(&logs)],
-        },
-        paths.clone(),
-    );
-    let now = chrono::Utc::now().timestamp();
-    let claims = serde_json::to_vec(&json!({"srv":"fixture_box","exp":now+60})).unwrap();
-    let token = format!(
-        "kmz_rd_{}.{}",
-        URL_SAFE_NO_PAD.encode(&claims),
-        URL_SAFE_NO_PAD.encode(registry.sign(&claims).as_ref())
-    );
-    assert_eq!(request(&app, "GET", "/health", &token, vec![]).await.0, 401);
     assert_eq!(
-        request(&app, "GET", "/v1/report", &token, vec![]).await.0,
-        401
-    );
-    assert_eq!(
-        request(
-            &app,
-            "POST",
-            "/v1/report",
-            "forged",
-            envelope(&registry, "report.read", "report", json!({}), now)
-        )
-        .await
-        .0,
-        401
-    );
-    assert_eq!(
-        request(
-            &app,
-            "POST",
-            "/v1/report",
-            &token,
-            envelope(&registry, "report.read", "report", json!({}), now)
-        )
-        .await
-        .0,
-        200
-    );
-    assert_eq!(
-        request(&app, "POST", "/v1/report", &token, vec![]).await.0,
-        403
-    );
-    assert_eq!(
-        request(
-            &app,
-            "POST",
-            "/v1/logs",
-            &token,
-            envelope(&registry, "logs.read", "logs", json!({"app":"web"}), now)
+        call(
+            &f.ui,
+            "GET",
+            "/api/status",
+            &[("host", "attacker.example")],
+            Value::Null
         )
         .await
         .0,
         403
     );
-    let (status, body) = request(
-        &app,
-        "POST",
-        "/v1/logs",
-        &token,
-        envelope(
-            &logs,
-            "logs.read",
-            "logs",
-            json!({"app":"web","tail":"1","service":"api"}),
-            now,
-        ),
+    assert_eq!(
+        call(&f.ui, "POST", "/api/action", WRITE, action()).await.0,
+        405
+    );
+    let mut invalid = action();
+    invalid["action"] = json!("deploy; id");
+    assert_eq!(
+        call(&f.ui, "POST", "/api/actions", WRITE, invalid).await.0,
+        403
+    );
+    let mut invalid = action();
+    invalid["application"] = json!("../other");
+    assert_eq!(
+        call(&f.ui, "POST", "/api/actions", WRITE, invalid).await.0,
+        400
+    );
+    let mut invalid = action();
+    invalid["command"] = json!("shell");
+    assert_eq!(
+        call(&f.ui, "POST", "/api/actions", WRITE, invalid).await.0,
+        400
+    );
+    assert!(f.calls().is_empty());
+    f.ui.shutdown().await;
+}
+#[tokio::test]
+async fn uncertain_acknowledgement_inspects_known_identity_and_never_retries_effect() {
+    let f = Fixture::new();
+    std::fs::write(f.root.join("lost"), b"lost ack").unwrap();
+    let (status, value) = call(&f.ui, "POST", "/api/actions", WRITE, action()).await;
+    assert_eq!(status, 200);
+    assert_eq!(value["confirmation"], "observed");
+    assert_eq!(value["operation_id"], "3a136f1b4cdd49cd0c83b4231129a21f");
+    assert_eq!(
+        value["result"]["release_digest"],
+        action()["release_digest"]
+    );
+    let calls = f.calls();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0][0], "request");
+    assert_eq!(calls[1][0], "inspect");
+    let path = PathBuf::from(std::fs::read_to_string(f.root.join("request-path")).unwrap());
+    assert!(!path.exists());
+    f.ui.shutdown().await;
+}
+#[tokio::test]
+async fn logs_keep_literal_untrusted_text_and_exact_scoped_cli_selectors() {
+    let f = Fixture::new();
+    let (status, value) = call(
+        &f.ui,
+        "GET",
+        "/api/logs?application=mailroom&instance=production&service=web",
+        &[],
+        Value::Null,
     )
     .await;
     assert_eq!(status, 200);
-    let value: Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(value["lines"], "api\tthird");
-    assert_eq!(value["services"], json!(["api", "worker"]));
-    let raw = envelope(
-        &operator,
-        "app.stop",
-        "owned_stop",
-        json!({"app":"web"}),
-        now,
+    assert_eq!(value["text"], "<script>untrusted output</script>\n");
+    assert_eq!(
+        f.calls()[0],
+        json!([
+            "logs",
+            "--host",
+            "host.example.test",
+            "--application",
+            "mailroom",
+            "--instance",
+            "production",
+            "--service",
+            "web"
+        ])
     );
     assert_eq!(
-        request(
-            &app,
-            "POST",
-            "/v1/commands",
-            &token,
-            envelope(
-                &registry,
-                "app.stop",
-                "registry_stop",
-                json!({"app":"web"}),
-                now
-            )
+        call(
+            &f.ui,
+            "GET",
+            "/api/logs?application=mailroom&application=other&instance=production&service=web",
+            &[],
+            Value::Null
         )
         .await
         .0,
-        403
+        400
     );
-    assert!(!paths.inbox.join("registry_stop").exists());
-    assert_eq!(
-        request(&app, "POST", "/v1/commands", &token, raw.clone())
-            .await
-            .0,
-        202
-    );
-    assert_eq!(std::fs::read(paths.inbox.join("owned_stop")).unwrap(), raw);
-    assert_eq!(
-        request(&app, "POST", "/v1/commands", &token, raw.clone())
-            .await
-            .0,
-        202
-    );
-    assert_eq!(std::fs::read_dir(&paths.inbox).unwrap().count(), 1);
-    assert_eq!(
-        request(&app, "GET", "/v1/commands/pending", &token, vec![])
-            .await
-            .0,
-        404
-    );
-    std::fs::write(
-        paths.results.join("owned_stop.json"),
-        format!(
-            "{{\"v\":1,\"id\":\"owned_stop\",\"op\":\"app.stop\",\"at\":\"{}\",\"ok\":true}}",
-            chrono::Utc::now().to_rfc3339()
-        ),
-    )
-    .unwrap();
-    assert_eq!(
-        request(&app, "POST", "/v1/commands", &token, raw).await.0,
-        200
-    );
-    for i in 1..128 {
-        std::fs::write(paths.inbox.join(format!("pending_{i}")), b"pending").unwrap();
+    assert_eq!(f.calls().len(), 1);
+    f.ui.shutdown().await;
+}
+#[test]
+fn only_loopback_fixed_host_owner_client_configuration_is_supported() {
+    let binary = std::env::current_exe().unwrap();
+    let args = vec![
+        "ui".into(),
+        "--host".into(),
+        "host.example.test".into(),
+        "--owner-client".into(),
+        binary.to_str().unwrap().into(),
+    ];
+    assert!(Config::parse(&args).is_ok());
+    for extra in [
+        vec!["--bind", "0.0.0.0"],
+        vec!["--bind", "192.0.2.1"],
+        vec!["--port", "0"],
+        vec!["--port", "65536"],
+        vec!["--hosts", "other"],
+        vec!["--report", "/etc/private"],
+        vec!["--host", "-oProxyCommand=bad"],
+    ] {
+        let mut bad = args.clone();
+        bad.extend(extra.into_iter().map(str::to_owned));
+        assert!(Config::parse(&bad).is_err());
     }
-    assert_eq!(
-        request(
-            &app,
-            "POST",
-            "/v1/commands",
-            &token,
-            envelope(
-                &operator,
-                "app.stop",
-                "over_capacity",
-                json!({"app":"web"}),
-                now
-            )
-        )
-        .await
-        .0,
-        503
-    );
-    assert_eq!(std::fs::read_dir(&paths.inbox).unwrap().count(), 128);
-    std::fs::write(paths.results.join("broken.json"), b"truncated").unwrap();
-    assert_eq!(
-        request(&app, "GET", "/v1/commands/broken", &token, vec![])
-            .await
-            .0,
-        500
-    );
-    std::fs::remove_dir_all(root).unwrap();
+    for mode in ["serve", "preview-ask"] {
+        assert!(Config::parse(&[mode.into()]).is_err());
+    }
 }
 
 #[tokio::test]
-async fn native_monitor_uses_a_private_unix_socket_and_preserves_signed_reads() {
-    use std::os::unix::fs::PermissionsExt;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let directory =
-        std::path::PathBuf::from("/tmp").join(format!("kmz-monitor-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir(&directory).unwrap();
-    let socket = directory.join("api.sock");
-    let config = directory.join("agent.json");
-    let report = directory.join("report.json");
-    let registry = Ed25519KeyPair::from_seed_unchecked(&[4; 32]).unwrap();
-    let now = chrono::Utc::now().timestamp();
-    std::fs::write(&config,serde_json::to_vec(&json!({"server_id":"fixture_box","registry_key":URL_SAFE_NO_PAD.encode(public(&registry))})).unwrap()).unwrap();
-    std::fs::write(&report, b"{\"v\":1,\"apps\":[]}").unwrap();
-    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_komizo-api"))
-        .arg("serve")
-        .arg("--socket")
-        .arg(&socket)
-        .arg("--config")
-        .arg(&config)
-        .arg("--report")
-        .arg(&report)
-        .kill_on_drop(true)
-        .spawn()
-        .unwrap();
-    let mut stream = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        loop {
-            if let Ok(stream) = tokio::net::UnixStream::connect(&socket).await {
-                break stream;
-            }
+async fn failed_confirmed_receipt_is_preserved_without_retry_or_reclassification() {
+    let f = Fixture::new();
+    std::fs::write(f.root.join("failed"), b"failure").unwrap();
+    let (status, value) = call(&f.ui, "POST", "/api/actions", WRITE, action()).await;
+    assert_eq!(status, 200);
+    assert_eq!(value["confirmation"], "confirmed");
+    assert_eq!(value["result"]["ok"], false);
+    assert_eq!(value["result"]["phase"], "failed");
+    assert_eq!(f.calls().len(), 1);
+    f.ui.shutdown().await;
+}
+#[tokio::test]
+async fn shutdown_reaps_owned_client_and_its_pipe_holding_descendant() {
+    let f = Fixture::new();
+    std::fs::write(f.root.join("hold"), b"hold").unwrap();
+    let ui = f.ui.clone();
+    let observation =
+        tokio::spawn(async move { call(&ui, "GET", "/api/status", &[], Value::Null).await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !f.root.join("pids").exists() {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     })
     .await
     .unwrap();
-    assert_eq!(
-        std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777,
-        0o660
-    );
-    let claims = serde_json::to_vec(&json!({"srv":"fixture_box","exp":now+60})).unwrap();
-    let token = format!(
-        "kmz_rd_{}.{}",
-        URL_SAFE_NO_PAD.encode(&claims),
-        URL_SAFE_NO_PAD.encode(registry.sign(&claims).as_ref())
-    );
-    let body = envelope(&registry, "report.read", "report", json!({}), now);
-    let header = format!(
-        "POST /v1/report HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    stream.write_all(header.as_bytes()).await.unwrap();
-    stream.write_all(&body).await.unwrap();
-    let mut response = Vec::new();
-    tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        stream.take(1 << 20).read_to_end(&mut response),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    let text = String::from_utf8(response).unwrap();
-    assert!(text.starts_with("HTTP/1.1 200"));
-    assert!(text.contains("\"report\":{\"apps\":[],\"v\":1}"));
-    unsafe { libc::kill(child.id().unwrap() as i32, libc::SIGTERM) };
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_secs(3), child.wait())
-            .await
-            .unwrap()
-            .unwrap()
-            .success()
-    );
-    std::fs::remove_dir_all(directory).unwrap();
-}
-
-#[tokio::test]
-async fn local_ui_reads_real_files_refuses_unknown_actions_and_holds_response_capacity() {
-    use komizo_api::{config::Config, ui::Ui};
-    let root = std::env::temp_dir().join(format!("komizo-ui-fixture-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(root.join("results")).unwrap();
-    std::fs::create_dir(root.join("apps")).unwrap();
-    std::fs::write(
-        root.join("report.json"),
-        br#"{"v":1,"apps":[{"name":"web","state":"running"}]}"#,
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("results/one.json"),
-        br#"{"v":1,"id":"one","op":"app.stop","at":"2026-10-31T00:00:00Z","ok":true}"#,
-    )
-    .unwrap();
-    let mut config = Config::parse(&[]).unwrap();
-    config.paths.report = root.join("report.json");
-    config.paths.results = root.join("results");
-    config.paths.apps = root.join("apps");
-    let (stop, _) = tokio::sync::watch::channel(false);
-    let ui = Ui::new(config, stop);
-    let router = ui.router();
-    for path in ["/healthz", "/readyz"] {
-        let response = router
-            .clone()
-            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(response.status(), 200);
-        assert!(response.headers().contains_key("x-request-id"));
-        let value: Value =
-            serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap()).unwrap();
-        assert!(value["revision"].as_str().is_some_and(|v| !v.is_empty()));
-    }
-    let response = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/report")
-                .body(Body::empty())
-                .unwrap(),
-        )
+    let pids: Vec<i32> = std::fs::read_to_string(f.root.join("pids"))
+        .unwrap()
+        .split_whitespace()
+        .map(|value| value.parse().unwrap())
+        .collect();
+    tokio::time::timeout(std::time::Duration::from_secs(5), f.ui.shutdown())
         .await
         .unwrap();
-    assert_eq!(response.status(), 200);
-    let body: Value =
-        serde_json::from_slice(&to_bytes(response.into_body(), 1 << 20).await.unwrap()).unwrap();
-    assert_eq!(body["report"]["apps"][0]["state"], "running");
-    for (raw, expected) in [
-        (br#"{"app":"web","action":"deploy"}"#.as_slice(), 403),
-        (br#"{"app":"../web","action":"stop"}"#.as_slice(), 400),
-        (br#"{"app":"missing","action":"stop"}"#.as_slice(), 404),
-        (b"broken".as_slice(), 400),
-    ] {
-        let response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/action")
-                    .body(Body::from(raw.to_vec()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), expected);
-        let id = response.headers()["x-request-id"]
-            .to_str()
-            .unwrap()
-            .to_owned();
-        let value: Value =
-            serde_json::from_slice(&to_bytes(response.into_body(), 65536).await.unwrap()).unwrap();
-        assert_eq!(value["error"]["request_id"], id);
-        assert!(value["error"]["code"].is_string());
+    assert_eq!(observation.await.unwrap().0, 503);
+    for pid in pids {
+        #[cfg(target_os = "linux")]
+        assert!(
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .map_or(true, |value| value.split_whitespace().nth(2) == Some("Z")),
+            "owned child still running: {pid}"
+        );
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            -1,
+            "owned child still running: {pid}"
+        );
     }
-    let mut held = Vec::new();
-    for _ in 0..8 {
-        let response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/report")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), 200);
-        held.push(response);
-    }
-    assert_eq!(
-        router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .uri("/api/report")
-                    .body(Body::empty())
-                    .unwrap()
-            )
-            .await
-            .unwrap()
-            .status(),
-        503
-    );
-    held.pop();
-    assert_eq!(
-        router
-            .oneshot(
-                Request::builder()
-                    .uri("/api/report")
-                    .body(Body::empty())
-                    .unwrap()
-            )
-            .await
-            .unwrap()
-            .status(),
-        200
-    );
-    drop(held);
-    ui.shutdown().await;
-    std::fs::remove_dir_all(root).unwrap();
 }

@@ -25,14 +25,13 @@ export function Dim(props: ParentProps) {
   return <p class="text-dim text-[13px] leading-relaxed">{props.children}</p>;
 }
 
-// Badge is a state word coloured by whether it is good news. The mapping is
-// deliberately small: running/ready/ok are good, stopped/exited/failed are
-// not, and anything else is a warning rather than a guess.
+// Owner stop intent is neutral; readiness and failed operations stay distinct.
 export function Badge(props: { word: string }) {
   const color = () => {
     const w = props.word.toLowerCase();
-    if (w === "running" || w === "ready" || w === "ok") return "text-good border-good";
-    if (w === "stopped" || w === "exited" || w === "failed") return "text-bad border-bad";
+    if (["running", "ready", "ok", "healthy", "readiness passed"].includes(w)) return "text-good border-good";
+    if (["failed", "operation failed", "unhealthy", "needs_reconciliation"].includes(w)) return "text-bad border-bad";
+    if (["stopped", "exited", "stopped by owner", "prepared while stopped", "prepared_stopped"].includes(w)) return "text-dim border-edge";
     return "text-warn border-warn";
   };
   return (

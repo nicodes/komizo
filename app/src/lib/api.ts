@@ -1,79 +1,26 @@
-// Talking to the box this page was served by.
-//
-// RELATIVE PATHS ONLY. There is no base URL, no env var, no configuration:
-// the app is a static export embedded in the CLI and served by the same
-// listener that answers /api/, on loopback or the tailnet interface. A URL
-// knob here would be a way to point the app at a box it was not served by.
-// ui_test.go pins this file to relative fetches.
+import type {ActionRequest, ActionResponse, HistoryResponse, Logs, Operation, StatusResponse} from "./types";
 
-import type {
-  ActionResponse,
-  BackupsResponse,
-  EventsResponse,
-  HistoryResponse,
-  MetricsResponse,
-  ReportResponse,
-} from "./types";
-
-export class APIError extends Error {
-  constructor(message: string, readonly status: number, readonly code = "request_failed", readonly requestId = "") { super(message); }
-}
-async function failure(response: Response): Promise<APIError> {
-  let message = `the box refused: ${response.status}`, code = "request_failed", requestId = response.headers.get("X-Request-ID") || "";
-  try {
-    const text = await response.text();
-    const value = text.length <= 65536 ? JSON.parse(text) : undefined;
-    if (typeof value?.error?.message === "string") message = value.error.message.slice(0,1024);
-    else if (typeof value?.output === "string") message = value.output.slice(0,1024);
-    if (typeof value?.error?.code === "string") code = value.error.code.slice(0,64);
-    if (!requestId && typeof value?.error?.request_id === "string") requestId = value.error.request_id.slice(0,128);
-  } catch { /* A proxy diagnostic is not a user-facing API message. */ }
-  return new APIError(message, response.status, code, requestId);
-}
-
-async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(path, { signal });
-  if (!res.ok) {
-    throw await failure(res);
+export class APIError extends Error { constructor(message: string, readonly status: number) {super(message);} }
+async function read<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const response = await fetch(path, options);
+  const text = await response.text();
+  if (text.length > 4 << 20) throw new APIError("The response exceeded its limit.", response.status);
+  let value: unknown;
+  try {value = JSON.parse(text);} catch {throw new APIError("The local UI returned an unreadable response.", response.status);}
+  if (!response.ok) {
+    const error = value as {error?: {message?: string}};
+    throw new APIError(error.error?.message?.slice(0, 1024) || "The observation is unavailable.", response.status);
   }
-  return (await res.json()) as T;
+  return value as T;
 }
-
-export function readReport(signal?: AbortSignal): Promise<ReportResponse> {
-  return get<ReportResponse>("/api/report", signal);
+export const readStatus = (signal?: AbortSignal) => read<StatusResponse>("/api/status", {signal});
+export const readHistory = (signal?: AbortSignal) => read<HistoryResponse>("/api/history", {signal});
+export function readOperation(application: string, instance: string, operation: string, release: string, signal?: AbortSignal) {
+  return read<Operation>(`/api/operation?${new URLSearchParams({application, instance, operation, release_digest: release})}`, {signal});
 }
-
-export function readHistory(from: number, to: number, signal?: AbortSignal): Promise<HistoryResponse> {
-  return get<HistoryResponse>(`/api/history?from=${from}&to=${to}`, signal);
+export function readLogs(application: string, instance: string, service: string, signal?: AbortSignal) {
+  return read<Logs>(`/api/logs?${new URLSearchParams({application, instance, service})}`, {signal});
 }
-
-export function readMetrics(signal?: AbortSignal): Promise<MetricsResponse> {
-  return get<MetricsResponse>("/api/metrics", signal);
-}
-
-export function readEvents(signal?: AbortSignal): Promise<EventsResponse> {
-  return get<EventsResponse>("/api/events", signal);
-}
-
-export function readBackups(signal?: AbortSignal): Promise<BackupsResponse> {
-  return get<BackupsResponse>("/api/backups", signal);
-}
-
-// The only write. The server enforces the allowlist -- this type is a
-// courtesy to the caller, not the boundary.
-export async function runAction(
-  app: string,
-  action: "start" | "stop" | "restart",
-  signal?: AbortSignal,
-): Promise<ActionResponse> {
-  const res = await fetch("/api/action", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ app, action }),
-    signal,
-  });
-  if (!res.ok) {
-    throw await failure(res);
-  }
-  return (await res.json()) as ActionResponse;
+export function runAction(request: ActionRequest, signal?: AbortSignal) {
+  return read<ActionResponse>("/api/actions", {method: "POST", headers: {"Content-Type": "application/json", "X-Komizo-Request": "1"}, body: JSON.stringify(request), signal});
 }

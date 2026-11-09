@@ -1,4 +1,7 @@
-use crate::{config::Config, static_files::Static, store};
+use crate::{
+    config::{self, Config},
+    static_files::Static,
+};
 use axum::{
     Json, Router,
     body::to_bytes,
@@ -8,17 +11,49 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::{path::Path, process::Stdio, sync::Arc, time::Duration};
+use sha2::{Digest, Sha256};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    io::Write,
+    os::unix::fs::OpenOptionsExt,
+    path::PathBuf,
+    process::Stdio,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tokio::{
     io::AsyncReadExt,
     sync::{Semaphore, watch},
 };
+
+const MAX_DOCUMENT: usize = 4 << 20;
+const MAX_DIAGNOSTIC: usize = 64 << 10;
+#[derive(Default)]
+struct History {
+    samples: VecDeque<(usize, Value)>,
+    bytes: usize,
+}
+impl History {
+    fn push(&mut self, value: Value) {
+        let size = serde_json::to_vec(&value).unwrap().len();
+        if size > 2 << 20 {
+            return;
+        }
+        self.samples.push_back((size, value));
+        self.bytes += size;
+        while self.samples.len() > 120 || self.bytes > 2 << 20 {
+            self.bytes -= self.samples.pop_front().unwrap().0;
+        }
+    }
+}
+
 pub struct Ui {
     config: Config,
     files: Static,
     admission: Arc<Semaphore>,
     stop: watch::Sender<bool>,
     tasks: Arc<crate::tasks::Tasks>,
+    history: Mutex<History>,
 }
 impl Ui {
     pub fn new(config: Config, stop: watch::Sender<bool>) -> Arc<Self> {
@@ -28,6 +63,7 @@ impl Ui {
             admission: Arc::new(Semaphore::new(8)),
             stop,
             tasks: Arc::new(crate::tasks::Tasks::default()),
+            history: Mutex::new(History::default()),
         })
     }
     pub async fn shutdown(&self) {
@@ -41,308 +77,533 @@ impl Ui {
             .layer(axum::middleware::from_fn(httpcontract::observe))
             .with_state(self.clone())
     }
+    async fn invoke(
+        &self,
+        action: &str,
+        options: &[String],
+        seconds: u64,
+    ) -> Result<Captured, u16> {
+        let lease = self.tasks.acquire().ok_or(503u16)?;
+        let mut args = vec![action.to_owned(), "--host".into(), self.config.host.clone()];
+        if let Some(identity) = &self.config.identity {
+            args.extend(["--identity".into(), identity.to_string_lossy().into_owned()]);
+        }
+        args.extend_from_slice(options);
+        owner_command(
+            self.config.owner_client.clone(),
+            args,
+            seconds,
+            self.stop.subscribe(),
+            lease,
+        )
+        .await
+    }
 }
 fn data(value: Value) -> Response {
-    (
-        [
-            ("x-content-type-options", "nosniff"),
-            ("cache-control", "no-store"),
-        ],
-        Json(value),
-    )
-        .into_response()
+    ([("cache-control", "no-store")], Json(value)).into_response()
 }
-fn error(status: u16, text: &str) -> Response {
+fn error(status: u16, message: &str) -> Response {
     (
         StatusCode::from_u16(status).unwrap(),
         [("cache-control", "no-store")],
-        Json(json!({"error":text})),
+        Json(json!({"error":{"message":message}})),
     )
         .into_response()
 }
+fn security(mut response: Response) -> Response {
+    for (name, value) in [
+        ("x-content-type-options", "nosniff"),
+        ("x-frame-options", "DENY"),
+        ("referrer-policy", "no-referrer"),
+        (
+            "content-security-policy",
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'none'",
+        ),
+    ] {
+        response.headers_mut().insert(name, value.parse().unwrap());
+    }
+    response
+}
+fn browser_boundary(config: &Config, request: &Request) -> Result<(), u16> {
+    let headers = request.headers();
+    let hosts: Vec<_> = headers.get_all("host").iter().collect();
+    if hosts.len() != 1 {
+        return Err(403);
+    }
+    let host = hosts[0].to_str().map_err(|_| 403u16)?;
+    let allowed = [config.authority(), format!("localhost:{}", config.port)];
+    if !allowed.iter().any(|value| value == host)
+        || request
+            .uri()
+            .authority()
+            .is_some_and(|authority| authority.as_str() != host)
+    {
+        return Err(403);
+    }
+    if request.uri().path().starts_with("/api/") {
+        if headers.get_all("origin").iter().count() > 1 {
+            return Err(403);
+        }
+        if let Some(origin) = headers.get("origin")
+            && origin.to_str().ok() != Some(format!("http://{host}").as_str())
+        {
+            return Err(403);
+        }
+        if let Some(site) = headers.get("sec-fetch-site")
+            && !matches!(site.to_str().ok(), Some("same-origin" | "none"))
+        {
+            return Err(403);
+        }
+        if request.method() == Method::POST {
+            if headers.get("origin").is_none()
+                || headers
+                    .get("x-komizo-request")
+                    .and_then(|value| value.to_str().ok())
+                    != Some("1")
+            {
+                return Err(403);
+            }
+            if headers.get_all("content-type").iter().count() != 1
+                || headers
+                    .get("content-type")
+                    .and_then(|value| value.to_str().ok())
+                    .map(|value| value.split(';').next().unwrap().trim())
+                    != Some("application/json")
+            {
+                return Err(415);
+            }
+        }
+    }
+    Ok(())
+}
+fn query(request: &Request, allowed: &[&str]) -> Result<BTreeMap<String, String>, u16> {
+    let raw = request.uri().query().unwrap_or("");
+    if raw.len() > 4096 {
+        return Err(400);
+    }
+    let mut values = BTreeMap::new();
+    for (key, value) in form_urlencoded::parse(raw.as_bytes()) {
+        if !allowed.contains(&key.as_ref())
+            || values
+                .insert(key.into_owned(), value.into_owned())
+                .is_some()
+        {
+            return Err(400);
+        }
+    }
+    Ok(values)
+}
+fn scope(values: &BTreeMap<String, String>) -> Result<Vec<String>, u16> {
+    let application = values.get("application").ok_or(400u16)?;
+    let instance = values.get("instance").ok_or(400u16)?;
+    if !config::name(application) || !config::name(instance) {
+        return Err(400);
+    }
+    Ok(vec![
+        "--application".into(),
+        application.clone(),
+        "--instance".into(),
+        instance.clone(),
+    ])
+}
+fn document(captured: &Captured) -> Result<Value, u16> {
+    let value: Value = serde_json::from_slice(&captured.stdout).map_err(|_| 503u16)?;
+    if value.get("version").and_then(Value::as_u64) != Some(1) {
+        return Err(503);
+    }
+    Ok(value)
+}
+fn status_valid(value: &Value) -> bool {
+    value["kind"] == "komizo.status"
+        && value["instances"].as_array().is_some_and(|instances| {
+            instances.len() <= 512
+                && instances.iter().all(|instance| {
+                    instance["application"].as_str().is_some_and(config::name)
+                        && instance["instance"].as_str().is_some_and(config::name)
+                        && instance["release_digest"]
+                            .as_str()
+                            .is_some_and(config::digest)
+                        && instance["desired_running"].is_boolean()
+                        && instance["services"].as_object().is_some_and(|services| {
+                            services.len() <= 64 && services.keys().all(|name| config::name(name))
+                        })
+                })
+        })
+}
+fn operation_valid(value: &Value, action: &Action, operation: &str) -> bool {
+    value["kind"] == "komizo.operation"
+        && value["version"] == 1
+        && value["application"] == action.application
+        && value["instance"] == action.instance
+        && value["release_digest"] == action.release_digest
+        && value["operation_id"] == operation
+        && value["ok"].is_boolean()
+        && value["phase"].as_str().is_some_and(|phase| {
+            matches!(
+                phase,
+                "admitted"
+                    | "staging"
+                    | "jobs"
+                    | "installing"
+                    | "activating"
+                    | "readiness"
+                    | "ready"
+                    | "prepared_stopped"
+                    | "failed"
+                    | "needs_reconciliation"
+            )
+        })
+}
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Action {
-    app: String,
+    application: String,
+    instance: String,
     action: String,
+    release_digest: String,
+    nonce: String,
+}
+pub fn operation_id(application: &str, instance: &str, nonce: &str) -> String {
+    format!(
+        "{:x}",
+        Sha256::digest(
+            format!("komizo-operation-v1\0{application}\0{instance}\0{nonce}").as_bytes()
+        )
+    )[..32]
+        .to_owned()
+}
+struct RequestFile(PathBuf);
+impl RequestFile {
+    fn new(value: &Value) -> std::io::Result<Self> {
+        let path = std::env::temp_dir().join(format!(
+            "komizo-ui-request-{}.json",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)?;
+        let selected = Self(path);
+        file.write_all(&serde_json::to_vec(value)?)?;
+        file.sync_all()?;
+        Ok(selected)
+    }
+}
+impl Drop for RequestFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+async fn change(ui: &Ui, action: Action) -> Response {
+    if !config::name(&action.application)
+        || !config::name(&action.instance)
+        || !config::digest(&action.release_digest)
+        || !config::hex(&action.nonce, 32)
+    {
+        return error(400, "invalid application operation identity");
+    }
+    if !matches!(
+        action.action.as_str(),
+        "start" | "stop" | "restart" | "backup"
+    ) {
+        return error(403, "unsupported owner action");
+    }
+    let proposed = operation_id(&action.application, &action.instance, &action.nonce);
+    let now = chrono::Utc::now().timestamp();
+    let request = json!({"kind":"komizo.request","version":1,"authority":"owner","application":action.application,
+        "instance":action.instance,"action":action.action,"release_digest":action.release_digest,"nonce":action.nonce,
+        "issued_at":now,"expires_at":now+120,"timeout_seconds":1500});
+    let file = match RequestFile::new(&request) {
+        Ok(file) => file,
+        Err(_) => return error(503, "could not prepare the owner request"),
+    };
+    let submitted = ui
+        .invoke(
+            "request",
+            &["--file".into(), file.0.to_string_lossy().into_owned()],
+            35,
+        )
+        .await;
+    if let Ok(captured) = &submitted
+        && let Ok(value) = document(captured)
+        && operation_valid(&value, &action, &proposed)
+    {
+        return data(
+            json!({"kind":"komizo.ui.action","version":1,"confirmation":"confirmed","operation_id":proposed,"result":value}),
+        );
+    }
+    if *ui.stop.borrow() {
+        return error(
+            503,
+            "UI is stopping; inspect the proposed operation before another change",
+        );
+    }
+    let options = vec![
+        "--application".into(),
+        action.application.clone(),
+        "--instance".into(),
+        action.instance.clone(),
+        "--operation".into(),
+        proposed.clone(),
+        "--release".into(),
+        action.release_digest.clone(),
+    ];
+    if let Ok(captured) = ui.invoke("inspect", &options, 20).await
+        && let Ok(value) = document(&captured)
+        && operation_valid(&value, &action, &proposed)
+    {
+        return data(
+            json!({"kind":"komizo.ui.action","version":1,"confirmation":"observed","operation_id":proposed,"result":value}),
+        );
+    }
+    data(
+        json!({"kind":"komizo.ui.action","version":1,"confirmation":"unconfirmed","operation_id":proposed,
+        "message":"Admission is unconfirmed. Inspect this operation before another change."}),
+    )
 }
 async fn handle(State(ui): State<Arc<Ui>>, request: Request) -> Response {
+    if let Err(status) = browser_boundary(&ui.config, &request) {
+        return security(error(status, "local same-origin request required"));
+    }
     let Ok(permit) = ui.admission.clone().try_acquire_owned() else {
-        return error(503, "this box is busy");
+        return security(error(503, "local UI is busy"));
     };
-    crate::response::hold(dispatch(ui, request).await, permit)
+    let head = request.method() == Method::HEAD;
+    let mut response = dispatch(ui, request).await;
+    if head {
+        *response.body_mut() = axum::body::Body::empty();
+    }
+    security(crate::response::hold(response, permit))
 }
 async fn dispatch(ui: Arc<Ui>, request: Request) -> Response {
     let path = request.uri().path().to_owned();
     let read = matches!(*request.method(), Method::GET | Method::HEAD);
-    let paths = &ui.config.paths;
     if read && matches!(path.as_str(), "/healthz" | "/readyz") {
-        let ready =
-            path != "/readyz" || (!*ui.stop.borrow() && store::report(&paths.report).is_ok());
-        let revision = option_env!("SOURCE_COMMIT")
-            .or(option_env!("COMMIT"))
-            .unwrap_or("development");
-        let mut response = (
+        let ready = !*ui.stop.borrow();
+        return (
             if ready {
                 StatusCode::OK
             } else {
                 StatusCode::SERVICE_UNAVAILABLE
             },
             httpcontract::health(
-                if !ready {
-                    "unready"
-                } else if path == "/healthz" {
-                    "ok"
-                } else {
-                    "ready"
-                },
-                revision,
+                if ready { "ready" } else { "stopping" },
+                option_env!("SOURCE_COMMIT").unwrap_or("development"),
             ),
         )
             .into_response();
-        if request.method() == Method::HEAD {
-            *response.body_mut() = axum::body::Body::empty();
+    }
+    if read && path == "/api/status" {
+        if !request.uri().query().unwrap_or("").is_empty() {
+            return error(400, "status takes no selectors");
         }
-        return response;
-    }
-    if read && path == "/api/report" {
-        return match store::report(&paths.report) {
-            Ok(report) => data(json!({"v":1,"report":report})),
-            Err(_) => error(
-                503,
-                "no report yet -- the agent writes one on its first tick",
-            ),
+        let captured = match ui.invoke("status", &[], 20).await {
+            Ok(value) => value,
+            Err(_) => return error(503, "owner host status is unavailable"),
         };
-    }
-    if read && (path == "/api/history" || path == "/api/metrics") {
-        let query = request.uri().query().unwrap_or("");
-        let pairs: Vec<_> = form_urlencoded::parse(query.as_bytes()).collect();
-        let from = pairs
-            .iter()
-            .find(|(key, _)| key == "from")
-            .map_or("", |(_, value)| value.as_ref());
-        let to = pairs
-            .iter()
-            .find(|(key, _)| key == "to")
-            .map_or("", |(_, value)| value.as_ref());
-        let (from, to) = match store::window(from, to, chrono::Utc::now().timestamp()) {
-            Ok(window) => window,
-            Err(e) => return error(400, &e.message),
+        let value = match document(&captured) {
+            Ok(value) if captured.success && status_valid(&value) => value,
+            _ => return error(503, "owner host returned an invalid status document"),
         };
-        if path == "/api/history" {
-            return data(
-                json!({"v":1,"from":from,"to":to,"samples":store::samples(&paths.history,from,to).unwrap_or(None)}),
-            );
+        let observation = json!({"captured_at":chrono::Utc::now().to_rfc3339(),"status":value});
+        {
+            let mut history = ui.history.lock().unwrap();
+            history.push(observation.clone());
         }
-        return match store::metrics(&paths.metrics, from, to) {
-            Ok(metrics) => data(json!({"v":1,"from":from,"to":to,"metrics":metrics})),
-            Err(_) => error(503, "could not read what was measured"),
-        };
-    }
-    if read && path == "/api/events" {
-        let mut events = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(&paths.results) {
-            for entry in entries.take(10000).flatten() {
-                if entry.file_type().is_ok_and(|t| t.is_file())
-                    && let Some(id) = entry
-                        .file_name()
-                        .to_str()
-                        .and_then(|s| s.strip_suffix(".json"))
-                    && let Ok(Some(value)) = store::outcome(&paths.results, id)
-                {
-                    events.push(value);
-                }
-            }
-        }
-        events.sort_by(|a, b| {
-            b["at"]
-                .as_str()
-                .unwrap_or("")
-                .cmp(a["at"].as_str().unwrap_or(""))
-        });
-        events.truncate(50);
-        return data(json!({"v":1,"events":events}));
-    }
-    if read && path == "/api/backups" {
         return data(
-            json!({"v":1,"backups":[],"note":"backups are not tracked on this box yet -- no box-local backup state exists, so this screen shows the absence rather than a guess. Planned for a later version."}),
+            json!({"kind":"komizo.ui.status","version":1,"host":ui.config.host,"captured_at":observation["captured_at"],"status":observation["status"]}),
         );
     }
-    if path == "/api/action" {
-        if request.method() != Method::POST {
-            return (
-                StatusCode::METHOD_NOT_ALLOWED,
-                [("allow", "POST")],
-                Json(json!({"error":"POST only"})),
-            )
-                .into_response();
+    if read && path == "/api/history" {
+        if !request.uri().query().unwrap_or("").is_empty() {
+            return error(400, "history takes no selectors");
         }
-        let raw = match tokio::time::timeout(
-            Duration::from_secs(30),
-            to_bytes(request.into_body(), 4096),
-        )
-        .await
+        return data(
+            json!({"kind":"komizo.ui.history","version":1,"scope":"local UI observations","samples":ui.history.lock().unwrap().samples.iter().map(|(_,value)|value.clone()).collect::<Vec<_>>()}),
+        );
+    }
+    if read && matches!(path.as_str(), "/api/operation" | "/api/logs") {
+        let values = match query(
+            &request,
+            if path == "/api/logs" {
+                &["application", "instance", "service"]
+            } else {
+                &["application", "instance", "operation", "release_digest"]
+            },
+        ) {
+            Ok(value) => value,
+            Err(status) => return error(status, "invalid observation selectors"),
+        };
+        let mut options = match scope(&values) {
+            Ok(value) => value,
+            Err(status) => return error(status, "an application instance is required"),
+        };
+        let action = if path == "/api/logs" {
+            let Some(service) = values.get("service").filter(|value| config::name(value)) else {
+                return error(400, "one admitted service is required");
+            };
+            options.extend(["--service".into(), service.clone()]);
+            "logs"
+        } else {
+            let Some(operation) = values
+                .get("operation")
+                .filter(|value| config::hex(value, 32))
+            else {
+                return error(400, "an exact operation identity is required");
+            };
+            let Some(release) = values
+                .get("release_digest")
+                .filter(|value| config::digest(value))
+            else {
+                return error(400, "an exact release identity is required");
+            };
+            options.extend([
+                "--operation".into(),
+                operation.clone(),
+                "--release".into(),
+                release.clone(),
+            ]);
+            "inspect"
+        };
+        let captured = match ui.invoke(action, &options, 20).await {
+            Ok(value) => value,
+            Err(_) => return error(503, "owner observation is unavailable"),
+        };
+        let value = match document(&captured) {
+            Ok(value) if captured.success => value,
+            _ => return error(503, "owner observation is unavailable"),
+        };
+        let valid = if action == "logs" {
+            value["kind"] == "komizo.logs"
+                && value["service"] == values["service"]
+                && value["text"]
+                    .as_str()
+                    .is_some_and(|text| text.len() <= 256 << 10)
+        } else {
+            value["kind"] == "komizo.operation"
+                && value["operation_id"] == values["operation"]
+                && value["release_digest"] == values["release_digest"]
+        };
+        if !valid
+            || value["application"] != values["application"]
+            || value["instance"] != values["instance"]
         {
-            Ok(Ok(raw)) => raw,
-            _ => return error(400, "could not read that request"),
+            return error(503, "owner observation identity changed");
         };
-        let action: Action = match serde_json::from_slice(&raw) {
-            Ok(action) => action,
-            Err(_) => return error(400, "could not read that request"),
+        return data(value);
+    }
+    if path == "/api/actions" && request.method() == Method::POST {
+        if !request.uri().query().unwrap_or("").is_empty() {
+            return error(400, "actions do not take URL selectors");
         };
-        if !matches!(action.action.as_str(), "start" | "stop" | "restart") {
-            return error(
-                403,
-                "not an action this serves: the allowlist is start, stop, restart",
-            );
-        }
-        if !store::app(&action.app) || action.app.starts_with('_') {
-            return error(400, "invalid app name");
-        }
-        if !paths.apps.join(format!("{}.env", action.app)).is_file() {
-            return error(404, "not an app on this box");
-        }
-        // The independently installed privileged host executor retains its own
-        // immutable-image, operation, stop-intent and resource authority. The
-        // API invokes only its existing finite lifecycle command, never a Go
-        // HTTP service or an arbitrary caller-supplied command line.
-        let Some(lease) = ui.tasks.acquire() else {
-            return error(503, "API is stopping");
+        let raw =
+            match tokio::time::timeout(Duration::from_secs(5), to_bytes(request.into_body(), 4096))
+                .await
+            {
+                Ok(Ok(value)) => value,
+                _ => return error(400, "bounded JSON action required"),
+            };
+        let action = match serde_json::from_slice::<Action>(&raw) {
+            Ok(value) => value,
+            Err(_) => return error(400, "closed JSON action required"),
         };
-        return match lifecycle(
-            Path::new("/usr/local/bin/komizo-box"),
-            &action.app,
-            &action.action,
-            ui.stop.subscribe(),
-            lease,
-        )
-        .await
-        {
-            Ok((ok, output)) => data(json!({"v":1,"ok":ok,"output":output})),
-            Err(status) => error(
-                status,
-                if status == 504 {
-                    "action did not finish in two minutes"
-                } else {
-                    "host lifecycle command unavailable"
-                },
-            ),
-        };
+        return change(&ui, action).await;
     }
     if path.starts_with("/api/") {
-        return error(404, "no such read");
-    }
+        return error(
+            if read { 404 } else { 405 },
+            "unsupported local UI operation",
+        );
+    };
     ui.files
         .response(&path, request.method(), request.headers())
 }
-async fn lifecycle(
-    binary: &Path,
-    app: &str,
-    action: &str,
+struct Captured {
+    success: bool,
+    stdout: Vec<u8>,
+}
+async fn limited(
+    stream: impl tokio::io::AsyncRead + Unpin,
+    maximum: usize,
+) -> Result<Vec<u8>, u16> {
+    let mut bytes = Vec::new();
+    stream
+        .take((maximum + 1) as u64)
+        .read_to_end(&mut bytes)
+        .await
+        .map_err(|_| 503u16)?;
+    if bytes.len() > maximum {
+        return Err(503);
+    };
+    Ok(bytes)
+}
+async fn owner_command(
+    binary: PathBuf,
+    args: Vec<String>,
+    seconds: u64,
     mut stop: watch::Receiver<bool>,
     lease: crate::tasks::Lease,
-) -> Result<(bool, String), u16> {
+) -> Result<Captured, u16> {
     let mut command = tokio::process::Command::new(binary);
     command
-        .args(["app", action, "--app", app])
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .process_group(0);
+    let inherited = std::env::vars_os().filter(|(key, _)| {
+        matches!(
+            key.to_str(),
+            Some(
+                "PATH"
+                    | "HOME"
+                    | "USER"
+                    | "LOGNAME"
+                    | "SSH_AUTH_SOCK"
+                    | "XDG_CONFIG_HOME"
+                    | "LANG"
+                    | "LC_ALL"
+            )
+        )
+    });
+    command.env_clear().envs(inherited);
     let mut child = command.spawn().map_err(|_| 503u16)?;
-    let pid = child.id().unwrap_or(0) as i32;
+    let pid = child.id().ok_or(503u16)? as i32;
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
     let (mut sender, receiver) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
         let _lease = lease;
-        let mut output = tokio::spawn(async move {
-            let mut out = Vec::new();
-            let mut err = Vec::new();
-            let mut stdout = stdout.take((1 << 20) + 1);
-            let mut stderr = stderr.take((1 << 20) + 1);
-            let (a, b) = tokio::join!(stdout.read_to_end(&mut out), stderr.read_to_end(&mut err));
-            if a.is_err() || b.is_err() || out.len() > 1 << 20 || err.len() > 1 << 20 {
-                return Err(503u16);
-            }
-            out.extend_from_slice(&err);
-            Ok(String::from_utf8_lossy(&out).into_owned())
-        });
-        let result = tokio::select! {_=sender.closed()=>None,_=stop.changed()=>Some(Err(503u16)),_=tokio::time::sleep(Duration::from_secs(120))=>Some(Err(504u16)),status=child.wait()=>Some(status.map(|s|s.success()).map_err(|_|503u16))};
-        if pid > 0 {
-            unsafe { libc::kill(-pid, libc::SIGKILL) };
-        }
-        let _ = child.kill().await;
-        let _ = child.wait().await;
-        let captured = match tokio::time::timeout(Duration::from_secs(1), &mut output).await {
-            Ok(result) => result.map_err(|_| 503u16).and_then(|result| result),
-            Err(_) => {
-                output.abort();
-                let _ = output.await;
-                Err(503u16)
-            }
+        let result = {
+            let work = async {
+                let (stdout, _stderr) = tokio::try_join!(
+                    limited(stdout, MAX_DOCUMENT),
+                    limited(stderr, MAX_DIAGNOSTIC)
+                )?;
+                let success = child.wait().await.map_err(|_| 503u16)?.success();
+                Ok(Captured { success, stdout })
+            };
+            tokio::pin!(work);
+            tokio::select! {value=&mut work=>Some(value),_=sender.closed()=>None,_=stop.changed()=>Some(Err(503u16)),_=tokio::time::sleep(Duration::from_secs(seconds))=>Some(Err(504u16))}
         };
+        if !matches!(result, Some(Ok(_))) {
+            unsafe {
+                libc::kill(-pid, libc::SIGTERM);
+            }
+            // Keep the leader unreaped until the whole process group has been
+            // stopped. A descendant can retain the pipes after its parent exits.
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            unsafe {
+                libc::kill(-pid, libc::SIGKILL);
+            }
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
         if let Some(result) = result {
-            let _ = sender.send(result.and_then(|ok| captured.map(|output| (ok, output))));
+            let _ = sender.send(result);
         }
     });
     receiver.await.map_err(|_| 503u16)?
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::os::unix::fs::PermissionsExt;
-    #[tokio::test]
-    async fn finite_host_executor_keeps_argv_failure_and_shutdown_owned() {
-        let directory =
-            std::env::temp_dir().join(format!("komizo-ui-executor-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir(&directory).unwrap();
-        let binary = directory.join("executor");
-        std::fs::write(
-            &binary,
-            b"#!/bin/sh\nprintf '%s\\n' \"$@\"\nprintf 'diagnostic\\n' >&2\nexit 7\n",
-        )
-        .unwrap();
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let tasks = Arc::new(crate::tasks::Tasks::default());
-        let (stop, stopping) = watch::channel(false);
-        let (ok, output) = lifecycle(&binary, "web", "stop", stopping, tasks.acquire().unwrap())
-            .await
-            .unwrap();
-        assert!(!ok);
-        assert_eq!(output, "app\nstop\n--app\nweb\ndiagnostic\n");
-        std::fs::write(
-            &binary,
-            b"#!/bin/sh\nprintf '%s' \"$$\" > \"$0.pid\"\nexec sleep 30\n",
-        )
-        .unwrap();
-        let pid_file = directory.join("executor.pid");
-        let lease = tasks.acquire().unwrap();
-        let command = tokio::spawn({
-            let binary = binary.clone();
-            let stopping = stop.subscribe();
-            async move { lifecycle(&binary, "web", "restart", stopping, lease).await }
-        });
-        let pid = tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                if let Ok(text) = std::fs::read_to_string(&pid_file)
-                    && let Ok(pid) = text.parse::<i32>()
-                {
-                    break pid;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        tasks.close();
-        let _ = stop.send(true);
-        tokio::time::timeout(Duration::from_secs(3), tasks.join())
-            .await
-            .unwrap();
-        assert!(command.await.unwrap().is_err());
-        assert_ne!(unsafe { libc::kill(pid, 0) }, 0);
-        std::fs::remove_dir_all(directory).unwrap();
-    }
 }
