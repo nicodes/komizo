@@ -69,7 +69,7 @@ def prepare(report):
     namespace='kmz-'+hashlib.sha256(b'pgbox\0pr-7').hexdigest()[:20]
     foreign='borrowed-'+namespace+'-foreign';orphan=namespace+'-unrecorded'
     for name in [foreign,orphan]:
-        if run(['podman','--remote=false','volume','exists',name],ok=False).returncode==0:
+        if run(['podman','--remote=false','volume','exists',name],ok=False).returncode!=1:
             raise ValueError('preview fixture cannot borrow an existing foreign volume')
         run(['podman','--remote=false','volume','create',name])
     orphan_record=json.loads(run(['podman','--remote=false','volume','inspect',orphan]).stdout)[0]

@@ -396,7 +396,7 @@ def failures(report):
     try:until(stopped,seconds=5)
     finally:
         write(ROOT/'deadline-observation.json',{'timeout_seconds':8,'elapsed_seconds':elapsed,'receipt':bounded,
-            'job_stopped':bool(stopped()),'entered_job':(mount/'deadline-started').exists(),
+            'job_stopped':bool(stopped()) if (mount/'deadline-started').exists() else None,'entered_job':(mount/'deadline-started').exists(),
             'outcome':'bounded_running_job' if (mount/'deadline-started').exists() else 'refused_before_job_effects',
             'late_write_present':(mount/'deadline-late').exists()})
     if (mount/'deadline-late').exists():raise ValueError('native job wrote retained data after its operation deadline')

@@ -131,10 +131,11 @@ while time.monotonic()<end:
     if result.returncode==0:
         actual=json.loads(result.stdout)[0]
         if actual['State']['Running']:
+            assert actual['Config']['Timeout']==0
             current=pathlib.Path('/proc/'+str(actual['State']['Pid'])+'/cgroup').read_text().strip()
             assert current.startswith('0::'+parent+'/') and current!='0::'+parent+'/runner'
             (root/(identity+'-helper.json')).write_text(json.dumps({'id':actual['Id'],'name':name,'pid':actual['State']['Pid'],
-                'parent':parent,'cgroup':current[3:],'native_timeout_seconds':0,'volume':volume}))
+                'parent':parent,'cgroup':current[3:],'native_timeout_seconds':actual['Config']['Timeout'],'volume':volume}))
             break
     time.sleep(.05)
 else:raise RuntimeError('native delegated helper did not start')
@@ -149,6 +150,13 @@ time.sleep(600)
     release=runtime.installed('secretbox')['release_digest']
     body=runtime.request('secretbox','backup',release,timeout_seconds=8)
     operation=hashlib.sha256(('komizo-operation-v1\0secretbox\0production\0'+body['nonce']).encode()).hexdigest()[:32]
+    dns_pid=int(run(['systemctl','show','komizo-dns.service','--property=MainPID','--value']).stdout)
+    if dns_pid<=0:raise ValueError('task isolation proof lacks its shared control helper')
+    dns_executable=Path('/proc')/str(dns_pid)/'exe'
+    dns_sha256=hashlib.sha256(dns_executable.read_bytes()).hexdigest()
+    dns_group=Path('/proc',str(dns_pid),'cgroup').read_text().strip()
+    if dns_group!='0::/komizo.slice/komizo-control.slice/komizo-dns.service':
+        raise ValueError('unrelated task isolation helper is outside the shared control budget')
     entered=ROOT/(operation+'-entered');late=ROOT/(operation+'-late')
     helper_record=ROOT/(operation+'-helper.json');helper_cid=ROOT/(operation+'-helper.cid')
     child=subprocess.Popen([BINARY,'submit'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
@@ -178,29 +186,58 @@ time.sleep(600)
         runtime.until(quiescent,seconds=12)
         elapsed=time.monotonic()-began
         process=Path('/proc')/str(helper['pid'])
-        helper_live=process.exists() and helper['cgroup'] in (process/'cgroup').read_text()
+        try:
+            state=(process/'status').read_text().split('State:',1)[1].splitlines()[0].strip().split()[0]
+            helper_live=state!='Z' and helper['cgroup'] in (process/'cgroup').read_text()
+        except FileNotFoundError:helper_live=False
         helper_late=(mount/'task-helper-late').exists()
+        dns_unchanged=int(run(['systemctl','show','komizo-dns.service','--property=MainPID','--value']).stdout)==dns_pid
+        dns_unchanged=dns_unchanged and hashlib.sha256(dns_executable.read_bytes()).hexdigest()==dns_sha256
+        dns_unchanged=dns_unchanged and Path('/proc',str(dns_pid),'cgroup').read_text().strip()==dns_group
+        if not dns_unchanged:raise ValueError('task expiry killed or replaced an unrelated shared control helper')
         write(ROOT/'task-deadline.json',{'timeout_seconds':8,'elapsed_seconds':elapsed,
             'controller_absent_at_expiry':True,'task_cgroup_quiescent':quiescent(),'late_write_present':late.exists(),
-            'native_helper':helper,'helper_live_after_deadline':helper_live,'helper_late_write':helper_late})
+            'native_helper':helper,'helper_live_after_deadline':helper_live,'helper_late_write':helper_late,
+            'shared_control_helper':{'pid':dns_pid,'executable_sha256':dns_sha256,'cgroup':dns_group[3:],'unchanged':dns_unchanged}})
         if elapsed>13 or late.exists() or helper_live or helper_late:
             raise ValueError('protected task or native/new-session descendant exceeded its absolute operation lifetime')
         report['checks'].update({'protected_task_absolute_deadline':'passed',
             'protected_task_survives_controller_death':'passed','protected_task_descendant_deadline':'passed',
-            'protected_task_native_helper_deadline':'passed'})
+            'protected_task_native_helper_deadline':'passed','protected_task_preserves_shared_control_helper':'passed'})
     finally:
-        if helper_cid.exists():
-            identity=helper_cid.read_text().strip()
-            if __import__('re').fullmatch('[a-f0-9]{64}',identity):
-                observed=run(['podman','--remote=false','--cgroup-manager=cgroupfs','container','inspect',identity],ok=False)
-                if observed.returncode==0 and json.loads(observed.stdout)[0]['Config']['Labels'].get('io.komizo.fixture.operation')==operation:
-                    run(['podman','--remote=false','--cgroup-manager=cgroupfs','rm','--force','--time=0',identity])
-        write(path,saved)
-        run(['systemctl','start','komizo-controller.service'])
-        runtime.until(lambda:run(['systemctl','is-active','komizo-controller.service'],ok=False).stdout.strip()==b'active')
-        try:child.wait(timeout=10)
-        except subprocess.TimeoutExpired:child.kill();child.wait(timeout=5)
-        child.stdout.close();child.stderr.close()
+        try:
+            if helper_cid.exists():
+                identity=helper_cid.read_text().strip()
+                if __import__('re').fullmatch('[a-f0-9]{64}',identity):
+                    engine=['podman','--remote=false','--cgroup-manager=cgroupfs']
+                    observed=run([*engine,'container','inspect',identity],ok=False)
+                    if observed.returncode==0 and json.loads(observed.stdout)[0]['Config']['Labels'].get('io.komizo.fixture.operation')==operation:
+                        removed=run([*engine,'rm','--force','--time=0',identity],ok=False)
+                        if removed.returncode:
+                            # Podman5.4.2 saves a stopped unknown-exit state after
+                            # detecting dead conmon, but returns an error from
+                            # the first forced removal. Admit only that state.
+                            current=json.loads(run([*engine,'container','inspect',identity]).stdout)[0]
+                            state=current['State']
+                            scope=Path('/sys/fs/cgroup/komizo.slice/komizo-control.slice')/unit/'cgroup.events'
+                            empty=not scope.exists() or 'populated 0' in scope.read_text().splitlines()
+                            write(ROOT/'task-helper-cleanup.json',{'container_id':identity,'parent_quiescent':empty,
+                                'state':{key:state.get(key) for key in ['Status','Running','Pid','ConmonPid','ExitCode','Error']}})
+                            if (current['Id']!=identity or current['Config']['Labels'].get('io.komizo.fixture.operation')!=operation
+                                    or not empty or state['Running'] is not False or state['Pid']!=0
+                                    or state['ConmonPid']!=0 or state['ExitCode']!=-1
+                                    or state['Error']!='conmon died without writing exit file, container exit code could not be retrieved'):
+                                raise ValueError('dead native helper lacks its exact quiescent unknown-exit cleanup state')
+                            run([*engine,'rm',identity])
+                        if run([*engine,'container','exists',identity],ok=False).returncode!=1:
+                            raise ValueError('owned task helper metadata remained after scoped removal')
+        finally:
+            write(path,saved)
+            run(['systemctl','start','komizo-controller.service'])
+            runtime.until(lambda:run(['systemctl','is-active','komizo-controller.service'],ok=False).stdout.strip()==b'active')
+            try:child.wait(timeout=10)
+            except subprocess.TimeoutExpired:child.kill();child.wait(timeout=5)
+            child.stdout.close();child.stderr.close()
 
 
 def prepare(report):
