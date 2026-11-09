@@ -31,7 +31,7 @@ def prepare(report):
     policy['previews']={'environment':'preview','hostname_suffix':'preview.localhost','max_instances':1,'max_ttl_seconds':120,
         'limits':runtime.limits(192,500,128),'secrets':{'postgres-owner':{'path':'/var/lib/komizo/preview-secrets/pgbox/{instance}/postgres-owner.env',
             'services':['postgres'],'jobs':['initialize'],'environment_file':True,'mount':False,'generation':'b'*32}},
-        'readiness':[{'url':'https://{instance}.preview.localhost/','status':200,'contains':'a'*40}]}
+        'readiness':[{'url':'https://{instance}.preview.localhost/','status':200,'contains':postgres.source()['revision']}]}
     write(path,policy)
     for selected in ['pr-7','pr-8']:
         directory=Path('/var/lib/komizo/preview-secrets/pgbox')/selected;directory.mkdir(mode=0o700,parents=True,exist_ok=True);directory.chmod(0o700)

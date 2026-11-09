@@ -10,7 +10,7 @@ from release_acceptance import read, read_budget, sha, REQUIRED_STEPS, validate_
 
 CANDIDATE_STEPS=set(REQUIRED_STEPS)
 BOUNDED_STEPS={'apparmor_override_refused','apparmor_root_helper_default','apparmor_signal_delivery','apparmor_stacked_profile_enforced','apparmor_foreign_profile_signal_refused','apparmor_host_signal_refused','real_reboot','bounded_full_postgresql_offline_reboot','fixed_budget_performance',
-    'real_postgresql_api_dag','shared_dns_control_budget','owner_postgresql_encrypted_restore','recovery_private_key_outside_capture_host'}
+    'real_postgresql_api_dag','shared_dns_control_budget','owner_postgresql_encrypted_restore','recovery_private_key_outside_capture_host','source_bound_authenticated_snapshot'}
 
 
 def export(observations,output,source):

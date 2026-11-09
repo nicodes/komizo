@@ -54,7 +54,7 @@ class AcceptanceGuards(unittest.TestCase):
             'authenticated_files': files, 'steps': [{'step': name, 'accepted': True} for name in sorted(REQUIRED_STEPS)],
             'profiles': {name: {'ok': True, 'profile': name, 'source': {'revision': self.source, 'binary_sha256': host},
                 'checks': {check: 'passed' for check in (REQUIRED_STEPS if name == 'functional' else
-                    {'real_reboot', 'bounded_full_postgresql_offline_reboot', 'fixed_budget_performance'})}}
+                    {'real_reboot', 'bounded_full_postgresql_offline_reboot', 'fixed_budget_performance', 'source_bound_authenticated_snapshot'})}}
                 for name in ['functional', 'bounded']}}
         self.performance = {'version': 1, 'scope': SCOPE, 'accepted': True, 'budget': self.budget, 'metrics': self.metrics,
                             'budget_sha256': sha(ENGINE / 'acceptance-budgets.toml')}
@@ -103,6 +103,7 @@ class AcceptanceGuards(unittest.TestCase):
                 lambda n: n['profiles']['bounded']['source'].update(revision='f' * 40),
                 lambda n: n['profiles']['functional']['checks'].pop('owner_postgresql_encrypted_restore'),
                 lambda n: n['profiles']['bounded']['checks'].pop('fixed_budget_performance'),
+                lambda n: n['profiles']['bounded']['checks'].pop('source_bound_authenticated_snapshot'),
                 lambda n: n['profiles']['functional']['checks'].update(real_reboot='not_run')]:
             args = self.args(); mutate(args[0])
             with self.subTest(mutate=mutate), self.assertRaises(ValueError):
@@ -317,6 +318,33 @@ class NativeCaptureGuards(unittest.TestCase):
                 with self.assertRaises(ValueError):adapter.capture(root)
                 self.assertFalse((root / 'capture').exists())
                 self.assertFalse((root / 'images.json').exists())
+
+
+class NativeRecoverySourceGuards(unittest.TestCase):
+    def test_source_is_data_until_its_exact_clean_repository_and_bytes_are_admitted(self):
+        spec = importlib.util.spec_from_file_location('native_host_recovery', ENGINE.parent / 'support/native_host_recovery.py')
+        recovery = importlib.util.module_from_spec(spec); spec.loader.exec_module(recovery)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            def git(*args):
+                return subprocess.check_output(['/usr/bin/git', '-c', 'core.hooksPath=/dev/null',
+                    '-c', 'user.name=Native fixture', '-c', 'user.email=fixture@example.invalid', '-C', str(root), *args],
+                    stderr=subprocess.PIPE, timeout=10)
+            git('init', '-q')
+            original = b'raise RuntimeError("source must not execute during admission")\n'
+            path = root / 'fixture.py'; path.write_bytes(original)
+            git('add', 'fixture.py'); git('commit', '-qm', 'Source fixture')
+            git('remote', 'add', 'origin', 'https://github.com/nicodes/tools.git')
+            revision = git('rev-parse', 'HEAD').decode().strip()
+            self.assertEqual(recovery.selected(root, 'nicodes/tools', revision), root)
+            self.assertEqual(recovery.source_file(root, revision, 'fixture.py'), original)
+            for relative in ['../fixture.py', '/fixture.py', 'a/../fixture.py']:
+                with self.subTest(relative=relative), self.assertRaises(ValueError):
+                    recovery.source_file(root, revision, relative)
+            with self.assertRaises(ValueError):recovery.selected(root, 'nicodes/other', revision)
+            path.write_bytes(b'changed accepted bytes')
+            with self.assertRaises(ValueError):recovery.source_file(root, revision, 'fixture.py')
+            with self.assertRaises(subprocess.CalledProcessError):recovery.selected(root, 'nicodes/tools', revision)
 
 
 if __name__ == '__main__':

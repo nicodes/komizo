@@ -31,6 +31,7 @@ REQUIRED_STEPS={
     'capacity_refusal_before_preview_credentials',
     'preview_real_ttl_expiry','preview_owned_cleanup','preview_unknown_namespace_refuses_absence','preview_removed_start_refused','preview_fresh_graph_after_expiry','preview_reopen_initialization_once','failed_preview_scoped_remove','failed_preview_fresh_redeploy','protected_postgresql_encrypted_capture','encrypted_pair_integrity',
     'owner_postgresql_encrypted_restore','owner_side_exact_framed_exports','recovery_private_key_outside_capture_host',
+    'source_bound_authenticated_snapshot',
     'protected_task_absolute_deadline','protected_task_survives_controller_death','protected_task_descendant_deadline','protected_task_native_helper_deadline','protected_task_preserves_shared_control_helper',
     'application_pid_stress','application_memory_stress','other_application_survives_stress',
     'registry_offline_reboot','stopped_reboot_no_replay','uncertain_job_reboot_no_replay','real_reboot',
@@ -72,7 +73,8 @@ def validate(native,cleanup,performance,onboarding,release,source,budget):
                 or report.get('checks',{}).get('real_reboot')!='passed'):
             raise ValueError('native profile source, exact running host or boot proof differs')
     if any(profiles['functional']['checks'].get(name)!='passed' for name in REQUIRED_STEPS):raise ValueError('functional source controls are incomplete')
-    if profiles['bounded']['checks'].get('bounded_full_postgresql_offline_reboot')!='passed' or profiles['bounded']['checks'].get('fixed_budget_performance')!='passed':
+    if any(profiles['bounded']['checks'].get(name)!='passed' for name in
+            ['bounded_full_postgresql_offline_reboot','fixed_budget_performance','source_bound_authenticated_snapshot']):
         raise ValueError('bounded PostgreSQL boot or measured performance evidence is missing')
     return validate_measurements(performance,onboarding,native,budget)
 

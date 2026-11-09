@@ -42,7 +42,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: nicodes/tools
-          ref: 09511ec42375d453f8fd16fc9cf574f84e7401b6
+          ref: 7873bb0fdae1726295dbf7f9317c58daa374b2a6
           path: .artifacts/native-proxy-tools
           persist-credentials: false
       - name: Build and audit the exact native proxy
@@ -51,6 +51,24 @@ jobs:
           set -euo pipefail
           mise install go@1.27.3 go:golang.org/x/vuln/cmd/govulncheck@1.7.0
           mise exec go@1.27.3 go:golang.org/x/vuln/cmd/govulncheck@1.7.0 -- python3 -I -B tests/support/native_host_proxy.py --tools .artifacts/native-proxy-tools --output .artifacts/native-proxy/caddy_Linux_x86_64
+      - name: Select the declared immutable backup provider
+        id: backup-provider
+        run: |
+          python3 -I -B - <<'PY'
+          import os, pathlib, re, tomllib
+          revision = tomllib.loads(pathlib.Path('mise.toml').read_text())['vars']['cookbook_ref']
+          if not re.fullmatch('[a-f0-9]{40}', revision):
+              raise ValueError('native backup provider must be immutable')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('revision=' + revision + '\n')
+          PY
+      - name: Check out the accepted backup provider
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/cookbook
+          ref: ${{ steps.backup-provider.outputs.revision }}
+          path: .artifacts/native-backup-cookbook
+          persist-credentials: false
       - name: Prepare the disposable machine runner
         run: |
           set -euo pipefail
@@ -59,7 +77,7 @@ jobs:
           native_runner_uid="$(id -u)"
           sudo setfacl -m "u:$native_runner_uid:rw" /dev/kvm
       - name: Assert native bootstrap, isolation and real reboot
-        run: python3 -I -B tests/support/native_host_vm.py --binary .artifacts/native-host-build/debug/komizo-box --proxy-binary .artifacts/native-proxy/caddy_Linux_x86_64 --proxy-receipt .artifacts/native-proxy/caddy_Linux_x86_64.json
+        run: python3 -I -B tests/support/native_host_vm.py --binary .artifacts/native-host-build/debug/komizo-box --proxy-binary .artifacts/native-proxy/caddy_Linux_x86_64 --proxy-receipt .artifacts/native-proxy/caddy_Linux_x86_64.json --cookbook-source .artifacts/native-backup-cookbook --tools-source .artifacts/native-proxy-tools
       - name: Preserve bounded native host evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

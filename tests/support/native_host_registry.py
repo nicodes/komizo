@@ -42,7 +42,7 @@ def static(root, app, revision, *, unsafe=False):
     return {'kind':'archive','reference':reference,'digest':identity,'size_bytes':len(payload),'media_type':STATIC}
 
 
-def image(root, app, revision):
+def image(root, app, revision, *, repository=None):
     data=io.BytesIO()
     with tarfile.open(fileobj=data,mode='w:',format=tarfile.USTAR_FORMAT) as archive:
         for name in ['bin','www','www/cgi-bin','data']:
@@ -53,7 +53,7 @@ def image(root, app, revision):
             info=tarfile.TarInfo(name);info.size=len(body);info.mode=mode;info.uid=info.gid=10001;archive.addfile(info,io.BytesIO(body))
     raw=data.getvalue();layer=gzip.compress(raw,mtime=0)
     config=canonical({'architecture':'amd64','os':'linux','config':{'User':'10001:10001','Entrypoint':['/bin/busybox'],
-        'Env':['PATH=/bin'],'Labels':{'org.opencontainers.image.source':'https://github.com/example/'+app,'org.opencontainers.image.revision':revision}},
+        'Env':['PATH=/bin'],'Labels':{'org.opencontainers.image.source':'https://github.com/'+(repository or 'example/'+app),'org.opencontainers.image.revision':revision}},
         'rootfs':{'type':'layers','diff_ids':[digest(raw)]}})
     config_id=blob(root,config);layer_id=blob(root,layer)
     manifest=canonical({'schemaVersion':2,'mediaType':MANIFEST,'config':{'mediaType':'application/vnd.oci.image.config.v1+json','digest':config_id,'size':len(config)},

@@ -14,14 +14,15 @@ import fixture_registry as registry
 import fixture_runtime as runtime
 
 BASE='docker.io/library/postgres@sha256:4ef4dbc939d61acea57712655ddb4b4ab27419c913f94cca0cd57cb3ea3c2280'
-REVISION='a'*40
+def source():return json.loads((ROOT/'profile.json').read_text())['source']
 
 
 def postgres_artifact():
+    identity=source();revision=identity['revision']
     context=ROOT/'postgres-build';context.mkdir(mode=0o700)
-    (context/'Containerfile').write_text('FROM '+BASE+'\nLABEL org.opencontainers.image.source="https://github.com/example/pgbox" org.opencontainers.image.revision="'+REVISION+'"\n')
+    (context/'Containerfile').write_text('FROM '+BASE+'\nLABEL org.opencontainers.image.source="https://github.com/'+identity['repository']+'" org.opencontainers.image.revision="'+revision+'"\n')
     run(['podman','--remote=false','pull',BASE],timeout=300)
-    tag='localhost/native-pgbox:'+REVISION
+    tag='localhost/native-pgbox:'+revision
     run(['podman','--remote=false','build','--format=oci','--layers','--pull=never','--network=none',
         '--file',str(context/'Containerfile'),'--tag',tag,str(context)],timeout=180)
     # The fixture adds source labels only; compare complete functional config
@@ -153,14 +154,17 @@ def prepare(report):
     policy['secrets']={'postgres-owner':{'path':str(alias),'services':['postgres'],'jobs':['initialize'],
         'environment_file':True,'mount':False,'generation':'a'*32}}
     write('/etc/komizo/apps/pgbox.json',policy)
-    release=runtime.release('pgbox',REVISION,dynamic=True,graph=False)
+    identity=source()
+    release=runtime.release('pgbox',identity['revision'],dynamic=True,graph=False,source=identity)
+    release['providers']=json.loads((ROOT/'profile.json').read_text())['providers']
     release['artifacts']['postgres']=artifact
     workload=release['workload'];workload['volumes']={'postgres-data':{}}
     workload['services']['postgres']={'artifact':'postgres','user':user,'limits':runtime.limits(128,300,64),
         'networks':['app'],'environment_files':['postgres-owner'],'environment':{'PGDATA':'/data/pg'},
         'volumes':[{'name':'postgres-data','target':'/data'}],
         'tmpfs':{'/tmp':{'size_bytes':16*MiB,'mode':0o1777}},
-        'command':['sh','-ec','if [ ! -e "$PGDATA/PG_VERSION" ]; then printf %s "$PGPASSWORD" > /tmp/owner-password; initdb -D "$PGDATA" -U "$PGUSER" --pwfile=/tmp/owner-password --auth-local=trust --auth-host=scram-sha-256; rm /tmp/owner-password; printf "host all all 0.0.0.0/0 scram-sha-256\\n" >> "$PGDATA/pg_hba.conf"; fi; exec postgres -D "$PGDATA" -h 0.0.0.0 -c unix_socket_directories=/tmp -c shared_buffers=8MB -c max_connections=8 -c max_locks_per_transaction=16'],
+        'command':['sh','-ec','if [ ! -e "$PGDATA/PG_VERSION" ]; then printf %s "$PGPASSWORD" > /tmp/owner-password; initdb -D "$PGDATA" -U "$PGUSER" --pwfile=/tmp/owner-password --auth-local=trust --auth-host=scram-sha-256; rm /tmp/owner-password; printf "host all all 0.0.0.0/0 scram-sha-256\\n" >> "$PGDATA/pg_hba.conf"; fi; exec postgres -D "$PGDATA" -h 0.0.0.0 "$@"',
+            'postgres','-c','unix_socket_directories=/tmp,@/komizo-capture','-c','shared_buffers=8MB','-c','max_connections=8','-c','max_locks_per_transaction=16'],
         'health':{'command':['pg_isready','-h','127.0.0.1','-U','fixture','-d','postgres'],'interval_seconds':2,'timeout_seconds':2,'retries':30,'start_period_seconds':30}}
     workload['jobs']={'initialize':{'artifact':'postgres','user':user,'limits':runtime.limits(32,100,32),
         'networks':['app'],'environment_files':['postgres-owner'],'needs':{'postgres':'healthy'},'timeout_seconds':45,

@@ -3,6 +3,7 @@
 import argparse
 import ctypes
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,7 @@ import selectors
 import shlex
 import tomllib
 import socket
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -330,7 +332,7 @@ def isolated_performance(guest,directory,cli,setup_seconds,isolated):
     return report,onboarding
 
 
-def owner_recovery(guest, directory, key):
+def owner_recovery(guest, directory, key, sources):
     report=json.loads(guest.command('cat /root/native-host/report.json',capture_output=True).stdout)
     checks={}
     records=report.get('owner_exports')
@@ -345,21 +347,37 @@ def owner_recovery(guest, directory, key):
         receipt=json.loads(pair['receipt.json'])
         if receipt['deployment']['application']!=record['application'] or receipt['deployment']['release_digest']!=record['release_digest'] or receipt['ciphertext_sha256']!=hashlib.sha256(pair['snapshot.cms']).hexdigest():
             raise ValueError('owner backup receipt lost captured source or ciphertext identity')
-        encrypted=directory/(record['application']+'.cms');encrypted.write_bytes(pair['snapshot.cms']);encrypted.chmod(0o600)
-        plaintext=run(['openssl','cms','-decrypt','-binary','-inform','DER','-in',str(encrypted),'-inkey',str(key)],capture_output=True).stdout
-        if record['format']=='synthetic-volume-json':
-            if json.loads(plaintext)!={'application':record['application'],'release_digest':record['release_digest'],'count':'accepted\n'}:
+        if receipt.get('format') != 2:
+            raise ValueError('native capture did not use the accepted authenticated snapshot format')
+        copied=directory/(record['application']+'-encrypted');copied.mkdir(mode=0o700)
+        for name,body in pair.items():
+            path=copied/name;path.write_bytes(body);path.chmod(0o600)
+        payload=directory/(record['application']+'-restored');payload.mkdir(mode=0o700)
+        recovered=sources.snapshot().unseal(copied,key,payload)
+        if record['format']=='synthetic-sqlite-package-v2':
+            with sqlite3.connect('file:'+str(payload/'data.db')+'?mode=ro',uri=True) as database:
+                retained=database.execute('SELECT application,release_digest,value FROM evidence').fetchall()
+            if retained != [(record['application'],record['release_digest'],'accepted\n')]:
                 raise ValueError('owner synthetic decryption changed retained data or source identity')
             checks['synthetic_owner_decryption']='passed'
-        elif record['format']=='postgresql-custom':
-            if not plaintext.startswith(b'PGDMP') or len(plaintext)>1<<20:raise ValueError('owner PostgreSQL plaintext is not the bounded captured dump')
-            dump=directory/'owner-postgres.dump';dump.write_bytes(plaintext);dump.chmod(0o600)
+        elif record['format']=='postgresql-package-v2':
+            manifest=recovered.get('postgresql',{})
+            deployment=manifest.get('deployment',{})
+            if (deployment.get('release_digest')!=record['release_digest']
+                    or deployment.get('release',{}).get('providers')!=sources.providers
+                    or deployment.get('provider')!=sources.providers
+                    or deployment.get('release',{}).get('source')!=sources.source):
+                raise ValueError('owner PostgreSQL package lost exact source or tested provider binding')
+            dump=payload/'database.dump'
+            if not dump.read_bytes().startswith(b'PGDMP') or dump.stat().st_size>1<<20:
+                raise ValueError('owner PostgreSQL plaintext is not the bounded captured dump')
             guest.copy(dump,'/root/native-host/owner-postgres.dump')
             restored=json.loads(guest.command('python3 /root/native-host/fixture_postgres.py restore',timeout=120,capture_output=True).stdout)
             if (restored.get('kind')!='komizo.native-database-recovery' or restored.get('release_digest')!=record['release_digest']
                     or restored.get('current_source_ci_acceptance') is not False or restored.get('rows')!='passed'):
                 raise ValueError('owner PostgreSQL restoration did not prove the captured installed source')
             checks['owner_postgresql_encrypted_restore']='passed';checks['owner_recovery_disposable_isolation']='passed'
+            checks['source_bound_authenticated_snapshot']='passed'
         else:raise ValueError('owner received an unsupported synthetic recovery format')
     checks['owner_side_exact_framed_exports']='passed';checks['recovery_private_key_outside_capture_host']='passed'
     return checks
@@ -372,6 +390,8 @@ def main():
     parser.add_argument('--proxy-receipt', required=True, type=Path)
     parser.add_argument('--profile',choices=['functional','bounded'],default='functional')
     parser.add_argument('--cli',type=Path,help='exact shipping cold owner executable; required for the bounded profile')
+    parser.add_argument('--cookbook-source',type=Path,default=os.environ.get('COOKBOOK_ROOT') or os.environ.get('RECIPE_SOURCE_SDK'))
+    parser.add_argument('--tools-source',type=Path,default=os.environ.get('TOOLS_ROOT'))
     parser.add_argument('--output', type=Path, default=ROOT / '.artifacts/native-host')
     args = parser.parse_args()
     if args.profile=='bounded' and (args.cli is None or args.cli.is_symlink() or not args.cli.is_file()):raise ValueError('bounded native acceptance requires its exact cold owner client')
@@ -381,6 +401,12 @@ def main():
     if not Path('/dev/kvm').exists() or not os.access('/dev/kvm', os.R_OK | os.W_OK):
         raise ValueError('real native host acceptance requires accessible KVM; no simulated success fallback')
     baseline = json.loads((FIXTURES / 'baseline.json').read_text())
+    if args.cookbook_source is None or args.tools_source is None:
+        raise ValueError('native capture requires the selected immutable Cookbook and Tools source directories')
+    spec=importlib.util.spec_from_file_location('native_recovery_sources',ROOT/'tests/support/native_host_recovery.py')
+    recovery=importlib.util.module_from_spec(spec);spec.loader.exec_module(recovery)
+    sources=recovery.Sources(ROOT,args.cookbook_source,args.tools_source,source=os.environ.get('NATIVE_HOST_SOURCE',''),
+        repository_id=os.environ.get('GITHUB_REPOSITORY_ID',''),tools_revision=baseline['proxy_tools_revision'])
     caddy=args.proxy_binary.absolute();proxy_receipt=args.proxy_receipt.absolute()
     for path,maximum in [(caddy,128<<20),(proxy_receipt,16384)]:
         if path.is_symlink() or not path.is_file() or not 0<path.stat().st_size<=maximum:raise ValueError('native host requires exact ordinary proxy outputs')
@@ -405,7 +431,8 @@ def main():
         run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(recovery_key),
             '-out',str(recipient),'-days','2','-subj','/CN=disposable-native-owner'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         recovery_key.chmod(0o600)
-        profile=directory/'profile.json';profile.write_text(json.dumps({'profile':args.profile}))
+        capture_bundle=sources.bundle(directory,recipient)
+        profile=directory/'profile.json';profile.write_text(json.dumps(sources.profile(args.profile)))
         user_data = {'disable_root': False, 'ssh_pwauth': False,
             'users': [{'name': 'root', 'ssh_authorized_keys': [owner.with_suffix('.pub').read_text().strip()]}],
             'ssh_keys': {'ed25519_private': host.read_text(), 'ed25519_public': host.with_suffix('.pub').read_text().strip()},
@@ -451,6 +478,14 @@ def main():
                 guest.command('chmod 644 /etc/komizo-proxy/binary.json')
                 guest.copy(submit.with_suffix('.pub'), '/root/native-host/submission.pub')
                 guest.copy(recipient, '/root/native-host/recipient.crt')
+                guest.copy(capture_bundle,'/root/native-host/capture-pgbox.bundle')
+                if guest.command('sha256sum /root/native-host/capture-pgbox.bundle',capture_output=True).stdout.decode().split()[0]!=hashlib.sha256(capture_bundle.read_bytes()).hexdigest():
+                    raise ValueError('guest backup program differs from its exact source/provider bundle')
+                guest.command('chmod 700 /root/native-host/capture-pgbox.bundle; install -d -m 700 /root/native-host/recovery')
+                for name,body in sources.helpers.items():
+                    path=directory/name;path.write_bytes(body);path.chmod(0o400)
+                    guest.copy(path,'/root/native-host/recovery/'+name)
+                guest.command('chmod 400 /root/native-host/recovery/*.py; chmod 500 /root/native-host/recovery')
                 guest.copy(profile,'/root/native-host/profile.json')
                 guest.copy(ROOT / 'tests/support/native_host_acceptance.py', '/root/native-host/acceptance.py')
                 guest.copy(ROOT / 'tests/support/native_host_runtime.py', '/root/native-host/fixture_runtime.py')
@@ -467,7 +502,7 @@ def main():
                 guest.submission_boundary(submit)
                 print('Running exact native workload effects and protected recovery fixtures',flush=True)
                 guest.command('python3 /root/native-host/acceptance.py runtime', timeout=600)
-                owner_checks=owner_recovery(guest,directory,recovery_key)
+                owner_checks=owner_recovery(guest,directory,recovery_key,sources)
                 (args.output / 'owner-recovery.json').write_text(json.dumps({'version': 1,
                     'source': {'revision': os.environ.get('NATIVE_HOST_SOURCE'), 'binary_sha256': binary_sha},
                     'checks': owner_checks}, sort_keys=True) + '\n')

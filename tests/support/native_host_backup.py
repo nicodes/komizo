@@ -16,38 +16,54 @@ import fixture_runtime as runtime
 import fixture_registry as registry
 
 
-CAPTURE = b'''#!/usr/bin/python3
-import hashlib,json,os,pathlib,subprocess,sys,tempfile
+CAPTURE = b'''#!/usr/bin/python3 -IB
+from datetime import datetime,timezone
+import hashlib,importlib.util,json,os,pathlib,shutil,sqlite3,subprocess,sys,tarfile,tempfile
 request=json.load(sys.stdin)
 assert request['kind']=='komizo.backup-request' and request['version']==1
 app=request['application'];instance=request['instance']
-assert app in {'secretbox','pgbox'} and instance=='production'
+assert app=='secretbox' and instance=='production'
 root=pathlib.Path('/var/lib/komizo')
 installed=json.loads((root/'instances'/f'{app}--{instance}.json').read_text())
 assert installed['release_digest']==request['release_digest']==os.environ['KOMIZO_RELEASE_DIGEST']
 assert request['operation_id']==os.environ['KOMIZO_OPERATION_ID']
 release=json.loads((root/'releases'/(request['release_digest'][7:]+'.json')).read_text())
-service='postgres' if app=='pgbox' else 'db'
-resource=json.loads(subprocess.check_output(['/usr/local/bin/komizo-box','resource','--application',app,'--instance',instance,'--service',service]))
+resource=json.loads(subprocess.check_output(['/usr/local/bin/komizo-box','resource','--application',app,'--instance',instance,'--service','db']))
 assert resource['release_digest']==request['release_digest'] and resource['deployment']['release']==release
-if app=='pgbox':
-    data=subprocess.check_output(['podman','--remote=false','exec',resource['container_name'],'pg_dump','--host=127.0.0.1','--username=fixture','--dbname=postgres','--format=custom'])
-    assert data.startswith(b'PGDMP') and len(data)<1048576
-else:
-    volume=resource['volumes']['data']['name']
-    mount=subprocess.check_output(['podman','--remote=false','volume','inspect',volume,'--format={{.Mountpoint}}'],text=True).strip()
-    count=(pathlib.Path(mount)/'count').read_bytes()
-    assert count==b'accepted\\n'
-    data=json.dumps({'application':app,'release_digest':request['release_digest'],'count':count.decode()}).encode()
+volume=resource['volumes']['data']['name']
+mount=subprocess.check_output(['podman','--remote=false','volume','inspect',volume,'--format={{.Mountpoint}}'],text=True).strip()
+retained=pathlib.Path(mount)/'count'
+assert not retained.is_symlink() and retained.is_file() and retained.stat().st_nlink==1
+count=retained.read_bytes();assert count==b'accepted\\n'
 output=pathlib.Path(request['output_directory'])
 assert str(output)==os.environ['KOMIZO_OUTPUT_DIRECTORY']
+expected_helpers=__RECOVERY_HELPERS__
+for name,identity in expected_helpers.items():
+    assert name in {'snapshot.py','postgres-recovery.py'}
+    path=pathlib.Path('/root/native-host/recovery')/name
+    assert not path.is_symlink() and hashlib.sha256(path.read_bytes()).hexdigest()==identity
+spec=importlib.util.spec_from_file_location('fixture_snapshot','/root/native-host/recovery/snapshot.py')
+snapshot=importlib.util.module_from_spec(spec);spec.loader.exec_module(snapshot)
 with tempfile.TemporaryDirectory(prefix='native-backup-',dir='/root/native-host') as temporary:
-    plaintext=pathlib.Path(temporary)/'plain.json'
-    plaintext.write_bytes(data)
-    subprocess.run(['openssl','cms','-encrypt','-binary','-aes-256-cbc','-outform','DER','-in',str(plaintext),'-out',str(output/'snapshot.cms'),'/root/native-host/recipient.crt'],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-snapshot=(output/'snapshot.cms').read_bytes()
-receipt={'version':1,'ciphertext_sha256':hashlib.sha256(snapshot).hexdigest(),'deployment':{'application':app,'release_digest':request['release_digest'],'source':release['source'],'provider':release.get('providers')}}
-(output/'receipt.json').write_text(json.dumps(receipt,sort_keys=True,separators=(',',':')))
+    package=pathlib.Path(temporary)
+    database=package/'data.db'
+    with sqlite3.connect(database) as connection:
+        connection.executescript('CREATE TABLE _collections(name TEXT); CREATE TABLE _migrations(name TEXT); CREATE TABLE evidence(application TEXT,release_digest TEXT,value TEXT);')
+        connection.execute('INSERT INTO evidence VALUES (?,?,?)',(app,request['release_digest'],count.decode()))
+    database.chmod(0o600)
+    archive=package/'data.tar.gz'
+    with tarfile.open(archive,'x:gz') as bundle:bundle.add(database,arcname='data.db',recursive=False)
+    restored=package/'validation';restored.mkdir(mode=0o700)
+    evidence=snapshot.restore(archive,restored)
+    evidence.update(image_id=resource['image_config_digest'],image_reference=resource['image_ref'],verified_at=datetime.now(timezone.utc).isoformat())
+    (package/'verification.json').write_text(json.dumps(evidence))
+    sealed=snapshot.seal(package,pathlib.Path('/root/native-host/recipient.crt'))
+    receipt=json.loads((sealed/'receipt.json').read_text());assert receipt['format']==2
+    # This is a synthetic SQLite framing proof. The encrypted row independently
+    # binds its scope; real PostgreSQL proves generic deployment authentication.
+    receipt['deployment']={'application':app,'release_digest':request['release_digest'],'source':release['source'],'provider':release.get('providers')}
+    shutil.copyfile(sealed/'snapshot.cms',output/'snapshot.cms')
+    (output/'receipt.json').write_text(json.dumps(receipt,sort_keys=True,separators=(',',':')))
 for path in output.iterdir():path.chmod(0o600)
 '''
 
@@ -68,11 +84,18 @@ def export(app, release, operation, metadata):
 
 def capture(app,report,format):
     installed=runtime.installed(app);release=installed['release_digest']
-    program=ROOT/'capture.py';write(program,CAPTURE,0o700)
+    if app=='pgbox':
+        program=ROOT/'capture-pgbox.bundle';body=program.read_bytes()
+    else:
+        helpers=json.loads((ROOT/'profile.json').read_text())['backup_helpers']
+        if set(helpers)!={'snapshot.py','postgres-recovery.py'} or any(
+                not isinstance(value,str) or not __import__('re').fullmatch('[a-f0-9]{64}',value) for value in helpers.values()):
+            raise ValueError('synthetic capture requires its exact immutable recovery helper inventory')
+        program=ROOT/'capture.py';body=CAPTURE.replace(b'__RECOVERY_HELPERS__',registry.canonical(helpers));write(program,body,0o700)
     if not (ROOT/'recipient.crt').is_file() or (ROOT/'recipient.key').exists():
         raise ValueError('capture host must receive only the owner public recipient certificate')
     path=Path('/etc/komizo/apps/'+app+'.json');policy=json.loads(path.read_text())
-    policy['backup']={'program':str(program),'sha256':registry.digest(CAPTURE),'timeout_seconds':30,'max_export_bytes':1<<20,'services':['postgres' if app=='pgbox' else 'db']}
+    policy['backup']={'program':str(program),'sha256':registry.digest(body),'timeout_seconds':30,'max_export_bytes':1<<20,'services':['postgres' if app=='pgbox' else 'db']}
     write(path,policy)
     capture=runtime.submit(runtime.request(app,'backup',release))
     if (not capture.get('ok') or capture.get('backup',{}).get('status')!='ready'
@@ -95,7 +118,7 @@ def capture(app,report,format):
 
 def capture_postgres(report):
     import fixture_postgres
-    capture('pgbox',report,'postgresql-custom')
+    capture('pgbox',report,'postgresql-package-v2')
     if fixture_postgres.query('SELECT value FROM evidence')!=b'retained native row':raise ValueError('PostgreSQL capture changed initialized rows')
     report['checks']['protected_postgresql_encrypted_capture']='passed'
 
@@ -273,7 +296,7 @@ time.sleep(600)
 
 
 def prepare(report):
-    capture('secretbox',report,'synthetic-volume-json')
+    capture('secretbox',report,'synthetic-sqlite-package-v2')
     if runtime.count('secretbox')!=1:raise ValueError('protected capture changed retained data')
     interrupted_deadline(report)
     # The deliberately stopped instance must never be started for capture.

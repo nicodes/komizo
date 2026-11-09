@@ -92,9 +92,10 @@ def host_policy(app):
     return value
 
 
-def release(app,revision,*,dynamic=False,unsafe=False,job_command=None,graph=True):
+def release(app,revision,*,dynamic=False,unsafe=False,job_command=None,graph=True,source=None):
     repo=ROOT/'registry';repo.mkdir(exist_ok=True)
-    artifact=registry.image(repo,app,revision) if dynamic else registry.static(repo,app,revision,unsafe=unsafe)
+    if source is not None and source['revision']!=revision:raise ValueError('fixture artifact source differs from its descriptor')
+    artifact=registry.image(repo,app,revision,repository=source['repository'] if source else None) if dynamic else registry.static(repo,app,revision,unsafe=unsafe)
     workload={'services':{},'jobs':{},'assets':{},'networks':{},'volumes':{},'routes':[],
         'readiness':[{'url':'https://'+app+'.localhost/','status':200,'contains':revision}]}
     if dynamic:
@@ -119,7 +120,7 @@ def release(app,revision,*,dynamic=False,unsafe=False,job_command=None,graph=Tru
     else:
         artifacts={'web':artifact};workload['assets']={'web':{'artifact':'web','serving':{}}}
         workload['routes']=[{'host':app+'.localhost','path':'/','target':{'kind':'asset','name':'web'}}]
-    return {'kind':'komizo.release','version':1,'application':app,'source':{'repository':'example/'+app,'repository_id':'123','revision':revision},
+    return {'kind':'komizo.release','version':1,'application':app,'source':source or {'repository':'example/'+app,'repository_id':'123','revision':revision},
         'artifacts':artifacts,'workload':workload}
 
 
@@ -556,7 +557,7 @@ def verify_reboot():
     if report['profile']=='bounded':
         import fixture_postgres
         until(lambda:b'a'*40 in fetch('staticbox',accepted['static']),seconds=60)
-        until(lambda:b'a'*40 in fetch('pgbox',report['postgres']['release_digest']),seconds=60)
+        until(lambda:fixture_postgres.source()['revision'].encode() in fetch('pgbox',report['postgres']['release_digest']),seconds=60)
         until(lambda:fixture_postgres.query('SELECT value FROM evidence')==b'retained native row',seconds=60)
         if fixture_postgres.query('SELECT count(*) FROM evidence')!=b'1':raise ValueError('bounded initialized PostgreSQL job replayed at boot')
         if not shared_dns('bounded-offline-reboot'):raise ValueError('bounded reboot lost shared DNS accounting')
