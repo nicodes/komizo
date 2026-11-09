@@ -129,6 +129,15 @@ pub fn guard(application: &str, instance: &str, service: &str) -> Result<()> {
         .services
         .get(service)
         .ok_or_else(|| anyhow!("service is not installed"))?;
+    if container.needs.values().any(|c| *c == Condition::Completed) {
+        ensure!(
+            !store
+                .unresolved(application, instance)?
+                .iter()
+                .any(|op| op.reconciliation_required || op.operation_id != installed.operation_id),
+            "service restart is fenced by an unresolved data operation"
+        );
+    }
     let record = installed
         .resources
         .containers

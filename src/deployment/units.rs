@@ -226,7 +226,7 @@ pub fn quadlet(
     let mut out = String::new();
     writeln!(
         out,
-        "[Unit]\nDescription=Komizo application service\nAfter=network-online.target\nWants=network-online.target\nRequiresMountsFor=/var/lib/komizo\n[Container]\nImage={reference}\nContainerName={ns}-{service}\nGlobalArgs=--remote=false\nCgroupsMode=enabled\nPodmanArgs={}",
+        "[Unit]\nDescription=Komizo application service\nAfter=network-online.target komizo-controller.service\nWants=network-online.target komizo-controller.service\nRequiresMountsFor=/var/lib/komizo\n[Container]\nImage={reference}\nContainerName={ns}-{service}\nGlobalArgs=--remote=false\nCgroupsMode=enabled\nPodmanArgs={}",
         options(service, value, bindings)?
             .iter()
             .map(|v| word(v))
@@ -258,7 +258,7 @@ pub fn quadlet(
         service
     )?;
     if wanted {
-        out.push_str("WantedBy=komizo-workloads.target\n");
+        out.push_str("WantedBy=multi-user.target\n");
     }
     Ok(out)
 }

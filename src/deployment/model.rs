@@ -500,6 +500,8 @@ pub struct PreviewPolicy {
     #[serde(default)]
     pub api_path: Option<String>,
     #[serde(default)]
+    pub readiness: Vec<Readiness>,
+    #[serde(default)]
     pub prepare: Option<ProtectedTask>,
     #[serde(default)]
     pub retain_data_on_remove: bool,

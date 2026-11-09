@@ -860,6 +860,32 @@ impl Policy {
             );
         }
         if let Some(preview) = &self.previews {
+            ensure!(
+                !preview.readiness.is_empty(),
+                "preview policy requires its own protected readiness probes"
+            );
+            let probes = preview
+                .readiness
+                .iter()
+                .map(|probe| {
+                    let mut probe = probe.clone();
+                    probe.url = probe.url.replace("{instance}", "pr-1");
+                    probe
+                })
+                .collect::<Vec<_>>();
+            ensure!(
+                probes.iter().all(|p| !p.url.contains(['{', '}'])),
+                "preview readiness has unsupported placeholders"
+            );
+            validate_readiness(
+                &probes,
+                &[
+                    format!("pr-1.{}", preview.hostname_suffix),
+                    format!("pr-1-api.{}", preview.hostname_suffix),
+                ]
+                .into_iter()
+                .collect(),
+            )?;
             preview.limits.validate()?;
             preview.controls.validate(&preview.limits)?;
             if let Some(limits) = &preview.service_limits {

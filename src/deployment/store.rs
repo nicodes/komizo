@@ -183,6 +183,42 @@ pub fn operation_identity(request: &Request) -> Result<String> {
 }
 
 impl Store {
+    pub fn unresolved(&self, application: &str, instance: &str) -> Result<Vec<Operation>> {
+        Self::instance_key(application, instance)?;
+        let mut result = Vec::new();
+        for entry in fs::read_dir(self.root.join("operations"))? {
+            let entry = entry?;
+            let filename = entry.file_name();
+            let id = filename
+                .to_str()
+                .and_then(|n| n.strip_suffix(".json"))
+                .ok_or_else(|| anyhow!("invalid operation ledger path"))?;
+            let operation = self.operation(id)?;
+            if operation.application != application
+                || operation.instance != instance
+                || (!operation.reconciliation_required && operation.terminal())
+            {
+                continue;
+            }
+            let path = self.root.join("reconciliations").join(format!("{id}.json"));
+            if path.try_exists()? {
+                let value = super::validation::bounded_value(&read_protected(&path, 4096)?, 4096)?;
+                let resolved = self.operation(
+                    value["resolved_by"]
+                        .as_str()
+                        .ok_or_else(|| anyhow!("invalid reconciliation record"))?,
+                )?;
+                if resolved.application == application
+                    && resolved.instance == instance
+                    && resolved.ok
+                {
+                    continue;
+                }
+            }
+            result.push(operation);
+        }
+        Ok(result)
+    }
     pub fn create_operation(&self, operation: &Operation) -> Result<()> {
         operation.validate()?;
         ensure!(
@@ -255,7 +291,7 @@ pub fn atomic(path: &Path, body: &[u8], mode: u32) -> Result<()> {
     Ok(())
 }
 
-pub fn read_protected(path: &Path, maximum: usize) -> Result<Vec<u8>> {
+pub fn open_protected(path: &Path, maximum: u64) -> Result<File> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
@@ -265,9 +301,15 @@ pub fn read_protected(path: &Path, maximum: usize) -> Result<Vec<u8>> {
         metadata.is_file()
             && metadata.uid() == unsafe { libc::geteuid() }
             && metadata.mode() & 0o022 == 0
-            && metadata.len() <= maximum as u64,
+            && metadata.nlink() == 1
+            && metadata.len() <= maximum,
         "unsafe or oversized protected file"
     );
+    Ok(file)
+}
+
+pub fn read_protected(path: &Path, maximum: usize) -> Result<Vec<u8>> {
+    let file = open_protected(path, maximum as u64)?;
     let mut body = Vec::new();
     file.take(maximum as u64 + 1).read_to_end(&mut body)?;
     ensure!(body.len() <= maximum, "protected file exceeds bounds");

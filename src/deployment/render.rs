@@ -164,6 +164,29 @@ pub fn caddy(
     upstreams: &BTreeMap<String, String>,
     http: bool,
 ) -> Result<String> {
+    let mut out = if http {
+        "{\nadmin off\nauto_https off\n}\n".to_owned()
+    } else {
+        String::new()
+    };
+    out.push_str(&sites(document, assets_root, upstreams, http)?);
+    out.push_str(&catchall());
+    Ok(out)
+}
+
+pub fn catchall() -> String {
+    let mut out = String::from("http:// {\n");
+    baseline(&mut out);
+    out.push_str("respond 404\n}\n");
+    out
+}
+
+pub fn sites(
+    document: &ReleaseDocument,
+    assets_root: &str,
+    upstreams: &BTreeMap<String, String>,
+    http: bool,
+) -> Result<String> {
     document.release.validate()?;
     ensure!(
         absolute(assets_root),
@@ -181,9 +204,6 @@ pub fn caddy(
         );
     }
     let mut out = String::new();
-    if http {
-        out.push_str("{\nadmin off\nauto_https off\n}\n");
-    }
     let mut hosts: BTreeMap<&str, Vec<(usize, &Route)>> = BTreeMap::new();
     for (i, route) in document.release.workload.routes.iter().enumerate() {
         hosts.entry(&route.host).or_default().push((i, route));
@@ -306,8 +326,5 @@ pub fn caddy(
         }
         out.push_str("}\n");
     }
-    out.push_str("http:// {\n");
-    baseline(&mut out);
-    out.push_str("respond 404\n}\n");
     Ok(out)
 }

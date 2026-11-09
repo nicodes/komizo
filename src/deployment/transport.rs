@@ -115,6 +115,15 @@ pub fn serve(
     gid: u32,
     handler: impl Fn(Vec<u8>, u32) -> Result<Completion> + Send + Sync + 'static,
 ) -> Result<()> {
+    serve_with_ready(socket, gid, handler, || Ok(()))
+}
+
+pub fn serve_with_ready(
+    socket: &Path,
+    gid: u32,
+    handler: impl Fn(Vec<u8>, u32) -> Result<Completion> + Send + Sync + 'static,
+    ready: impl FnOnce() -> Result<()>,
+) -> Result<()> {
     ensure!(
         unsafe { libc::geteuid() } == 0 && socket == Path::new(SOCKET),
         "daemon requires the fixed protected root socket"
@@ -153,6 +162,7 @@ pub fn serve(
         "cannot assign submission socket group"
     );
     fs::set_permissions(socket, fs::Permissions::from_mode(0o660))?;
+    ready()?;
     let handler = Arc::new(handler);
     let active = Arc::new(AtomicUsize::new(0));
     let readers = Arc::new(AtomicUsize::new(0));

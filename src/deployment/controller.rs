@@ -27,6 +27,9 @@ pub struct Job {
 }
 
 pub trait Backend: Send + Sync + 'static {
+    fn maintenance(&self, _store: &Store) -> Result<()> {
+        Ok(())
+    }
     fn execute(
         &self,
         store: &Store,
@@ -89,7 +92,15 @@ impl Coordinator {
         std::thread::spawn(move || {
             // One effect worker preserves the shared startup and disk budget.
             // Authentication and read-only inspection remain independently live.
-            for job in receiver {
+            loop {
+                let job = match receiver.recv_timeout(Duration::from_secs(10)) {
+                    Ok(job) => job,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        let _ = backend.maintenance(&worker_store);
+                        continue;
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                };
                 let result = (|| -> Result<Operation> {
                     let mut operation = worker_store.operation(&job.operation_id)?;
                     let executed =
@@ -128,6 +139,7 @@ impl Coordinator {
                 if let Ok(operation) = result {
                     let _ = job.response.send(operation);
                 }
+                let _ = backend.maintenance(&worker_store);
                 // The lease and credentials are dropped only after the worker
                 // finishes, never when its waiting SSH connection disappears.
             }
@@ -214,6 +226,11 @@ impl Coordinator {
             &serde_json::to_vec(
                 &json!({"kind":"komizo.admission","version":1,"operation_id":id,"policy_digest":policy_digest,"evidence":evidence}),
             )?,
+            0o600,
+        )?;
+        store::atomic(
+            &journal.join("policy.json"),
+            &serde_json::to_vec(&policy)?,
             0o600,
         )?;
         if let Some(record) = installed {
@@ -332,13 +349,13 @@ impl Coordinator {
         );
         let path = self.store.root.join("exports").join(id).join(name);
         super::assets::verify_file(&path, &metadata.sha256, metadata.size_bytes)?;
-        let mut file = fs::File::open(&path)?;
+        let file = store::open_protected(&path, metadata.size_bytes)?;
         let header = json!({"kind":"komizo.export","version":1,"operation_id":id,"application":request.application,"instance":request.instance,"release_digest":request.release_digest,"export_name":name,"size_bytes":metadata.size_bytes,"sha256":metadata.sha256});
         let size = metadata.size_bytes;
         Ok(Box::new(move |stream| {
             serde_json::to_writer(&mut *stream, &header)?;
             stream.write_all(b"\n")?;
-            let copied = std::io::copy(&mut file, stream)?;
+            let copied = std::io::copy(&mut std::io::Read::take(file, size), stream)?;
             ensure!(copied == size, "encrypted export changed during transfer");
             Ok(())
         }))

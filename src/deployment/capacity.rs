@@ -186,7 +186,8 @@ pub fn reserve(
     instance: &str,
     startup: bool,
 ) -> Result<()> {
-    let is_static = document.release.workload.services.is_empty();
+    let is_static =
+        document.release.workload.services.is_empty() && document.release.workload.jobs.is_empty();
     let _lock = store.lock("platform", "capacity")?;
     let path = store.root.join("allocations.json");
     let mut records: BTreeMap<String, Allocation> = if path.try_exists()? {
@@ -231,6 +232,18 @@ pub fn reserve(
         Store::instance_key(&policy.application, instance)?,
         candidate,
     );
+    atomic(&path, &serde_json::to_vec(&records)?, 0o600)
+}
+
+pub fn release(store: &Store, application: &str, instance: &str) -> Result<()> {
+    let _lock = store.lock("platform", "capacity")?;
+    let path = store.root.join("allocations.json");
+    if !path.try_exists()? {
+        return Ok(());
+    }
+    let mut records: BTreeMap<String, Allocation> =
+        serde_json::from_slice(&read_protected(&path, 1 << 20)?)?;
+    records.remove(&Store::instance_key(application, instance)?);
     atomic(&path, &serde_json::to_vec(&records)?, 0o600)
 }
 
@@ -286,6 +299,13 @@ pub fn verify_cgroup(root: &Path, limits: &Limits, controls: &ResourceControls) 
         ensure!(
             number("cpu.weight")? == u64::from(weight),
             "kernel CPU weight differs from policy"
+        );
+    }
+    if let Some(weight) = controls.io_weight {
+        let observed = fs::read_to_string(root.join("io.weight"))?;
+        ensure!(
+            observed.split_whitespace().collect::<Vec<_>>() == ["default", &weight.to_string()],
+            "kernel IO weight differs from policy"
         );
     }
     if !controls.io_max.is_empty() {

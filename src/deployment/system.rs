@@ -268,7 +268,7 @@ pub fn instance_slice(
 pub fn caddy_validate(config: &Path, deadline: Instant) -> Result<()> {
     let mut command = Command::new("/usr/local/bin/caddy");
     command.env_clear().env("PATH", "/usr/bin:/bin").args([
-        "validate",
+        "adapt",
         "--adapter",
         "caddyfile",
         "--config",

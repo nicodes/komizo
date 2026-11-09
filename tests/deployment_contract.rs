@@ -169,6 +169,7 @@ fn previews_cannot_inherit_production_secret_grants() {
     let mut grant = policy();
     grant.previews=Some(serde_json::from_value(json!({
         "hostname_suffix":"preview.example","max_instances":2,"max_ttl_seconds":3600,
+        "readiness":[{"url":"https://{instance}.preview.example/","status":200}],
         "limits":{"memory_bytes":268435456,"memory_swap_bytes":268435456,"milli_cpus":500,"pids":256}
     })).unwrap());
     let mut value = example();
