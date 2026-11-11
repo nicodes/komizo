@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Boot one pinned disposable Debian guest and collect native host acceptance."""
+"""Boot one pinned disposable Alpine guest and collect native host acceptance."""
 import argparse
 import ctypes
 import hashlib
 import importlib.util
+import inspect
 import json
 import math
 import os
@@ -47,11 +48,130 @@ def download(record, target):
         raise ValueError('pinned fixture download differs from reviewed bytes')
 
 
+def authenticate_image(record, image, directory):
+    key = FIXTURES/'alpine-cloud-signing-key.asc'
+    if hashlib.sha256(key.read_bytes()).hexdigest() != record['signing_key_sha256']:
+        raise ValueError('Alpine signing key differs from its reviewed public bytes')
+    if image.stat().st_size != record['size_bytes']:
+        raise ValueError('Alpine cloud image length differs')
+    signature = directory/'image.asc'
+    download({'url':record['signature_url'],'sha256':record['signature_sha256'],'max_bytes':4096}, signature)
+    home = directory/'gpg';home.mkdir(mode=0o700)
+    listing = run(['gpg','--homedir',str(home),'--batch','--with-colons','--show-keys',str(key)],capture_output=True).stdout.decode()
+    fingerprints = [line.split(':')[9] for line in listing.splitlines() if line.startswith('fpr:')]
+    if not fingerprints or fingerprints[0] != record['signing_fingerprint']:
+        raise ValueError('Alpine image signer fingerprint differs from the official release key')
+    run(['gpg','--homedir',str(home),'--batch','--import',str(key)],capture_output=True)
+    status = run(['gpg','--homedir',str(home),'--batch','--status-fd=1','--verify',str(signature),str(image)],capture_output=True).stdout.decode()
+    if not any(line.startswith('[GNUPG:] VALIDSIG '+record['signing_fingerprint']+' ') for line in status.splitlines()):
+        raise ValueError('Alpine cloud image lacks its exact official signer')
+
+
 def parent_lifetime(parent):
     # An aggregate timeout/crash of the driver must not leave its owned KVM
     # process running. No other guest or host process is selected by this hook.
     if ctypes.CDLL(None,use_errno=True).prctl(1,signal.SIGKILL)!=0:raise OSError(ctypes.get_errno(),'cannot bind owned guest lifetime')
     if os.getppid()!=parent:os.kill(os.getpid(),signal.SIGKILL)
+
+
+def fixture_root_user(public_key):
+    # Linux OpenSSH rejects a shadow account prefixed with '!'. Cloud-init
+    # locks existing users by default; '*' keeps passwords unusable while
+    # allowing only the disposable authorized key with ssh_pwauth disabled.
+    return {'name': 'root', 'lock_passwd': False, 'hashed_passwd': '*',
+        'ssh_authorized_keys': [public_key]}
+
+
+def fixture_cloud_options():
+    # Host keys are already pinned independently by Guest. Alpine's optional
+    # console publisher helper is absent; its display is not authentication.
+    return {'disable_root': False, 'ssh_pwauth': False,
+        'ssh': {'emit_keys_to_console': False}}
+
+
+def startup_diagnostics(directory=None, boot_id=None):
+    """Read only the four fixed, private, non-authoritative startup records."""
+    import json
+    import os
+    from pathlib import Path
+    import re
+    import stat
+    roles = ('controller', 'proxy', 'dns', 'expiry')
+    directory = Path('/run/komizo-infrastructure') if directory is None else Path(directory)
+    boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip() if boot_id is None else boot_id
+    result = {}
+    def pairs(items):
+        value = {}
+        for key, item in items:
+            if key in value: raise ValueError('duplicate diagnostic field')
+            value[key] = item
+        return value
+    try:
+        info = directory.stat()
+        if (any(p.is_symlink() for p in [directory, *directory.parents])
+                or not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_gid != 0
+                or stat.S_IMODE(info.st_mode) != 0o700):
+            raise ValueError('private diagnostic directory differs')
+    except (OSError, ValueError):
+        return {role: {'state': 'unavailable'} for role in roles}
+    for role in roles:
+        try:
+            descriptor = os.open(directory / (role + '.startup.json'), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, 'rb') as stream:
+                before = os.fstat(stream.fileno())
+                if (not stat.S_ISREG(before.st_mode) or before.st_uid != 0 or before.st_gid != 0
+                        or stat.S_IMODE(before.st_mode) != 0o600 or before.st_nlink != 1
+                        or not 0 < before.st_size <= 4096):
+                    raise ValueError('private bounded diagnostic required')
+                raw = stream.read(4097)
+                after = os.fstat(stream.fileno())
+            if (len(raw) != before.st_size or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                    != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+                raise ValueError('diagnostic changed')
+            value = json.loads(raw, object_pairs_hook=pairs)
+            if (not isinstance(value, dict) or set(value) != {'kind', 'version', 'diagnostic_only', 'role', 'boot_id', 'pid', 'stage', 'errno', 'error'}
+                    or value['kind'] != 'komizo.infrastructure-startup-diagnostic'
+                    or type(value['version']) is not int or value['version'] != 1 or value['diagnostic_only'] is not True
+                    or value['role'] != role or value['boot_id'] != boot_id
+                    or re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', value['boot_id']) is None
+                    or type(value['pid']) is not int or value['pid'] <= 1
+                    or value['stage'] not in {'files', 'leaf', 'monitor', 'parent', 'notification',
+                        'notification_environment', 'notification_address', 'notification_socket',
+                        'notification_parent', 'notification_identity', 'proxy_guard', 'confinement', 'exec', 'runner'}
+                    or not (value['errno'] is None or type(value['errno']) is int)
+                    or value['error'] not in {'io', 'guard', 'pending'}
+                    or value['error'] == 'pending' and (value['stage'] != 'exec' or value['errno'] is not None)):
+                raise ValueError('diagnostic schema differs')
+            result[role] = value
+        except FileNotFoundError:
+            result[role] = {'state': 'absent'}
+        except (OSError, ValueError, TypeError):
+            result[role] = {'state': 'refused'}
+    return result
+
+
+def notification_metadata():
+    """Observe only the two fixed notification objects; never follow links."""
+    import os
+    import stat
+    result = {}
+    paths = ('/run/openrc', '/run/openrc/supervise-komizo-proxy.sock')
+    for index, path in enumerate(paths):
+        if index and result[paths[0]].get('type') != 'directory':
+            result[path] = {'state': 'refused'}
+            continue
+        try:
+            info = os.lstat(path)
+            expected = stat.S_ISDIR if index == 0 else stat.S_ISSOCK
+            if not expected(info.st_mode):
+                raise ValueError('fixed notification object has another type')
+            result[path] = {'uid': info.st_uid, 'gid': info.st_gid,
+                'mode': stat.S_IMODE(info.st_mode), 'type': 'directory' if index == 0 else 'socket'}
+        except FileNotFoundError:
+            result[path] = {'state': 'absent'}
+        except (OSError, ValueError):
+            result[path] = {'state': 'refused'}
+    return result
 
 
 def key(directory, name):
@@ -107,42 +227,70 @@ class Guest:
         arguments[arguments.index('-p')] = '-P'
         run(['scp', '-q', *arguments, str(source), 'root@127.0.0.1:' + target], timeout=120)
 
-    def ready(self, process, deadline):
+    def fetch(self, source, target):
+        arguments = self.arguments.copy()
+        arguments[arguments.index('-p')] = '-P'
+        run(['scp', '-q', *arguments, 'root@127.0.0.1:' + source, str(target)], timeout=120)
+
+    def ready(self, process, deadline, *, evidence=None):
         observation = {'state': 'no authenticated SSH response'}
-        while time.monotonic() < deadline:
-            if process.poll() is not None:
-                raise ValueError('disposable guest stopped before SSH readiness')
-            try:
-                result = self.command('test -f /root/native-host/cloud-ready && cloud-init status --wait',
-                    timeout=max(.01, min(15, deadline - time.monotonic())), capture_output=True, check=False)
-                observation = {'returncode': result.returncode}
-                if result.returncode == 0:
-                    return
-            except subprocess.TimeoutExpired:
-                observation = {'state': 'cloud setup or SSH command timed out'}
-            except (subprocess.SubprocessError, OSError):
-                observation = {'state': 'SSH transport unavailable'}
-            remaining = deadline - time.monotonic()
-            if remaining > 0:
-                time.sleep(min(1, remaining))
-        raise ValueError('disposable guest readiness deadline expired: ' + json.dumps(observation, sort_keys=True))
+        first = None
+        attempts = 0
+        ready = False
+        try:
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise ValueError('disposable guest stopped before SSH readiness')
+                attempts += 1
+                try:
+                    result = self.command('test -f /root/native-host/cloud-ready && cloud-init status --wait',
+                        timeout=max(.01, min(15, deadline - time.monotonic())), capture_output=True, check=False)
+                    # Only dummy fixture material exists here. Preserve the
+                    # original SSH error without exporting argv/environment.
+                    observation = {'returncode': result.returncode,
+                        'stderr': result.stderr[-4096:].decode(errors='replace')}
+                    if first is None: first = observation
+                    if result.returncode == 0:
+                        ready = True
+                        return
+                except subprocess.TimeoutExpired as error:
+                    observation = {'state': 'cloud setup or SSH command timed out',
+                        'stderr': (error.stderr or b'')[-4096:].decode(errors='replace')}
+                except (subprocess.SubprocessError, OSError):
+                    observation = {'state': 'SSH transport unavailable'}
+                if first is None: first = observation
+                remaining = deadline - time.monotonic()
+                if remaining > 0:
+                    time.sleep(min(1, remaining))
+            raise ValueError('disposable guest readiness deadline expired: ' + json.dumps(observation, sort_keys=True))
+        finally:
+            if evidence is not None:
+                record = {'kind': 'komizo.disposable-guest-ssh-observations', 'version': 1,
+                    'ready': ready, 'attempts': attempts, 'first': first, 'last': observation}
+                try:
+                    with evidence.open('x') as output:
+                        os.fchmod(output.fileno(), 0o600)
+                        output.write(json.dumps(record, sort_keys=True) + '\n')
+                except OSError:
+                    # Optional evidence never replaces the original result.
+                    pass
 
     def boot_diagnostics(self):
         # Fixed read-only boot observations contain no process argv, environment
         # or private controller state. Each command and its exported bytes are
         # bounded independently, even when the OS has pending start jobs.
-        script = '''import json, pathlib, subprocess, tempfile
+        script = inspect.getsource(startup_diagnostics) + '\n' + inspect.getsource(notification_metadata) + '''\nimport json, pathlib, subprocess, tempfile
 commands = {
     'cloud_init': ['cloud-init', 'status', '--long', '--format=json'],
-    'pending_jobs': ['systemctl', 'list-jobs', '--no-pager', '--full'],
-    'system_state': ['systemctl', 'is-system-running'],
-    'boot_units': ['systemctl', 'show', 'cloud-init-main.service', 'cloud-init-local.service', 'cloud-init-network.service',
-        'cloud-config.service', 'cloud-final.service', 'multi-user.target',
-        '--property=Id,ActiveState,SubState,Result,Job'],
-    'cloud_journal': ['journalctl', '-b', '-u', 'cloud-init-main', '-u', 'cloud-init-local', '-u', 'cloud-init-network',
-        '-u', 'cloud-config', '-u', 'cloud-final', '-n', '120', '--no-pager', '-o', 'short-monotonic'],
+    'openrc': ['rc-status', '--all'],
+    'apparmor': ['rc-service', 'apparmor', 'status'],
+    'cloud_log': ['tail', '-c', '32768', '/var/log/cloud-init-output.log'],
+    'service_log': ['tail', '-c', '16384', '/var/log/messages', '/var/log/rc.log'],
+    'kernel': ['cat', '/sys/kernel/security/lsm', '/sys/module/apparmor/parameters/enabled'],
 }
 record = {'version': 1, 'boot_id': pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip(), 'observations': {}}
+record['infrastructure_startup'] = startup_diagnostics(boot_id=record['boot_id'])
+record['notification_metadata'] = notification_metadata()
 for name, argv in commands.items():
     with tempfile.TemporaryFile() as output:
         try:
@@ -287,7 +435,7 @@ def cold_owner(guest,directory,cli,isolated):
         if not isinstance(value,dict):raise ValueError('cold owner client did not return a typed record')
         return value
     capabilities=command('capabilities')
-    if capabilities.get('kind')!='komizo.capabilities' or capabilities.get('host')!={'os':'debian','version':'13','engine':'podman','rootful':True}:
+    if capabilities.get('kind')!='komizo.capabilities' or capabilities.get('host')!={'os':'alpine','version':'3.24','engine':'podman','rootful':True}:
         raise ValueError('shipping owner client capability contract differs')
     flags=['--host','127.0.0.1','--application','pgbox','--instance','production']
     if command('status','--host','127.0.0.1').get('kind')!='komizo.status':raise ValueError('cold owner inventory failed')
@@ -455,20 +603,33 @@ def main():
         submit = key(directory, 'submission')
         host = key(directory, 'host')
         base = directory / 'base.qcow2'
-        print('Downloading and authenticating the pinned Debian cloud image',flush=True)
+        print('Downloading and authenticating the signed pinned Alpine cloud image',flush=True)
         download(baseline['cloud_image'], base)
+        authenticate_image(baseline['cloud_image'], base, directory)
         recovery_key=directory/'recipient.key';recipient=directory/'recipient.crt'
         run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(recovery_key),
             '-out',str(recipient),'-days','2','-subj','/CN=disposable-native-owner'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         recovery_key.chmod(0o600)
         capture_bundle=sources.bundle(directory,recipient)
         profile=directory/'profile.json';profile.write_text(json.dumps(sources.profile(args.profile)))
-        user_data = {'disable_root': False, 'ssh_pwauth': False,
-            'users': [{'name': 'root', 'ssh_authorized_keys': [owner.with_suffix('.pub').read_text().strip()]}],
+        user_data = {**fixture_cloud_options(),
+            'users': [fixture_root_user(owner.with_suffix('.pub').read_text().strip())],
             'ssh_keys': {'ed25519_private': host.read_text(), 'ed25519_public': host.with_suffix('.pub').read_text().strip()},
-            'package_update': True,
-            'packages': ['podman', 'uidmap', 'netavark', 'aardvark-dns', 'busybox-static', 'python3', 'curl', 'ca-certificates', 'nftables', 'strace'],
-            'runcmd': [['sh', '-c', 'install -d -m 700 /root/native-host; touch /root/native-host/cloud-ready']]}
+            'runcmd': [['sh', '-ec',
+                'exec > /dev/ttyS0 2>&1; '
+                'install -d -m 700 /root/native-host /root/native-host/apk-cache; '
+                'printf "%s\\n" https://dl-cdn.alpinelinux.org/alpine/v3.24/main https://dl-cdn.alpinelinux.org/alpine/v3.24/community > /etc/apk/repositories; '
+                'apk update; apk fetch --recursive --output /root/native-host/apk-cache ' +
+                ' '.join(shlex.quote(p) for p in baseline['native_packages']) + '; '
+                'cp -a /etc/apk/keys /root/native-host/apk-cache/keys; '
+                'cp /etc/apk/repositories /root/native-host/apk-cache/repositories; '
+                'cp /var/cache/apk/APKINDEX.* /root/native-host/apk-cache/; '
+                'apk add --no-network /root/native-host/apk-cache/*.apk; '
+                'apk info -vv > /root/native-host/apk-cache/installed.txt; '
+                'cd /root/native-host/apk-cache; sha256sum *.apk > SHA256SUMS; '
+                'tar -cf /root/native-host/alpine-packages.tar .; '
+                'touch /root/native-host/cloud-ready']]}
+
         config = directory / 'user-data'
         config.write_text('#cloud-config\n' + json.dumps(user_data))
         config.chmod(0o600)
@@ -482,8 +643,7 @@ def main():
         guest = Guest(directory, owner, host.with_suffix('.pub'), ssh_port)
         console = args.output / 'console.log'
         with console.open('wb') as log:
-            # Debian GRUB needs the default console/video device model even
-            # with a hidden display (Debian bug 1111240); the image stays exact.
+            # The signed Limine cloud image boots the owned disk directly.
             owner_pid=os.getpid()
             process = subprocess.Popen(['qemu-system-x86_64', '-no-user-config', '-display', 'none',
                 '-machine', 'q35,accel=kvm', '-cpu', 'host', '-m', '1024' if args.profile=='bounded' else '2048', '-smp', '1' if args.profile=='bounded' else '2',
@@ -495,7 +655,28 @@ def main():
             disposable.process=process
             try:
                 print('Booting the disposable guest and waiting for its bounded cloud setup',flush=True)
-                guest.ready(process, time.monotonic() + 600)
+                guest.ready(process, time.monotonic() + 600, evidence=args.output/'initial-ssh.json')
+                guest.copy(ROOT/'tests/support/native_host_alpine.py', '/root/native-host/alpine-boot.py')
+                guest.command('mountpoint -q /sys/kernel/security || mount -t securityfs securityfs /sys/kernel/security')
+                guest.command('python3 -I -B /root/native-host/alpine-boot.py', timeout=30)
+                initial_boot = guest.command('cat /proc/sys/kernel/random/boot_id', capture_output=True).stdout.strip()
+                guest.command('reboot', timeout=15, check=False)
+                time.sleep(3)
+                guest.ready(process, time.monotonic() + 240)
+                if guest.command('cat /proc/sys/kernel/random/boot_id', capture_output=True).stdout.strip() == initial_boot:
+                    raise ValueError('AppArmor setup did not actually reboot the disposable guest')
+                guest.command('test "$(cat /sys/module/apparmor/parameters/enabled)" = Y && grep -qw apparmor /sys/kernel/security/lsm && rc-service apparmor status')
+                package_size = int(guest.command('stat -c %s /root/native-host/alpine-packages.tar', capture_output=True).stdout)
+                if not 0 < package_size <= 512 << 20:
+                    raise ValueError('public signed APK closure exceeds its finite bound')
+                guest.fetch('/root/native-host/alpine-packages.tar', args.output/'alpine-packages.tar')
+                archive = args.output/'alpine-packages.tar'
+                if archive.stat().st_size != package_size:
+                    raise ValueError('public APK closure copy is incomplete')
+                (args.output/'alpine-packages.json').write_text(json.dumps({'kind':'komizo.alpine-public-package-closure','version':1,
+                    'sha256':hashlib.sha256(archive.read_bytes()).hexdigest(),'size_bytes':package_size,'image':baseline['cloud_image'],
+                    'requested_packages':baseline['native_packages'],'signature_verification':'apk add --no-network with trusted distro keys',
+                    'production_host_packages_changed':False},sort_keys=True)+'\n')
                 setup_started=time.monotonic()
                 print('Guest setup completed; installing the exact compiled native controller',flush=True)
                 guest.copy(binary, '/usr/local/bin/komizo-box')
@@ -518,6 +699,7 @@ def main():
                 guest.command('chmod 400 /root/native-host/recovery/*.py; chmod 500 /root/native-host/recovery')
                 guest.copy(profile,'/root/native-host/profile.json')
                 guest.copy(ROOT / 'tests/support/native_host_acceptance.py', '/root/native-host/acceptance.py')
+                guest.copy(ROOT / 'tests/support/native_host_fixture.py', '/root/native-host/fixture_tasks.py')
                 guest.copy(ROOT / 'tests/support/native_host_runtime.py', '/root/native-host/fixture_runtime.py')
                 guest.copy(ROOT / 'tests/support/native_host_registry.py', '/root/native-host/fixture_registry.py')
                 guest.copy(ROOT / 'tests/support/native_host_secrets.py', '/root/native-host/fixture_secrets.py')
@@ -542,7 +724,7 @@ def main():
                     (args.output/'onboarding.json').write_text(json.dumps(onboarding,sort_keys=True)+'\n')
                 before = guest.command('cat /proc/sys/kernel/random/boot_id', capture_output=True).stdout.strip()
                 print('Rebooting the real guest with the artifact registry offline',flush=True)
-                guest.command('systemctl reboot', timeout=15)
+                guest.command('reboot', timeout=15, check=False)
                 time.sleep(3)
                 guest.ready(process, time.monotonic() + 240)
                 after = guest.command('cat /proc/sys/kernel/random/boot_id', capture_output=True).stdout.strip()
@@ -569,7 +751,7 @@ def main():
                     except (OSError, subprocess.SubprocessError):
                         pass
                     try:
-                        guest.command("journalctl -b -u komizo-controller -u komizo-proxy -u 'kmz-*' -u 'komizo-backup-*' -u 'komizo-prepare-*' -u 'komizo-reconcile-*' -n 500 --no-pager > /root/native-host/journal.log", timeout=20)
+                        guest.command("dmesg | tail -c 65536 > /root/native-host/journal.log", timeout=20)
                         evidence = guest.command('cat /root/native-host/journal.log', timeout=20, capture_output=True).stdout
                         (args.output / 'journal.log').write_bytes(evidence)
                         status=guest.command('/usr/local/bin/komizo-box status',timeout=30,capture_output=True,check=False)

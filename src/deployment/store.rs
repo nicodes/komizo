@@ -517,6 +517,10 @@ impl Store {
         Ok(format!("{application}--{instance}"))
     }
     pub fn lock(&self, application: &str, instance: &str) -> Result<Guard> {
+        self.try_lock(application, instance)?
+            .ok_or_else(|| anyhow!("instance already has an active operation"))
+    }
+    pub fn try_lock(&self, application: &str, instance: &str) -> Result<Option<Guard>> {
         let key = Self::instance_key(application, instance)?;
         let file = OpenOptions::new()
             .read(true)
@@ -531,11 +535,14 @@ impl Store {
                 && file.metadata()?.mode() & 0o077 == 0,
             "unsafe instance lock"
         );
-        ensure!(
-            unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
-            "instance already has an active operation"
-        );
-        Ok(Guard(file))
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                return Ok(None);
+            }
+            return Err(error.into());
+        }
+        Ok(Some(Guard(file)))
     }
     pub fn reserve(
         &self,

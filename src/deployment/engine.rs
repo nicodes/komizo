@@ -10,6 +10,29 @@ use std::{
 pub struct Engine {
     pub deadline: Instant,
 }
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum HealthProbe {
+    Completed,
+    Unavailable125,
+}
+
+fn health_probe_status(code: Option<i32>) -> Result<HealthProbe> {
+    match code {
+        Some(0 | 1) => Ok(HealthProbe::Completed),
+        Some(125) => Ok(HealthProbe::Unavailable125),
+        _ => Err(anyhow!("native health probe could not complete")),
+    }
+}
+pub fn workload_group(value: &Value, group: &super::cgroups::Group) -> Result<()> {
+    super::workload_guard::verify(value, group)
+}
+pub fn workload_limits(
+    value: &Value,
+    group: &super::cgroups::Group,
+    limits: &super::model::Limits,
+) -> Result<()> {
+    super::workload_guard::verify_limits(value, group, limits)
+}
 pub fn normalize_id(value: &str) -> String {
     if value.starts_with("sha256:") {
         value.to_owned()
@@ -39,8 +62,168 @@ pub fn workload_label(label: &str) -> Result<()> {
     Ok(())
 }
 
+fn alpine_release(os: &str) -> Result<()> {
+    let field = |name: &str| -> Result<&str> {
+        let values = os
+            .lines()
+            .filter_map(|line| line.strip_prefix(&format!("{name}=")))
+            .collect::<Vec<_>>();
+        ensure!(values.len() == 1, "ambiguous host release identity");
+        let value = values[0];
+        if let Some(value) = value.strip_prefix('"') {
+            value
+                .strip_suffix('"')
+                .filter(|value| !value.contains('"'))
+                .ok_or_else(|| anyhow!("invalid quoted host release identity"))
+        } else {
+            ensure!(!value.contains('"'), "invalid quoted host release identity");
+            Ok(value)
+        }
+    };
+    let version = field("VERSION_ID")?.split('.').collect::<Vec<_>>();
+    ensure!(
+        field("ID")? == "alpine"
+            && matches!(version.len(), 2 | 3)
+            && version[0] == "3"
+            && version[1] == "24"
+            && version
+                .iter()
+                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())),
+        "host requires the supported Alpine 3.24 baseline"
+    );
+    Ok(())
+}
+
+fn cleanup_identity(actual: &Value, expected: &Value) -> Result<String> {
+    let id = expected["Id"]
+        .as_str()
+        .filter(|id| hex(id, 64))
+        .ok_or_else(|| anyhow!("owned cleanup requires an exact recorded container ID"))?;
+    let labels = &expected["Config"]["Labels"];
+    ensure!(
+        expected["Config"].is_object()
+            && expected["HostConfig"].is_object()
+            && expected["Mounts"].is_array()
+            && expected["Name"].is_string()
+            && labels["io.komizo.application"].as_str().is_some_and(name)
+            && labels["io.komizo.instance"].as_str().is_some_and(name)
+            && labels["io.komizo.service"].as_str().is_some_and(name)
+            && labels["io.komizo.release"].as_str().is_some_and(digest)
+            && labels["io.komizo.ownership"]
+                .as_str()
+                .is_some_and(|value| hex(value, 32))
+            && expected["Image"]
+                .as_str()
+                .is_some_and(|value| digest(&normalize_id(value)))
+            && expected["AppArmorProfile"] == super::bootstrap::WORKLOAD_PROFILE
+            && actual["Id"] == id
+            && [
+                "Config",
+                "HostConfig",
+                "Mounts",
+                "Image",
+                "Name",
+                "AppArmorProfile",
+                "OCIRuntime"
+            ]
+            .iter()
+            .all(|key| actual[key] == expected[key]),
+        "owned cleanup refused changed or incomplete immutable container identity"
+    );
+    Ok(id.to_owned())
+}
+
 impl Engine {
-    fn capture(&self, arguments: &[&str]) -> Result<crate::process::Captured> {
+    /// Cleanup-only: never creates, starts or extends a workload's lifetime.
+    /// A separately bounded caller may use this after its execution budget.
+    pub fn kill_owned(&self, expected: &Value) -> Result<()> {
+        let id = cleanup_identity(expected, expected)?;
+        let inspect = || -> Result<Value> {
+            let value = self.json(&["container", "inspect", &id])?;
+            let entries = value
+                .as_array()
+                .filter(|entries| entries.len() == 1)
+                .ok_or_else(|| anyhow!("owned cleanup inspection is ambiguous"))?;
+            cleanup_identity(&entries[0], expected)?;
+            Ok(entries[0].clone())
+        };
+        let terminal = |value: &Value| -> bool {
+            value["State"]["Running"] == false
+                && value["State"]["Paused"] == false
+                && value["State"]["Pid"] == 0
+                && value["State"]["Status"] == "exited"
+        };
+        let actual = inspect()?;
+        if terminal(&actual) {
+            return Ok(());
+        }
+        ensure!(
+            actual["State"]["Running"] == true || actual["State"]["Paused"] == true,
+            "owned cleanup refuses an unknown native execution state"
+        );
+        let killed = self
+            .capture(&["kill", "--signal", "KILL", &id])?
+            .status
+            .success();
+        loop {
+            let current = inspect()?;
+            if terminal(&current) {
+                return Ok(());
+            }
+            ensure!(
+                killed && Instant::now() < self.deadline,
+                "owned container termination remains unproven"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    /// Finite jobs may exit between inspection and a captured proc read. Only
+    /// that typed terminal race permits one same-CID immutable reinspection.
+    /// Services use the strict free function during activation.
+    pub fn workload_group(
+        &self,
+        value: &Value,
+        group: &super::cgroups::Group,
+    ) -> Result<Option<Value>> {
+        self.finite_workload(value, group, None)
+    }
+    pub fn workload_limits(
+        &self,
+        value: &Value,
+        group: &super::cgroups::Group,
+        limits: &super::model::Limits,
+    ) -> Result<Option<Value>> {
+        self.finite_workload(value, group, Some(limits))
+    }
+    fn finite_workload(
+        &self,
+        value: &Value,
+        group: &super::cgroups::Group,
+        limits: Option<&super::model::Limits>,
+    ) -> Result<Option<Value>> {
+        let proof = if let Some(limits) = limits {
+            workload_limits(value, group, limits)
+        } else {
+            workload_group(value, group)
+        };
+        match proof {
+            Ok(()) => Ok(None),
+            Err(error) if super::workload_guard::process_ended(&error) => {
+                let id = value["Id"]
+                    .as_str()
+                    .filter(|id| hex(id, 64))
+                    .ok_or_else(|| anyhow!("finite workload lacks an exact inspection ID"))?;
+                let terminal = self.inspect("container", id)?;
+                super::workload_guard::verify_terminal(&terminal, value, group)?;
+                if let Some(limits) = limits {
+                    super::workload_guard::configuration_limits(&terminal, limits)?;
+                }
+                Ok(Some(terminal))
+            }
+            Err(error) => Err(error),
+        }
+    }
+    fn command(&self, arguments: &[&str]) -> Result<Command> {
         let remaining = self.deadline.saturating_duration_since(Instant::now());
         ensure!(!remaining.is_zero(), "native engine deadline expired");
         // The independent watchdog also survives controller death. Otherwise
@@ -58,9 +241,123 @@ impl Engine {
             .arg(format!("{:.3}s", remaining.as_secs_f64().max(0.001)))
             .arg("/usr/bin/podman")
             .arg("--remote=false")
+            .arg("--cgroup-manager=cgroupfs")
             .args(arguments);
+        Ok(command)
+    }
+    fn capture(&self, arguments: &[&str]) -> Result<crate::process::Captured> {
+        let mut command = self.command(arguments)?;
         crate::process::capture(&mut command, None, 4 << 20, self.deadline, || false)
             .map_err(|_| anyhow!("native engine process failed or exceeded its deadline"))
+    }
+    /// Bind this owned child and every forked monitor before either timeout or
+    /// Podman executes. No existing process is selected or moved by PID.
+    fn capture_in_group(
+        &self,
+        arguments: &[&str],
+        group: &super::cgroups::Group,
+    ) -> Result<crate::process::Captured> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::{fd::AsRawFd, unix::process::CommandExt};
+            let entry = super::cgroups::process_entry(group)?;
+            let mut command = self.command(arguments)?;
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::write(entry.as_raw_fd(), b"0".as_ptr().cast(), 1) != 1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            crate::process::capture(&mut command, None, 4 << 20, self.deadline, || false)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (arguments, group);
+            Err(anyhow!(
+                "native process placement requires the supported Alpine host"
+            ))
+        }
+    }
+    pub fn start_in_group(&self, id: &str, monitor: &super::cgroups::Group) -> Result<()> {
+        ensure!(
+            hex(id, 64),
+            "native start requires an exact owned container ID"
+        );
+        let output = self.capture_in_group(&["start", id], monitor)?;
+        ensure!(
+            output.status.success(),
+            "native engine operation refused: {}",
+            String::from_utf8_lossy(&output.stderr)
+                .chars()
+                .take(2048)
+                .collect::<String>()
+        );
+        Ok(())
+    }
+    pub fn logs(&self, id: &str, maximum: usize) -> Result<(Vec<u8>, Vec<u8>)> {
+        use std::{cell::RefCell, io::Write, rc::Rc};
+        ensure!(
+            hex(id, 64) && maximum > 0 && maximum <= 256 << 10,
+            "native logs require an exact owned container ID and bounded tail"
+        );
+        // Podman sends container stdout and stderr on separate descriptors.
+        // Keep both tails separate until each has passed secret redaction.
+        struct Tail {
+            bytes: Rc<RefCell<Vec<u8>>>,
+            maximum: usize,
+        }
+        impl Write for Tail {
+            fn write(&mut self, input: &[u8]) -> std::io::Result<usize> {
+                let mut bytes = self.bytes.borrow_mut();
+                if input.len() >= self.maximum {
+                    bytes.clear();
+                    bytes.extend_from_slice(&input[input.len() - self.maximum..]);
+                } else {
+                    let remove = (bytes.len() + input.len()).saturating_sub(self.maximum);
+                    bytes.drain(..remove);
+                    bytes.extend_from_slice(input);
+                }
+                Ok(input.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let output = Rc::new(RefCell::new(Vec::new()));
+        let errors = Rc::new(RefCell::new(Vec::new()));
+        let mut stdout = Tail {
+            bytes: output.clone(),
+            maximum,
+        };
+        let mut stderr = Tail {
+            bytes: errors.clone(),
+            maximum,
+        };
+        let mut command = self.command(&["logs", "--tail", "200", id])?;
+        let result = crate::process::stream(
+            &mut command,
+            None,
+            maximum,
+            self.deadline,
+            || false,
+            &mut stdout,
+            &mut stderr,
+        )?;
+        ensure!(
+            result.status.success(),
+            "bounded native log observation failed"
+        );
+        drop(stdout);
+        drop(stderr);
+        let output = Rc::try_unwrap(output)
+            .map_err(|_| anyhow!("log observation retained an unexpected writer"))?
+            .into_inner();
+        let errors = Rc::try_unwrap(errors)
+            .map_err(|_| anyhow!("log observation retained an unexpected writer"))?
+            .into_inner();
+        Ok((output, errors))
     }
     pub fn run(&self, arguments: &[&str]) -> Result<Vec<u8>> {
         let output = self.capture(arguments)?;
@@ -86,6 +383,30 @@ impl Engine {
         );
         Ok(())
     }
+    /// Charge the client, timeout and their descendants to this exact owned
+    /// probe leaf before any executable or health effect can run.
+    pub fn health_in_group(&self, id: &str, group: &super::cgroups::Group) -> Result<()> {
+        ensure!(
+            self.health_probe_in_group(id, group)? == HealthProbe::Completed,
+            "native health probe could not complete"
+        );
+        Ok(())
+    }
+    /// A completed Podman internal error is an unavailable observation, not a
+    /// health result. Maintenance must prove the live workload again before
+    /// leaving it alone; activation and owner probes retain the strict wrapper.
+    pub(super) fn health_probe_in_group(
+        &self,
+        id: &str,
+        group: &super::cgroups::Group,
+    ) -> Result<HealthProbe> {
+        ensure!(
+            hex(id, 64),
+            "native health probe requires an exact owned container ID"
+        );
+        let output = self.capture_in_group(&["healthcheck", "run", id], group)?;
+        health_probe_status(output.status.code())
+    }
     pub fn json(&self, arguments: &[&str]) -> Result<Value> {
         crate::strict::value(&self.run(arguments)?, 4 << 20)
     }
@@ -104,49 +425,40 @@ impl Engine {
     pub fn preflight(&self) -> Result<()> {
         ensure!(
             unsafe { libc::geteuid() } == 0
-                && Path::new("/run/systemd/system").is_dir()
+                && Path::new("/run/openrc").is_dir()
+                && Path::new("/sbin/supervise-daemon").is_file()
                 && Path::new("/sys/fs/cgroup/cgroup.controllers").is_file(),
-            "host requires protected root execution, systemd and unified cgroup v2"
+            "host requires protected root execution, OpenRC and unified cgroup v2"
         );
-        let os = std::fs::read_to_string("/etc/os-release")?;
-        let field = |name: &str| {
-            os.lines()
-                .find_map(|line| line.strip_prefix(&format!("{name}=")))
-                .map(|v| v.trim_matches('"'))
-                .unwrap_or("")
-        };
-        ensure!(
-            field("ID") == "debian" && field("VERSION_ID") == "13",
-            "host requires the supported Debian 13 baseline"
-        );
+        alpine_release(&std::fs::read_to_string("/etc/os-release")?)?;
+        for (path, maximum) in [
+            ("/usr/bin/podman", 128 << 20),
+            ("/usr/bin/crun", 32 << 20),
+            ("/usr/bin/conmon", 32 << 20),
+        ] {
+            super::bootstrap::public_root_file(Path::new(path), maximum, 0o755)?;
+        }
         let info = self.json(&["info", "--format=json"])?;
         let host = &info["host"];
         ensure!(
             host["cgroupVersion"] == "v2"
-                && host["cgroupManager"] == "systemd"
+                && host["cgroupManager"] == "cgroupfs"
                 && host["security"]["rootless"] == false
-                && host["security"]["apparmorEnabled"] == true,
+                && host["security"]["apparmorEnabled"] == true
+                && host["ociRuntime"]["name"] == "crun"
+                && host["ociRuntime"]["path"] == "/usr/bin/crun"
+                && host["conmon"]["path"] == "/usr/bin/conmon"
+                && host["networkBackend"] == "netavark",
             "native engine has an unsupported authority or cgroup configuration"
         );
         let controllers = host["cgroupControllers"]
             .as_array()
             .ok_or_else(|| anyhow!("native cgroup controller evidence is unavailable"))?;
         ensure!(
-            ["memory", "cpu", "pids"]
+            ["memory", "cpu", "pids", "io"]
                 .iter()
                 .all(|c| controllers.iter().any(|v| v == c)),
-            "host lacks required memory, CPU or PID controllers"
-        );
-        let version = self.run(&["version", "--format={{.Client.Version}}"])?;
-        let parts = std::str::from_utf8(&version)?
-            .trim()
-            .split('.')
-            .take(3)
-            .map(str::parse::<u32>)
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        ensure!(
-            parts.len() == 3 && (parts[0], parts[1], parts[2]) >= (5, 4, 2),
-            "native engine requires version 5.4.2 or newer"
+            "host lacks required memory, CPU, PID or I/O controllers"
         );
         Ok(())
     }
@@ -161,7 +473,7 @@ impl Engine {
         );
         Ok(format!("linux/{arch}"))
     }
-    pub fn inspect(&self, kind: &str, name: &str) -> Result<Value> {
+    fn inspection(&self, kind: &str, name: &str) -> Result<Value> {
         ensure!(
             ["container", "network", "volume", "image", "secret"].contains(&kind),
             "invalid inspection kind"
@@ -174,25 +486,14 @@ impl Engine {
             array.len() == 1,
             "native engine inspection did not select one object"
         );
-        if kind == "container" {
-            workload_profile(&array[0])?;
-            if array[0]["State"]["Running"] == true {
-                let pid = array[0]["State"]["Pid"]
-                    .as_u64()
-                    .filter(|pid| *pid > 0 && *pid <= i32::MAX as u64)
-                    .ok_or_else(|| anyhow!("live workload has no native PID"))?;
-                let base = std::path::PathBuf::from(format!("/proc/{pid}/attr"));
-                let named = base.join("apparmor/current");
-                let path = if named.try_exists()? {
-                    named
-                } else {
-                    base.join("current")
-                };
-                let label = std::fs::read_to_string(path)?;
-                workload_label(label.trim())?;
-            }
-        }
         Ok(array[0].clone())
+    }
+    pub fn inspect(&self, kind: &str, name: &str) -> Result<Value> {
+        let value = self.inspection(kind, name)?;
+        if kind == "container" {
+            workload_profile(&value)?;
+        }
+        Ok(value)
     }
     pub fn image(&self, reference: &str, config_digest: &str) -> Result<()> {
         let value = self.inspect("image", reference)?;
@@ -211,7 +512,7 @@ impl Engine {
         ])?;
         self.image(config_digest, config_digest)
     }
-    pub fn owned_container(
+    pub fn container_metadata(
         &self,
         record: &ContainerRecord,
         application: &str,
@@ -221,11 +522,16 @@ impl Engine {
         if !self.exists("container", &record.name)? {
             return Ok(None);
         }
-        let value = self.inspect("container", &record.name)?;
+        let value = self.inspection("container", &record.name)?;
+        workload_profile(&value)?;
         let id = value["Id"].as_str().unwrap_or("");
         let labels = &value["Config"]["Labels"];
         ensure!(
             hex(id, 64)
+                && id == record.id
+                && value["Name"]
+                    .as_str()
+                    .is_some_and(|actual| actual.strip_prefix('/').unwrap_or(actual) == record.name)
                 && hex(&record.ownership, 32)
                 && labels["io.komizo.application"] == application
                 && labels["io.komizo.instance"] == instance
@@ -235,12 +541,8 @@ impl Engine {
                 && normalize_id(value["Image"].as_str().unwrap_or("")) == record.config_digest,
             "container is outside its recorded immutable ownership"
         );
-        // A supervised restart receives a new ID. It must retain the protected
-        // unit's creation token, image and complete retained-volume bindings.
-        ensure!(
-            !record.id.is_empty(),
-            "unrecorded preexisting container cannot be adopted"
-        );
+        // The creation intent persists this CID before start. Supervisor
+        // restarts reuse it; explicit recovery must persist its own candidate.
         let mounts = value["Mounts"]
             .as_array()
             .ok_or_else(|| anyhow!("container mount evidence missing"))?;
@@ -258,7 +560,39 @@ impl Engine {
             observed == expected,
             "container retained-volume bindings changed"
         );
+        super::workload_guard::configuration(
+            &value,
+            &super::cgroups::workload_group(
+                application,
+                instance,
+                super::cgroups::WorkloadKind::Service,
+                service,
+                &record.ownership,
+            )?,
+        )?;
         Ok(Some(value))
+    }
+    pub fn owned_container(
+        &self,
+        record: &ContainerRecord,
+        application: &str,
+        instance: &str,
+        service: &str,
+    ) -> Result<Option<Value>> {
+        let value = self.container_metadata(record, application, instance, service)?;
+        if let Some(value) = &value {
+            workload_group(
+                value,
+                &super::cgroups::workload_group(
+                    application,
+                    instance,
+                    super::cgroups::WorkloadKind::Service,
+                    service,
+                    &record.ownership,
+                )?,
+            )?;
+        }
+        Ok(value)
     }
     pub fn owned_object(&self, kind: &str, record: &ObjectRecord) -> Result<Value> {
         ensure!(
@@ -415,4 +749,91 @@ pub fn service_mounts(
         "native retained mount targets or access differ from the installed descriptor"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::*;
+    #[test]
+    fn only_a_completed_internal_probe_error_is_an_unavailable_observation() {
+        assert_eq!(
+            health_probe_status(Some(0)).unwrap(),
+            HealthProbe::Completed
+        );
+        assert_eq!(
+            health_probe_status(Some(1)).unwrap(),
+            HealthProbe::Completed
+        );
+        assert_eq!(
+            health_probe_status(Some(125)).unwrap(),
+            HealthProbe::Unavailable125
+        );
+        for status in [None, Some(2), Some(124), Some(126), Some(127), Some(137)] {
+            assert!(health_probe_status(status).is_err());
+        }
+    }
+    #[test]
+    fn scoped_start_refuses_names_and_delegated_branches_before_execution() {
+        let engine = Engine {
+            deadline: Instant::now() + Duration::from_secs(1),
+        };
+        let group = super::super::cgroups::root_group();
+        for id in ["container-name", "", "../foreign", &"a".repeat(63)] {
+            let error = engine.start_in_group(id, &group).unwrap_err();
+            assert!(error.to_string().contains("exact owned container ID"));
+        }
+        let error = engine.start_in_group(&"a".repeat(64), &group).unwrap_err();
+        #[cfg(target_os = "linux")]
+        assert!(
+            error
+                .to_string()
+                .contains("process cannot enter a delegated resource branch")
+        );
+        #[cfg(not(target_os = "linux"))]
+        assert!(error.to_string().contains("supported Alpine host"));
+    }
+    #[test]
+    fn alpine_baseline_accepts_patch_updates_but_not_another_distro_or_minor() {
+        for version in ["3.24", "3.24.0", "3.24.3", "3.24.99"] {
+            assert!(alpine_release(&format!("ID=alpine\nVERSION_ID=\"{version}\"\n")).is_ok());
+        }
+        for os in [
+            "ID=debian\nVERSION_ID=13\n",
+            "ID=alpine\nVERSION_ID=3.23.9\n",
+            "ID=alpine\nVERSION_ID=3.25.0\n",
+            "ID=alpine\nVERSION_ID=3.24.invalid\n",
+            "ID=alpine\nVERSION_ID=3.24.3.extra\n",
+            "ID=\"alpine\nVERSION_ID=3.24.3\n",
+            "ID=alpine\nID=debian\nVERSION_ID=3.24.3\n",
+        ] {
+            assert!(alpine_release(os).is_err(), "{os:?}");
+        }
+    }
+    #[test]
+    fn cleanup_can_only_select_the_recorded_container_and_unchanged_immutable_bytes() {
+        use serde_json::json;
+        let expected = json!({"Id":"b".repeat(64),"Image":"sha256:".to_owned()+&"c".repeat(64),"Name":"kmz-fixed-job-fixed","AppArmorProfile":super::super::bootstrap::WORKLOAD_PROFILE,"OCIRuntime":"crun","HostConfig":{"CgroupParent":"/komizo/production/fixed"},"Mounts":[],"Config":{"Labels":{"io.komizo.application":"alpha","io.komizo.instance":"production","io.komizo.service":"migrate","io.komizo.release":"sha256:".to_owned()+&"d".repeat(64),"io.komizo.ownership":"a".repeat(32)}}});
+        assert_eq!(
+            cleanup_identity(&expected, &expected).unwrap(),
+            "b".repeat(64)
+        );
+        for key in [
+            "Id",
+            "Image",
+            "Name",
+            "AppArmorProfile",
+            "OCIRuntime",
+            "HostConfig",
+            "Mounts",
+            "Config",
+        ] {
+            let mut foreign = expected.clone();
+            foreign[key] = json!("foreign-private-sentinel");
+            let error = cleanup_identity(&foreign, &expected).unwrap_err();
+            assert!(!error.to_string().contains("foreign-private-sentinel"));
+        }
+        let mut incomplete = expected.clone();
+        incomplete["Config"] = json!({});
+        assert!(cleanup_identity(&incomplete, &incomplete).is_err());
+    }
 }

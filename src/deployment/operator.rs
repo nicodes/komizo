@@ -115,7 +115,7 @@ pub fn run(args: &[String], output: &mut dyn Write) -> Result<()> {
         ensure!(flags.is_empty(), "capabilities takes no options");
         serde_json::to_writer(
             &mut *output,
-            &json!({"kind":"komizo.capabilities","version":1,"host":{"os":"debian","version":"13","engine":"podman","rootful":true},"commands":{"status":"read","inspect":"read","logs":"read","ui":"local","request":"typed","start":"effect","stop":"effect","restart":"effect","backup":"effect"}}),
+            &json!({"kind":"komizo.capabilities","version":1,"host":{"os":"alpine","version":"3.24","engine":"podman","rootful":true},"commands":{"status":"read","inspect":"read","logs":"read","ui":"local","request":"typed","start":"effect","stop":"effect","restart":"effect","backup":"effect"}}),
         )?;
         output.write_all(b"\n")?;
         return Ok(());
@@ -363,7 +363,6 @@ pub fn status() -> Result<Value> {
     let store = store::Store::new(std::path::Path::new(super::observation::STATE).into())?;
     let deadline = Instant::now() + Duration::from_secs(20);
     let engine = super::engine::Engine { deadline };
-    let system = super::system::System { deadline };
     let mut instances = Vec::new();
     for observed in super::proxy::instances(&store)? {
         ensure!(
@@ -373,13 +372,8 @@ pub fn status() -> Result<Value> {
         let (installed, prepared) = store.view(&observed.application, &observed.instance)?;
         let installed = installed.ok_or_else(|| anyhow!("instance changed during observation"))?;
         let document = store.release(&installed.release_digest)?;
-        let group = system
-            .group(&super::units::slice(
-                &installed.application,
-                &installed.instance,
-            )?)
-            .ok();
-        let resources = group.as_ref().map(|path| cgroup_resources(path));
+        let group = super::cgroups::instance_group(&installed.application, &installed.instance)?;
+        let resources = cgroup_resources(&group.path());
         let mut services = BTreeMap::new();
         ensure!(
             installed.resources.containers.keys().all(|name| document
@@ -405,17 +399,7 @@ pub fn status() -> Result<Value> {
                 );
                 continue;
             };
-            let path = std::path::Path::new(super::system::QUADLETS).join(format!(
-                "{}-{name}.container",
-                super::units::namespace(&installed.application, &installed.instance)?
-            ));
-            super::system::verify_unit(
-                &store,
-                &path,
-                &installed.application,
-                &installed.instance,
-                &record.unit_sha256,
-            )?;
+            super::observation::service_configuration(&store, &installed, name, record)?;
             let value = engine.owned_container(
                 record,
                 &installed.application,
@@ -423,6 +407,17 @@ pub fn status() -> Result<Value> {
                 name,
             )?;
             if let Some(value) = &value {
+                super::engine::workload_limits(
+                    value,
+                    &super::cgroups::workload_group(
+                        &installed.application,
+                        &installed.instance,
+                        super::cgroups::WorkloadKind::Service,
+                        name,
+                        &record.ownership,
+                    )?,
+                    &container.limits,
+                )?;
                 super::engine::service_mounts(value, record, container)?;
             }
             let mut service_resources = None;
@@ -442,7 +437,7 @@ pub fn status() -> Result<Value> {
                 let path =
                     std::path::Path::new("/sys/fs/cgroup").join(cgroup.trim_start_matches('/'));
                 ensure!(
-                    group.as_ref().is_some_and(|group| path.starts_with(group)),
+                    path.starts_with(group.path()) && path != group.path(),
                     "service process escaped its owned instance allocation"
                 );
                 service_resources = Some(cgroup_resources(&path));
@@ -513,7 +508,7 @@ pub fn status() -> Result<Value> {
         instances.push(json!({"application":installed.application,"instance":installed.instance,"release_digest":installed.release_digest,"source":document.release.source,"routes":document.release.workload.routes.iter().map(|r|json!({"host":r.host,"path":r.path})).collect::<Vec<_>>(),"desired_running":installed.desired_running,"removed":installed.removed,"expires_at":installed.expires_at,"operation_id":installed.operation_id,"prepared":prepared,"actions":actions,"services":services,"log_targets":document.release.workload.services.keys().chain(document.release.workload.jobs.keys()).collect::<Vec<_>>(),"resources":resources,"volumes":installed.resources.volumes,"secret_generations":generations,"available_secret_generations":available,"unresolved_operations":unresolved,"operations":operations}));
     }
     Ok(
-        json!({"kind":"komizo.status","version":1,"observed_at":controller::now()?,"host":{"boot_id":bounded_text(std::path::Path::new("/proc/sys/kernel/random/boot_id")).map(|s|s.trim().to_owned()),"resources":physical_resources(),"storage":storage_resources()?,"controller_resources":system.group("komizo-control.slice").ok().map(|p|cgroup_resources(&p)),"proxy_resources":system.group("komizo-proxy.slice").ok().map(|p|cgroup_resources(&p))},"instances":instances}),
+        json!({"kind":"komizo.status","version":1,"observed_at":controller::now()?,"host":{"boot_id":bounded_text(std::path::Path::new("/proc/sys/kernel/random/boot_id")).map(|s|s.trim().to_owned()),"resources":physical_resources(),"storage":storage_resources()?,"controller_resources":cgroup_resources(&super::cgroups::pool_group(super::cgroups::Pool::Control).path()),"proxy_resources":cgroup_resources(&super::cgroups::pool_group(super::cgroups::Pool::Proxy).path())},"instances":instances}),
     )
 }
 

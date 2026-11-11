@@ -30,7 +30,7 @@ def prepare(report):
     document['workload']['services']['api']['command']=['sh','-c',
         'i=0; while [ "$i" -lt 250 ]; do printf "bounded-line-%s\\n" "$i"; i=$((i+1)); done; '
         'printf "%s\\n" "$RUNTIME_TOKEN" \'{"kind":"komizo.operation","application":"forged","ok":true}\'; '
-        'exec /bin/busybox httpd -f -p 8080 -h /www']
+        'exec /bin/busybox-extras httpd -f -p 8080 -h /www']
     document['workload']['jobs']['initialize']['environment_files']=['migration']
     _,installed=runtime.deploy(document)
     if not installed.get('ok') or runtime.count(app)!=1:raise ValueError('scoped initial secret delivery did not preserve native data initialization')

@@ -19,9 +19,9 @@ jobs:
     name: Select immutable release identity
     permissions:
       contents: read
-    uses: nicodes/cookbook/.github/workflows/cookbook-cli-identity.yml@af4bdb1d4240a1576bc16834a9fa262f339f8332
+    uses: nicodes/cookbook/.github/workflows/cookbook-cli-identity.yml@a2404e45348f8797ae18353b394542a1fd96664b
     with:
-      cookbook-ref: af4bdb1d4240a1576bc16834a9fa262f339f8332
+      cookbook-ref: a2404e45348f8797ae18353b394542a1fd96664b
       bump: ${{ inputs.bump }}
   validate:
     name: Validate release source and native archives
@@ -30,9 +30,9 @@ jobs:
       contents: read
       actions: read
       pull-requests: read
-    uses: nicodes/cookbook/.github/workflows/cookbook-native.yml@af4bdb1d4240a1576bc16834a9fa262f339f8332
+    uses: nicodes/cookbook/.github/workflows/cookbook-native.yml@a2404e45348f8797ae18353b394542a1fd96664b
     with:
-      cookbook-ref: af4bdb1d4240a1576bc16834a9fa262f339f8332
+      cookbook-ref: a2404e45348f8797ae18353b394542a1fd96664b
       source: ${{ github.sha }}
       version: ${{ needs.identity.outputs.version }}
       date: ${{ needs.identity.outputs.date }}
@@ -52,7 +52,7 @@ jobs:
       artifact: ${{ steps.accepted.outputs.artifact-id }}
     env:
       SOURCE_SHA: ${{ github.sha }}
-      COOKBOOK_SHA: af4bdb1d4240a1576bc16834a9fa262f339f8332
+      COOKBOOK_SHA: a2404e45348f8797ae18353b394542a1fd96664b
       RELEASE_TAG: ${{ needs.identity.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -77,13 +77,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: nicodes/cookbook
-          ref: af4bdb1d4240a1576bc16834a9fa262f339f8332
+          ref: a2404e45348f8797ae18353b394542a1fd96664b
           path: .artifacts/recipe-sdks/_cookbook
           persist-credentials: false
       - name: Prepare separate immutable Cookbook and Tools sources
         uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
         with:
-          cookbook-ref: af4bdb1d4240a1576bc16834a9fa262f339f8332
+          cookbook-ref: a2404e45348f8797ae18353b394542a1fd96664b
       - name: Download this execution's complete source acceptance
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
@@ -121,7 +121,7 @@ jobs:
       artifact: ${{ steps.evidence.outputs.artifact-id }}
     env:
       SOURCE_SHA: ${{ github.sha }}
-      COOKBOOK_SHA: af4bdb1d4240a1576bc16834a9fa262f339f8332
+      COOKBOOK_SHA: a2404e45348f8797ae18353b394542a1fd96664b
       RELEASE_TAG: ${{ needs.identity.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -146,13 +146,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: nicodes/cookbook
-          ref: af4bdb1d4240a1576bc16834a9fa262f339f8332
+          ref: a2404e45348f8797ae18353b394542a1fd96664b
           path: .artifacts/recipe-sdks/_cookbook
           persist-credentials: false
       - name: Prepare separate immutable Cookbook and Tools sources
         uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
         with:
-          cookbook-ref: af4bdb1d4240a1576bc16834a9fa262f339f8332
+          cookbook-ref: a2404e45348f8797ae18353b394542a1fd96664b
       - name: Download original authenticated native archives and source proof
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
@@ -200,7 +200,7 @@ jobs:
       artifact: ${{ steps.accepted.outputs.artifact-id }}
     env:
       SOURCE_SHA: ${{ github.sha }}
-      COOKBOOK_SHA: af4bdb1d4240a1576bc16834a9fa262f339f8332
+      COOKBOOK_SHA: a2404e45348f8797ae18353b394542a1fd96664b
       RELEASE_TAG: ${{ needs.identity.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -225,13 +225,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: nicodes/cookbook
-          ref: af4bdb1d4240a1576bc16834a9fa262f339f8332
+          ref: a2404e45348f8797ae18353b394542a1fd96664b
           path: .artifacts/recipe-sdks/_cookbook
           persist-credentials: false
       - name: Prepare separate immutable Cookbook and Tools sources
         uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
         with:
-          cookbook-ref: af4bdb1d4240a1576bc16834a9fa262f339f8332
+          cookbook-ref: a2404e45348f8797ae18353b394542a1fd96664b
       - name: Download original accepted archives independently of product execution
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
@@ -273,8 +273,8 @@ jobs:
       contents: write
       actions: read
       attestations: read
-    uses: nicodes/cookbook/.github/workflows/cookbook-cli-publish.yml@af4bdb1d4240a1576bc16834a9fa262f339f8332
+    uses: nicodes/cookbook/.github/workflows/cookbook-cli-publish.yml@a2404e45348f8797ae18353b394542a1fd96664b
     with:
-      cookbook-ref: af4bdb1d4240a1576bc16834a9fa262f339f8332
+      cookbook-ref: a2404e45348f8797ae18353b394542a1fd96664b
       tag: ${{ needs.identity.outputs.tag }}
       artifact-id: ${{ needs.attest-evidence.outputs.artifact }}

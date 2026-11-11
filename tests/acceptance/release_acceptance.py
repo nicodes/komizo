@@ -16,7 +16,7 @@ from native_release import inventory, read as payload_read, SOURCE, TAG, PAYLOAD
 
 REQUIRED_STEPS={
     'apparmor_override_refused','apparmor_root_helper_default','apparmor_signal_delivery','apparmor_stacked_profile_enforced','apparmor_foreign_profile_signal_refused','apparmor_host_signal_refused',
-    'supported_host','root_peer','forged_owner_peer','proxy_uid','proxy_mount_write_refusal',
+    'supported_host','root_peer','forged_owner_peer','proxy_uid','proxy_asset_write_refusal',
     'proxy_process_metadata_isolation','secret_isolation','kernel_limits','unsafe_filesystem','idempotent_install',
     'managed_bootstrap_upgrade','foreign_bootstrap_bytes_refused','typed_dns_helper_refusal','native_proxy_source_receipt','unprivileged_proxy_digest_guard',
     'static_archive','service_job_dag','owner_empty_data_enrollment','nonempty_data_initialization_refused','unenrolled_production_refused',
@@ -85,7 +85,7 @@ def validate_measurements(performance,onboarding,identities,budget):
     if performance.get('accepted') is not True or performance.get('budget')!=budget:raise ValueError('reviewed fixed performance budget differs')
     evaluate(performance['metrics'],budget)
     for row in performance['metrics']['control_processes']:
-        expected={'controller':identities['host_sha256'],'proxy':identities['proxy_sha256']}.get(row['role'])
+        expected={'controller':identities['host_sha256'],'dns-runner':identities['host_sha256'],'expiry':identities['host_sha256'],'proxy':identities['proxy_sha256']}.get(row['role'])
         if expected is not None and row['executable_sha256']!=expected:raise ValueError('running native executable differs from accepted standalone bytes')
     if (onboarding.get('accepted') is not True or onboarding.get('mode')!='deterministic_public_cli' or onboarding.get('human_interventions')!=0
             or onboarding.get('provider_credentials_in_task') is not False or onboarding.get('source_checkout_in_task') is not False

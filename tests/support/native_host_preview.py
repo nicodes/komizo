@@ -8,7 +8,7 @@ import secrets
 import time
 import urllib.request
 
-from acceptance import ROOT, BINARY, run, write, show
+from acceptance import ROOT, BINARY, run, write, service_active, service_pid
 import fixture_postgres as postgres
 import fixture_registry as registry
 import fixture_runtime as runtime
@@ -30,11 +30,11 @@ def prepare(report):
     # Owner-controlled orphan refusal/repair below must not race the independent
     # periodic expiry service for the same nonblocking instance lock. Exercise
     # that shipped scheduler separately on the final fresh preview.
-    if show('komizo-expire.timer','ActiveState')!='active':
-        raise ValueError('installed preview expiry timer is not active')
-    run(['systemctl','stop','komizo-expire.timer','komizo-expire.service'])
-    if any(show(unit,'ActiveState') not in {'inactive','failed'} for unit in ['komizo-expire.timer','komizo-expire.service']):
-        raise ValueError('scheduled expiry did not quiesce before the owner-controlled preview fixture')
+    if not service_active('komizo-expiry'):
+        raise ValueError('installed independent expiry loop is not supervised')
+    run(['rc-service','komizo-expiry','stop'])
+    if service_active('komizo-expiry'):
+        raise ValueError('expiry loop did not quiesce before owner-controlled preview proof')
     instance='pr-7';path=Path('/etc/komizo/apps/pgbox.json');policy=json.loads(path.read_text())
     policy['previews']={'environment':'preview','hostname_suffix':'preview.localhost','max_instances':1,'max_ttl_seconds':120,
         'limits':runtime.limits(192,500,128),'secrets':{'postgres-owner':{'path':'/var/lib/komizo/preview-secrets/pgbox/{instance}/postgres-owner.env',
@@ -189,19 +189,20 @@ def expire(report):
     if not repaired.get('ok') or repaired.get('phase')!='ready' or postgres.query('SELECT count(*) FROM evidence',preview['instance'])!=b'1':
         raise ValueError('scoped failed-preview removal did not release its data and reconciliation fences: '+json.dumps(repaired))
     expires=installed(preview['instance'])['expires_at']
-    run(['systemctl','start','komizo-expire.timer'])
-    if show('komizo-expire.timer','ActiveState')!='active':
-        raise ValueError('shipped preview expiry timer did not resume')
+    run(['rc-service','komizo-expiry','start'])
+    if not service_active('komizo-expiry'):
+        raise ValueError('shipped independent expiry loop did not resume')
+    expiry_pid=service_pid('komizo-expiry')
     deadline=time.monotonic()+125
-    while not (installed(preview['instance']).get('removed') and show('komizo-expire.service','ActiveState')=='inactive'):
+    while not (installed(preview['instance']).get('removed') and service_active('komizo-expiry')):
         if time.monotonic()>=deadline:raise ValueError('scheduled preview expiry exceeded its real TTL and timer interval')
         time.sleep(.5)
     removed=installed(preview['instance'])
     if (int(time.time())<expires or removed['desired_running'] or removed['expires_at'] is not None
             or removed['resources']['volumes'] or removed['resources']['networks'] or removed['resources']['containers']):
         raise ValueError('scheduled preview expiry did not remove only the expired owned graph')
-    if show('komizo-expire.service','Result')!='success' or show('komizo-expire.service','ExecMainStatus')!='0':
-        raise ValueError('scheduled expiry did not complete through the shipped service')
+    if service_pid('komizo-expiry')!=expiry_pid:
+        raise ValueError('expiry removed the graph only after its independent loop was replaced')
     run(['podman','--remote=false','volume','inspect',preview['production_volume']])
     report['checks'].update({'preview_removed_start_refused':'passed','preview_fresh_graph_after_expiry':'passed',
         'preview_reopen_initialization_once':'passed','failed_preview_scoped_remove':'passed','failed_preview_fresh_redeploy':'passed',

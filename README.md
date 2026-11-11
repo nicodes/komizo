@@ -1,8 +1,8 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: d0287e696b33e43c2d8c54e9777d10c9396d61110d2b47fd1d0ff6d4cce2ee3a -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 1f67c4eaf31a3c027398b483dacfbb6531e8f353933abf2cdd3bc8b7ac29cf77 -->
 
 # komizo
 
-Komizo installs immutable application releases on a Debian 13 host using rootful Podman, systemd and cgroup v2. Applications declare services, one-shot jobs, static assets, private networks, retained volumes, routes and readiness. Protected host policy grants artifact, resource, hostname and secret authority.
+Komizo installs immutable application releases on an Alpine Linux host using rootful Podman, OpenRC and cgroup v2. Applications declare services, one-shot jobs, static assets, private networks, retained volumes, routes and readiness. Protected host policy grants artifact, resource, hostname and secret authority.
 
 A host Caddy service serves installed static files and routes to private application addresses. Static applications require no application containers. Container services publish no host ports. Workload processes use the numeric identities and capabilities declared by their application.
 
@@ -46,7 +46,7 @@ Request files can contain credentials. Keep them private. Requests travel over S
 
 ## Prepare the host
 
-The supported host baseline is Debian 13, distro Podman 5.4.2 or newer, systemd, a unified cgroup v2 hierarchy and enabled AppArmor. Komizo installs and requires its reviewed enforcing workload profile. The executor requires enforced memory, CPU and PID controllers. Capacity policy accounts for measured RAM, CPU, storage, operating-system reserve, application pools, shared helpers and ingress.
+The supported host baseline is Alpine Linux 3.24, Podman 5.8.10, OpenRC, a unified cgroup v2 hierarchy and enabled AppArmor. Komizo uses Podman's cgroupfs manager and crun, and installs its reviewed enforcing profiles. The executor requires enforced memory, CPU and PID controllers. Capacity policy accounts for measured RAM, CPU, storage, operating-system reserve, application pools, shared helpers and ingress.
 
 Install the verified `komizo-box` and native Caddy artifacts at their protected paths, including the matching Caddy build receipt. Prepare root-owned capacity, proxy and application policies under `/etc/komizo`. Then the owner installs the restricted submission boundary:
 
@@ -54,7 +54,7 @@ Install the verified `komizo-box` and native Caddy artifacts at their protected 
 komizo-box install --authorized-keys /absolute/path/submission-public-keys
 ```
 
-Bootstrap verifies the Caddy executable and provenance receipt, manages systemd units and creates the restricted `komizo-submit` account and independent unprivileged `komizo-proxy` account. Individual applications do not receive host SSH accounts. GitHub application/action authorization is checked independently inside the protected controller; possession of a submission key grants no application authority.
+Bootstrap verifies the Caddy executable and provenance receipt, manages fixed OpenRC infrastructure services and creates the restricted `komizo-submit` account and independent unprivileged `komizo-proxy` account. Individual applications do not receive host SSH accounts. GitHub application/action authorization is checked independently inside the protected controller; possession of a submission key grants no application authority.
 
 Policy types and finite constraints are defined in [the deployment model](src/deployment/model.rs) and [validation](src/deployment/validation.rs). Protected policy, state and secret files remain private. Installed public assets use a separate readable, immutable serving cache.
 
@@ -78,7 +78,7 @@ The release packet contains its exact descriptor and inventory, explicitly inven
 
 ## State, secrets and recovery
 
-Services run through protected Quadlet definitions. The controller journals effects before executing them and survives submitter disconnects. One-shot job receipts bind code, secrets, retained objects, native lifetime and exit evidence. Execution reserves native startup and watchdog time inside the remaining admitted deadline; a short or exhausted budget refuses Start. Failed or uncertain migrations never replay automatically. Native boot uses only installed artifacts and retains deliberate stop intent.
+The controller manages Podman services directly from protected canonical configurations and journals effects before executing them. It survives submitter disconnects. One-shot job receipts bind code, secrets, retained objects, native lifetime and exit evidence. Execution reserves native startup and independent watchdog time inside the remaining admitted deadline; a short or exhausted budget refuses Start. Failed or uncertain migrations never replay automatically. Native boot uses only installed artifacts and retains deliberate stop intent.
 
 Deploying to a stopped instance stages an accepted prepared release without starting databases, jobs or public routes. Start selects that exact prepared release. Restart, Stop and ordinary Backup select the installed release.
 
@@ -105,4 +105,4 @@ mise run test
 
 Setup prepares declared SDKs and fixtures. Build produces the UI, local API, owner clients, separate host executors and audited Caddy companions. Test verifies current-source outputs; it does not install tools or build missing shipping artifacts. Verification evidence stays in `.artifacts/verification`.
 
-The matrix covers Linux and macOS owner clients on both architectures. Disposable Debian hosts verify actual boot, Podman lifecycle, data capture/restore, deliberately stopped state, network isolation and kernel limits. Release acceptance separately measures the reviewed one-CPU/one-GiB host profile and cold owner operations. Source, package, installed and application acceptance remain separate evidence.
+The matrix covers Linux and macOS owner clients on both architectures. Disposable Alpine hosts verify actual boot, Podman lifecycle, data capture/restore, deliberately stopped state, network isolation and kernel limits. Release acceptance separately measures the reviewed one-CPU/one-GiB host profile and cold owner operations. Source, package, installed and application acceptance remain separate evidence.

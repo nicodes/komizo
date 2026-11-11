@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Accept exact authenticated standalone bytes on real disposable Debian guests."""
+"""Accept exact authenticated standalone bytes on real disposable Alpine guests."""
 import argparse
 import hashlib
 import json
@@ -18,26 +18,39 @@ from release_acceptance import REQUIRED_STEPS
 ROOT=Path(__file__).resolve().parents[2]
 
 
-def virtualization():
+def remaining(deadline,limit):
+    value=deadline-time.monotonic()
+    if value<=0:raise ValueError('native release acceptance exhausted its original aggregate deadline')
+    return min(limit,value)
+
+
+def virtualization(deadline):
+    remaining(deadline,305)
     if sys.platform!='linux' or not Path('/dev/kvm').exists():raise ValueError('release acceptance requires a real Linux KVM host')
     import shutil
-    if any(shutil.which(name) is None for name in ('qemu-system-x86_64','qemu-img','cloud-localds','setfacl')):
-        subprocess.run(['sudo','apt-get','update'],check=True,timeout=90)
-        subprocess.run(['sudo','apt-get','install','--yes','--no-install-recommends','qemu-system-x86','qemu-utils','cloud-image-utils','acl'],check=True,timeout=150)
-    if not os.access('/dev/kvm',os.R_OK|os.W_OK):subprocess.run(['sudo','setfacl','-m','u:'+str(os.getuid())+':rw','/dev/kvm'],check=True,timeout=10)
+    tools=('qemu-system-x86_64','qemu-img','cloud-localds','setfacl')
+    if any(shutil.which(name) is None for name in tools):
+        provider=ROOT/'.artifacts/recipe-sdks/_cookbook/cookbook/ubuntu_ci.py'
+        if provider.is_symlink() or not provider.is_file():raise ValueError('native acceptance requires its immutable Ubuntu CI provider')
+        # The fixed helper has a 300s independent lifetime. Do not start it when
+        # its full window and startup/reap reserve cannot fit this aggregate.
+        if remaining(deadline,305)<305:raise ValueError('native runner preparation cannot fit the original aggregate deadline')
+        subprocess.run(['sudo','-n','/usr/bin/python3','-I','-B',str(provider),'native-host'],check=True,timeout=305)
+        if any(shutil.which(name) is None for name in tools):raise ValueError('native runner provider did not supply the required tools')
+    acl_budget=remaining(deadline,10)
+    if not os.access('/dev/kvm',os.R_OK|os.W_OK):subprocess.run(['sudo','setfacl','-m','u:'+str(os.getuid())+':rw','/dev/kvm'],check=True,timeout=acl_budget)
 
 
 def native_run(binary,proxy,receipt,cli,profile,output,source,deadline):
     # Device ACLs can be refreshed between independent guest lifetimes.
     # Re-establish this trial's actual KVM precondition within the same deadline.
-    virtualization()
-    remaining=min(1000,deadline-time.monotonic())
-    if remaining<=0:raise ValueError('native release acceptance exhausted its original aggregate deadline')
+    virtualization(deadline)
+    guest_budget=remaining(deadline,1000)
     environment={key:value for key,value in os.environ.items() if key not in {'GH_TOKEN','GITHUB_TOKEN','MISE_GITHUB_TOKEN','SSH_AUTH_SOCK'}}
     environment['NATIVE_HOST_SOURCE']=source
     subprocess.run([sys.executable,'-I','-B',str(ROOT/'tests/support/native_host_vm.py'),'--binary',str(binary),
         '--proxy-binary',str(proxy),'--proxy-receipt',str(receipt),'--cli',str(cli),'--profile',profile,'--output',str(output)],
-        env=environment,check=True,timeout=remaining)
+        env=environment,check=True,timeout=guest_budget)
     report=json.loads((output/'report.json').read_bytes())
     if report.get('ok') is not True:raise ValueError('real native guest did not complete acceptance')
     closed={key:report[key] for key in ('ok','profile','source')}

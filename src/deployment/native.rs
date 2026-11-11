@@ -27,8 +27,15 @@ use std::{
 
 pub struct Native;
 
+#[path = "service_maintenance.rs"]
+mod service_maintenance;
+
 #[path = "task_lifetime.rs"]
 mod task_lifetime;
+#[path = "task_process.rs"]
+mod task_process;
+#[path = "task_watchdog.rs"]
+mod task_watchdog;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -63,7 +70,6 @@ struct ServiceIntent {
     record: store::ContainerRecord,
     #[serde(skip_serializing_if = "Option::is_none")]
     unit_body: Option<String>,
-    health_units: BTreeMap<String, String>,
 }
 
 fn service_intent_path(
@@ -354,6 +360,95 @@ fn prepared_path(store: &Store, application: &str, instance: &str) -> Result<Pat
     )))
 }
 
+struct TaskFence {
+    kill: std::fs::File,
+    group: super::cgroups::Group,
+    channel: Option<std::os::unix::net::UnixStream>,
+}
+impl Drop for TaskFence {
+    fn drop(&mut self) {
+        use std::io::Write;
+        let _ = self.kill.write_all(b"1");
+        if matches!(super::cgroups::empty(&self.group), Ok(true))
+            && let Some(channel) = self.channel.as_mut()
+        {
+            let timeout = Some(Duration::from_millis(50));
+            let _ = channel.set_read_timeout(timeout);
+            let _ = channel.set_write_timeout(timeout);
+            let _ = channel.write_all(b"D");
+            let mut acknowledgement = [0_u8];
+            let _ = channel.read_exact(&mut acknowledgement);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn spawn_task_entry(
+    operation_id: &str,
+    kind: &str,
+    mode: &str,
+    group: &super::cgroups::Group,
+    channel: Option<std::os::unix::net::UnixStream>,
+    output: Option<std::fs::File>,
+) -> Result<task_process::Process> {
+    use std::os::{fd::AsRawFd, unix::process::CommandExt};
+    ensure!(
+        hex(operation_id, 32)
+            && ["backup", "prepare", "reconcile"].contains(&kind)
+            && ["task-run", "task-watch"].contains(&mode),
+        "invalid protected child scope"
+    );
+    let entry = super::cgroups::process_entry(group)?;
+    let mut command = std::process::Command::new("/usr/local/bin/komizo-box");
+    command
+        .env_clear()
+        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+        .env("HOME", "/root")
+        .env("LANG", "C.UTF-8")
+        .args([mode, "--operation", operation_id, "--task", kind])
+        .stdin(std::process::Stdio::null())
+        .stdout(
+            output
+                .map(std::process::Stdio::from)
+                .unwrap_or_else(std::process::Stdio::null),
+        )
+        .stderr(std::process::Stdio::null());
+    // Only async-signal-safe syscalls run between fork and exec. The already
+    // verified kernel descriptor attaches the child before any task code runs.
+    let bound_output = mode == "task-run" && kind == "reconcile";
+    unsafe {
+        command.pre_exec(move || {
+            if libc::setsid() < 0
+                || libc::write(entry.as_raw_fd(), b"0".as_ptr().cast(), 1) != 1
+                || libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            task_process::child_limits(bound_output)?;
+            if let Some(channel) = &channel
+                && (libc::dup2(channel.as_raw_fd(), 3) != 3
+                    || libc::fcntl(3, libc::F_SETFD, 0) != 0)
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    task_process::Process::spawn(&mut command, mode == "task-run")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn spawn_task_entry(
+    _operation_id: &str,
+    _kind: &str,
+    _mode: &str,
+    _group: &super::cgroups::Group,
+    _channel: Option<std::os::unix::net::UnixStream>,
+    _output: Option<std::fs::File>,
+) -> Result<task_process::Process> {
+    Err(anyhow!("protected native task execution requires Linux"))
+}
+
 fn run_task(
     store: &Store,
     operation_id: &str,
@@ -363,12 +458,11 @@ fn run_task(
     environment: &BTreeMap<String, String>,
     deadline: Instant,
 ) -> Result<()> {
+    use std::io::Write;
     ensure!(
         hex(operation_id, 32) && ["backup", "prepare", "reconcile"].contains(&kind),
         "invalid protected task scope"
     );
-    // Freeze before hashing, writing units or reloading the service manager.
-    // The independent helper never turns this into a fresh relative budget.
     let (boot_id, deadline_monotonic_ns) =
         task_lifetime::deadline(deadline, program.timeout_seconds)?;
     ensure!(
@@ -378,11 +472,6 @@ fn run_task(
         )?) == program.sha256,
         "protected executable bundle bytes changed"
     );
-    let remaining = deadline
-        .saturating_duration_since(Instant::now())
-        .as_secs()
-        .min(u64::from(program.timeout_seconds));
-    ensure!(remaining > 0, "protected task deadline expired");
     let scope = bounded_value(input, MAX_DOCUMENT_BYTES)?;
     let application = scope["application"]
         .as_str()
@@ -401,42 +490,21 @@ fn run_task(
         "task identity cannot be supplied by a protected program"
     );
     environment.insert("KOMIZO_TASK_OPERATION_ID".into(), operation_id.into());
-    let journal = store.root.join("journal").join(operation_id);
-    let request_path = journal.join(format!("{kind}-request.json"));
-    store::atomic(&request_path, input, 0o600)?;
-    let mut body = format!(
-        "[Unit]\nDescription=Komizo protected {kind} task\nRequiresMountsFor=/var/lib/komizo\n[Service]\nType=oneshot\nUser=root\nGroup=root\nSlice=komizo-control.slice\nUMask=0077\nNoNewPrivileges=yes\nKillMode=control-group\nKillSignal=SIGKILL\nTimeoutStartFailureMode=kill\nTimeoutStartSec={remaining}s\nTimeoutStopSec=0\nRemainAfterExit=no\nStandardInput=null\nStandardOutput=null\nStandardError=journal\nExecStart=/usr/local/bin/komizo-box task-run --operation {operation_id} --task {kind}\n",
-    );
-    // Native capture containers belong below this one task, so its independent
-    // watchdog owns them too. The runner leaf leaves the delegated parent free
-    // of processes, as required by the unified hierarchy's domain controllers.
-    body.push_str("Delegate=yes\nDelegateSubgroup=runner\n");
-    let capacity = capacity::read(Path::new("/etc/komizo/capacity.json"))?;
-    body.push_str(&units::resource_limits(&capacity.control.limits)?);
-    if kind == "reconcile" {
-        let output = journal.join("reconcile-output.json");
-        ensure!(!output.try_exists()?, "reconciliation output is not fresh");
-        store::atomic(&output, b"", 0o600)?;
-        body = body.replace(
-            "StandardOutput=null\n",
-            &format!(
-                "StandardOutput=append:{}\nLimitFSIZE=33554432\n",
-                output.display()
-            ),
-        );
-    }
-    for (key, value) in &environment {
+    for key in environment.keys() {
         ensure!(
             key.starts_with("KOMIZO_") || ["PATH", "HOME", "LANG"].contains(&key.as_str()),
             "unsupported protected task environment"
         );
-        body.push_str(&format!(
-            "Environment={}\n",
-            units::word(&format!("{key}={value}"))
-        ));
     }
-    let path = Path::new(system::UNITS).join(&unit);
-    let hash = document_digest(body.as_bytes());
+    let capacity = capacity::read(Path::new("/etc/komizo/capacity.json"))?;
+    let body = canonical(&json!({"kind":"komizo.task-config","version":1,
+        "application":application,"instance":instance,"operation_id":operation_id,
+        "task":kind,"program":program.program,"program_sha256":program.sha256,
+        "request_sha256":document_digest(input),"environment":environment,
+        "boot_id":boot_id,"deadline_monotonic_ns":deadline_monotonic_ns,"limits":capacity.control.limits}))?;
+    let hash = document_digest(&body);
+    let journal = store.root.join("journal").join(operation_id);
+    store::atomic(&journal.join(format!("{kind}-request.json")), input, 0o600)?;
     store::atomic(
         &journal.join(format!("{kind}-task.json")),
         &serde_json::to_vec(&TaskIntent {
@@ -456,7 +524,7 @@ fn run_task(
                 .filter(|id| hex(id, 32))
                 .ok_or_else(|| anyhow!("protected task operation scope missing"))?
                 .into(),
-            environment: environment.clone(),
+            environment,
             boot_id,
             deadline_monotonic_ns,
         })?,
@@ -465,33 +533,113 @@ fn run_task(
     ensure!(
         system::install_for_operation(
             store,
-            &path,
+            &units::config_path(&unit)?,
             application,
             instance,
-            body.as_bytes(),
+            &body,
             operation_id
         )? == hash,
-        "protected task unit identity changed"
+        "protected task configuration changed"
     );
     let system = System { deadline };
-    system.reload()?;
+    let group = super::cgroups::task_group(kind, operation_id)?;
+    let runner = super::cgroups::task_runner(kind, operation_id)?;
+    let watchers = super::cgroups::control_leaf(super::cgroups::ControlLeaf::Watchdogs);
+    for selected in [&group, &runner] {
+        system.prepare_group(selected, &capacity.control.limits, &Default::default())?;
+    }
+    system.prepare_group(
+        &watchers,
+        &capacity.control.limits,
+        &capacity.control.controls,
+    )?;
+    ensure!(
+        system.group_empty(&group)?,
+        "fresh protected task already owns processes"
+    );
+    let mut _fence = TaskFence {
+        kill: system.kill_entry(&group)?,
+        group: group.clone(),
+        channel: None,
+    };
     if kind != "reconcile" {
         super::bootstrap::apparmor_guard()?;
     }
+    let (mut owner, watcher) = std::os::unix::net::UnixStream::pair()?;
+    _fence.channel = Some(owner.try_clone()?);
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .ok_or_else(|| anyhow!("protected task setup expired"))?;
+    owner.set_read_timeout(Some(remaining))?;
+    owner.set_write_timeout(Some(remaining))?;
+    let mut watchdog = spawn_task_entry(
+        operation_id,
+        kind,
+        "task-watch",
+        &watchers,
+        Some(watcher),
+        None,
+    )?;
+    let mut acknowledgement = [0_u8];
+    owner.read_exact(&mut acknowledgement)?;
     ensure!(
-        task_lifetime::monotonic_ns()? < deadline_monotonic_ns,
-        "protected task setup exhausted its absolute lifetime"
+        acknowledgement == *b"A"
+            && watchdog.try_wait()?.is_none()
+            && task_lifetime::monotonic_ns()? < deadline_monotonic_ns,
+        "independent task watchdog did not arm before execution"
     );
-    system.start(&unit)?;
-    let status = system.run(&["show", "--property=ExecMainStatus", "--value", &unit])?;
+    let output = if kind == "reconcile" {
+        use std::os::unix::fs::OpenOptionsExt;
+        Some(
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(journal.join("reconcile-output.json"))?,
+        )
+    } else {
+        None
+    };
+    let mut child = spawn_task_entry(operation_id, kind, "task-run", &runner, None, output)?;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        ensure!(
+            watchdog.try_wait()?.is_none(),
+            "independent task watchdog exited before completion"
+        );
+        ensure!(
+            Instant::now() < deadline && task_lifetime::monotonic_ns()? < deadline_monotonic_ns,
+            "protected task absolute deadline expired"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
     ensure!(
-        std::str::from_utf8(&status)?.trim() == "0",
-        "protected task exit evidence differs"
+        status.success(),
+        "protected task did not complete successfully"
     );
-    // Stop the owned group even after a successful leader exit, so background
-    // children cannot outlive a supposedly completed capture.
-    system.stop(&unit)?;
-    task_quiescent(&system, &unit)?;
+    system.kill_group(&group)?;
+    task_quiescent(kind, operation_id)?;
+    owner.write_all(b"D")?;
+    owner.read_exact(&mut acknowledgement)?;
+    ensure!(
+        acknowledgement == *b"D",
+        "task watchdog did not verify empty completion"
+    );
+    loop {
+        if let Some(status) = watchdog.try_wait()? {
+            ensure!(status.success(), "task watchdog completion failed");
+            break;
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "task watchdog completion exceeded its deadline"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    system.remove_group(&group)?;
     store::atomic(
         &journal.join(format!("{kind}-completed.json")),
         &canonical(&json!({"unit_sha256":hash,"exit_code":0}))?,
@@ -499,16 +647,13 @@ fn run_task(
     )
 }
 
-/// Internal systemd entrypoint. No caller-selected executable, environment or
-/// path crosses this boundary; all are frozen in the protected effect intent.
-pub fn task_run(operation_id: &str, kind: &str) -> Result<()> {
+fn task_intent(store: &Store, operation_id: &str, kind: &str) -> Result<TaskIntent> {
     ensure!(
         unsafe { libc::geteuid() } == 0
             && hex(operation_id, 32)
             && ["backup", "prepare", "reconcile"].contains(&kind),
         "invalid protected task execution scope"
     );
-    let store = Store::new(Path::new(observation::STATE).into())?;
     let journal = store.root.join("journal").join(operation_id);
     let intent: TaskIntent = serde_json::from_value(bounded_value(
         &store::read_protected(&journal.join(format!("{kind}-task.json")), 16384)?,
@@ -529,6 +674,53 @@ pub fn task_run(operation_id: &str, kind: &str) -> Result<()> {
             && hex(&intent.request_operation_id, 32),
         "protected task intent is invalid"
     );
+    Ok(intent)
+}
+
+/// This independent process owns the same absolute deadline when its caller
+/// or task runner dies. Its anonymous socket is fixed to descriptor three.
+pub fn task_watch(operation_id: &str, kind: &str) -> Result<()> {
+    use std::os::fd::FromRawFd;
+    let store = Store::new(Path::new(observation::STATE).into())?;
+    let intent = task_intent(&store, operation_id, kind)?;
+    let operation = store.operation(operation_id)?;
+    ensure!(
+        operation.application == intent.application
+            && operation.instance == intent.instance
+            && operation.phase == "jobs"
+            && !operation.ok
+            && !operation.reconciliation_required,
+        "task watchdog no longer belongs to its admitted operation"
+    );
+    system::verify_unit(
+        &store,
+        &units::config_path(&intent.unit)?,
+        &intent.application,
+        &intent.instance,
+        &intent.unit_sha256,
+    )?;
+    let group = super::cgroups::task_group(kind, operation_id)?;
+    let mut socket: libc::stat = unsafe { std::mem::zeroed() };
+    ensure!(
+        unsafe { libc::fstat(3, &mut socket) } == 0
+            && socket.st_mode & libc::S_IFMT == libc::S_IFSOCK,
+        "task watchdog owner channel is unavailable"
+    );
+    let channel = unsafe { std::os::unix::net::UnixStream::from_raw_fd(3) };
+    task_watchdog::serve(
+        &group.path(),
+        &intent.boot_id,
+        intent.deadline_monotonic_ns,
+        channel,
+    )
+}
+
+/// No caller-selected executable, environment or path crosses this boundary;
+/// all are frozen in the protected effect intent.
+pub fn task_run(operation_id: &str, kind: &str) -> Result<()> {
+    let store = Store::new(Path::new(observation::STATE).into())?;
+    let journal = store.root.join("journal").join(operation_id);
+    let intent = task_intent(&store, operation_id, kind)?;
     let lifetime =
         task_lifetime::Lifetime::arm(&intent.unit, &intent.boot_id, intent.deadline_monotonic_ns)?;
     ensure!(
@@ -552,7 +744,7 @@ pub fn task_run(operation_id: &str, kind: &str) -> Result<()> {
     );
     system::verify_unit(
         &store,
-        &Path::new(system::UNITS).join(&intent.unit),
+        &units::config_path(&intent.unit)?,
         &intent.application,
         &intent.instance,
         &intent.unit_sha256,
@@ -610,31 +802,12 @@ pub fn task_run(operation_id: &str, kind: &str) -> Result<()> {
     lifetime.finish()
 }
 
-fn task_quiescent(system: &System, unit: &str) -> Result<()> {
-    let state = system.run(&["show", "--property=ActiveState", "--value", unit])?;
+fn task_quiescent(kind: &str, operation_id: &str) -> Result<()> {
+    let group = super::cgroups::task_group(kind, operation_id)?;
     ensure!(
-        ["inactive", "failed"].contains(&std::str::from_utf8(&state)?.trim()),
-        "protected task group is not inactive"
+        super::cgroups::empty(&group)?,
+        "protected task still has live descendants"
     );
-    let group = system.run(&["show", "--property=ControlGroup", "--value", unit])?;
-    let group = std::str::from_utf8(&group)?.trim();
-    if !group.is_empty() {
-        ensure!(
-            absolute(group) && group != "/",
-            "protected task cgroup is ambiguous"
-        );
-        let events = Path::new("/sys/fs/cgroup")
-            .join(group.trim_start_matches('/'))
-            .join("cgroup.events");
-        if events.try_exists()? {
-            ensure!(
-                fs::read_to_string(events)?
-                    .lines()
-                    .any(|line| line == "populated 0"),
-                "protected task still has live descendants"
-            );
-        }
-    }
     Ok(())
 }
 
@@ -693,24 +866,25 @@ fn reconcile_tasks(store: &Store, operation: &Operation, system: &System) -> Res
                 "protected task changed its operation identity"
             );
         }
-        let unit = Path::new(system::UNITS).join(&intent.unit);
-        if unit.try_exists()? {
+        let path = units::config_path(&intent.unit)?;
+        let group = super::cgroups::task_group(kind, &operation.operation_id)?;
+        if path.try_exists()? {
             system::verify_unit(
                 store,
-                &unit,
+                &path,
                 &operation.application,
                 &operation.instance,
                 &intent.unit_sha256,
             )?;
-            system.stop(&intent.unit)?;
+            system.kill_group(&group)?;
         } else {
-            let state = system.run(&["show", "--property=LoadState", "--value", &intent.unit])?;
             ensure!(
-                std::str::from_utf8(&state)?.trim() == "not-found",
-                "missing task unit remains loaded and requires explicit repair"
+                system.group_empty(&group)?,
+                "missing task configuration still owns live descendants and requires explicit repair"
             );
         }
-        task_quiescent(system, &intent.unit)?;
+        task_quiescent(kind, &operation.operation_id)?;
+        system.remove_group(&group)?;
         store::atomic(
             &journal.join(format!("{kind}-reconciled.json")),
             &canonical(
@@ -824,6 +998,7 @@ fn cleanup_captures(
 }
 
 fn validate_service_intent(
+    store: &Store,
     intent: &ServiceIntent,
     operation: &Operation,
     installed: &Installed,
@@ -869,12 +1044,19 @@ fn validate_service_intent(
         .volumes
         .iter()
         .map(|mount| {
-            installed
-                .resources
-                .volumes
-                .get(&mount.name)
-                .map(|record| (mount.name.clone(), record.name.clone()))
-                .ok_or_else(|| anyhow!("service intent retained volume is missing"))
+            let expected = units::object_name(
+                &installed.application,
+                &installed.instance,
+                "volume",
+                &mount.name,
+            )?;
+            if let Some(record) = installed.resources.volumes.get(&mount.name) {
+                ensure!(
+                    record.name == expected,
+                    "service intent retained volume changed physical scope"
+                );
+            }
+            Ok((mount.name.clone(), expected))
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
     ensure!(
@@ -884,29 +1066,33 @@ fn validate_service_intent(
         "service creation token does not bind its complete image and volume closure"
     );
     if intent.kind == "komizo.service-creation" {
+        let body = intent
+            .unit_body
+            .as_ref()
+            .ok_or_else(|| anyhow!("service creation config missing"))?;
         ensure!(
             intent.record.id.is_empty()
-                && intent
-                    .unit_body
-                    .as_ref()
-                    .is_some_and(|body| body.len() <= 1 << 20
-                        && document_digest(body.as_bytes()) == intent.record.unit_sha256)
-                && ((service.health.is_some()
-                    && intent.health_units.len() == 2
-                    && ["service", "timer"]
-                        .iter()
-                        .all(|name| intent.health_units.contains_key(*name)))
-                    || (service.health.is_none() && intent.health_units.is_empty()))
-                && intent
-                    .health_units
-                    .values()
-                    .all(|body| !body.is_empty() && body.len() <= 1 << 20),
-            "service unit intent bytes are incomplete or changed"
+                && body.len() <= 1 << 20
+                && document_digest(body.as_bytes()) == intent.record.unit_sha256,
+            "service configuration intent bytes are incomplete or changed"
+        );
+        let actual = units::ServiceConfig::parse(body.as_bytes())?;
+        let expected = service_configuration(
+            store,
+            installed,
+            document,
+            &intent.service,
+            &intent.record.ownership,
+            true,
+        )?;
+        ensure!(
+            actual.bytes()? == expected.bytes()?,
+            "service creation escaped its complete admitted configuration"
         );
     } else {
         ensure!(
-            intent.unit_body.is_none() && intent.health_units.is_empty(),
-            "service removal cannot add native units"
+            intent.unit_body.is_none(),
+            "service removal cannot add service configuration"
         );
     }
     Ok(())
@@ -919,10 +1105,13 @@ fn reconcile_services(
     system: &System,
 ) -> Result<()> {
     let journal = store.root.join("journal").join(&interrupted.operation_id);
-    // Complete only accepted offline unit metadata and accepted removals. This
-    // path never starts a service or executes a migration.
+    // Complete only accepted metadata and removals. Never start containers,
+    // run migrations, or infer an outcome for an interrupted service start.
     for kind in ["removal", "creation"] {
+        let mut count = 0;
         for entry in fs::read_dir(&journal)? {
+            count += 1;
+            ensure!(count <= 16384, "service recovery journal exceeds bound");
             let entry = entry?;
             let filename = entry.file_name();
             let Some(filename) = filename.to_str() else {
@@ -932,8 +1121,8 @@ fn reconcile_services(
                 continue;
             }
             let intent: ServiceIntent = serde_json::from_value(bounded_value(
-                &store::read_protected(&entry.path(), 4 << 20)?,
-                4 << 20,
+                &store::read_protected(&entry.path(), 2 << 20)?,
+                2 << 20,
             )?)?;
             ensure!(
                 entry.path()
@@ -946,18 +1135,8 @@ fn reconcile_services(
                 "service intent path changed"
             );
             let document = store.release(&intent.release_digest)?;
-            if kind == "removal" && !installed.resources.containers.contains_key(&intent.service) {
-                ensure!(
-                    intent.application == installed.application
-                        && intent.instance == installed.instance
-                        && intent.operation_id == interrupted.operation_id,
-                    "completed service removal intent escaped its operation"
-                );
-                continue;
-            }
-            validate_service_intent(&intent, interrupted, installed, &document)?;
-            let path =
-                Path::new(system::QUADLETS).join(format!("{}.container", intent.record.name));
+            validate_service_intent(store, &intent, interrupted, installed, &document)?;
+            let path = units::config_path(&intent.record.name)?;
             if kind == "removal" {
                 let Some(record) = installed.resources.containers.get(&intent.service).cloned()
                 else {
@@ -989,62 +1168,41 @@ fn reconcile_services(
                         &candidate.unit_sha256,
                     )?;
                 }
-                if engine.exists("container", &candidate.name)? {
-                    if candidate.id.is_empty() {
-                        candidate.id = engine.inspect("container", &candidate.name)?["Id"]
-                            .as_str()
-                            .filter(|id| hex(id, 64))
-                            .ok_or_else(|| anyhow!("owned service ID unavailable"))?
-                            .into();
-                    }
-                    engine.owned_container(
+                if candidate.id.is_empty() && engine.exists("container", &candidate.name)? {
+                    candidate.id = engine.inspect("container", &candidate.name)?["Id"]
+                        .as_str()
+                        .filter(|id| hex(id, 64))
+                        .ok_or_else(|| anyhow!("owned service ID unavailable"))?
+                        .into();
+                    let value = engine
+                        .container_metadata(
+                            &candidate,
+                            &installed.application,
+                            &installed.instance,
+                            &intent.service,
+                        )?
+                        .ok_or_else(|| anyhow!("recorded service disappeared during recovery"))?;
+                    super::engine::service_mounts(
+                        &value,
                         &candidate,
-                        &installed.application,
-                        &installed.instance,
-                        &intent.service,
+                        &document.release.workload.services[&intent.service],
                     )?;
+                    installed
+                        .resources
+                        .containers
+                        .insert(intent.service.clone(), candidate.clone());
+                    store.save_installed(installed)?;
                 }
-                if path.try_exists()? {
-                    system::verify_unit(
-                        store,
-                        &path,
-                        &installed.application,
-                        &installed.instance,
-                        &candidate.unit_sha256,
-                    )?;
-                    if document.release.workload.services[&intent.service]
-                        .health
-                        .is_some()
-                    {
-                        let timer =
-                            Path::new(system::UNITS).join(format!("{}-health.timer", record.name));
-                        if timer.try_exists()? {
-                            let bytes = store::read_protected(&timer, 1 << 20)?;
-                            system::verify_unit(
-                                store,
-                                &timer,
-                                &installed.application,
-                                &installed.instance,
-                                &document_digest(&bytes),
-                            )?;
-                            system.stop(&format!("{}-health.timer", record.name))?;
-                        }
-                    }
-                    system.stop(&format!("{}.service", record.name))?;
-                } else {
-                    task_quiescent(system, &format!("{}.service", record.name))?;
-                }
-                if let Some(value) = engine.owned_container(
-                    &candidate,
-                    &installed.application,
-                    &installed.instance,
+                stop_owned_service(
+                    installed,
+                    &document,
                     &intent.service,
-                )? {
-                    ensure!(
-                        value["State"]["Running"] == false,
-                        "owned service still runs during removal reconciliation"
-                    );
-                    engine.run(&["rm", value["Id"].as_str().unwrap()])?;
+                    &candidate,
+                    engine,
+                    system,
+                )?;
+                if engine.exists("container", &candidate.name)? {
+                    engine.run(&["rm", "--", &candidate.id])?;
                 }
                 if path.try_exists()? {
                     system::remove_for_operation(
@@ -1054,24 +1212,6 @@ fn reconcile_services(
                         &installed.instance,
                         &interrupted.operation_id,
                     )?;
-                }
-                if document.release.workload.services[&intent.service]
-                    .health
-                    .is_some()
-                {
-                    for suffix in ["service", "timer"] {
-                        let path = Path::new(system::UNITS)
-                            .join(format!("{}-health.{suffix}", record.name));
-                        if path.try_exists()? {
-                            system::remove_for_operation(
-                                store,
-                                &path,
-                                &installed.application,
-                                &installed.instance,
-                                &interrupted.operation_id,
-                            )?;
-                        }
-                    }
                 }
                 installed.resources.containers.remove(&intent.service);
                 store.save_installed(installed)?;
@@ -1084,6 +1224,7 @@ fn reconcile_services(
                 if let Some(record) = installed.resources.containers.get(&intent.service) {
                     ensure!(
                         record.ownership == intent.record.ownership
+                            && record.name == intent.record.name
                             && record.config_digest == intent.record.config_digest
                             && record.volumes == intent.record.volumes,
                         "service creation encountered a foreign protected record"
@@ -1104,33 +1245,20 @@ fn reconcile_services(
                         intent.unit_body.as_ref().unwrap().as_bytes(),
                         &interrupted.operation_id,
                     )?;
+                } else {
+                    system::verify_unit(
+                        store,
+                        &path,
+                        &installed.application,
+                        &installed.instance,
+                        &intent.record.unit_sha256,
+                    )?;
                 }
-                for (suffix, body) in &intent.health_units {
-                    let path = Path::new(system::UNITS)
-                        .join(format!("{}-health.{suffix}", intent.record.name));
-                    if !path.try_exists()? {
-                        system::install_for_operation(
-                            store,
-                            &path,
-                            &installed.application,
-                            &installed.instance,
-                            body.as_bytes(),
-                            &interrupted.operation_id,
-                        )?;
-                    } else {
-                        system::verify_unit(
-                            store,
-                            &path,
-                            &installed.application,
-                            &installed.instance,
-                            &document_digest(body.as_bytes()),
-                        )?;
-                    }
-                }
+                verified_service_configuration(store, installed, &document, &intent.service)?;
             }
         }
     }
-    system.reload()
+    Ok(())
 }
 
 fn reconcile_container_ids(
@@ -1141,13 +1269,20 @@ fn reconcile_container_ids(
     operation_id: &str,
 ) -> Result<()> {
     let namespace = units::namespace(&installed.application, &installed.instance)?;
-    for (name, record) in &mut installed.resources.containers {
+    let names = installed
+        .resources
+        .containers
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    for name in names {
+        let mut record = installed.resources.containers[&name].clone();
         ensure!(
-            document.release.workload.services.contains_key(name)
+            document.release.workload.services.contains_key(&name)
                 && record.name == format!("{namespace}-{name}"),
             "container recovery escaped its installed service"
         );
-        let path = Path::new(system::QUADLETS).join(format!("{namespace}-{name}.container"));
+        let path = units::config_path(&record.name)?;
         record.unit_sha256 = system::reconciled_unit_hash(
             store,
             &path,
@@ -1156,36 +1291,31 @@ fn reconcile_container_ids(
             operation_id,
             &record.unit_sha256,
         )?;
-        system::verify_unit(
-            store,
-            &path,
-            &installed.application,
-            &installed.instance,
-            &record.unit_sha256,
-        )?;
+        installed
+            .resources
+            .containers
+            .insert(name.clone(), record.clone());
+        verified_service_configuration(store, installed, document, &name)?;
         if record.id.is_empty() && engine.exists("container", &record.name)? {
-            let value = engine.inspect("container", &record.name)?;
-            let mut candidate = record.clone();
-            candidate.id = value["Id"]
+            record.id = engine.inspect("container", &record.name)?["Id"]
                 .as_str()
                 .filter(|id| hex(id, 64))
                 .ok_or_else(|| anyhow!("created service has no native ID"))?
                 .into();
-            engine.owned_container(
-                &candidate,
-                &installed.application,
-                &installed.instance,
-                name,
-            )?;
+        }
+        if let Some(value) = engine.container_metadata(
+            &record,
+            &installed.application,
+            &installed.instance,
+            &name,
+        )? {
             super::engine::service_mounts(
                 &value,
-                &candidate,
-                &document.release.workload.services[name],
+                &record,
+                &document.release.workload.services[&name],
             )?;
-            *record = candidate;
-        } else {
-            engine.owned_container(record, &installed.application, &installed.instance, name)?;
         }
+        installed.resources.containers.insert(name, record);
     }
     store.save_installed(installed)
 }
@@ -1440,6 +1570,79 @@ fn retained(
     Ok(())
 }
 
+fn cleanup_service(
+    before: Option<&serde_json::Value>,
+    group: &super::cgroups::Group,
+) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let native = if let Some(before) = before {
+        Engine { deadline }.kill_owned(before)
+    } else {
+        Ok(())
+    };
+    // Always attempt the exact kernel kill even if native cleanup failed.
+    let kernel = super::cgroups::kill(group, deadline)
+        .and_then(|()| super::cgroups::remove(group, deadline));
+    native?;
+    kernel
+}
+
+fn stop_owned_service(
+    installed: &Installed,
+    document: &ReleaseDocument,
+    name: &str,
+    record: &store::ContainerRecord,
+    engine: &Engine,
+    _system: &System,
+) -> Result<()> {
+    let group = super::cgroups::workload_group(
+        &installed.application,
+        &installed.instance,
+        super::cgroups::WorkloadKind::Service,
+        name,
+        &record.ownership,
+    )?;
+    if let Some(before) =
+        engine.container_metadata(record, &installed.application, &installed.instance, name)?
+    {
+        super::engine::service_mounts(&before, record, &document.release.workload.services[name])?;
+        if before["State"]["Running"] == true || before["State"]["Paused"] == true {
+            let stopped = (|| -> Result<()> {
+                super::engine::workload_group(&before, &group)?;
+                let timeout = document.release.workload.services[name]
+                    .stop_timeout_seconds
+                    .to_string();
+                engine.run(&["stop", "--time", &timeout, "--", &record.id])?;
+                let after = engine
+                    .container_metadata(record, &installed.application, &installed.instance, name)?
+                    .ok_or_else(|| anyhow!("owned service disappeared during stop"))?;
+                ensure!(
+                    after["State"]["Running"] == false
+                        && after["State"]["Paused"] == false
+                        && after["State"]["Pid"] == 0,
+                    "owned service remained live after stop"
+                );
+                Ok(())
+            })();
+            if let Err(error) = stopped {
+                let cleanup = cleanup_service(Some(&before), &group);
+                if cleanup.is_err() {
+                    return Err(
+                        error.context("owned service stop failed and termination remains unproven")
+                    );
+                }
+                return Err(error);
+            }
+        } else {
+            ensure!(
+                before["State"]["Paused"] == false && before["State"]["Pid"] == 0,
+                "non-running service retains unexplained execution state"
+            );
+        }
+    }
+    cleanup_service(None, &group)
+}
+
 fn stop_services(
     store: &Store,
     installed: &mut Installed,
@@ -1452,24 +1655,14 @@ fn stop_services(
     store.save_installed(installed)?;
     proxy::refresh(store, system.deadline)?;
     let document = store.release(&installed.release_digest)?;
-    let ns = units::namespace(&installed.application, &installed.instance)?;
     let mut ordered = order(&document)?;
     ordered.reverse();
     for name in ordered {
-        let Some(container) = document.release.workload.services.get(&name) else {
+        let Some(record) = installed.resources.containers.get(&name).cloned() else {
             continue;
         };
-        let Some(record) = installed.resources.containers.get(&name) else {
-            continue;
-        };
-        let path = Path::new(system::QUADLETS).join(format!("{ns}-{name}.container"));
-        system::verify_unit(
-            store,
-            &path,
-            &installed.application,
-            &installed.instance,
-            &record.unit_sha256,
-        )?;
+        verified_service_configuration(store, installed, &document, &name)?;
+        let path = units::config_path(&record.name)?;
         if remove {
             let intent = ServiceIntent {
                 kind: "komizo.service-removal".into(),
@@ -1481,7 +1674,6 @@ fn stop_services(
                 service: name.clone(),
                 record: record.clone(),
                 unit_body: None,
-                health_units: BTreeMap::new(),
             };
             store::atomic(
                 &service_intent_path(store, operation_id, "removal", &name)?,
@@ -1489,25 +1681,11 @@ fn stop_services(
                 0o600,
             )?;
         }
-        if container.health.is_some() {
-            system.stop(&format!("{ns}-{name}-health.timer"))?;
-        }
-        if engine.exists("container", &record.name)? {
-            engine.owned_container(record, &installed.application, &installed.instance, &name)?;
-        }
-        system.stop(&format!("{ns}-{name}.service"))?;
-        if let Some(value) =
-            engine.owned_container(record, &installed.application, &installed.instance, &name)?
-        {
-            ensure!(
-                value["State"]["Running"] == false,
-                "service remained running after stop"
-            );
-            if remove {
-                engine.run(&["rm", value["Id"].as_str().unwrap()])?;
-            }
-        }
+        stop_owned_service(installed, &document, &name, &record, engine, system)?;
         if remove {
+            if engine.exists("container", &record.name)? {
+                engine.run(&["rm", "--", &record.id])?;
+            }
             system::remove_for_operation(
                 store,
                 &path,
@@ -1515,26 +1693,11 @@ fn stop_services(
                 &installed.instance,
                 operation_id,
             )?;
-            if container.health.is_some() {
-                for suffix in ["service", "timer"] {
-                    system::remove_for_operation(
-                        store,
-                        &Path::new(system::UNITS).join(format!("{ns}-{name}-health.{suffix}")),
-                        &installed.application,
-                        &installed.instance,
-                        operation_id,
-                    )?;
-                }
-            }
             installed.resources.containers.remove(&name);
             store.save_installed(installed)?;
         }
     }
-    if remove {
-        installed.resources.containers.clear();
-        store.save_installed(installed)?;
-        system.reload()?;
-    } else {
+    if !remove {
         wanted(store, installed, false, system, operation_id)?;
     }
     Ok(())
@@ -1544,42 +1707,32 @@ fn wanted(
     store: &Store,
     installed: &mut Installed,
     value: bool,
-    system: &System,
+    _system: &System,
     operation_id: &str,
 ) -> Result<()> {
-    let ns = units::namespace(&installed.application, &installed.instance)?;
-    for (name, record) in &mut installed.resources.containers {
-        let path = Path::new(system::QUADLETS).join(format!("{ns}-{name}.container"));
-        system::verify_unit(
-            store,
-            &path,
-            &installed.application,
-            &installed.instance,
-            &record.unit_sha256,
-        )?;
-        let old = String::from_utf8(store::read_protected(&path, 1 << 20)?)?;
-        let mut body = old
-            .strip_suffix("WantedBy=multi-user.target\n")
-            .unwrap_or(&old)
-            .to_owned();
-        ensure!(
-            body.ends_with("[Install]\n"),
-            "managed Quadlet install section changed"
-        );
-        if value {
-            body.push_str("WantedBy=multi-user.target\n");
-        }
+    let document = store.release(&installed.release_digest)?;
+    let names = installed
+        .resources
+        .containers
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    for name in names {
+        let mut config = verified_service_configuration(store, installed, &document, &name)?;
+        config.wanted = value;
+        let bytes = config.bytes()?;
+        let record = installed.resources.containers.get_mut(&name).unwrap();
         record.unit_sha256 = system::install_for_operation(
             store,
-            &path,
+            &units::config_path(&record.name)?,
             &installed.application,
             &installed.instance,
-            body.as_bytes(),
+            &bytes,
             operation_id,
         )?;
     }
     store.save_installed(installed)?;
-    system.reload()
+    Ok(())
 }
 
 pub fn order(document: &ReleaseDocument) -> Result<Vec<String>> {
@@ -1624,54 +1777,143 @@ pub fn order(document: &ReleaseDocument) -> Result<Vec<String>> {
     Ok(result)
 }
 
-fn install_units(
+fn service_configuration(
     store: &Store,
-    installed: &mut Installed,
+    installed: &Installed,
     document: &ReleaseDocument,
-    system: &System,
-) -> Result<()> {
-    let ns = units::namespace(&installed.application, &installed.instance)?;
-    for (name, container) in &document.release.workload.services {
-        let ownership = store::identity()?;
-        let env = installed
-            .secret_snapshots
-            .iter()
-            .map(|(a, s)| (a.clone(), s.path.clone()))
-            .collect();
-        let mounts = container
-            .secrets
-            .iter()
-            .map(|s| {
-                Ok((
-                    s.source.clone(),
-                    secrets::mount_snapshot(
-                        &store.root,
-                        name,
-                        s,
-                        &installed.secret_snapshots[&s.source],
-                    )?,
-                ))
-            })
-            .collect::<Result<BTreeMap<_, _>>>()?;
-        let bindings = units::Bindings {
+    name: &str,
+    ownership: &str,
+    wanted: bool,
+) -> Result<units::ServiceConfig> {
+    let container = document
+        .release
+        .workload
+        .services
+        .get(name)
+        .ok_or_else(|| anyhow!("service configuration selects an undeclared service"))?;
+    let env = container
+        .environment_files
+        .iter()
+        .map(|alias| {
+            let snapshot = installed
+                .secret_snapshots
+                .get(alias)
+                .ok_or_else(|| anyhow!("service environment snapshot missing"))?;
+            let body = store::read_protected(Path::new(&snapshot.path), 128 << 10)?;
+            ensure!(
+                document_digest(&body) == snapshot.sha256,
+                "service environment snapshot changed"
+            );
+            secrets::environment_file(&body)?;
+            Ok((alias.clone(), snapshot.path.clone()))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let mounts = container
+        .secrets
+        .iter()
+        .map(|secret| {
+            let snapshot = installed
+                .secret_snapshots
+                .get(&secret.source)
+                .ok_or_else(|| anyhow!("service secret snapshot is missing"))?;
+            Ok((
+                secret.source.clone(),
+                secrets::mount_snapshot(&store.root, name, secret, snapshot)?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    units::service_config(
+        document,
+        name,
+        &units::Bindings {
             application: &installed.application,
             instance: &installed.instance,
             release_digest: &document.digest,
-            ownership: &ownership,
+            ownership,
             networks: &installed.resources.networks,
             volumes: &installed.resources.volumes,
             environment_files: &env,
             secrets: &mounts,
             ingress: None,
-        };
-        let body = units::quadlet(document, name, &bindings, true)?;
-        let health_units = if let Some(health) = &container.health {
-            let (service, timer) =
-                units::health_units(&installed.application, &installed.instance, name, health)?;
-            BTreeMap::from([("service".into(), service), ("timer".into(), timer)])
-        } else {
-            BTreeMap::new()
-        };
+        },
+        wanted,
+    )
+}
+
+fn verified_service_configuration(
+    store: &Store,
+    installed: &Installed,
+    document: &ReleaseDocument,
+    name: &str,
+) -> Result<units::ServiceConfig> {
+    let record = installed
+        .resources
+        .containers
+        .get(name)
+        .ok_or_else(|| anyhow!("protected service record missing"))?;
+    let path = units::config_path(&record.name)?;
+    system::verify_unit(
+        store,
+        &path,
+        &installed.application,
+        &installed.instance,
+        &record.unit_sha256,
+    )?;
+    let bytes = store::read_protected(&path, 1 << 20)?;
+    let actual = units::ServiceConfig::parse(&bytes)?;
+    let expected = service_configuration(
+        store,
+        installed,
+        document,
+        name,
+        &record.ownership,
+        actual.wanted,
+    )?;
+    let declared = &document.release.workload.services[name];
+    let Artifact::Image {
+        reference,
+        config_digest,
+        ..
+    } = &document.release.artifacts[&declared.artifact]
+    else {
+        return Err(anyhow!(
+            "service configuration lacks immutable image authority"
+        ));
+    };
+    let volumes = declared
+        .volumes
+        .iter()
+        .map(|mount| {
+            let binding = installed
+                .resources
+                .volumes
+                .get(&mount.name)
+                .ok_or_else(|| anyhow!("service volume authority missing"))?;
+            Ok((mount.name.clone(), binding.name.clone()))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    ensure!(
+        actual.bytes()? == expected.bytes()?
+            && record.name == expected.container_name
+            && record.release_digest == document.digest
+            && record.image == *reference
+            && record.config_digest == *config_digest
+            && record.volumes == volumes,
+        "service configuration escaped its admitted release and bindings"
+    );
+    Ok(actual)
+}
+
+fn install_units(
+    store: &Store,
+    installed: &mut Installed,
+    document: &ReleaseDocument,
+    _system: &System,
+) -> Result<()> {
+    for (name, container) in &document.release.workload.services {
+        let ownership = store::identity()?;
+        let config = service_configuration(store, installed, document, name, &ownership, true)?;
+        let body = String::from_utf8(config.bytes()?)?;
         let Artifact::Image {
             reference,
             config_digest,
@@ -1681,7 +1923,7 @@ fn install_units(
             return Err(anyhow!("service image missing"));
         };
         let record = store::ContainerRecord {
-            name: format!("{ns}-{name}"),
+            name: config.container_name.clone(),
             id: String::new(),
             image: reference.clone(),
             config_digest: config_digest.clone(),
@@ -1691,10 +1933,10 @@ fn install_units(
             volumes: container
                 .volumes
                 .iter()
-                .map(|m| {
+                .map(|mount| {
                     (
-                        m.name.clone(),
-                        installed.resources.volumes[&m.name].name.clone(),
+                        mount.name.clone(),
+                        installed.resources.volumes[&mount.name].name.clone(),
                     )
                 })
                 .collect(),
@@ -1709,7 +1951,6 @@ fn install_units(
             service: name.clone(),
             record: record.clone(),
             unit_body: Some(body.clone()),
-            health_units: health_units.clone(),
         };
         store::atomic(
             &service_intent_path(store, &installed.operation_id, "creation", name)?,
@@ -1720,82 +1961,1038 @@ fn install_units(
         store.save_installed(installed)?;
         system::install_for_operation(
             store,
-            &Path::new(system::QUADLETS).join(format!("{ns}-{name}.container")),
+            &units::config_path(&config.container_name)?,
             &installed.application,
             &installed.instance,
             body.as_bytes(),
             &installed.operation_id,
         )?;
-        for (suffix, body) in health_units {
-            system::install_for_operation(
-                store,
-                &Path::new(system::UNITS).join(format!("{ns}-{name}-health.{suffix}")),
-                &installed.application,
-                &installed.instance,
-                body.as_bytes(),
-                &installed.operation_id,
-            )?;
-        }
     }
-    system.reload()
+    Ok(())
+}
+
+fn service_group(
+    installed: &Installed,
+    name: &str,
+    ownership: &str,
+) -> Result<super::cgroups::Group> {
+    super::cgroups::workload_group(
+        &installed.application,
+        &installed.instance,
+        super::cgroups::WorkloadKind::Service,
+        name,
+        ownership,
+    )
+}
+
+fn health_interval(health: &Health, started: &str, now: i64) -> Result<u32> {
+    let started = chrono::DateTime::parse_from_rfc3339(started)?.timestamp();
+    ensure!(started > 0, "service health start time missing");
+    Ok(
+        if now.saturating_sub(started) < i64::from(health.start_period_seconds) {
+            health
+                .start_interval_seconds
+                .unwrap_or(health.interval_seconds)
+        } else {
+            health.interval_seconds
+        },
+    )
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProbeRecord {
+    kind: String,
+    version: u32,
+    container_id: String,
+    started_at: String,
+    checked_at: i64,
+}
+
+fn valid_probe_start(value: &str) -> bool {
+    value.len() <= 64
+        && chrono::DateTime::parse_from_rfc3339(value).is_ok_and(|at| at.timestamp() > 0)
+}
+
+pub(super) fn probe_due(
+    previous: Option<&serde_json::Value>,
+    id: &str,
+    started_at: &str,
+    now: i64,
+    interval: u32,
+) -> Result<bool> {
+    ensure!(
+        hex(id, 64) && valid_probe_start(started_at),
+        "service probe generation is invalid"
+    );
+    let Some(previous) = previous else {
+        return Ok(true);
+    };
+    let previous: ProbeRecord = serde_json::from_value(previous.clone())?;
+    ensure!(
+        previous.kind == "komizo.probe"
+            && previous.version == 1
+            && hex(&previous.container_id, 64)
+            && valid_probe_start(&previous.started_at)
+            && previous.checked_at > 0,
+        "service probe metadata is invalid"
+    );
+    Ok(!(previous.container_id == id
+        && previous.started_at == started_at
+        && now >= previous.checked_at
+        && now - previous.checked_at < i64::from(interval)))
+}
+
+fn service_probe(
+    store: &Store,
+    policy: &Policy,
+    installed: &Installed,
+    name: &str,
+    value: &serde_json::Value,
+    health: &Health,
+    engine: &Engine,
+) -> Result<()> {
+    let record = installed
+        .resources
+        .containers
+        .get(name)
+        .ok_or_else(|| anyhow!("service probe has no protected record"))?;
+    let (application, instance) = probe_lock_scope(installed, name)?;
+    // A background probe never owns the application mutation lease. It drops
+    // this separate probe lease when admission wins, so the lock order cannot
+    // deadlock and readiness need not fail merely because a probe was running.
+    let _guard = loop {
+        if let Some(guard) = store.try_lock(&application, &instance)? {
+            break guard;
+        }
+        ensure!(
+            Instant::now() < engine.deadline,
+            "service probe lease exceeded original readiness deadline"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let now = controller::now()?;
+    let interval = health_interval(
+        health,
+        value["State"]["StartedAt"]
+            .as_str()
+            .ok_or_else(|| anyhow!("service health start identity missing"))?,
+        now,
+    )?;
+    let previous = probe_record(store, installed, name)?;
+    let started_at = value["State"]["StartedAt"]
+        .as_str()
+        .ok_or_else(|| anyhow!("service probe start identity missing"))?;
+    if !probe_due(previous.as_ref(), &record.id, started_at, now, interval)? {
+        return Ok(());
+    }
+    let group = super::cgroups::service_probe_group(
+        &installed.application,
+        &installed.instance,
+        name,
+        &record.ownership,
+    )?;
+    super::cgroups::prepare(
+        &group,
+        instance_limits(policy, &installed.instance)?,
+        &Default::default(),
+        engine.deadline,
+    )?;
+    engine.health_in_group(&record.id, &group)?;
+    commit_probe(store, installed, name, &record.id, started_at, now)
+}
+
+fn stopped_service(value: &serde_json::Value) -> Result<()> {
+    ensure!(
+        value["State"]["Running"] == false
+            && value["State"]["Paused"] == false
+            && value["State"]["Pid"] == 0
+            && ["configured", "created", "exited", "stopped"]
+                .contains(&value["State"]["Status"].as_str().unwrap_or("")),
+        "service start refuses an unexplained native execution state"
+    );
+    Ok(())
+}
+
+fn unstarted_service(value: &serde_json::Value) -> Result<()> {
+    stopped_service(value)?;
+    ensure!(
+        ["configured", "created"].contains(&value["State"]["Status"].as_str().unwrap_or("")),
+        "new service already executed before durable CID registration"
+    );
+    Ok(())
 }
 
 fn start_service(
     store: &Store,
+    policy: &Policy,
     installed: &mut Installed,
     document: &ReleaseDocument,
     name: &str,
     engine: &Engine,
     system: &System,
 ) -> Result<()> {
-    let record = &installed.resources.containers[name];
-    if engine.exists("container", &record.name)? {
-        engine.owned_container(record, &installed.application, &installed.instance, name)?;
-    }
-    system.start(&format!("{}.service", record.name))?;
-    let value = engine.inspect("container", &record.name)?;
-    let mut candidate = record.clone();
-    candidate.id = value["Id"]
-        .as_str()
-        .ok_or_else(|| anyhow!("started container ID missing"))?
-        .to_owned();
-    engine.owned_container(
-        &candidate,
-        &installed.application,
-        &installed.instance,
-        name,
-    )?;
-    installed
-        .resources
-        .containers
-        .insert(name.to_owned(), candidate);
-    store.save_installed(installed)?;
-    let container = &document.release.workload.services[name];
-    if container.health.is_some() {
-        system.start(&format!(
-            "{}-health.timer",
-            installed.resources.containers[name].name
-        ))?;
-    }
-    engine.wait_healthy(
-        &installed.resources.containers[name].name,
-        container.health.is_some(),
-    )?;
-    let observed = system.group(&format!(
-        "{}.service",
-        installed.resources.containers[name].name
-    ))?;
+    let config = verified_service_configuration(store, installed, document, name)?;
     ensure!(
-        observed
-            .starts_with(Path::new("/sys/fs/cgroup").join(
-                units::slice(&installed.application, &installed.instance)?.replace('-', "/")
-            ))
-            || observed
-                .to_str()
-                .is_some_and(|p| p
-                    .contains(&units::slice(&installed.application, &installed.instance).unwrap())),
-        "service escaped its instance slice"
+        config.wanted && installed.desired_running,
+        "service start is not desired by its protected state"
     );
+    let limits = if installed.instance == "production" {
+        &policy.limits
+    } else {
+        &policy
+            .previews
+            .as_ref()
+            .ok_or_else(|| anyhow!("preview allocation missing"))?
+            .limits
+    };
+    let group = service_group(installed, name, &config.ownership)?;
+    system.prepare_group(&group, limits, &Default::default())?;
+    let mut record = installed.resources.containers[name].clone();
+    if record.id.is_empty() {
+        ensure!(
+            !engine.exists("container", &record.name)?,
+            "unrecorded service requires explicit metadata reconciliation"
+        );
+        ensure!(
+            system.group_empty(&group)?,
+            "missing service retains live owned processes"
+        );
+        let mut arguments = vec![
+            "create".to_owned(),
+            "--name".into(),
+            config.container_name.clone(),
+        ];
+        arguments.extend(config.options.clone());
+        arguments.push(config.image_id.clone());
+        arguments.extend(config.command.clone());
+        let raw = engine.run(&arguments.iter().map(String::as_str).collect::<Vec<_>>())?;
+        let created = std::str::from_utf8(&raw)?.trim();
+        ensure!(
+            hex(created, 64),
+            "native service create did not return its exact container identity"
+        );
+        record.id = created.into();
+        let before = engine
+            .container_metadata(&record, &installed.application, &installed.instance, name)?
+            .ok_or_else(|| anyhow!("created service disappeared before durable registration"))?;
+        unstarted_service(&before)?;
+        super::engine::service_mounts(&before, &record, &document.release.workload.services[name])?;
+        installed
+            .resources
+            .containers
+            .insert(name.to_owned(), record.clone());
+        store.save_installed(installed)?;
+    }
+    // A missing recorded CID is not authority to replace it or adopt its name.
+    let before = engine
+        .container_metadata(&record, &installed.application, &installed.instance, name)?
+        .ok_or_else(|| {
+            anyhow!("recorded service container is missing; owner reconciliation required")
+        })?;
+    super::engine::service_mounts(&before, &record, &document.release.workload.services[name])?;
+    let mut start_attempted = before["State"]["Running"] == true;
+    let effect = (|| -> Result<()> {
+        if before["State"]["Running"] != true {
+            stopped_service(&before)?;
+            // Preserve the former pre-start authority, retained data, exact
+            // image/snapshot and completed/healthy dependency fences.
+            observation::guard(&installed.application, &installed.instance, name)?;
+            let monitor = super::cgroups::workload_monitor_group(
+                &installed.application,
+                &installed.instance,
+                super::cgroups::WorkloadKind::Service,
+                name,
+                &record.ownership,
+            )?;
+            system.prepare_group(&monitor, limits, &Default::default())?;
+            start_attempted = true;
+            engine.start_in_group(&record.id, &monitor)?;
+        }
+        loop {
+            ensure!(
+                Instant::now() < engine.deadline,
+                "native service readiness deadline exceeded"
+            );
+            let value = engine
+                .owned_container(&record, &installed.application, &installed.instance, name)?
+                .ok_or_else(|| anyhow!("native service disappeared before readiness"))?;
+            super::engine::service_mounts(
+                &value,
+                &record,
+                &document.release.workload.services[name],
+            )?;
+            system.verify_group(&group, limits, &Default::default())?;
+            super::engine::workload_limits(
+                &value,
+                &group,
+                &document.release.workload.services[name].limits,
+            )?;
+            ensure!(
+                value["State"]["Running"] == true && value["State"]["Paused"] == false,
+                "native service exited before readiness"
+            );
+            let Some(health) = &config.health else {
+                break;
+            };
+            if value["State"]["Health"]["Status"] == "healthy" {
+                break;
+            }
+            ensure!(
+                value["State"]["Health"]["Status"] != "unhealthy",
+                "native service healthcheck failed"
+            );
+            service_probe(store, policy, installed, name, &value, health, engine)?;
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        Ok(())
+    })();
+    if let Err(error) = effect {
+        let cleanup = cleanup_service(if start_attempted { Some(&before) } else { None }, &group);
+        if cleanup.is_err() {
+            return Err(error.context(
+                "service activation failed and exact owned termination remains unproven",
+            ));
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn restart_due(
+    previous: Option<&serde_json::Value>,
+    record: &store::ContainerRecord,
+    now: i64,
+) -> Result<bool> {
+    let Some(previous) = previous else {
+        return Ok(true);
+    };
+    ensure!(
+        previous["kind"] == "komizo.service-backoff"
+            && previous["version"] == 1
+            && previous["container_id"]
+                .as_str()
+                .is_some_and(|id| hex(id, 64))
+            && previous["unit_sha256"].as_str().is_some_and(digest)
+            && previous["attempted_at"]
+                .as_i64()
+                .is_some_and(|time| time > 0),
+        "service restart backoff is invalid"
+    );
+    Ok(previous["container_id"] != record.id
+        || previous["unit_sha256"] != record.unit_sha256
+        || previous["attempted_at"]
+            .as_i64()
+            .is_some_and(|attempt| now >= attempt && now - attempt >= 3))
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ServiceEpoch {
+    kind: String,
+    version: u32,
+    application: String,
+    instance: String,
+    token: String,
+}
+fn service_epoch_path(store: &Store, installed: &Installed) -> Result<PathBuf> {
+    Ok(store.root.join("service-epochs").join(format!(
+        "{}.json",
+        Store::instance_key(&installed.application, &installed.instance)?
+    )))
+}
+fn service_epoch(store: &Store, installed: &Installed) -> Result<Option<String>> {
+    let path = service_epoch_path(store, installed)?;
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    let epoch: ServiceEpoch = serde_json::from_value(crate::strict::value(
+        &store::read_protected(&path, 4096)?,
+        4096,
+    )?)?;
+    ensure!(
+        epoch.kind == "komizo.service-epoch"
+            && epoch.version == 1
+            && epoch.application == installed.application
+            && epoch.instance == installed.instance
+            && hex(&epoch.token, 32),
+        "service runtime epoch escaped its instance"
+    );
+    Ok(Some(epoch.token))
+}
+fn advance_service_epoch(store: &Store, installed: &Installed) -> Result<()> {
+    let epoch = ServiceEpoch {
+        kind: "komizo.service-epoch".into(),
+        version: 1,
+        application: installed.application.clone(),
+        instance: installed.instance.clone(),
+        token: store::identity()?,
+    };
+    store::atomic(
+        &service_epoch_path(store, installed)?,
+        &canonical(&serde_json::to_value(epoch)?)?,
+        0o600,
+    )
+}
+
+#[derive(Clone)]
+struct ServiceSnapshot {
+    installed: Installed,
+    document: ReleaseDocument,
+    policy: Policy,
+    config: units::ServiceConfig,
+    record: store::ContainerRecord,
+    binding: String,
+}
+
+fn instance_limits<'a>(policy: &'a Policy, instance: &str) -> Result<&'a Limits> {
+    if instance == "production" {
+        Ok(&policy.limits)
+    } else {
+        Ok(&policy
+            .previews
+            .as_ref()
+            .ok_or_else(|| anyhow!("preview allocation missing"))?
+            .limits)
+    }
+}
+
+// Caller holds the short, priority-aware maintenance lease. This reads and
+// freezes the entire authority closure; it never invokes a native CLI.
+fn service_snapshot(
+    store: &Store,
+    scope: &service_maintenance::Scope,
+    prepare: bool,
+) -> Result<Option<ServiceSnapshot>> {
+    let Some(installed) = store.installed(&scope.application, &scope.instance)? else {
+        return Ok(None);
+    };
+    let operation = store.operation(&installed.operation_id)?;
+    if !maintenance_eligible(
+        &installed,
+        &operation,
+        !store
+            .unresolved(&scope.application, &scope.instance)?
+            .is_empty(),
+        controller::now()?,
+    ) {
+        return Ok(None);
+    }
+    let document = store.release(&installed.release_digest)?;
+    let Some(record) = installed.resources.containers.get(&scope.service).cloned() else {
+        return Ok(None);
+    };
+    ensure!(
+        hex(&record.id, 64),
+        "automatic restart cannot adopt an unrecorded native identity"
+    );
+    let (policy, policy_digest) =
+        controller::policy(Path::new(observation::POLICIES), &scope.application)?;
+    let admission = store::read_protected(
+        &store
+            .root
+            .join("journal")
+            .join(&installed.operation_id)
+            .join("admission.json"),
+        MAX_DOCUMENT_BYTES,
+    )?;
+    let authority = crate::strict::value(&admission, MAX_DOCUMENT_BYTES)?;
+    ensure!(
+        authority["kind"] == "komizo.admission"
+            && authority["version"] == 1
+            && authority["operation_id"] == installed.operation_id
+            && authority["policy_digest"] == policy_digest,
+        "automatic service maintenance requires its unchanged admitted policy"
+    );
+    let config = verified_service_configuration(store, &installed, &document, &scope.service)?;
+    ensure!(config.wanted, "desired service configuration is disabled");
+    let data =
+        if installed.instance == "production" && !document.release.workload.volumes.is_empty() {
+            Some(document_digest(&store::read_protected(
+                &store.root.join("data-admissions").join(format!(
+                    "{}.json",
+                    Store::instance_key(&scope.application, &scope.instance)?
+                )),
+                1 << 20,
+            )?))
+        } else {
+            None
+        };
+    let mut completed = BTreeMap::new();
+    for (dependency, condition) in &document.release.workload.services[&scope.service].needs {
+        if *condition == Condition::Completed {
+            let identity = jobs::identity(&document, dependency, &installed)?;
+            let receipt = jobs::read(store, &scope.application, &scope.instance, &identity)?;
+            completed.insert(
+                dependency.clone(),
+                document_digest(&canonical(&serde_json::to_value(receipt)?)?),
+            );
+        }
+    }
+    let binding = document_digest(&canonical(
+        &json!({"installed":installed,"operation":operation,
+        "policy_digest":policy_digest,"admission":document_digest(&admission),
+        "configuration":document_digest(&config.bytes()?),"data_admission":data,"completed":completed,
+        "runtime_epoch":service_epoch(store,&installed)?}),
+    )?);
+    if prepare {
+        let system = System {
+            deadline: Instant::now() + Duration::from_secs(5),
+        };
+        system::restore_instance_allocation(store, &system, &policy, &scope.instance)?;
+        let group = service_group(&installed, &scope.service, &record.ownership)?;
+        system.prepare_group(
+            &group,
+            instance_limits(&policy, &scope.instance)?,
+            &Default::default(),
+        )?;
+        let probe = super::cgroups::service_probe_group(
+            &scope.application,
+            &scope.instance,
+            &scope.service,
+            &record.ownership,
+        )?;
+        system.prepare_group(
+            &probe,
+            instance_limits(&policy, &scope.instance)?,
+            &Default::default(),
+        )?;
+    }
+    Ok(Some(ServiceSnapshot {
+        installed,
+        document,
+        policy,
+        config,
+        record,
+        binding,
+    }))
+}
+
+fn same_service_generation(observed: &serde_json::Value, current: &serde_json::Value) -> bool {
+    observed["Id"] == current["Id"]
+        && observed["State"]["StartedAt"].as_str().is_some()
+        && observed["State"]["StartedAt"] == current["State"]["StartedAt"]
+        && (current["State"]["Running"] != true
+            || (observed["State"]["Running"] == true
+                && observed["State"]["Pid"] == current["State"]["Pid"]))
+}
+
+fn probe_lock_scope(installed: &Installed, service: &str) -> Result<(String, String)> {
+    let namespace = units::namespace(&installed.application, &installed.instance)?;
+    let key = document_digest(service.as_bytes());
+    Ok((
+        format!("probe-{}", &namespace[4..]),
+        format!("service-{}", &key[7..27]),
+    ))
+}
+
+fn probe_path(store: &Store, installed: &Installed, service: &str) -> Result<PathBuf> {
+    Ok(store
+        .root
+        .join("probes")
+        .join(units::namespace(
+            &installed.application,
+            &installed.instance,
+        )?)
+        .join(format!("{service}.json")))
+}
+
+fn probe_record(
+    store: &Store,
+    installed: &Installed,
+    service: &str,
+) -> Result<Option<serde_json::Value>> {
+    let path = probe_path(store, installed, service)?;
+    if path.try_exists()? {
+        Ok(Some(crate::strict::value(
+            &store::read_protected(&path, 4096)?,
+            4096,
+        )?))
+    } else {
+        Ok(None)
+    }
+}
+
+fn commit_probe(
+    store: &Store,
+    installed: &Installed,
+    service: &str,
+    id: &str,
+    started_at: &str,
+    checked_at: i64,
+) -> Result<()> {
+    store::atomic(
+        &probe_path(store, installed, service)?,
+        &canonical(&json!({"kind":"komizo.probe",
+        "version":1,"container_id":id,"started_at":started_at,"checked_at":checked_at}))?,
+        0o600,
+    )
+}
+
+fn backoff_path(store: &Store, installed: &Installed, service: &str) -> Result<PathBuf> {
+    Ok(store
+        .root
+        .join("service-backoff")
+        .join(units::namespace(
+            &installed.application,
+            &installed.instance,
+        )?)
+        .join(format!("{service}.json")))
+}
+
+fn service_backoff(store: &Store, snapshot: &ServiceSnapshot, service: &str) -> Result<bool> {
+    let path = backoff_path(store, &snapshot.installed, service)?;
+    let previous = if path.try_exists()? {
+        Some(crate::strict::value(
+            &store::read_protected(&path, 4096)?,
+            4096,
+        )?)
+    } else {
+        None
+    };
+    restart_due(previous.as_ref(), &snapshot.record, controller::now()?)
+}
+
+fn commit_backoff(store: &Store, snapshot: &ServiceSnapshot, service: &str) -> Result<()> {
+    store::atomic(
+        &backoff_path(store, &snapshot.installed, service)?,
+        &canonical(&json!({
+        "kind":"komizo.service-backoff","version":1,"container_id":snapshot.record.id,
+        "unit_sha256":snapshot.record.unit_sha256,"attempted_at":controller::now()?}))?,
+        0o600,
+    )
+}
+
+fn health_observation(status: &str, unavailable: bool) -> Result<Option<bool>> {
+    ensure!(
+        ["healthy", "starting", "unhealthy"].contains(&status),
+        "service health state missing"
+    );
+    // An actual unhealthy result remains actionable even if this particular
+    // command was unavailable. Never promote a stale healthy result to success.
+    Ok(if status == "unhealthy" {
+        Some(false)
+    } else if unavailable {
+        None
+    } else {
+        Some(true)
+    })
+}
+
+// Each queued scope owns its dedupe slot until every observation/commit ends.
+// Probe and authority CLIs run outside the application mutation lease.
+fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
+    let store = Store::new(scope.root.clone())?;
+    let frozen = {
+        let Some(_lease) =
+            controller::maintenance_lease(&store, &scope.application, &scope.instance)?
+        else {
+            return Ok(());
+        };
+        let Some(snapshot) = service_snapshot(&store, scope, true)? else {
+            return Ok(());
+        };
+        snapshot
+    };
+    let (probe_application, probe_instance) = probe_lock_scope(&frozen.installed, &scope.service)?;
+    let Some(probe_lock) = store.try_lock(&probe_application, &probe_instance)? else {
+        return Ok(());
+    };
+    // If admission acquired the instance while we were taking the probe lock,
+    // discard immediately instead of starting a long stale health command.
+    {
+        let Some(_lease) =
+            controller::maintenance_lease(&store, &scope.application, &scope.instance)?
+        else {
+            return Ok(());
+        };
+        let Some(current) = service_snapshot(&store, scope, false)? else {
+            return Ok(());
+        };
+        if current.binding != frozen.binding {
+            return Ok(());
+        }
+    }
+    let deadline =
+        Instant::now() + Duration::from_secs(u64::from(frozen.policy.operation_timeout_seconds));
+    let engine = Engine {
+        deadline: deadline.min(Instant::now() + Duration::from_secs(20)),
+    };
+    let group = service_group(&frozen.installed, &scope.service, &frozen.record.ownership)?;
+    let before = engine
+        .container_metadata(
+            &frozen.record,
+            &scope.application,
+            &scope.instance,
+            &scope.service,
+        )?
+        .ok_or_else(|| {
+            anyhow!("desired native CID missing; explicit owner reconciliation required")
+        })?;
+    super::engine::service_mounts(
+        &before,
+        &frozen.record,
+        &frozen.document.release.workload.services[&scope.service],
+    )?;
+    let mut checked_at = None;
+    let observed = (|| -> Result<Option<bool>> {
+        super::engine::workload_limits(
+            &before,
+            &group,
+            &frozen.document.release.workload.services[&scope.service].limits,
+        )?;
+        if before["State"]["Running"] != true {
+            stopped_service(&before)?;
+            return Ok(Some(false));
+        }
+        super::cgroups::verify(
+            &group,
+            instance_limits(&frozen.policy, &scope.instance)?,
+            &Default::default(),
+        )?;
+        if let Some(health) = &frozen.config.health {
+            let mut unavailable = false;
+            let now = controller::now()?;
+            let interval = health_interval(
+                health,
+                before["State"]["StartedAt"]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("service health lacks start identity"))?,
+                now,
+            )?;
+            let previous = probe_record(&store, &frozen.installed, &scope.service)?;
+            let started_at = before["State"]["StartedAt"]
+                .as_str()
+                .ok_or_else(|| anyhow!("service probe generation missing"))?;
+            if probe_due(
+                previous.as_ref(),
+                &frozen.record.id,
+                started_at,
+                now,
+                interval,
+            )? {
+                let probe = super::cgroups::service_probe_group(
+                    &scope.application,
+                    &scope.instance,
+                    &scope.service,
+                    &frozen.record.ownership,
+                )?;
+                let command = Engine {
+                    deadline: deadline.min(
+                        Instant::now()
+                            + Duration::from_secs(u64::from(health.timeout_seconds) + 15),
+                    ),
+                };
+                match command.health_probe_in_group(&frozen.record.id, &probe)? {
+                    super::engine::HealthProbe::Completed => checked_at = Some(now),
+                    super::engine::HealthProbe::Unavailable125 => unavailable = true,
+                }
+            }
+            let after = Engine {
+                deadline: deadline.min(Instant::now() + Duration::from_secs(20)),
+            }
+            .owned_container(
+                &frozen.record,
+                &scope.application,
+                &scope.instance,
+                &scope.service,
+            )?
+            .ok_or_else(|| anyhow!("service disappeared during health observation"))?;
+            if after["State"]["Running"] != true {
+                stopped_service(&after)?;
+                return Ok(Some(false));
+            }
+            if unavailable {
+                // Resource pressure can prevent a probe from starting. Only a
+                // fresh proof of this same live generation permits retaining
+                // it without an observation; failed confinement still cleans up.
+                ensure!(
+                    same_service_generation(&before, &after),
+                    "service generation changed during unavailable health probe"
+                );
+                super::engine::service_mounts(
+                    &after,
+                    &frozen.record,
+                    &frozen.document.release.workload.services[&scope.service],
+                )?;
+                super::engine::workload_limits(
+                    &after,
+                    &group,
+                    &frozen.document.release.workload.services[&scope.service].limits,
+                )?;
+                super::cgroups::verify(
+                    &group,
+                    instance_limits(&frozen.policy, &scope.instance)?,
+                    &Default::default(),
+                )?;
+            }
+            let status = after["State"]["Health"]["Status"].as_str().unwrap_or("");
+            health_observation(status, unavailable)
+        } else {
+            Ok(Some(true))
+        }
+    })();
+    let restart = matches!(observed, Ok(Some(false)));
+    let stopped = {
+        let Some(_lease) =
+            controller::maintenance_lease(&store, &scope.application, &scope.instance)?
+        else {
+            return Ok(());
+        };
+        let Some(current) = service_snapshot(&store, scope, false)? else {
+            return Ok(());
+        };
+        if current.binding != frozen.binding {
+            return Ok(());
+        }
+        let live = Engine {
+            deadline: deadline.min(Instant::now() + Duration::from_secs(5)),
+        }
+        .container_metadata(
+            &frozen.record,
+            &scope.application,
+            &scope.instance,
+            &scope.service,
+        )?
+        .ok_or_else(|| anyhow!("service disappeared before observation commit"))?;
+        if !same_service_generation(&before, &live) {
+            return Ok(());
+        }
+        if let Some(checked) = checked_at {
+            commit_probe(
+                &store,
+                &current.installed,
+                &scope.service,
+                &current.record.id,
+                before["State"]["StartedAt"]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("service probe generation missing"))?,
+                checked,
+            )?;
+        }
+        match observed {
+            Ok(Some(true) | None) => return Ok(()),
+            Err(error) => {
+                commit_backoff(&store, &current, &scope.service)?;
+                advance_service_epoch(&store, &current.installed)?;
+                if cleanup_service(Some(&before), &group).is_err() {
+                    return Err(error.context(
+                        "service observation failed and exact owned termination remains unproven",
+                    ));
+                }
+                return Err(error);
+            }
+            Ok(Some(false)) => {
+                if !service_backoff(&store, &current, &scope.service)? {
+                    return Ok(());
+                }
+                commit_backoff(&store, &current, &scope.service)?;
+                let was_running = live["State"]["Running"] == true;
+                if was_running {
+                    advance_service_epoch(&store, &current.installed)?;
+                }
+                let stop = Engine {
+                    deadline: deadline.min(
+                        Instant::now()
+                            + Duration::from_secs(
+                                u64::from(
+                                    current.document.release.workload.services[&scope.service]
+                                        .stop_timeout_seconds,
+                                ) + 5,
+                            ),
+                    ),
+                };
+                stop_owned_service(
+                    &current.installed,
+                    &current.document,
+                    &scope.service,
+                    &current.record,
+                    &stop,
+                    &System {
+                        deadline: stop.deadline,
+                    },
+                )?;
+                let stopped = stop
+                    .container_metadata(
+                        &current.record,
+                        &scope.application,
+                        &scope.instance,
+                        &scope.service,
+                    )?
+                    .ok_or_else(|| anyhow!("stopped service disappeared"))?;
+                stopped_service(&stopped)?;
+                // A new source/dependency proof follows the three-second backoff.
+                if was_running {
+                    return Ok(());
+                }
+                stopped
+            }
+        }
+    };
+    drop(probe_lock);
+    if !restart {
+        return Ok(());
+    }
+    // The full pre-start source/data/job/dependency guard observes outside the
+    // mutation lease. Its entire frozen authority closure is rechecked below.
+    observation::guard(&scope.application, &scope.instance, &scope.service)?;
+    let after_start_binding = {
+        let Some(_lease) =
+            controller::maintenance_lease(&store, &scope.application, &scope.instance)?
+        else {
+            return Ok(());
+        };
+        let Some(current) = service_snapshot(&store, scope, false)? else {
+            return Ok(());
+        };
+        if current.binding != frozen.binding {
+            return Ok(());
+        }
+        let command = Engine {
+            deadline: deadline.min(Instant::now() + Duration::from_secs(5)),
+        };
+        let live = command
+            .container_metadata(
+                &current.record,
+                &scope.application,
+                &scope.instance,
+                &scope.service,
+            )?
+            .ok_or_else(|| anyhow!("service disappeared before restart"))?;
+        if !same_service_generation(&stopped, &live) {
+            return Ok(());
+        }
+        stopped_service(&live)?;
+        let system = System {
+            deadline: command.deadline,
+        };
+        system.prepare_group(
+            &group,
+            instance_limits(&current.policy, &scope.instance)?,
+            &Default::default(),
+        )?;
+        let probe = super::cgroups::service_probe_group(
+            &scope.application,
+            &scope.instance,
+            &scope.service,
+            &current.record.ownership,
+        )?;
+        system.prepare_group(
+            &probe,
+            instance_limits(&current.policy, &scope.instance)?,
+            &Default::default(),
+        )?;
+        advance_service_epoch(&store, &current.installed)?;
+        let started = (|| -> Result<()> {
+            let monitor = super::cgroups::workload_monitor_group(
+                &scope.application,
+                &scope.instance,
+                super::cgroups::WorkloadKind::Service,
+                &scope.service,
+                &current.record.ownership,
+            )?;
+            system.prepare_group(
+                &monitor,
+                instance_limits(&current.policy, &scope.instance)?,
+                &Default::default(),
+            )?;
+            command.start_in_group(&current.record.id, &monitor)?;
+            let after = command
+                .owned_container(
+                    &current.record,
+                    &scope.application,
+                    &scope.instance,
+                    &scope.service,
+                )?
+                .ok_or_else(|| anyhow!("restarted service disappeared"))?;
+            super::engine::workload_limits(
+                &after,
+                &group,
+                &current.document.release.workload.services[&scope.service].limits,
+            )?;
+            ensure!(
+                after["State"]["Running"] == true,
+                "service exited during restart"
+            );
+            Ok(())
+        })();
+        if let Err(error) = started {
+            advance_service_epoch(&store, &current.installed)?;
+            if cleanup_service(Some(&live), &group).is_err() {
+                return Err(error.context(
+                    "service restart failed and exact owned termination remains unproven",
+                ));
+            }
+            return Err(error);
+        }
+        service_snapshot(&store, scope, false)?
+            .ok_or_else(|| anyhow!("restarted service authority disappeared"))?
+            .binding
+    };
+    // Route generation reads current protected state itself. HTTP readiness is
+    // pure observation and must not hold the application mutation lease.
+    proxy::refresh(
+        &store,
+        deadline.min(Instant::now() + Duration::from_secs(20)),
+    )?;
+    readiness(
+        &frozen.document,
+        &frozen.policy,
+        &scope.instance,
+        deadline.min(Instant::now() + Duration::from_secs(15)),
+    )?;
+    // No operational metadata or source acceptance is inferred from this old
+    // observation if admission changed the instance while readiness ran.
+    let Some(_lease) = controller::maintenance_lease(&store, &scope.application, &scope.instance)?
+    else {
+        return Ok(());
+    };
+    let Some(current) = service_snapshot(&store, scope, false)? else {
+        return Ok(());
+    };
+    if current.binding != after_start_binding {
+        return Ok(());
+    }
+    Ok(())
+}
+
+fn maintenance_eligible(
+    installed: &Installed,
+    operation: &Operation,
+    unresolved: bool,
+    now: i64,
+) -> bool {
+    !installed.removed
+        && installed.desired_running
+        && !unresolved
+        && installed.expires_at.is_none_or(|expires| expires > now)
+        && operation.application == installed.application
+        && operation.instance == installed.instance
+        && operation.operation_id == installed.operation_id
+        && operation.phase == "ready"
+        && operation.ok
+        && !operation.reconciliation_required
+        && operation.release_digest == installed.release_digest
+}
+
+fn maintain_services(store: &Store) -> Result<()> {
+    for installed in proxy::instances(store)? {
+        if installed.removed || !installed.desired_running {
+            continue;
+        }
+        let document = store.release(&installed.release_digest)?;
+        for service in order(&document)? {
+            if !document.release.workload.services.contains_key(&service) {
+                continue;
+            }
+            service_maintenance::enqueue(service_maintenance::Scope {
+                root: store.root.clone(),
+                application: installed.application.clone(),
+                instance: installed.instance.clone(),
+                service,
+            })?;
+        }
+    }
     Ok(())
 }
 
@@ -1816,7 +3013,7 @@ fn activate(
     if operation.phase == "staging" {
         advance(store, operation, "jobs")?;
     }
-    system::instance_slice(store, &system, policy, &installed.instance)?;
+    system::instance_allocation(store, &system, policy, &installed.instance)?;
     retained(store, installed, document, &engine)?;
     data::require(store, installed, document, &engine)?;
     install_units(store, installed, document, &system)?;
@@ -1826,6 +3023,7 @@ fn activate(
         if document.release.workload.jobs.contains_key(&name) {
             jobs::run(
                 store,
+                policy,
                 document,
                 installed,
                 &name,
@@ -1833,7 +3031,7 @@ fn activate(
                 job.deadline,
             )?;
         } else {
-            start_service(store, installed, document, &name, &engine, &system)?;
+            start_service(store, policy, installed, document, &name, &engine, &system)?;
         }
     }
     advance(store, operation, "installing")?;
@@ -2208,7 +3406,10 @@ fn finish_remove(
 
 impl Backend for Native {
     fn maintenance(&self, store: &Store) -> Result<()> {
-        proxy::refresh(store, Instant::now() + Duration::from_secs(20))
+        let services = maintain_services(store);
+        let routes = proxy::refresh_background(store, Instant::now() + Duration::from_secs(20));
+        services?;
+        routes
     }
     fn execute(
         &self,
@@ -2494,6 +3695,7 @@ impl Backend for Native {
                         advance(store, operation, "jobs")?;
                         installed.desired_running = true;
                         store.save_installed(&installed)?;
+                        wanted(store, &mut installed, true, &system, &job.operation_id)?;
                         for name in order(&old_document)? {
                             if policy
                                 .backup
@@ -2502,6 +3704,7 @@ impl Backend for Native {
                             {
                                 start_service(
                                     store,
+                                    policy,
                                     &mut installed,
                                     &old_document,
                                     &name,
@@ -2550,7 +3753,7 @@ impl Backend for Native {
                     let capacity = capacity::read(Path::new("/etc/komizo/capacity.json"))?;
                     capacity::reserve(store, &capacity, policy, &document, instance, true)?;
                     advance(store, operation, "jobs")?;
-                    system::instance_slice(store, &system, policy, instance)?;
+                    system::instance_allocation(store, &system, policy, instance)?;
                     if job.request.action == "restart" {
                         stop_services(
                             store,
@@ -2569,6 +3772,7 @@ impl Backend for Native {
                         if document.release.workload.services.contains_key(&name) {
                             start_service(
                                 store,
+                                policy,
                                 &mut installed,
                                 &document,
                                 &name,
@@ -2797,6 +4001,137 @@ pub fn expire() -> Result<()> {
 mod recovery_tests {
     use super::*;
     #[test]
+    fn service_observation_discards_replaced_or_restarted_process_generations() {
+        let observed = json!({"Id":"a".repeat(64),"State":{"Running":true,"Pid":123,"StartedAt":"2026-11-11T00:00:00Z"}});
+        assert!(same_service_generation(&observed, &observed));
+        let mut terminal = observed.clone();
+        terminal["State"]["Running"] = json!(false);
+        terminal["State"]["Pid"] = json!(0);
+        assert!(same_service_generation(&observed, &terminal));
+        let mut changed = observed.clone();
+        changed["Id"] = json!("b".repeat(64));
+        assert!(!same_service_generation(&observed, &changed));
+        changed = observed.clone();
+        changed["State"]["StartedAt"] = json!("2026-11-11T00:00:01Z");
+        assert!(!same_service_generation(&observed, &changed));
+        changed = observed.clone();
+        changed["State"]["Pid"] = json!(124);
+        assert!(!same_service_generation(&observed, &changed));
+        assert!(!same_service_generation(&terminal, &observed));
+    }
+
+    #[test]
+    fn health_schedule_honors_start_period_interval_and_exact_native_identity() {
+        let health = Health {
+            command: vec!["/app/health".into()],
+            interval_seconds: 30,
+            timeout_seconds: 3,
+            retries: 3,
+            start_period_seconds: 60,
+            start_interval_seconds: Some(2),
+        };
+        let started = "2026-11-11T00:00:00Z";
+        let epoch = chrono::DateTime::parse_from_rfc3339(started)
+            .unwrap()
+            .timestamp();
+        assert_eq!(health_interval(&health, started, epoch + 59).unwrap(), 2);
+        assert_eq!(health_interval(&health, started, epoch + 60).unwrap(), 30);
+        assert!(health_interval(&health, "missing", epoch).is_err());
+        let id = "a".repeat(64);
+        let previous = json!({"kind":"komizo.probe","version":1,"container_id":id,"started_at":started,"checked_at":epoch});
+        assert!(!probe_due(Some(&previous), &id, started, epoch + 29, 30).unwrap());
+        assert!(probe_due(Some(&previous), &id, started, epoch + 30, 30).unwrap());
+        assert!(probe_due(Some(&previous), &"b".repeat(64), started, epoch + 1, 30).unwrap());
+        assert!(probe_due(Some(&json!({})), &id, started, epoch, 30).is_err());
+        // Native restarts preserve CID. The old generation must not suppress
+        // the first probe for an hour when the new start period is zero.
+        assert!(!probe_due(Some(&previous), &id, started, epoch + 1, 3600).unwrap());
+        assert!(
+            probe_due(
+                Some(&previous),
+                &id,
+                "2026-11-11T00:00:01Z",
+                epoch + 1,
+                3600
+            )
+            .unwrap()
+        );
+        let mut legacy = previous.clone();
+        legacy.as_object_mut().unwrap().remove("started_at");
+        assert!(probe_due(Some(&legacy), &id, started, epoch + 1, 3600).is_err());
+        let mut foreign = previous.clone();
+        foreign["unexpected"] = json!(true);
+        assert!(probe_due(Some(&foreign), &id, started, epoch + 1, 3600).is_err());
+        assert!(probe_due(None, &id, "invalid", epoch, 3600).is_err());
+        assert!(probe_due(None, "foreign", started, epoch, 3600).is_err());
+    }
+
+    #[test]
+    fn unavailable_health_observations_never_promote_stale_success_or_hide_failure() {
+        for status in ["healthy", "starting"] {
+            assert_eq!(health_observation(status, true).unwrap(), None);
+            assert_eq!(health_observation(status, false).unwrap(), Some(true));
+        }
+        for unavailable in [true, false] {
+            assert_eq!(
+                health_observation("unhealthy", unavailable).unwrap(),
+                Some(false)
+            );
+            for unknown in ["", "missing", "exited", "private-sentinel"] {
+                assert!(health_observation(unknown, unavailable).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn service_restart_backoff_is_finite_and_unknown_native_states_never_start() {
+        let record = store::ContainerRecord {
+            name: "synthetic".into(),
+            id: "a".repeat(64),
+            image: "unused".into(),
+            config_digest: format!("sha256:{}", "b".repeat(64)),
+            release_digest: format!("sha256:{}", "c".repeat(64)),
+            ownership: "d".repeat(32),
+            unit_sha256: format!("sha256:{}", "e".repeat(64)),
+            volumes: BTreeMap::new(),
+        };
+        let previous = json!({"kind":"komizo.service-backoff","version":1,"container_id":record.id,
+            "unit_sha256":record.unit_sha256,"attempted_at":100});
+        assert!(!restart_due(Some(&previous), &record, 102).unwrap());
+        assert!(restart_due(Some(&previous), &record, 103).unwrap());
+        assert!(!restart_due(Some(&previous), &record, 99).unwrap());
+        let mut replacement = record.clone();
+        replacement.id = "f".repeat(64);
+        assert!(restart_due(Some(&previous), &replacement, 101).unwrap());
+        assert!(
+            unstarted_service(
+                &json!({"State":{"Status":"created","Running":false,"Paused":false,"Pid":0}})
+            )
+            .is_ok()
+        );
+        assert!(
+            unstarted_service(
+                &json!({"State":{"Status":"exited","Running":false,"Paused":false,"Pid":0}})
+            )
+            .is_err()
+        );
+        for status in ["configured", "created", "exited", "stopped"] {
+            stopped_service(
+                &json!({"State":{"Status":status,"Running":false,"Paused":false,"Pid":0}}),
+            )
+            .unwrap();
+        }
+        for state in [
+            json!({}),
+            json!({"Status":"unknown","Running":false,"Paused":false,"Pid":0}),
+            json!({"Status":"running","Running":true,"Paused":false,"Pid":42}),
+            json!({"Status":"exited","Running":false,"Paused":false,"Pid":42}),
+        ] {
+            assert!(stopped_service(&json!({"State":state})).is_err());
+        }
+    }
+
+    #[test]
     fn service_creation_and_removal_intents_bind_exact_source_token_unit_and_volume_authority() {
         let document = read_release(include_bytes!(
             "../../tests/fixtures/deployment/release.json"
@@ -2810,6 +4145,11 @@ mod recovery_tests {
         else {
             panic!()
         };
+        let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let store = Store::new(directory.path().join("state")).unwrap();
+        let environment = store.root.join("runtime.env");
+        let secret = b"TOKEN=synthetic-only\n";
+        store::atomic(&environment, secret, 0o600).unwrap();
         let installed = Installed {
             kind: "komizo.installed".into(),
             version: 1,
@@ -2820,8 +4160,24 @@ mod recovery_tests {
             desired_running: false,
             removed: false,
             expires_at: None,
-            resources: Resources::default(),
-            secret_snapshots: BTreeMap::new(),
+            resources: Resources {
+                networks: BTreeMap::from([(
+                    "backend".into(),
+                    ObjectRecord {
+                        name: "kmz-owned-network".into(),
+                        id: "c".repeat(64),
+                    },
+                )]),
+                ..Default::default()
+            },
+            secret_snapshots: BTreeMap::from([(
+                "runtime".into(),
+                secrets::Snapshot {
+                    generation: "synthetic-generation".into(),
+                    path: environment.to_str().unwrap().into(),
+                    sha256: document_digest(secret),
+                },
+            )]),
         };
         let operation = Operation {
             kind: "komizo.operation".into(),
@@ -2836,7 +4192,13 @@ mod recovery_tests {
             reconciliation_required: true,
             backup: None,
         };
-        let body = "[Container]\nImage=accepted\n".to_owned();
+        let body = String::from_utf8(
+            service_configuration(&store, &installed, &document, "api", &"b".repeat(32), true)
+                .unwrap()
+                .bytes()
+                .unwrap(),
+        )
+        .unwrap();
         let mut intent = ServiceIntent {
             kind: "komizo.service-creation".into(),
             version: 1,
@@ -2859,29 +4221,71 @@ mod recovery_tests {
                 volumes: BTreeMap::new(),
             },
             unit_body: Some(body),
-            health_units: if document.release.workload.services["api"].health.is_some() {
-                BTreeMap::from([
-                    ("service".into(), "accepted service".into()),
-                    ("timer".into(), "accepted timer".into()),
-                ])
-            } else {
-                BTreeMap::new()
-            },
         };
-        validate_service_intent(&intent, &operation, &installed, &document).unwrap();
+        validate_service_intent(&store, &intent, &operation, &installed, &document).unwrap();
+        assert_eq!(service_epoch(&store, &installed).unwrap(), None);
+        advance_service_epoch(&store, &installed).unwrap();
+        let first_epoch = service_epoch(&store, &installed).unwrap().unwrap();
+        assert!(hex(&first_epoch, 32));
+        advance_service_epoch(&store, &installed).unwrap();
+        assert_ne!(
+            service_epoch(&store, &installed).unwrap().unwrap(),
+            first_epoch
+        );
+        let epoch_path = service_epoch_path(&store, &installed).unwrap();
+        let mut foreign: serde_json::Value =
+            serde_json::from_slice(&store::read_protected(&epoch_path, 4096).unwrap()).unwrap();
+        foreign["instance"] = json!("foreign");
+        store::atomic(&epoch_path, &canonical(&foreign).unwrap(), 0o600).unwrap();
+        assert!(service_epoch(&store, &installed).is_err());
+        advance_service_epoch(&store, &installed).unwrap();
+        fs::set_permissions(&epoch_path, fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(service_epoch(&store, &installed).is_err());
+        fs::set_permissions(&epoch_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let original_body = intent.unit_body.clone().unwrap();
+        let mut forged = units::ServiceConfig::parse(original_body.as_bytes()).unwrap();
+        forged.command.push("unadmitted".into());
+        let forged_body = String::from_utf8(forged.bytes().unwrap()).unwrap();
+        intent.record.unit_sha256 = document_digest(forged_body.as_bytes());
+        intent.unit_body = Some(forged_body);
+        assert!(
+            validate_service_intent(&store, &intent, &operation, &installed, &document).is_err()
+        );
+        intent.record.unit_sha256 = document_digest(original_body.as_bytes());
+        intent.unit_body = Some(original_body);
+        let mut ready = operation.clone();
+        ready.phase = "ready".into();
+        ready.ok = true;
+        ready.reconciliation_required = false;
+        let mut desired = installed.clone();
+        desired.desired_running = true;
+        assert!(maintenance_eligible(&desired, &ready, false, 100));
+        assert!(!maintenance_eligible(&desired, &ready, true, 100));
+        assert!(!maintenance_eligible(&desired, &operation, false, 100));
+        assert!(!maintenance_eligible(&installed, &ready, false, 100));
+        desired.expires_at = Some(100);
+        assert!(!maintenance_eligible(&desired, &ready, false, 100));
+        desired.expires_at = None;
+        ready.application = "foreign".into();
+        assert!(!maintenance_eligible(&desired, &ready, false, 100));
         intent.record.ownership = "wrong".into();
-        assert!(validate_service_intent(&intent, &operation, &installed, &document).is_err());
+        assert!(
+            validate_service_intent(&store, &intent, &operation, &installed, &document).is_err()
+        );
         intent.record.ownership = "b".repeat(32);
         intent.unit_body = Some("changed".into());
-        assert!(validate_service_intent(&intent, &operation, &installed, &document).is_err());
+        assert!(
+            validate_service_intent(&store, &intent, &operation, &installed, &document).is_err()
+        );
         intent.kind = "komizo.service-removal".into();
         intent.unit_body = None;
-        intent.health_units.clear();
-        validate_service_intent(&intent, &operation, &installed, &document).unwrap();
+        validate_service_intent(&store, &intent, &operation, &installed, &document).unwrap();
         intent
             .record
             .volumes
             .insert("foreign".into(), "foreign-data".into());
-        assert!(validate_service_intent(&intent, &operation, &installed, &document).is_err());
+        assert!(
+            validate_service_intent(&store, &intent, &operation, &installed, &document).is_err()
+        );
     }
 }

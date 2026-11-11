@@ -163,22 +163,79 @@ pub fn completed(
 }
 
 trait Runtime {
+    fn prepare_group(&self, group: &super::cgroups::Group, limits: &Limits) -> Result<()>;
+    fn workload_limits(
+        &self,
+        actual: &serde_json::Value,
+        group: &super::cgroups::Group,
+        limits: &Limits,
+    ) -> Result<Option<serde_json::Value>>;
+    fn kill_owned(
+        &self,
+        expected: &serde_json::Value,
+        cleanup_deadline: std::time::Instant,
+    ) -> Result<()>;
+    fn retire_group(
+        &self,
+        group: &super::cgroups::Group,
+        cleanup_deadline: std::time::Instant,
+    ) -> Result<()>;
     fn run(&self, arguments: &[&str]) -> Result<Vec<u8>>;
-    fn start(&self, id: &str, deadline: std::time::Instant) -> Result<()>;
+    fn start(
+        &self,
+        id: &str,
+        monitor: &super::cgroups::Group,
+        deadline: std::time::Instant,
+    ) -> Result<()>;
     fn exists(&self, kind: &str, name: &str) -> Result<bool>;
     fn inspect(&self, kind: &str, name: &str) -> Result<serde_json::Value>;
     fn retained(&self, kind: &str, record: &store::ObjectRecord) -> Result<()>;
 }
 impl Runtime for super::engine::Engine {
+    fn prepare_group(&self, group: &super::cgroups::Group, limits: &Limits) -> Result<()> {
+        super::cgroups::prepare(group, limits, &ResourceControls::default(), self.deadline)
+    }
+    fn workload_limits(
+        &self,
+        actual: &serde_json::Value,
+        group: &super::cgroups::Group,
+        limits: &Limits,
+    ) -> Result<Option<serde_json::Value>> {
+        self.workload_limits(actual, group, limits)
+    }
+    fn kill_owned(
+        &self,
+        expected: &serde_json::Value,
+        cleanup_deadline: std::time::Instant,
+    ) -> Result<()> {
+        // Cleanup can outlive an expired execution budget only to terminate the
+        // already-proven native identity. This helper cannot start or replay it.
+        Self {
+            deadline: cleanup_deadline,
+        }
+        .kill_owned(expected)
+    }
+    fn retire_group(
+        &self,
+        group: &super::cgroups::Group,
+        cleanup_deadline: std::time::Instant,
+    ) -> Result<()> {
+        super::cgroups::kill(group, cleanup_deadline)?;
+        super::cgroups::remove(group, cleanup_deadline)
+    }
     fn run(&self, arguments: &[&str]) -> Result<Vec<u8>> {
         self.run(arguments)
     }
-    fn start(&self, id: &str, deadline: std::time::Instant) -> Result<()> {
+    fn start(
+        &self,
+        id: &str,
+        monitor: &super::cgroups::Group,
+        deadline: std::time::Instant,
+    ) -> Result<()> {
         Self {
             deadline: deadline.min(self.deadline),
         }
-        .run(&["start", id])?;
-        Ok(())
+        .start_in_group(id, monitor)
     }
     fn exists(&self, kind: &str, name: &str) -> Result<bool> {
         self.exists(kind, name)
@@ -189,6 +246,30 @@ impl Runtime for super::engine::Engine {
     fn retained(&self, kind: &str, record: &store::ObjectRecord) -> Result<()> {
         self.owned_object(kind, record).map(|_| ())
     }
+}
+
+fn cleanup_deadline() -> std::time::Instant {
+    std::time::Instant::now() + std::time::Duration::from_secs(5)
+}
+
+fn job_group(receipt: &Receipt) -> Result<super::cgroups::Group> {
+    super::cgroups::workload_group(
+        &receipt.application,
+        &receipt.instance,
+        super::cgroups::WorkloadKind::Job,
+        &receipt.job,
+        &receipt.ownership,
+    )
+}
+
+fn job_monitor_group(receipt: &Receipt) -> Result<super::cgroups::Group> {
+    super::cgroups::workload_monitor_group(
+        &receipt.application,
+        &receipt.instance,
+        super::cgroups::WorkloadKind::Job,
+        &receipt.job,
+        &receipt.ownership,
+    )
 }
 
 fn owned(
@@ -252,7 +333,9 @@ fn owned(
         observed == expected,
         "one-shot retained-volume mounts changed"
     );
-    Ok(actual)
+    Ok(runtime
+        .workload_limits(&actual, &job_group(receipt)?, &value.limits)?
+        .unwrap_or(actual))
 }
 
 fn snapshots(value: &Container, installed: &Installed) -> Result<()> {
@@ -343,6 +426,7 @@ fn environment(
 /// any interrupted or unproven attempt requires owner reconciliation, never replay.
 pub fn run(
     store: &Store,
+    policy: &Policy,
     document: &ReleaseDocument,
     installed: &Installed,
     job: &str,
@@ -350,6 +434,7 @@ pub fn run(
     deadline: std::time::Instant,
 ) -> Result<Receipt> {
     document.release.validate()?;
+    policy.validate()?;
     let value = document
         .release
         .workload
@@ -363,29 +448,44 @@ pub fn run(
         .min(std::time::Instant::now() + std::time::Duration::from_secs(u64::from(timeout)));
     run_with(
         store,
+        policy,
         document,
         installed,
         job,
-        operation_id,
-        deadline,
+        JobExecution {
+            operation_id,
+            deadline,
+        },
         &super::engine::Engine { deadline },
     )
 }
 
+struct JobExecution<'a> {
+    operation_id: &'a str,
+    deadline: std::time::Instant,
+}
+
 fn run_with(
     store: &Store,
+    policy: &Policy,
     document: &ReleaseDocument,
     installed: &Installed,
     job: &str,
-    operation_id: &str,
-    deadline: std::time::Instant,
+    execution: JobExecution<'_>,
     runtime: &impl Runtime,
 ) -> Result<Receipt> {
+    let JobExecution {
+        operation_id,
+        deadline,
+    } = execution;
     ensure!(
         std::time::Instant::now() < deadline
             && installed.kind == "komizo.installed"
             && installed.version == 1
             && installed.application == document.release.application
+            && policy.kind == "komizo.policy"
+            && policy.version == 1
+            && policy.application == installed.application
             && installed.release_digest == document.digest
             && installed.operation_id == operation_id
             && hex(operation_id, 32),
@@ -400,6 +500,16 @@ fn run_with(
     let Artifact::Image { config_digest, .. } = &document.release.artifacts[&value.artifact] else {
         return Err(anyhow!("job artifact is not an image"));
     };
+    let group_limits = if installed.instance == "production" {
+        &policy.limits
+    } else {
+        &policy
+            .previews
+            .as_ref()
+            .ok_or_else(|| anyhow!("preview job allocation missing"))?
+            .limits
+    };
+    group_limits.validate()?;
     snapshots(value, installed)?;
     retained(runtime, value, installed)?;
     let identity = identity(document, job, installed)?;
@@ -421,6 +531,7 @@ fn run_with(
                     "completed job no longer has its proven native exit state"
                 );
             }
+            runtime.retire_group(&job_group(&receipt)?, cleanup_deadline())?;
             return Ok(receipt);
         }
         if ["starting", "running"].contains(&receipt.phase.as_str()) {
@@ -484,11 +595,22 @@ fn run_with(
         "--label".into(),
         format!("io.komizo.job.identity={identity}"),
     ];
-    arguments.extend(super::units::options(job, value, &bindings)?);
+    arguments.extend(super::units::options(
+        super::cgroups::WorkloadKind::Job,
+        job,
+        value,
+        &bindings,
+    )?);
     arguments.push(config_digest.clone());
     arguments.extend(value.command.iter().cloned());
     save(store, &receipt)?;
+    let group = job_group(&receipt)?;
+    runtime.prepare_group(&group, group_limits)?;
+    let monitor = job_monitor_group(&receipt)?;
+    let mut before_start = None;
+    let mut start_attempted = false;
     let effect = (|| -> Result<()> {
+        runtime.prepare_group(&monitor, group_limits)?;
         let output = runtime.run(&arguments.iter().map(String::as_str).collect::<Vec<_>>())?;
         let id = std::str::from_utf8(&output)?.trim();
         ensure!(
@@ -497,13 +619,24 @@ fn run_with(
         );
         receipt.container_id = id.to_owned();
         save(store, &receipt)?;
-        owned(runtime, &receipt, value, installed, config_digest)?;
+        let created = owned(runtime, &receipt, value, installed, config_digest)?;
+        ensure!(
+            created["State"]["Running"] == false
+                && created["State"]["Paused"] == false
+                && created["State"]["Pid"] == 0
+                && ["configured", "created"]
+                    .contains(&created["State"]["Status"].as_str().unwrap_or("")),
+            "new job already executed before its proven native start"
+        );
+        before_start = Some(created);
         let start_deadline = deadline - std::time::Duration::from_secs(u64::from(timeout) + 2);
         ensure!(
             std::time::Instant::now() < start_deadline,
             "job preparation exhausted its native lifetime reservation; start refused"
         );
-        runtime.start(&receipt.container_id, start_deadline)?;
+        start_attempted = true;
+        runtime.start(&receipt.container_id, &monitor, start_deadline)?;
+        owned(runtime, &receipt, value, installed, config_digest)?;
         receipt.phase = "running".into();
         save(store, &receipt)?;
         let output = runtime.run(&[
@@ -532,13 +665,40 @@ fn run_with(
         ensure!(exit == 0, "one-shot job exited unsuccessfully");
         Ok(())
     })();
+    // Every return after successful allocation retires the exact owned payload
+    // and monitor subtree. Keep the native container and durable result for
+    // owner reconciliation; a failed operation never creates a new attempt.
+    // The immutable pre-start inspection was already proven against the
+    // durable receipt. Native KILL also reaches a monitor/payload that failed
+    // attachment to its expected kernel group; never select a replacement ID.
+    let cleanup_deadline = cleanup_deadline();
+    let termination = if effect.is_err() && start_attempted {
+        runtime.kill_owned(
+            before_start
+                .as_ref()
+                .expect("verified inspection precedes start"),
+            cleanup_deadline,
+        )
+    } else {
+        Ok(())
+    };
+    let retirement = runtime.retire_group(&group, cleanup_deadline);
     if let Err(error) = effect {
         if !["completed", "failed"].contains(&receipt.phase.as_str()) {
             receipt.phase = "uncertain".into();
             save(store, &receipt)?;
         }
+        if termination.is_err() {
+            return Err(
+                error.context("job failed and exact owned native termination remains unproven")
+            );
+        }
+        if retirement.is_err() {
+            return Err(error.context("job failed and owned cgroup retirement remains unproven"));
+        }
         return Err(error);
     }
+    retirement?;
     Ok(receipt)
 }
 
@@ -627,6 +787,7 @@ fn cleanup_ephemeral_with(
         )?
         .ok_or_else(|| anyhow!("job receipt disappeared during cleanup"))?;
         if !runtime.exists("container", &receipt.container_name)? {
+            runtime.retire_group(&job_group(&receipt)?, cleanup_deadline())?;
             continue;
         }
         let document = store.release(&receipt.release_digest)?;
@@ -669,6 +830,7 @@ fn cleanup_ephemeral_with(
             )?,
             0o600,
         )?;
+        runtime.retire_group(&job_group(&receipt)?, cleanup_deadline())?;
         runtime.run(&["rm", "--force", "--", &receipt.container_id])?;
         ensure!(
             !runtime.exists("container", &receipt.container_name)?,
@@ -764,18 +926,36 @@ fn reconcile_with(
             receipt.job == *job && receipt.release_digest == document.digest,
             "job recovery receipt differs from the interrupted release"
         );
+        let Artifact::Image { config_digest, .. } = &document.release.artifacts[&value.artifact]
+        else {
+            return Err(anyhow!("job recovery artifact is not an image"));
+        };
+        retained(runtime, value, installed)?;
         if receipt.phase == "completed" {
+            if runtime.exists("container", &receipt.container_name)? {
+                let actual = owned(runtime, &receipt, value, installed, config_digest)?;
+                ensure!(
+                    actual["State"]["Running"] == false
+                        && actual["State"]["Paused"] == false
+                        && actual["State"]["Pid"] == 0
+                        && actual["State"]["ExitCode"] == 0
+                        && ["exited", "stopped"]
+                            .contains(&actual["State"]["Status"].as_str().unwrap_or(""))
+                        && actual["State"]["FinishedAt"]
+                            .as_str()
+                            .is_some_and(|time| !time.is_empty() && !time.starts_with("0001-")),
+                    "completed job no longer has its proven terminal native state"
+                );
+            }
+            // Exit proof does not imply the later cleanup barrier succeeded.
+            // Reconcile the exact group without starting or replaying the job.
+            runtime.retire_group(&job_group(&receipt)?, cleanup_deadline())?;
             continue;
         }
         ensure!(
             (receipt.phase != "failed" || allow_failed),
             "failed job requires a corrected job identity before deployment"
         );
-        let Artifact::Image { config_digest, .. } = &document.release.artifacts[&value.artifact]
-        else {
-            return Err(anyhow!("job recovery artifact is not an image"));
-        };
-        retained(runtime, value, installed)?;
         let actual = owned(runtime, &receipt, value, installed, config_digest)?;
         let exit = actual["State"]["ExitCode"]
             .as_i64()
@@ -790,6 +970,7 @@ fn reconcile_with(
                 && exit.is_some(),
             "interrupted job has no independently proven native exit"
         );
+        runtime.retire_group(&job_group(&receipt)?, cleanup_deadline())?;
         receipt.exit_code = exit.map(|n| n as i32);
         receipt.phase = if exit == Some(0) {
             "completed"
@@ -819,6 +1000,7 @@ mod tests {
         _directory: tempfile::TempDir,
         store: Store,
         document: ReleaseDocument,
+        policy: Policy,
         installed: Installed,
     }
     impl Fixture {
@@ -876,10 +1058,20 @@ mod tests {
                     },
                 )]),
             };
+            let policy = serde_json::from_value(json!({
+                "kind":"komizo.policy","version":1,"application":"mailroom",
+                "authority":{"kind":"owner"},"artifact_prefixes":["ghcr.io/example/mailroom"],
+                "hostnames":["api.mail.example"],
+                "limits":{"memory_bytes":268435456,"memory_swap_bytes":268435456,"milli_cpus":500,"pids":256},
+                "readiness":[{"url":"https://api.mail.example/readyz","status":200}],
+                "previews":{"hostname_suffix":"preview.mail.example","max_instances":4,"max_ttl_seconds":3600,
+                    "limits":{"memory_bytes":134217728,"memory_swap_bytes":134217728,"milli_cpus":250,"pids":128}}
+            })).unwrap();
             Self {
                 _directory: directory,
                 store,
                 document,
+                policy,
                 installed,
             }
         }
@@ -895,11 +1087,14 @@ mod tests {
         fn run(&self, runtime: &Fake<'_>) -> Result<Receipt> {
             run_with(
                 &self.store,
+                &self.policy,
                 &self.document,
                 &self.installed,
                 "migrate",
-                &self.installed.operation_id,
-                Instant::now() + Duration::from_secs(30),
+                JobExecution {
+                    operation_id: &self.installed.operation_id,
+                    deadline: Instant::now() + Duration::from_secs(30),
+                },
                 runtime,
             )
         }
@@ -913,7 +1108,14 @@ mod tests {
         corrupt_owner: bool,
         corrupt_mount: bool,
         corrupt_timeout: bool,
+        corrupt_parent: bool,
+        fail_group: Option<&'static str>,
+        fresh_terminal: Option<i32>,
+        escaped_process: Option<&'static str>,
+        fail_kill: bool,
         cleanup_operation: Option<String>,
+        groups: RefCell<Vec<(String, String)>>,
+        cleanup_deadlines: RefCell<Vec<Instant>>,
     }
     impl<'a> Fake<'a> {
         fn new(fixture: &'a Fixture) -> Self {
@@ -926,16 +1128,154 @@ mod tests {
                 corrupt_owner: false,
                 corrupt_mount: false,
                 corrupt_timeout: false,
+                corrupt_parent: false,
+                fail_group: None,
+                fresh_terminal: None,
+                escaped_process: None,
+                fail_kill: false,
                 cleanup_operation: None,
+                groups: RefCell::new(Vec::new()),
+                cleanup_deadlines: RefCell::new(Vec::new()),
             }
         }
     }
     impl Runtime for Fake<'_> {
-        fn start(&self, id: &str, deadline: Instant) -> Result<()> {
+        fn prepare_group(
+            &self,
+            group: &super::super::cgroups::Group,
+            limits: &Limits,
+        ) -> Result<()> {
+            let receipt = self
+                .fixture
+                .receipt()
+                .expect("intent precedes cgroup allocation");
+            let monitor = group == &job_monitor_group(&receipt)?;
+            assert!(monitor || group == &job_group(&receipt)?);
+            let expected = if self.fixture.installed.instance == "production" {
+                &self.fixture.policy.limits
+            } else {
+                &self.fixture.policy.previews.as_ref().unwrap().limits
+            };
+            assert_eq!(limits.memory_bytes, expected.memory_bytes);
+            assert_eq!(limits.memory_swap_bytes, expected.memory_swap_bytes);
+            assert_eq!(limits.milli_cpus, expected.milli_cpus);
+            assert_eq!(limits.pids, expected.pids);
+            self.groups.borrow_mut().push((
+                if monitor {
+                    "prepare-monitor"
+                } else {
+                    "prepare"
+                }
+                .into(),
+                group.relative().into(),
+            ));
+            ensure!(
+                self.fail_group != Some("prepare")
+                    && !(monitor && self.fail_group == Some("monitor")),
+                "synthetic cgroup allocation failure"
+            );
+            Ok(())
+        }
+        fn workload_limits(
+            &self,
+            actual: &Value,
+            group: &super::super::cgroups::Group,
+            limits: &Limits,
+        ) -> Result<Option<Value>> {
+            assert_eq!(
+                limits.memory_bytes,
+                self.fixture.document.release.workload.jobs["migrate"]
+                    .limits
+                    .memory_bytes
+            );
+            ensure!(
+                actual["HostConfig"]["CgroupParent"] == group.relative(),
+                "job cgroup parent differs"
+            );
+            self.groups
+                .borrow_mut()
+                .push(("verify".into(), group.relative().into()));
+            ensure!(
+                actual["State"]["Running"] != true || self.escaped_process.is_none(),
+                "synthetic payload or monitor escaped its cgroup"
+            );
+            if let Some(exit) = self.fresh_terminal
+                && actual["State"]["Running"] == true
+            {
+                let mut terminal = actual.clone();
+                terminal["State"] = json!({"Running":false,"Paused":false,"Pid":0,"Status":"exited",
+                    "ExitCode":exit,"FinishedAt":"2026-01-01T00:00:00Z"});
+                return Ok(Some(terminal));
+            }
+            Ok(None)
+        }
+        fn kill_owned(&self, expected: &Value, cleanup_deadline: Instant) -> Result<()> {
+            self.cleanup_deadlines.borrow_mut().push(cleanup_deadline);
+            let receipt = self.fixture.receipt().unwrap();
+            let mut current = self.container.borrow_mut();
+            let actual = current
+                .as_mut()
+                .ok_or_else(|| anyhow!("owned job disappeared"))?;
+            assert_eq!(expected["Id"], receipt.container_id);
+            assert_eq!(actual["Id"], expected["Id"]);
+            for key in [
+                "Config",
+                "HostConfig",
+                "Mounts",
+                "Image",
+                "Name",
+                "AppArmorProfile",
+            ] {
+                ensure!(
+                    actual[key] == expected[key],
+                    "native termination refused changed ownership"
+                );
+            }
+            self.groups
+                .borrow_mut()
+                .push(("kill".into(), job_group(&receipt)?.relative().into()));
+            ensure!(!self.fail_kill, "synthetic native termination failure");
+            actual["State"]["Running"] = json!(false);
+            actual["State"]["Status"] = json!("exited");
+            // Killing an unproven attempt does not authenticate a job outcome.
+            Ok(())
+        }
+        fn retire_group(
+            &self,
+            group: &super::super::cgroups::Group,
+            cleanup_deadline: Instant,
+        ) -> Result<()> {
+            self.cleanup_deadlines.borrow_mut().push(cleanup_deadline);
+            self.groups
+                .borrow_mut()
+                .push(("retire".into(), group.relative().into()));
+            ensure!(
+                self.fail_group != Some("retire"),
+                "synthetic cgroup retirement failure"
+            );
+            Ok(())
+        }
+        fn start(
+            &self,
+            id: &str,
+            monitor: &super::super::cgroups::Group,
+            deadline: Instant,
+        ) -> Result<()> {
             ensure!(
                 Instant::now() < deadline,
                 "synthetic start deadline expired"
             );
+            let receipt = self.fixture.receipt().unwrap();
+            assert_eq!(id, receipt.container_id);
+            assert_eq!(monitor, &job_monitor_group(&receipt)?);
+            assert!(
+                self.groups
+                    .borrow()
+                    .contains(&("prepare-monitor".into(), monitor.relative().into()))
+            );
+            self.groups
+                .borrow_mut()
+                .push(("start-monitor".into(), monitor.relative().into()));
             self.run(&["start", id])?;
             Ok(())
         }
@@ -958,6 +1298,8 @@ mod tests {
                     assert!(args.contains(&"--pull=never"));
                     assert!(args.contains(&"--read-only"));
                     assert!(args.contains(&"--timeout"));
+                    assert!(args.contains(&"--cgroups=no-conmon"));
+                    assert!(!args.contains(&"--cgroups=enabled"));
                     assert!(args.contains(&"--cgroup-parent"));
                     assert!(args.contains(&"--env-file"));
                     assert!(!args.join(" ").contains("do-not-log-this"));
@@ -972,10 +1314,14 @@ mod tests {
                     let mut value = json!({"Id":"d".repeat(64),"Name":receipt.container_name,
                         "Image":format!("sha256:{}","c".repeat(64)),"Config":{"Labels":labels,"Timeout":receipt.native_timeout_seconds},
                         "AppArmorProfile":super::super::bootstrap::WORKLOAD_PROFILE,
-                        "State":{"Running":false,"Status":"configured","ExitCode":0,"FinishedAt":"0001-01-01T00:00:00Z"},
+                        "HostConfig":{"CgroupParent":args.windows(2).find(|pair| pair[0] == "--cgroup-parent").unwrap()[1]},
+                        "State":{"Running":false,"Paused":false,"Pid":0,"Status":"configured","ExitCode":0,"FinishedAt":"0001-01-01T00:00:00Z"},
                         "Mounts":[{"Type":"volume","Name":"kmz-owned-data","Destination":"/var/lib/app","RW":true}]});
                     if self.corrupt_mount {
                         value["Mounts"][0]["Name"] = json!("foreign-data");
+                    }
+                    if self.corrupt_parent {
+                        value["HostConfig"]["CgroupParent"] = json!("/komizo/production/foreign");
                     }
                     if self.corrupt_timeout {
                         value["Config"]["Timeout"] = json!(1500);
@@ -1037,6 +1383,220 @@ mod tests {
         fn retained(&self, _kind: &str, _record: &store::ObjectRecord) -> Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn failed_payload_or_monitor_attachment_terminates_only_the_previously_owned_native_id() {
+        for escaped in ["payload", "monitor"] {
+            for fail_kill in [false, true] {
+                let fixture = Fixture::new();
+                let mut runtime = Fake::new(&fixture);
+                runtime.escaped_process = Some(escaped);
+                runtime.fail_kill = fail_kill;
+                let error = fixture.run(&runtime).unwrap_err();
+                let receipt = fixture.receipt().unwrap();
+                assert_eq!(receipt.phase, "uncertain");
+                assert_eq!(receipt.exit_code, None);
+                assert_eq!(
+                    runtime
+                        .calls
+                        .borrow()
+                        .iter()
+                        .map(|a| a[0].as_str())
+                        .collect::<Vec<_>>(),
+                    ["create", "start"]
+                );
+                let events = runtime.groups.borrow();
+                assert_eq!(events[events.len() - 2].0, "kill");
+                assert_eq!(events.last().unwrap().0, "retire");
+                let deadlines = runtime.cleanup_deadlines.borrow();
+                assert_eq!(deadlines.len(), 2);
+                assert_eq!(deadlines[0], deadlines[1]);
+                assert!(deadlines[0] <= Instant::now() + Duration::from_secs(5));
+                assert!(format!("{error:#}").contains("escaped its cgroup"));
+                if fail_kill {
+                    assert!(error.to_string().contains("termination remains unproven"));
+                }
+                assert_eq!(
+                    runtime.container.borrow().as_ref().unwrap()["State"]["Running"],
+                    fail_kill
+                );
+                let count = runtime.calls.borrow().len();
+                assert!(fixture.run(&runtime).is_err());
+                assert_eq!(runtime.calls.borrow().len(), count);
+            }
+        }
+    }
+
+    #[test]
+    fn finite_job_owned_evidence_returns_fresh_terminal_exit_without_reclassifying_it() {
+        let fixture = Fixture::new();
+        let mut runtime = Fake::new(&fixture);
+        runtime.fail = Some("wait");
+        assert!(fixture.run(&runtime).is_err());
+        runtime.container.borrow_mut().as_mut().unwrap()["State"]["Running"] = json!(true);
+        runtime.fresh_terminal = Some(19);
+        let receipt = fixture.receipt().unwrap();
+        let value = &fixture.document.release.workload.jobs["migrate"];
+        let Artifact::Image { config_digest, .. } =
+            &fixture.document.release.artifacts[&value.artifact]
+        else {
+            panic!()
+        };
+        let actual = owned(&runtime, &receipt, value, &fixture.installed, config_digest).unwrap();
+        assert_eq!(actual["State"]["Running"], false);
+        assert_eq!(actual["State"]["ExitCode"], 19);
+        assert_eq!(
+            runtime.container.borrow().as_ref().unwrap()["State"]["Running"],
+            true
+        );
+        reconcile_with(
+            &fixture.store,
+            &fixture.document,
+            &fixture.installed,
+            &fixture.installed.operation_id,
+            &runtime,
+            true,
+        )
+        .unwrap();
+        assert_eq!(fixture.receipt().unwrap().phase, "failed");
+        assert_eq!(fixture.receipt().unwrap().exit_code, Some(19));
+        assert!(fixture.run(&runtime).is_err());
+    }
+
+    #[test]
+    fn job_workloads_have_distinct_owned_parents_and_retire_after_each_attempt() {
+        for instance in ["production", "pr-1"] {
+            let mut fixture = Fixture::new();
+            fixture.installed.instance = instance.into();
+            let runtime = Fake::new(&fixture);
+            let receipt = fixture.run(&runtime).unwrap();
+            let group = job_group(&receipt).unwrap();
+            let monitor = job_monitor_group(&receipt).unwrap();
+            assert_eq!(monitor.relative(), format!("{}/conmon", group.relative()));
+            let service = super::super::cgroups::workload_group(
+                "mailroom",
+                instance,
+                super::super::cgroups::WorkloadKind::Service,
+                "migrate",
+                &receipt.ownership,
+            )
+            .unwrap();
+            assert_ne!(group, service);
+            let events = runtime.groups.borrow();
+            assert_eq!(events.first().unwrap().0, "prepare");
+            assert_eq!(events.last().unwrap().0, "retire");
+            for (kind, parent) in events.iter() {
+                let expected = if ["prepare-monitor", "start-monitor"].contains(&kind.as_str()) {
+                    monitor.relative()
+                } else {
+                    group.relative()
+                };
+                assert_eq!(parent, expected);
+            }
+            assert_eq!(
+                events[1],
+                ("prepare-monitor".into(), monitor.relative().into())
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|(kind, _)| kind == "start-monitor")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                events.iter().filter(|(kind, _)| kind == "verify").count(),
+                3
+            );
+        }
+        for command in ["create", "start", "wait"] {
+            let fixture = Fixture::new();
+            let mut runtime = Fake::new(&fixture);
+            runtime.fail = Some(command);
+            assert!(fixture.run(&runtime).is_err());
+            assert_eq!(runtime.groups.borrow().last().unwrap().0, "retire");
+            assert_eq!(fixture.receipt().unwrap().phase, "uncertain");
+        }
+    }
+    #[test]
+    fn unprepared_or_foreign_job_parent_refuses_execution_and_cleanup_failure_blocks_success() {
+        for phase in ["prepare", "monitor", "retire", "foreign"] {
+            let fixture = Fixture::new();
+            let mut runtime = Fake::new(&fixture);
+            if phase == "foreign" {
+                runtime.corrupt_parent = true;
+            } else {
+                runtime.fail_group = Some(phase);
+            }
+            assert!(fixture.run(&runtime).is_err());
+            let calls = runtime.calls.borrow();
+            if ["prepare", "monitor"].contains(&phase) {
+                assert!(calls.is_empty());
+            }
+            if phase == "monitor" {
+                assert_eq!(runtime.groups.borrow().last().unwrap().0, "retire");
+                assert_eq!(fixture.receipt().unwrap().phase, "uncertain");
+            }
+            if phase == "foreign" {
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0][0], "create");
+            }
+            if phase == "retire" {
+                assert_eq!(fixture.receipt().unwrap().phase, "completed");
+                assert_eq!(fixture.receipt().unwrap().exit_code, Some(0));
+                // A durable outcome remains final even when post-exit cleanup failed.
+                assert_eq!(calls.iter().filter(|args| args[0] == "create").count(), 1);
+            }
+        }
+        let mut fixture = Fixture::new();
+        fixture.policy.application = "foreign".into();
+        let runtime = Fake::new(&fixture);
+        assert!(fixture.run(&runtime).is_err());
+        assert!(runtime.calls.borrow().is_empty());
+        assert!(fixture.receipt().is_none());
+    }
+
+    #[test]
+    fn completed_job_recovery_still_requires_exact_owned_terminal_state_and_retirement() {
+        let fixture = Fixture::new();
+        let mut runtime = Fake::new(&fixture);
+        runtime.fail_group = Some("retire");
+        assert!(fixture.run(&runtime).is_err());
+        let before = canonical(&serde_json::to_value(fixture.receipt().unwrap()).unwrap()).unwrap();
+        assert_eq!(fixture.receipt().unwrap().phase, "completed");
+        let effects = runtime.calls.borrow().len();
+        let recover = |runtime: &Fake<'_>| {
+            reconcile_with(
+                &fixture.store,
+                &fixture.document,
+                &fixture.installed,
+                &fixture.installed.operation_id,
+                runtime,
+                false,
+            )
+        };
+        assert!(recover(&runtime).is_err());
+        assert_eq!(runtime.calls.borrow().len(), effects);
+        runtime.fail_group = None;
+        let owned = runtime.container.borrow().as_ref().unwrap().clone();
+        runtime.container.borrow_mut().as_mut().unwrap()["Config"]["Labels"]["io.komizo.ownership"] =
+            json!("f".repeat(32));
+        assert!(recover(&runtime).is_err());
+        *runtime.container.borrow_mut() = Some(owned.clone());
+        runtime.container.borrow_mut().as_mut().unwrap()["State"]["Running"] = json!(true);
+        assert!(recover(&runtime).is_err());
+        *runtime.container.borrow_mut() = Some(owned);
+        recover(&runtime).unwrap();
+        assert_eq!(
+            canonical(&serde_json::to_value(fixture.receipt().unwrap()).unwrap()).unwrap(),
+            before
+        );
+        assert_eq!(runtime.calls.borrow().len(), effects);
+        assert_eq!(runtime.groups.borrow().last().unwrap().0, "retire");
+        *runtime.container.borrow_mut() = None;
+        recover(&runtime).unwrap();
+        assert_eq!(runtime.calls.borrow().len(), effects);
     }
 
     #[test]
@@ -1304,11 +1864,14 @@ mod tests {
         assert!(
             run_with(
                 &fixture.store,
+                &fixture.policy,
                 &fixture.document,
                 &fixture.installed,
                 "migrate",
-                &fixture.installed.operation_id,
-                Instant::now() - Duration::from_secs(1),
+                JobExecution {
+                    operation_id: &fixture.installed.operation_id,
+                    deadline: Instant::now() - Duration::from_secs(1)
+                },
                 &runtime
             )
             .is_err()

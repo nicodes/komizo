@@ -134,7 +134,18 @@ pub fn upstreams(
 }
 
 pub fn refresh(store: &Store, deadline: Instant) -> Result<()> {
-    let _lock = store.lock("platform", "proxy")?;
+    let _lock = super::controller::resource_lease(store, "platform", "proxy", deadline)?;
+    refresh_locked(store, deadline)
+}
+
+pub fn refresh_background(store: &Store, deadline: Instant) -> Result<()> {
+    let Some(_lock) = super::controller::maintenance_lease(store, "platform", "proxy")? else {
+        return Ok(());
+    };
+    refresh_locked(store, deadline)
+}
+
+fn refresh_locked(store: &Store, deadline: Instant) -> Result<()> {
     system::reconcile_framework_units(store, "platform", "proxy")?;
     let engine = Engine { deadline };
     let mut body = globals()?;

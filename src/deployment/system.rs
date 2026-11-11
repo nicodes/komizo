@@ -1,11 +1,12 @@
 use super::{
-    capacity::{self, Capacity},
+    capacity::Capacity,
+    cgroups::{self, Group, Pool},
     model::*,
     store::{self, Store},
     units,
     validation::*,
 };
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -15,8 +16,7 @@ use std::{
     time::Instant,
 };
 
-pub const QUADLETS: &str = "/etc/containers/systemd";
-pub const UNITS: &str = "/etc/systemd/system";
+pub const SERVICE_CONFIGS: &str = "/var/lib/komizo/service-configs";
 pub const ASSETS: &str = "/var/lib/komizo-assets";
 pub const PROXY_CONFIG: &str = "/etc/komizo-proxy/Caddyfile";
 pub const PROXY_SOCKET: &str = "unix//run/komizo-proxy/admin.sock";
@@ -33,58 +33,55 @@ pub struct System {
     pub deadline: Instant,
 }
 impl System {
-    pub fn run(&self, args: &[&str]) -> Result<Vec<u8>> {
-        let mut command = Command::new("/usr/bin/systemctl");
-        command
-            .env_clear()
-            .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
-            .env("LANG", "C.UTF-8")
-            .args(args);
-        let output = crate::process::capture(&mut command, None, 1 << 20, self.deadline, || false)
-            .map_err(|_| anyhow!("service manager process failed or exceeded its deadline"))?;
-        ensure!(
-            output.status.success(),
-            "service manager refused the protected operation"
-        );
-        Ok(output.stdout)
-    }
-    pub fn reload(&self) -> Result<()> {
-        self.run(&["daemon-reload"])?;
-        Ok(())
-    }
-    pub fn start(&self, name: &str) -> Result<()> {
-        self.run(&["start", name])?;
-        Ok(())
-    }
-    pub fn stop(&self, name: &str) -> Result<()> {
-        self.run(&["stop", name])?;
-        Ok(())
-    }
-    pub fn active(&self, name: &str) -> Result<bool> {
-        let value = self.run(&["show", "--property=ActiveState", "--value", name])?;
-        let value = std::str::from_utf8(&value)?.trim();
-        ensure!(
-            ["active", "inactive", "failed", "activating", "deactivating"].contains(&value),
-            "service manager state is ambiguous"
-        );
-        Ok(value == "active")
-    }
-    pub fn group(&self, name: &str) -> Result<PathBuf> {
-        let value = self.run(&["show", "--property=ControlGroup", "--value", name])?;
-        let path = std::str::from_utf8(&value)?.trim();
-        ensure!(
-            absolute(path) && path != "/",
-            "service manager omitted its protected cgroup"
-        );
-        Ok(Path::new("/sys/fs/cgroup").join(path.trim_start_matches('/')))
-    }
-    pub fn verify_slice(
+    pub fn prepare_group(
         &self,
-        name: &str,
+        group: &Group,
         limits: &Limits,
         controls: &ResourceControls,
     ) -> Result<()> {
-        capacity::verify_cgroup(&self.group(name)?, limits, controls)
+        cgroups::prepare(group, limits, controls, self.deadline)
+    }
+    pub fn verify_group(
+        &self,
+        group: &Group,
+        limits: &Limits,
+        controls: &ResourceControls,
+    ) -> Result<()> {
+        ensure!(
+            Instant::now() < self.deadline,
+            "resource verification deadline expired"
+        );
+        cgroups::verify(group, limits, controls)
+    }
+    pub fn group_empty(&self, group: &Group) -> Result<bool> {
+        ensure!(
+            Instant::now() < self.deadline,
+            "resource observation deadline expired"
+        );
+        cgroups::empty(group)
+    }
+    pub fn kill_group(&self, group: &Group) -> Result<()> {
+        cgroups::kill(group, self.deadline)
+    }
+    pub fn kill_entry(&self, group: &Group) -> Result<fs::File> {
+        cgroups::kill_entry(group)
+    }
+    pub fn process_entry(&self, group: &Group) -> Result<fs::File> {
+        ensure!(
+            Instant::now() < self.deadline,
+            "process entry deadline expired"
+        );
+        cgroups::process_entry(group)
+    }
+    pub fn enter(&self, group: &Group, pid: u32) -> Result<()> {
+        ensure!(
+            Instant::now() < self.deadline,
+            "process entry deadline expired"
+        );
+        cgroups::enter(group, pid)
+    }
+    pub fn remove_group(&self, group: &Group) -> Result<()> {
+        cgroups::remove(group, self.deadline)
     }
 }
 
@@ -109,9 +106,12 @@ pub struct UnitIntent {
     pub phase: String,
 }
 fn destination(path: &Path) -> bool {
-    path.parent() == Some(Path::new(QUADLETS))
-        || path.parent() == Some(Path::new(UNITS))
-        || path == Path::new(PROXY_CONFIG)
+    path == Path::new(PROXY_CONFIG)
+        || path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .and_then(|value| units::config_path(value).ok())
+            .is_some_and(|expected| expected == path)
 }
 impl UnitIntent {
     pub fn validate(&self) -> Result<()> {
@@ -225,7 +225,7 @@ pub fn reconcile_unit_intent_with(
     files: &impl UnitFiles,
 ) -> Result<()> {
     intent.validate()?;
-    let _guard = store.lock("platform", "units")?;
+    let _guard = metadata_lease(store)?;
     reconcile_one(store, intent, files)
 }
 fn reconcile_one(store: &Store, intent: &UnitIntent, files: &impl UnitFiles) -> Result<()> {
@@ -276,6 +276,17 @@ fn reconcile_one(store: &Store, intent: &UnitIntent, files: &impl UnitFiles) -> 
     )?;
     Ok(())
 }
+fn metadata_lease(store: &Store) -> Result<store::Guard> {
+    // Only protected filesystem/ledger operations use this bounded wait; no
+    // native execution or service lifetime is renewed by metadata contention.
+    super::controller::resource_lease(
+        store,
+        "platform",
+        "units",
+        Instant::now() + std::time::Duration::from_secs(5),
+    )
+}
+
 fn transaction(
     store: &Store,
     path: &Path,
@@ -291,7 +302,7 @@ fn transaction(
             && operation_id.is_none_or(|id| hex(id, 32)),
         "invalid protected unit transaction scope"
     );
-    let _guard = store.lock("platform", "units")?;
+    let _guard = metadata_lease(store)?;
     ensure!(
         !intent_records(store)?
             .iter()
@@ -450,7 +461,7 @@ fn reconcile_selected_unit_intents(
     operation_id: Option<&str>,
     files: &impl UnitFiles,
 ) -> Result<()> {
-    let _guard = store.lock("platform", "units")?;
+    let _guard = metadata_lease(store)?;
     for (path, mut intent) in intent_records(store)? {
         if scoped(&intent, application, instance, operation_id) && intent.phase == "pending" {
             reconcile_one(store, &intent, files)?;
@@ -550,11 +561,38 @@ pub fn verify_unit(
     Ok(())
 }
 
+fn resource_config(
+    store: &Store,
+    group: &Group,
+    identity: &str,
+    application: &str,
+    instance: &str,
+    limits: &Limits,
+    controls: &ResourceControls,
+) -> Result<()> {
+    limits.validate()?;
+    controls.validate(limits)?;
+    let body = canonical(
+        &serde_json::json!({"kind":"komizo.cgroup-allocation", "version":1,
+        "group":group.relative(), "limits":limits, "controls":controls}),
+    )?;
+    install(
+        store,
+        &units::config_path(identity)?,
+        application,
+        instance,
+        &body,
+    )?;
+    Ok(())
+}
+
 pub fn host_pools(store: &Store, system: &System, capacity: &Capacity) -> Result<()> {
     capacity.measured()?;
+    let root = cgroups::root_group();
     let pools = vec![
         (
-            "komizo.slice",
+            root,
+            "cgroup-root",
             &capacity.limits,
             ResourceControls {
                 memory_low_bytes: capacity.limits.memory_bytes,
@@ -562,7 +600,8 @@ pub fn host_pools(store: &Store, system: &System, capacity: &Capacity) -> Result
             },
         ),
         (
-            "komizo-production.slice",
+            cgroups::pool_group(Pool::Production),
+            "cgroup-production",
             &capacity.production,
             ResourceControls {
                 memory_low_bytes: capacity.production.memory_bytes,
@@ -570,7 +609,8 @@ pub fn host_pools(store: &Store, system: &System, capacity: &Capacity) -> Result
             },
         ),
         (
-            "komizo-previews.slice",
+            cgroups::pool_group(Pool::Previews),
+            "cgroup-previews",
             &capacity.previews,
             ResourceControls {
                 memory_low_bytes: capacity.previews.memory_bytes,
@@ -578,34 +618,28 @@ pub fn host_pools(store: &Store, system: &System, capacity: &Capacity) -> Result
             },
         ),
         (
-            "komizo-control.slice",
+            cgroups::pool_group(Pool::Control),
+            "cgroup-control",
             &capacity.control.limits,
             capacity.control.controls.clone(),
         ),
         (
-            "komizo-proxy.slice",
+            cgroups::pool_group(Pool::Proxy),
+            "cgroup-proxy",
             &capacity.proxy.limits,
             capacity.proxy.controls.clone(),
         ),
     ];
-    for (unit, limits, controls) in &pools {
-        install(
-            store,
-            &Path::new(UNITS).join(unit),
-            "platform",
-            "capacity",
-            units::controlled_slice(limits, controls)?.as_bytes(),
+    for (group, identity, limits, controls) in pools {
+        resource_config(
+            store, &group, identity, "platform", "capacity", limits, &controls,
         )?;
-    }
-    system.reload()?;
-    for (unit, limits, controls) in &pools {
-        system.start(unit)?;
-        system.verify_slice(unit, limits, controls)?;
+        system.prepare_group(&group, limits, &controls)?;
     }
     Ok(())
 }
 
-pub fn instance_slice(
+pub fn instance_allocation(
     store: &Store,
     system: &System,
     policy: &Policy,
@@ -614,27 +648,72 @@ pub fn instance_slice(
     let (limits, controls) = if instance == "production" {
         (&policy.limits, &policy.controls)
     } else {
-        let p = policy
+        let preview = policy
             .previews
             .as_ref()
             .ok_or_else(|| anyhow!("preview allocation missing"))?;
-        (&p.limits, &p.controls)
+        (&preview.limits, &preview.controls)
     };
-    let name = units::slice(&policy.application, instance)?;
-    install(
+    let group = cgroups::instance_group(&policy.application, instance)?;
+    resource_config(
         store,
-        &Path::new(UNITS).join(&name),
+        &group,
+        &format!(
+            "cgroup-{}",
+            units::namespace(&policy.application, instance)?
+        ),
         &policy.application,
         instance,
-        units::controlled_slice(limits, controls)?.as_bytes(),
+        limits,
+        controls,
     )?;
-    system.reload()?;
-    system.start(&name)?;
-    system.verify_slice(&name, limits, controls)
+    system.prepare_group(&group, limits, controls)
+}
+
+/// Restore an admitted allocation after boot without entering or modifying the
+/// shared configuration ledger from a background actor.
+pub fn restore_instance_allocation(
+    store: &Store,
+    system: &System,
+    policy: &Policy,
+    instance: &str,
+) -> Result<()> {
+    let (limits, controls) = if instance == "production" {
+        (&policy.limits, &policy.controls)
+    } else {
+        let preview = policy
+            .previews
+            .as_ref()
+            .ok_or_else(|| anyhow!("preview allocation missing"))?;
+        (&preview.limits, &preview.controls)
+    };
+    let group = cgroups::instance_group(&policy.application, instance)?;
+    let path = units::config_path(&format!(
+        "cgroup-{}",
+        units::namespace(&policy.application, instance)?
+    ))?;
+    let body = canonical(
+        &serde_json::json!({"kind":"komizo.cgroup-allocation", "version":1,
+        "group":group.relative(), "limits":limits, "controls":controls}),
+    )?;
+    verify_unit(
+        store,
+        &path,
+        &policy.application,
+        instance,
+        &document_digest(&body),
+    )?;
+    system.prepare_group(&group, limits, controls)
 }
 
 pub fn caddy_validate(config: &Path, deadline: Instant) -> Result<()> {
+    let entered = Instant::now();
+    let entry_remaining_ms = deadline.saturating_duration_since(entered).as_millis();
     super::bootstrap::proxy_guard()?;
+    let guard_elapsed_ms = entered.elapsed().as_millis();
+    let after_guard_remaining_ms = deadline
+        .saturating_duration_since(Instant::now())
+        .as_millis();
     let mut command = Command::new("/usr/local/bin/caddy");
     command.env_clear().env("PATH", "/usr/bin:/bin").args([
         "adapt",
@@ -645,7 +724,12 @@ pub fn caddy_validate(config: &Path, deadline: Instant) -> Result<()> {
             .to_str()
             .ok_or_else(|| anyhow!("invalid proxy staging path"))?,
     ]);
-    let output = crate::process::capture(&mut command, None, 256 << 10, deadline, || false)?;
+    let capture_started = Instant::now();
+    let output = crate::process::capture(&mut command, None, 256 << 10, deadline, || false)
+        .with_context(|| format!(
+            "native proxy configuration adaptation process (entry_remaining_ms={entry_remaining_ms}, guard_elapsed_ms={guard_elapsed_ms}, after_guard_remaining_ms={after_guard_remaining_ms}, capture_elapsed_ms={})",
+            capture_started.elapsed().as_millis()
+        ))?;
     ensure!(
         output.status.success(),
         "proxy rejected staged serving configuration: {}",
@@ -658,7 +742,13 @@ pub fn caddy_validate(config: &Path, deadline: Instant) -> Result<()> {
 }
 
 pub fn caddy_reload(deadline: Instant) -> Result<()> {
+    let entered = Instant::now();
+    let entry_remaining_ms = deadline.saturating_duration_since(entered).as_millis();
     super::bootstrap::proxy_guard()?;
+    let guard_elapsed_ms = entered.elapsed().as_millis();
+    let after_guard_remaining_ms = deadline
+        .saturating_duration_since(Instant::now())
+        .as_millis();
     let mut command = Command::new("/usr/local/bin/caddy");
     command.env_clear().env("PATH", "/usr/bin:/bin").args([
         "reload",
@@ -669,10 +759,49 @@ pub fn caddy_reload(deadline: Instant) -> Result<()> {
         "--address",
         PROXY_SOCKET,
     ]);
-    let output = crate::process::capture(&mut command, None, 256 << 10, deadline, || false)?;
+    let capture_started = Instant::now();
+    let output = crate::process::capture(&mut command, None, 256 << 10, deadline, || false)
+        .with_context(|| format!(
+            "native proxy reload acknowledgment process (entry_remaining_ms={entry_remaining_ms}, guard_elapsed_ms={guard_elapsed_ms}, after_guard_remaining_ms={after_guard_remaining_ms}, capture_elapsed_ms={})",
+            capture_started.elapsed().as_millis()
+        ))?;
     ensure!(
         output.status.success(),
         "proxy refused the staged serving configuration"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod metadata_lease_tests {
+    use super::*;
+    use std::{os::unix::fs::PermissionsExt, sync::mpsc, time::Duration};
+
+    #[test]
+    fn ledger_lease_waits_for_real_contention_and_keeps_file_ownership_checks() {
+        let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let store = Store::new(directory.path().join("state")).unwrap();
+        let prior = store.lock("platform", "units").unwrap();
+        let (ready, received) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let other = store.clone();
+        let worker = std::thread::spawn(move || {
+            let _guard = metadata_lease(&other).unwrap();
+            ready.send(()).unwrap();
+            released.recv_timeout(Duration::from_secs(2)).unwrap();
+        });
+        assert!(received.recv_timeout(Duration::from_millis(20)).is_err());
+        drop(prior);
+        received.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(store.try_lock("platform", "units").unwrap().is_none());
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(store.try_lock("platform", "units").unwrap().is_some());
+        fs::set_permissions(
+            store.root.join("locks/platform--units"),
+            fs::Permissions::from_mode(0o666),
+        )
+        .unwrap();
+        assert!(metadata_lease(&store).is_err());
+    }
 }

@@ -11,8 +11,8 @@ concurrency:
   group: native-host-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  debian:
-    name: Debian 13 native host
+  alpine:
+    name: Alpine 3.24 native host
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
@@ -25,32 +25,14 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Verify the pinned SDK transport boundary
         timeout-minutes: 1
-        run: python3 -I -B tests/acceptance/test_native_sdk.py
+        run: |
+          sudo -n /usr/bin/python3 -I -B tests/acceptance/test_native_sdk.py
+          python3 -I -B -m unittest discover -s tests/acceptance -p test_native_release.py
       - name: Authenticate the exact SDK through the official asset API
         timeout-minutes: 2
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 -I -B tests/support/native_host_sdk.py
-      - name: Build the exact native controller source
-        env:
-          CARGO_PROFILE_DEV_DEBUG: '0'
-        run: |
-          set -euo pipefail
-          mise install rust@1.94.0
-          mise exec rust@1.94.0 -- cargo build --locked --bin komizo-box --target-dir .artifacts/native-host-build
-      - name: Check out the accepted proxy source closure
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: nicodes/tools
-          ref: 7873bb0fdae1726295dbf7f9317c58daa374b2a6
-          path: .artifacts/native-proxy-tools
-          persist-credentials: false
-      - name: Build and audit the exact native proxy
-        timeout-minutes: 20
-        run: |
-          set -euo pipefail
-          mise install go@1.27.3 go:golang.org/x/vuln/cmd/govulncheck@1.7.0
-          mise exec go@1.27.3 go:golang.org/x/vuln/cmd/govulncheck@1.7.0 -- python3 -I -B tests/support/native_host_proxy.py --tools .artifacts/native-proxy-tools --output .artifacts/native-proxy/caddy_Linux_x86_64
       - name: Select the declared immutable backup provider
         id: backup-provider
         run: |
@@ -69,20 +51,44 @@ jobs:
           ref: ${{ steps.backup-provider.outputs.revision }}
           path: .artifacts/native-backup-cookbook
           persist-credentials: false
-      - name: Prepare the disposable machine runner
+      - name: Prepare verified Ubuntu native runner dependencies
+        timeout-minutes: 6
+        run: sudo -n /usr/bin/python3 -I -B .artifacts/native-backup-cookbook/cookbook/ubuntu_ci.py native-host
+      - name: Build the exact native controller source
+        env:
+          CARGO_PROFILE_DEV_DEBUG: '0'
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils acl
+          mise install rust@1.94.0
+          mise exec rust@1.94.0 -- rustup target add x86_64-unknown-linux-musl
+          mise exec rust@1.94.0 -- cargo build --locked --bin komizo-box --target x86_64-unknown-linux-musl --target-dir .artifacts/native-host-build
+      - name: Check out the accepted proxy source closure
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/tools
+          ref: 7873bb0fdae1726295dbf7f9317c58daa374b2a6
+          path: .artifacts/native-proxy-tools
+          persist-credentials: false
+      - name: Build and audit the exact native proxy
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          mise install go@1.27.4 go:golang.org/x/vuln/cmd/govulncheck@1.7.0
+          mise exec go@1.27.4 go:golang.org/x/vuln/cmd/govulncheck@1.7.0 -- python3 -I -B tests/support/native_host_proxy.py --tools .artifacts/native-proxy-tools --output .artifacts/native-proxy/caddy_Linux_x86_64
+      - name: Allow the disposable machine runner to use KVM
+        run: |
+          set -euo pipefail
           native_runner_uid="$(id -u)"
           sudo setfacl -m "u:$native_runner_uid:rw" /dev/kvm
       - name: Assert native bootstrap, isolation and real reboot
-        run: python3 -I -B tests/support/native_host_vm.py --binary .artifacts/native-host-build/debug/komizo-box --proxy-binary .artifacts/native-proxy/caddy_Linux_x86_64 --proxy-receipt .artifacts/native-proxy/caddy_Linux_x86_64.json --cookbook-source .artifacts/native-backup-cookbook --tools-source .artifacts/native-proxy-tools
+        run: python3 -I -B tests/support/native_host_vm.py --binary .artifacts/native-host-build/x86_64-unknown-linux-musl/debug/komizo-box --proxy-binary .artifacts/native-proxy/caddy_Linux_x86_64 --proxy-receipt .artifacts/native-proxy/caddy_Linux_x86_64.json --cookbook-source .artifacts/native-backup-cookbook --tools-source .artifacts/native-proxy-tools
       - name: Preserve bounded native host evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: native-host-${{ env.NATIVE_HOST_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .artifacts/native-host/
+          path: |
+            .artifacts/native-host/
+            .artifacts/native-proxy/security/
           retention-days: 14
           if-no-files-found: error

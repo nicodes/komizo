@@ -8,10 +8,11 @@ use super::{
 use anyhow::{Result, anyhow, ensure};
 use serde_json::{Value, json};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     io::{Read, Seek, Write},
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
-    sync::{Arc, mpsc},
+    sync::{Arc, Condvar, Mutex, OnceLock, mpsc},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -42,6 +43,126 @@ pub struct Coordinator {
     pub store: Store,
     pub policies: PathBuf,
     sender: mpsc::SyncSender<Job>,
+}
+
+type LeaseKey = (PathBuf, String);
+
+#[derive(Default)]
+struct MaintenanceOwners {
+    held: BTreeSet<LeaseKey>,
+    waiting: BTreeMap<LeaseKey, usize>,
+}
+
+fn maintenance_owners() -> &'static (Mutex<MaintenanceOwners>, Condvar) {
+    static OWNERS: OnceLock<(Mutex<MaintenanceOwners>, Condvar)> = OnceLock::new();
+    OWNERS.get_or_init(|| (Mutex::new(MaintenanceOwners::default()), Condvar::new()))
+}
+
+/// A short background mutation lease. Admission has priority over new probes.
+pub struct MaintenanceLease {
+    key: LeaseKey,
+    guard: Option<Guard>,
+}
+
+impl Drop for MaintenanceLease {
+    fn drop(&mut self) {
+        let (mutex, changed) = maintenance_owners();
+        let mut owners = mutex.lock().unwrap_or_else(|error| error.into_inner());
+        // Release the real interprocess lock before waking an admitted caller.
+        drop(self.guard.take());
+        owners.held.remove(&self.key);
+        changed.notify_all();
+    }
+}
+
+pub fn maintenance_lease(
+    store: &Store,
+    application: &str,
+    instance: &str,
+) -> Result<Option<MaintenanceLease>> {
+    let key = (
+        store.root.clone(),
+        Store::instance_key(application, instance)?,
+    );
+    let (mutex, _) = maintenance_owners();
+    let mut owners = mutex
+        .lock()
+        .map_err(|_| anyhow!("maintenance lease registry failed"))?;
+    if owners.held.contains(&key) || owners.waiting.contains_key(&key) {
+        return Ok(None);
+    }
+    let Some(guard) = store.try_lock(application, instance)? else {
+        return Ok(None);
+    };
+    owners.held.insert(key.clone());
+    Ok(Some(MaintenanceLease {
+        key,
+        guard: Some(guard),
+    }))
+}
+
+fn admission_lease(
+    store: &Store,
+    application: &str,
+    instance: &str,
+    deadline: Instant,
+) -> Result<Guard> {
+    foreground_lease(store, application, instance, deadline, false)
+}
+
+/// Serialize shared infrastructure updates within the existing effect budget.
+pub(crate) fn resource_lease(
+    store: &Store,
+    application: &str,
+    instance: &str,
+    deadline: Instant,
+) -> Result<Guard> {
+    foreground_lease(store, application, instance, deadline, true)
+}
+
+fn foreground_lease(
+    store: &Store,
+    application: &str,
+    instance: &str,
+    deadline: Instant,
+    wait_for_operation: bool,
+) -> Result<Guard> {
+    let key = (
+        store.root.clone(),
+        Store::instance_key(application, instance)?,
+    );
+    let (mutex, changed) = maintenance_owners();
+    let mut owners = mutex
+        .lock()
+        .map_err(|_| anyhow!("maintenance lease registry failed"))?;
+    *owners.waiting.entry(key.clone()).or_default() += 1;
+    let result = loop {
+        if Instant::now() >= deadline {
+            break Err(anyhow!("operation expired waiting for its resource lease"));
+        }
+        if !owners.held.contains(&key) {
+            match store.try_lock(application, instance) {
+                Ok(Some(guard)) => break Ok(guard),
+                Ok(None) if !wait_for_operation => {
+                    break Err(anyhow!("instance already has an active operation"));
+                }
+                Err(error) => break Err(error),
+                Ok(None) => {}
+            }
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        owners = changed
+            .wait_timeout(owners, remaining.min(Duration::from_millis(10)))
+            .map_err(|_| anyhow!("maintenance lease registry failed"))?
+            .0;
+    };
+    if let Some(waiting) = owners.waiting.get_mut(&key) {
+        *waiting -= 1;
+        if *waiting == 0 {
+            owners.waiting.remove(&key);
+        }
+    }
+    result
 }
 
 pub fn now() -> Result<i64> {
@@ -88,17 +209,35 @@ impl Coordinator {
         });
         let worker_store = coordinator.store.clone();
         let worker_policies = coordinator.policies.clone();
-        std::thread::spawn(move || {
+        let maintenance_store = coordinator.store.clone();
+        let maintenance_backend = backend.clone();
+        let live = Arc::downgrade(&coordinator);
+        std::thread::Builder::new()
+            .name("komizo-maintenance".into())
+            .spawn(move || {
+                // Service probes and restarts remain available while an
+                // unrelated bounded deployment or backup occupies the worker.
+                // The backend takes nonblocking instance leases and never
+                // repeats migrations from this independent maintenance path.
+                while live.strong_count() > 0 {
+                    std::thread::sleep(Duration::from_secs(1));
+                    if live.strong_count() == 0 {
+                        break;
+                    }
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        maintenance_backend.maintenance(&maintenance_store)
+                    }));
+                }
+            })?;
+        std::thread::Builder::new()
+            .name("komizo-effects".into())
+            .spawn(move || {
             // One effect worker preserves the shared startup and disk budget.
             // Authentication and read-only inspection remain independently live.
             loop {
-                let job = match receiver.recv_timeout(Duration::from_secs(10)) {
+                let job = match receiver.recv() {
                     Ok(job) => job,
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        let _ = backend.maintenance(&worker_store);
-                        continue;
-                    }
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(_) => break,
                 };
                 let result = (|| -> Result<Operation> {
                     let mut operation = worker_store.operation(&job.operation_id)?;
@@ -177,9 +316,8 @@ impl Coordinator {
                 if let Ok(operation) = result {
                     let _ = response.send(operation);
                 }
-                let _ = backend.maintenance(&worker_store);
             }
-        });
+        })?;
         Ok(coordinator)
     }
 
@@ -190,6 +328,7 @@ impl Coordinator {
         at: i64,
         key: &mut authority::KeyProvider<'_>,
     ) -> Result<Completion> {
+        let admission_started = Instant::now();
         let scope = bounded_value(&body, MAX_DOCUMENT_BYTES)?;
         let application = scope["application"]
             .as_str()
@@ -212,7 +351,22 @@ impl Coordinator {
             self.store.reserve(&request, &request_digest, &id)?;
             return self.export(&request, &policy);
         }
-        let guard = self.store.lock(&request.application, &request.instance)?;
+        let work_remaining = request
+            .issued_at
+            .checked_add(i64::from(request.timeout_seconds))
+            .and_then(|n| n.checked_sub(at))
+            .ok_or_else(|| anyhow!("operation deadline overflow"))?;
+        ensure!(work_remaining > 0, "operation deadline has already elapsed");
+        let deadline = admission_started
+            + Duration::from_secs(
+                (work_remaining as u64).min(u64::from(policy.operation_timeout_seconds)),
+            );
+        let guard = admission_lease(
+            &self.store,
+            &request.application,
+            &request.instance,
+            deadline,
+        )?;
         self.blocked(&request)?;
         let installed = self
             .store
@@ -237,16 +391,6 @@ impl Coordinator {
                 "operation target differs from the installed release"
             );
         }
-        let work_remaining = request
-            .issued_at
-            .checked_add(i64::from(request.timeout_seconds))
-            .and_then(|n| n.checked_sub(at))
-            .ok_or_else(|| anyhow!("operation deadline overflow"))?;
-        ensure!(work_remaining > 0, "operation deadline has already elapsed");
-        let deadline = Instant::now()
-            + Duration::from_secs(
-                (work_remaining as u64).min(u64::from(policy.operation_timeout_seconds)),
-            );
         self.store.reserve(&request, &request_digest, &id)?;
         if let Some(document) = release {
             self.store.save_release(&document)?;
@@ -500,4 +644,162 @@ pub fn write_frame(stream: &mut UnixStream, operation: &Operation) -> Result<()>
     serde_json::to_writer(&mut *stream, operation)?;
     stream.write_all(b"\n")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod lease_tests {
+    use super::*;
+
+    fn store() -> (tempfile::TempDir, Store) {
+        let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let store = Store::new(directory.path().join("state")).unwrap();
+        (directory, store)
+    }
+
+    #[test]
+    fn admission_waits_for_background_handoff_without_refusing_or_renewing_time() {
+        let (_directory, store) = store();
+        let maintenance = maintenance_lease(&store, "example", "production")
+            .unwrap()
+            .unwrap();
+        let worker_store = store.clone();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let waiting = std::thread::spawn(move || {
+            admission_lease(&worker_store, "example", "production", deadline)
+        });
+        let key = (
+            store.root.clone(),
+            Store::instance_key("example", "production").unwrap(),
+        );
+        while !maintenance_owners()
+            .0
+            .lock()
+            .unwrap()
+            .waiting
+            .contains_key(&key)
+        {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(
+            maintenance_lease(&store, "example", "production")
+                .unwrap()
+                .is_none()
+        );
+        drop(maintenance);
+        let admitted = waiting.join().unwrap().unwrap();
+        assert!(store.lock("example", "production").is_err());
+        drop(admitted);
+        assert!(store.lock("example", "production").is_ok());
+    }
+
+    #[test]
+    fn busy_admitted_operation_refuses_immediately_and_background_wait_has_fixed_deadline() {
+        let (_directory, store) = store();
+        let operation = store.lock("example", "production").unwrap();
+        let started = Instant::now();
+        assert!(
+            admission_lease(
+                &store,
+                "example",
+                "production",
+                started + Duration::from_secs(1)
+            )
+            .is_err()
+        );
+        assert!(started.elapsed() < Duration::from_millis(250));
+        assert!(
+            maintenance_lease(&store, "example", "production")
+                .unwrap()
+                .is_none()
+        );
+        drop(operation);
+        let maintenance = maintenance_lease(&store, "example", "production")
+            .unwrap()
+            .unwrap();
+        let started = Instant::now();
+        assert!(
+            admission_lease(
+                &store,
+                "example",
+                "production",
+                started + Duration::from_millis(20)
+            )
+            .is_err()
+        );
+        assert!(started.elapsed() < Duration::from_millis(500));
+        let key = (
+            store.root.clone(),
+            Store::instance_key("example", "production").unwrap(),
+        );
+        assert!(
+            !maintenance_owners()
+                .0
+                .lock()
+                .unwrap()
+                .waiting
+                .contains_key(&key)
+        );
+        drop(maintenance);
+        assert!(store.lock("example", "production").is_ok());
+    }
+
+    #[test]
+    fn background_skip_cannot_hide_an_unsafe_lock_file() {
+        let (_directory, store) = store();
+        let path = store.root.join("locks/example--production");
+        std::os::unix::fs::symlink("/dev/null", &path).unwrap();
+        assert!(store.try_lock("example", "production").is_err());
+        assert!(maintenance_lease(&store, "example", "production").is_err());
+        assert!(
+            admission_lease(
+                &store,
+                "example",
+                "production",
+                Instant::now() + Duration::from_secs(1)
+            )
+            .is_err()
+        );
+        std::fs::remove_file(path).unwrap();
+        assert!(
+            maintenance_lease(&store, "example", "production")
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn shared_route_updates_serialize_and_give_waiting_effects_priority() {
+        let (_directory, store) = store();
+        let first = store.lock("platform", "proxy").unwrap();
+        let worker_store = store.clone();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let waiting = std::thread::spawn(move || {
+            resource_lease(&worker_store, "platform", "proxy", deadline)
+        });
+        let key = (
+            store.root.clone(),
+            Store::instance_key("platform", "proxy").unwrap(),
+        );
+        while !maintenance_owners()
+            .0
+            .lock()
+            .unwrap()
+            .waiting
+            .contains_key(&key)
+        {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(
+            maintenance_lease(&store, "platform", "proxy")
+                .unwrap()
+                .is_none()
+        );
+        drop(first);
+        let second = waiting.join().unwrap().unwrap();
+        assert!(store.try_lock("platform", "proxy").unwrap().is_none());
+        drop(second);
+        assert!(store.try_lock("platform", "proxy").unwrap().is_some());
+    }
 }

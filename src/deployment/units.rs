@@ -1,6 +1,10 @@
 use super::{model::*, store::*, validation::*};
 use anyhow::{Result, anyhow, ensure};
-use std::{collections::BTreeMap, fmt::Write};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 pub fn namespace(application: &str, instance: &str) -> Result<String> {
     Store::instance_key(application, instance)?;
@@ -20,22 +24,29 @@ pub fn object_name(application: &str, instance: &str, kind: &str, logical: &str)
         &hash[7..27]
     ))
 }
-pub fn slice(application: &str, instance: &str) -> Result<String> {
-    Ok(format!(
-        "komizo-{}-i{}.slice",
-        if instance == "production" {
-            "production"
-        } else {
-            "previews"
-        },
-        &namespace(application, instance)?[4..]
-    ))
-}
-fn scalar(value: &str) -> String {
-    value.replace('%', "%%").replace('$', "$$")
-}
-pub fn word(value: &str) -> String {
-    serde_json::to_string(&scalar(value)).expect("string serialization")
+pub fn config_path(container: &str) -> Result<PathBuf> {
+    let service = container.strip_prefix("kmz-").is_some_and(|rest| {
+        rest.is_ascii()
+            && rest.len() >= 22
+            && hex(&rest[..20], 20)
+            && rest.as_bytes()[20] == b'-'
+            && name(&rest[21..])
+    });
+    let task = container.strip_suffix(".service").is_some_and(|body| {
+        ["backup", "prepare", "reconcile"].iter().any(|kind| {
+            body.strip_prefix(&format!("komizo-{kind}-"))
+                .is_some_and(|id| hex(id, 32))
+        })
+    });
+    let allocation = container.strip_prefix("cgroup-").is_some_and(|value| {
+        ["root", "control", "proxy", "production", "previews"].contains(&value)
+            || value.strip_prefix("kmz-").is_some_and(|id| hex(id, 20))
+    });
+    ensure!(
+        service || task || allocation,
+        "configuration name is outside exact owned service/task/resource scopes"
+    );
+    Ok(Path::new(super::system::SERVICE_CONFIGS).join(format!("{container}.json")))
 }
 
 pub struct Bindings<'a> {
@@ -50,8 +61,13 @@ pub struct Bindings<'a> {
     pub ingress: Option<&'a str>,
 }
 
-/// The same finite argv contract drives jobs and the protected Quadlet renderer.
-pub fn options(service: &str, value: &Container, bindings: &Bindings<'_>) -> Result<Vec<String>> {
+/// The same finite native argv contract drives jobs and protected service configuration.
+pub fn options(
+    kind: super::cgroups::WorkloadKind,
+    service: &str,
+    value: &Container,
+    bindings: &Bindings<'_>,
+) -> Result<Vec<String>> {
     ensure!(
         name(service) && digest(bindings.release_digest) && hex(bindings.ownership, 32),
         "invalid runtime identity"
@@ -69,7 +85,9 @@ pub fn options(service: &str, value: &Container, bindings: &Bindings<'_>) -> Res
         "--http-proxy=false".into(),
         "--restart=no".into(),
         "--image-volume=ignore".into(),
-        "--log-driver=journald".into(),
+        "--cgroups=no-conmon".into(),
+        "--log-driver=k8s-file".into(),
+        "--log-opt=max-size=1048576".into(),
         "--user".into(),
         value.user.clone(),
         "--memory".into(),
@@ -82,7 +100,15 @@ pub fn options(service: &str, value: &Container, bindings: &Bindings<'_>) -> Res
         "--pids-limit".into(),
         value.limits.pids.to_string(),
         "--cgroup-parent".into(),
-        slice(bindings.application, bindings.instance)?,
+        super::cgroups::workload_group(
+            bindings.application,
+            bindings.instance,
+            kind,
+            service,
+            bindings.ownership,
+        )?
+        .relative()
+        .into(),
         "--stop-timeout".into(),
         value.stop_timeout_seconds.to_string(),
     ];
@@ -214,136 +240,143 @@ pub fn options(service: &str, value: &Container, bindings: &Bindings<'_>) -> Res
     Ok(args)
 }
 
-pub fn quadlet(
+/// Root-owned launch data, never an executable service-manager language.
+/// Before use, the caller rederives these exact bytes from the admitted release
+/// and protected object/credential bindings and verifies the ownership ledger.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceConfig {
+    pub kind: String,
+    pub version: u32,
+    pub application: String,
+    pub instance: String,
+    pub service: String,
+    pub release_digest: String,
+    pub ownership: String,
+    pub container_name: String,
+    pub image_id: String,
+    pub options: Vec<String>,
+    pub command: Vec<String>,
+    pub health: Option<Health>,
+    pub wanted: bool,
+}
+impl ServiceConfig {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            self.kind == "komizo.service-config"
+                && self.version == 1
+                && name(&self.application)
+                && name(&self.instance)
+                && name(&self.service)
+                && digest(&self.release_digest)
+                && digest(&self.image_id)
+                && hex(&self.ownership, 32)
+                && self.container_name
+                    == format!(
+                        "{}-{}",
+                        namespace(&self.application, &self.instance)?,
+                        self.service
+                    )
+                && self.options.len() <= 4096
+                && self.options.iter().all(|v| safe_text(v, 65536))
+                && self.command.len() <= 128
+                && self.command.iter().all(|v| safe_text(v, 8192)),
+            "protected service configuration identity or bounds differ"
+        );
+        config_path(&self.container_name)?;
+        Ok(())
+    }
+    pub fn bytes(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        let body = canonical(&serde_json::to_value(self)?)?;
+        ensure!(
+            body.len() <= 1 << 20,
+            "protected service configuration exceeds bound"
+        );
+        Ok(body)
+    }
+    pub fn parse(body: &[u8]) -> Result<Self> {
+        let result: Self = serde_json::from_value(crate::strict::value(body, 1 << 20)?)?;
+        result.validate()?;
+        ensure!(
+            result.bytes()? == body,
+            "service configuration is not canonical"
+        );
+        Ok(result)
+    }
+}
+
+pub fn service_config(
     document: &ReleaseDocument,
     service: &str,
     bindings: &Bindings<'_>,
     wanted: bool,
-) -> Result<String> {
+) -> Result<ServiceConfig> {
     document.release.validate()?;
     let value = document
         .release
         .workload
         .services
         .get(service)
-        .ok_or_else(|| anyhow!("Quadlet requires a declared service"))?;
+        .ok_or_else(|| anyhow!("service configuration requires a declared service"))?;
     ensure!(
         bindings.application == document.release.application
             && bindings.release_digest == document.digest,
         "runtime bindings differ from the admitted release"
     );
-    let Artifact::Image {
-        config_digest: reference,
-        ..
-    } = &document.release.artifacts[&value.artifact]
-    else {
+    let Artifact::Image { config_digest, .. } = &document.release.artifacts[&value.artifact] else {
         return Err(anyhow!("service artifact is not an image"));
     };
-    let ns = namespace(bindings.application, bindings.instance)?;
-    let mut out = String::new();
-    writeln!(
-        out,
-        "[Unit]\nDescription=Komizo application service\nAfter=network-online.target komizo-controller.service\nWants=network-online.target komizo-controller.service\nRequiresMountsFor=/var/lib/komizo\n[Container]\nImage={reference}\nContainerName={ns}-{service}\nGlobalArgs=--remote=false\nCgroupsMode=enabled\nPodmanArgs={}",
-        options(service, value, bindings)?
-            .iter()
-            .map(|v| word(v))
-            .collect::<Vec<_>>()
-            .join(" ")
-    )?;
-    if !value.command.is_empty() {
-        writeln!(
-            out,
-            "Exec={}",
-            value
-                .command
-                .iter()
-                .map(|v| word(v))
-                .collect::<Vec<_>>()
-                .join(" ")
-        )?;
-    }
-    if value.health.is_some() {
-        writeln!(out, "[Unit]\nWants={ns}-{service}-health.timer")?;
-    }
-    writeln!(
-        out,
-        "[Service]\nSlice={}\nRestart=on-failure\nRestartSec=3\nTimeoutStartSec=300\nTimeoutStopSec={}\nExecCondition=/usr/local/bin/komizo-box fence --application {} --instance {} --service {}\nExecStartPre=/usr/local/bin/komizo-box guard --application {} --instance {} --service {}\n[Install]",
-        slice(bindings.application, bindings.instance)?,
-        value.stop_timeout_seconds + 30,
-        bindings.application,
-        bindings.instance,
-        service,
-        bindings.application,
-        bindings.instance,
-        service
-    )?;
-    if wanted {
-        out.push_str("WantedBy=multi-user.target\n");
-    }
-    Ok(out)
+    let result = ServiceConfig {
+        kind: "komizo.service-config".into(),
+        version: 1,
+        application: bindings.application.into(),
+        instance: bindings.instance.into(),
+        service: service.into(),
+        release_digest: bindings.release_digest.into(),
+        ownership: bindings.ownership.into(),
+        container_name: format!(
+            "{}-{service}",
+            namespace(bindings.application, bindings.instance)?
+        ),
+        image_id: config_digest.clone(),
+        options: options(
+            super::cgroups::WorkloadKind::Service,
+            service,
+            value,
+            bindings,
+        )?,
+        command: value.command.clone(),
+        health: value.health.clone(),
+        wanted,
+    };
+    result.validate()?;
+    Ok(result)
 }
 
-pub fn health_units(
-    application: &str,
-    instance: &str,
-    service: &str,
-    health: &Health,
-) -> Result<(String, String)> {
-    ensure!(name(service), "invalid health service scope");
-    let base = format!("{}-{service}", namespace(application, instance)?);
-    let tick = health
-        .start_interval_seconds
-        .unwrap_or(health.interval_seconds)
-        .min(health.interval_seconds);
-    let unit = format!(
-        "[Unit]\nDescription=Komizo native health probe\nAfter={base}.service\nRequisite={base}.service\nPartOf={base}.service\n[Service]\nType=oneshot\nSlice={}\nTimeoutStartSec={}\nExecStart=/usr/local/bin/komizo-box health --application {application} --instance {instance} --service {service}\nStandardOutput=null\n",
-        slice(application, instance)?,
-        health.timeout_seconds + 20
-    );
-    let timer = format!(
-        "[Unit]\nDescription=Komizo native health probe timer\nAfter={base}.service\nPartOf={base}.service\n[Timer]\nOnActiveSec=1s\nOnUnitInactiveSec={tick}s\nAccuracySec=100ms\nUnit={base}-health.service\n"
-    );
-    Ok((unit, timer))
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-pub fn resource_slice(limits: &Limits) -> Result<String> {
-    Ok(format!(
-        "[Unit]\nDescription=Komizo instance allocation\n[Slice]\n{}",
-        resource_limits(limits)?
-    ))
-}
-
-pub fn resource_limits(limits: &Limits) -> Result<String> {
-    limits.validate()?;
-    Ok(format!(
-        "CPUAccounting=yes\nMemoryAccounting=yes\nTasksAccounting=yes\nMemoryMax={}\nMemorySwapMax={}\nCPUQuota={}.{}%\nCPUQuotaPeriodSec=1s\nTasksMax={}\n",
-        limits.memory_bytes,
-        limits.memory_swap_bytes - limits.memory_bytes,
-        limits.milli_cpus / 10,
-        limits.milli_cpus % 10,
-        limits.pids
-    ))
-}
-
-pub fn controlled_slice(limits: &Limits, controls: &ResourceControls) -> Result<String> {
-    controls.validate(limits)?;
-    let mut out = resource_slice(limits)?;
-    writeln!(out, "MemoryLow={}", controls.memory_low_bytes)?;
-    if controls.memory_high_bytes > 0 {
-        writeln!(out, "MemoryHigh={}", controls.memory_high_bytes)?;
+    #[test]
+    fn config_names_are_only_exact_generated_scopes() {
+        let container = format!("{}-api", namespace("mailroom", "production").unwrap());
+        assert_eq!(
+            config_path(&container).unwrap(),
+            Path::new(super::super::system::SERVICE_CONFIGS).join(format!("{container}.json"))
+        );
+        assert!(config_path(&format!("komizo-backup-{}.service", "a".repeat(32))).is_ok());
+        assert!(config_path("cgroup-root").is_ok());
+        for name in [
+            "../outside",
+            "api",
+            "foreign.service",
+            "kmz-ééééééééééééééééééééé-api",
+            "cgroup-unknown",
+            "komizo-backup-short.service",
+            "/tmp/config",
+        ] {
+            assert!(config_path(name).is_err(), "{name}");
+        }
     }
-    if let Some(weight) = controls.cpu_weight {
-        writeln!(out, "CPUWeight={weight}")?;
-    }
-    if let Some(weight) = controls.io_weight {
-        writeln!(out, "IOWeight={weight}")?;
-    }
-    for rate in &controls.io_max {
-        writeln!(
-            out,
-            "IOReadBandwidthMax=/dev/block/{} {}\nIOWriteBandwidthMax=/dev/block/{} {}",
-            rate.device, rate.read_bytes_per_second, rate.device, rate.write_bytes_per_second
-        )?;
-    }
-    Ok(out)
 }

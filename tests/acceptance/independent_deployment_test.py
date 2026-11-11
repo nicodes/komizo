@@ -1,4 +1,4 @@
-"""Exercise source-candidate standalone bytes in a real disposable Debian host."""
+"""Exercise source-candidate standalone bytes in a real disposable Alpine host."""
 import argparse
 import hashlib
 import json
