@@ -121,5 +121,13 @@ class NativeGuestReadinessEvidence(unittest.TestCase):
         self.assertEqual(user['hashed_passwd'],'*')
         self.assertNotIn('plain_text_passwd',user)
 
+    def test_fixture_disables_only_optional_key_display_without_reclassifying_cloud_warnings(self):
+        module,_=self.guest('')
+        configuration=module.fixture_cloud_options()
+        self.assertIs(configuration['ssh']['emit_keys_to_console'],False)
+        self.assertIs(configuration['ssh_pwauth'],False)
+        self.assertIs(configuration['disable_root'],False)
+        self.assertNotIn('output',configuration)
+
 
 if __name__=='__main__':unittest.main()

@@ -81,6 +81,13 @@ def fixture_root_user(public_key):
         'ssh_authorized_keys': [public_key]}
 
 
+def fixture_cloud_options():
+    # Host keys are already pinned independently by Guest. Alpine's optional
+    # console publisher helper is absent; its display is not authentication.
+    return {'disable_root': False, 'ssh_pwauth': False,
+        'ssh': {'emit_keys_to_console': False}}
+
+
 def key(directory, name):
     path = directory / name
     run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(path)])
@@ -516,13 +523,11 @@ def main():
         recovery_key.chmod(0o600)
         capture_bundle=sources.bundle(directory,recipient)
         profile=directory/'profile.json';profile.write_text(json.dumps(sources.profile(args.profile)))
-        user_data = {'disable_root': False, 'ssh_pwauth': False,
-            # Cloud/package failures must remain observable if initial SSH
-            # never becomes usable. No owner material enters this fixture.
-            'output': {'all': '| tee -a /var/log/cloud-init-output.log /dev/ttyS0'},
+        user_data = {**fixture_cloud_options(),
             'users': [fixture_root_user(owner.with_suffix('.pub').read_text().strip())],
             'ssh_keys': {'ed25519_private': host.read_text(), 'ed25519_public': host.with_suffix('.pub').read_text().strip()},
             'runcmd': [['sh', '-ec',
+                'exec > /dev/ttyS0 2>&1; '
                 'install -d -m 700 /root/native-host /root/native-host/apk-cache; '
                 'printf "%s\\n" https://dl-cdn.alpinelinux.org/alpine/v3.24/main https://dl-cdn.alpinelinux.org/alpine/v3.24/community > /etc/apk/repositories; '
                 'apk update; apk fetch --recursive --output /root/native-host/apk-cache ' +

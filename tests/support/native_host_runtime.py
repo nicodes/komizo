@@ -315,7 +315,7 @@ def apparmor_boundary(app,report):
         raise ValueError('root Podman helper default does not preserve the reviewed profile and SIGURG')
     foreign_file=ROOT/'apparmor-foreign'
     write(foreign_file,Path('/etc/apparmor.d/komizo-workload').read_bytes().replace(b'komizo-workload',b'komizo-native-negative'))
-    run(['/usr/bin/apparmor_parser','-r',str(foreign_file)],timeout=10)
+    run(['/sbin/apparmor_parser','-r',str(foreign_file)],timeout=10)
     try:
         # Different LSM profile, but deliberately the same PID namespace and UID:
         # the denial must not rely solely on namespace or UID separation.
@@ -335,7 +335,7 @@ def apparmor_boundary(app,report):
             try:victim.wait(timeout=5)
             except subprocess.TimeoutExpired:victim.kill();victim.wait(timeout=5)
     finally:
-        run(['/usr/bin/apparmor_parser','-R',str(foreign_file)],timeout=10)
+        run(['/sbin/apparmor_parser','-R',str(foreign_file)],timeout=10)
         foreign_file.unlink()
     write(ROOT/'apparmor-boundary.json',{'service_label':label,'foreign_profile_label':foreign.stdout.decode().strip(),'helper_default_label':default_helper.stdout.decode().splitlines()[0],'no_new_privileges':True,'same_uid_host_signal_baseline':'passed',
         'same_profile_sigurg':'passed','foreign_profile_refused':'passed','host_signal_refused':'passed'})

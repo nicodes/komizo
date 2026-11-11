@@ -37,7 +37,7 @@ const ENGINE_NETWORK: &str = "[containers]\napparmor_profile=\"komizo-workload\"
 
 pub const WORKLOAD_PROFILE: &str = "komizo-workload";
 const APPARMOR_FILE: &str = "/etc/apparmor.d/komizo-workload";
-const APPARMOR_PARSER: &str = "/usr/bin/apparmor_parser";
+const APPARMOR_PARSER: &str = "/sbin/apparmor_parser";
 const APPARMOR_POLICY: &[u8] = include_bytes!("apparmor-workload");
 const APPARMOR_LICENSE: &[u8] = include_bytes!("apparmor-workload.LICENSE");
 const INFRASTRUCTURE_PROFILE: &str = "/etc/apparmor.d/komizo-infrastructure";
