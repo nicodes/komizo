@@ -33,29 +33,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 -I -B tests/support/native_host_sdk.py
-      - name: Build the exact native controller source
-        env:
-          CARGO_PROFILE_DEV_DEBUG: '0'
-        run: |
-          set -euo pipefail
-          mise install rust@1.94.0
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends musl-tools
-          mise exec rust@1.94.0 -- rustup target add x86_64-unknown-linux-musl
-          mise exec rust@1.94.0 -- cargo build --locked --bin komizo-box --target x86_64-unknown-linux-musl --target-dir .artifacts/native-host-build
-      - name: Check out the accepted proxy source closure
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: nicodes/tools
-          ref: 7873bb0fdae1726295dbf7f9317c58daa374b2a6
-          path: .artifacts/native-proxy-tools
-          persist-credentials: false
-      - name: Build and audit the exact native proxy
-        timeout-minutes: 20
-        run: |
-          set -euo pipefail
-          mise install go@1.27.4 go:golang.org/x/vuln/cmd/govulncheck@1.7.0
-          mise exec go@1.27.4 go:golang.org/x/vuln/cmd/govulncheck@1.7.0 -- python3 -I -B tests/support/native_host_proxy.py --tools .artifacts/native-proxy-tools --output .artifacts/native-proxy/caddy_Linux_x86_64
       - name: Select the declared immutable backup provider
         id: backup-provider
         run: |
@@ -74,11 +51,33 @@ jobs:
           ref: ${{ steps.backup-provider.outputs.revision }}
           path: .artifacts/native-backup-cookbook
           persist-credentials: false
-      - name: Prepare the disposable machine runner
+      - name: Prepare verified Ubuntu native runner dependencies
+        timeout-minutes: 6
+        run: sudo -n /usr/bin/python3 -I -B .artifacts/native-backup-cookbook/cookbook/ubuntu_ci.py native-host
+      - name: Build the exact native controller source
+        env:
+          CARGO_PROFILE_DEV_DEBUG: '0'
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils acl
+          mise install rust@1.94.0
+          mise exec rust@1.94.0 -- rustup target add x86_64-unknown-linux-musl
+          mise exec rust@1.94.0 -- cargo build --locked --bin komizo-box --target x86_64-unknown-linux-musl --target-dir .artifacts/native-host-build
+      - name: Check out the accepted proxy source closure
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/tools
+          ref: 7873bb0fdae1726295dbf7f9317c58daa374b2a6
+          path: .artifacts/native-proxy-tools
+          persist-credentials: false
+      - name: Build and audit the exact native proxy
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          mise install go@1.27.4 go:golang.org/x/vuln/cmd/govulncheck@1.7.0
+          mise exec go@1.27.4 go:golang.org/x/vuln/cmd/govulncheck@1.7.0 -- python3 -I -B tests/support/native_host_proxy.py --tools .artifacts/native-proxy-tools --output .artifacts/native-proxy/caddy_Linux_x86_64
+      - name: Allow the disposable machine runner to use KVM
+        run: |
+          set -euo pipefail
           native_runner_uid="$(id -u)"
           sudo setfacl -m "u:$native_runner_uid:rw" /dev/kvm
       - name: Assert native bootstrap, isolation and real reboot

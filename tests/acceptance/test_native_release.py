@@ -121,7 +121,8 @@ class NativeRelease(unittest.TestCase):
 
     def test_each_native_trial_rechecks_virtualization_within_original_deadline(self):
         clock=[0];timeouts=[]
-        def prepare():clock[0]+=10
+        def prepare(deadline):
+            self.assertEqual(deadline,50);clock[0]+=10
         def execute(arguments,**options):
             timeouts.append(options['timeout'])
             self.assertNotIn('GH_TOKEN',options['env'])
@@ -138,7 +139,65 @@ class NativeRelease(unittest.TestCase):
                     profile,self.root/profile,self.source,50)
                 self.assertEqual(result['profile'],profile)
             self.assertEqual(prerequisite.call_count,2)
+            self.assertEqual(prerequisite.call_args_list,[mock.call(50),mock.call(50)])
         self.assertEqual(timeouts,[40,30])
+
+    def test_virtualization_prepares_once_and_rechecks_each_guest_kvm_acl(self):
+        provider=self.root/'.artifacts/recipe-sdks/_cookbook/cookbook/ubuntu_ci.py'
+        provider.parent.mkdir(parents=True);provider.write_text('# synthetic provider is never executed\n')
+        clock=[0];installed=[False];calls=[]
+        def execute(arguments,**options):
+            calls.append((arguments,options['timeout']))
+            self.assertTrue(options['check'])
+            if arguments[-1]=='native-host':
+                self.assertEqual(arguments,['sudo','-n','/usr/bin/python3','-I','-B',str(provider),'native-host'])
+                installed[0]=True;clock[0]+=30
+            else:
+                self.assertEqual(arguments,['sudo','setfacl','-m','u:'+str(os.getuid())+':rw','/dev/kvm'])
+                clock[0]+=1
+        with mock.patch.object(lifecycle,'ROOT',self.root),mock.patch.object(lifecycle.sys,'platform','linux'), \
+                mock.patch.object(lifecycle.Path,'exists',return_value=True), \
+                mock.patch.object(shutil,'which',side_effect=lambda name:'/usr/bin/'+name if installed[0] else None), \
+                mock.patch.object(lifecycle.os,'access',return_value=False), \
+                mock.patch.object(lifecycle.time,'monotonic',side_effect=lambda:clock[0]), \
+                mock.patch.object(lifecycle.subprocess,'run',side_effect=execute):
+            lifecycle.virtualization(350);lifecycle.virtualization(350)
+            lifecycle.virtualization(34)  # Existing tools need no fresh 305s window.
+        self.assertEqual([budget for _,budget in calls],[305,10,10,2])
+
+    def test_virtualization_refuses_missing_provider_or_insufficient_original_budget(self):
+        with mock.patch.object(lifecycle,'ROOT',self.root),mock.patch.object(lifecycle.sys,'platform','linux'), \
+                mock.patch.object(lifecycle.Path,'exists',return_value=True), \
+                mock.patch.object(shutil,'which',return_value=None), \
+                mock.patch.object(lifecycle.time,'monotonic',return_value=0), \
+                mock.patch.object(lifecycle.subprocess,'run') as execute:
+            with self.assertRaisesRegex(ValueError,'immutable Ubuntu CI provider'):lifecycle.virtualization(500)
+            provider=self.root/'.artifacts/recipe-sdks/_cookbook/cookbook/ubuntu_ci.py'
+            provider.parent.mkdir(parents=True);provider.write_text('# synthetic provider is never executed\n')
+            with self.assertRaisesRegex(ValueError,'original aggregate deadline'):lifecycle.virtualization(304)
+            with self.assertRaisesRegex(ValueError,'original aggregate deadline'):lifecycle.virtualization(0)
+            execute.assert_not_called()
+
+    def test_virtualization_provider_failure_never_retries_or_renews_aggregate(self):
+        provider=self.root/'.artifacts/recipe-sdks/_cookbook/cookbook/ubuntu_ci.py'
+        provider.parent.mkdir(parents=True);provider.write_text('# synthetic provider is never executed\n')
+        installed=[False];clock=[0]
+        with mock.patch.object(lifecycle,'ROOT',self.root),mock.patch.object(lifecycle.sys,'platform','linux'), \
+                mock.patch.object(lifecycle.Path,'exists',return_value=True), \
+                mock.patch.object(shutil,'which',side_effect=lambda name:'/usr/bin/'+name if installed[0] else None), \
+                mock.patch.object(lifecycle.os,'access',return_value=False), \
+                mock.patch.object(lifecycle.time,'monotonic',side_effect=lambda:clock[0]), \
+                mock.patch.object(lifecycle.subprocess,'run') as execute:
+            execute.side_effect=subprocess.CalledProcessError(100,['synthetic-provider'])
+            with self.assertRaises(subprocess.CalledProcessError):lifecycle.virtualization(500)
+            self.assertEqual(execute.call_count,1)
+            execute.reset_mock();execute.side_effect=None
+            with self.assertRaisesRegex(ValueError,'did not supply'):lifecycle.virtualization(500)
+            self.assertEqual(execute.call_count,1)
+            def exhaust(*args,**kwargs):installed[0]=True;clock[0]=501
+            execute.reset_mock();execute.side_effect=exhaust
+            with self.assertRaisesRegex(ValueError,'original aggregate deadline'):lifecycle.virtualization(500)
+            self.assertEqual(execute.call_count,1)
 
     def test_native_trial_refuses_before_start_without_kvm_or_original_budget(self):
         with mock.patch.object(lifecycle.subprocess,'run') as execute:
