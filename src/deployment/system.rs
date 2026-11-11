@@ -6,7 +6,7 @@ use super::{
     units,
     validation::*,
 };
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -718,7 +718,8 @@ pub fn caddy_validate(config: &Path, deadline: Instant) -> Result<()> {
             .to_str()
             .ok_or_else(|| anyhow!("invalid proxy staging path"))?,
     ]);
-    let output = crate::process::capture(&mut command, None, 256 << 10, deadline, || false)?;
+    let output = crate::process::capture(&mut command, None, 256 << 10, deadline, || false)
+        .context("native proxy configuration adaptation process")?;
     ensure!(
         output.status.success(),
         "proxy rejected staged serving configuration: {}",
@@ -742,7 +743,8 @@ pub fn caddy_reload(deadline: Instant) -> Result<()> {
         "--address",
         PROXY_SOCKET,
     ]);
-    let output = crate::process::capture(&mut command, None, 256 << 10, deadline, || false)?;
+    let output = crate::process::capture(&mut command, None, 256 << 10, deadline, || false)
+        .context("native proxy reload acknowledgment process")?;
     ensure!(
         output.status.success(),
         "proxy refused the staged serving configuration"
