@@ -25,7 +25,9 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Verify the pinned SDK transport boundary
         timeout-minutes: 1
-        run: python3 -I -B tests/acceptance/test_native_sdk.py
+        run: |
+          python3 -I -B tests/acceptance/test_native_sdk.py
+          python3 -I -B -m unittest discover -s tests/acceptance -p test_native_release.py
       - name: Authenticate the exact SDK through the official asset API
         timeout-minutes: 2
         env:
@@ -52,8 +54,8 @@ jobs:
         timeout-minutes: 20
         run: |
           set -euo pipefail
-          mise install go@1.27.3 go:golang.org/x/vuln/cmd/govulncheck@1.7.0
-          mise exec go@1.27.3 go:golang.org/x/vuln/cmd/govulncheck@1.7.0 -- python3 -I -B tests/support/native_host_proxy.py --tools .artifacts/native-proxy-tools --output .artifacts/native-proxy/caddy_Linux_x86_64
+          mise install go@1.27.4 go:golang.org/x/vuln/cmd/govulncheck@1.7.0
+          mise exec go@1.27.4 go:golang.org/x/vuln/cmd/govulncheck@1.7.0 -- python3 -I -B tests/support/native_host_proxy.py --tools .artifacts/native-proxy-tools --output .artifacts/native-proxy/caddy_Linux_x86_64
       - name: Select the declared immutable backup provider
         id: backup-provider
         run: |
@@ -86,6 +88,8 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: native-host-${{ env.NATIVE_HOST_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .artifacts/native-host/
+          path: |
+            .artifacts/native-host/
+            .artifacts/native-proxy/security/
           retention-days: 14
           if-no-files-found: error

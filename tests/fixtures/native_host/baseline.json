@@ -13,7 +13,7 @@
     "signing_fingerprint": "F26ADFADBAE702EF7AF637459DA7EF23BFFCDF22"
   },
   "proxy_tools_revision": "7873bb0fdae1726295dbf7f9317c58daa374b2a6",
-  "proxy_go_version": "1.27.3",
+  "proxy_go_version": "1.27.4",
   "proxy_source_sha256": {
     "caddy.go.mod": "sha256:a9056233663f7ccd6ded5f1334393061cfa06bd088f67b0050758c3a2555ba3a",
     "caddy.go.sum": "sha256:05275136107a9863d5b1fb2501e19ee43c2e181a5d50eff470f04e58113a631c",

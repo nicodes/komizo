@@ -433,10 +433,17 @@ pub fn run(
         document,
         installed,
         job,
-        operation_id,
-        deadline,
+        JobExecution {
+            operation_id,
+            deadline,
+        },
         &super::engine::Engine { deadline },
     )
+}
+
+struct JobExecution<'a> {
+    operation_id: &'a str,
+    deadline: std::time::Instant,
 }
 
 fn run_with(
@@ -445,10 +452,13 @@ fn run_with(
     document: &ReleaseDocument,
     installed: &Installed,
     job: &str,
-    operation_id: &str,
-    deadline: std::time::Instant,
+    execution: JobExecution<'_>,
     runtime: &impl Runtime,
 ) -> Result<Receipt> {
+    let JobExecution {
+        operation_id,
+        deadline,
+    } = execution;
     ensure!(
         std::time::Instant::now() < deadline
             && installed.kind == "komizo.installed"
@@ -895,18 +905,36 @@ fn reconcile_with(
             receipt.job == *job && receipt.release_digest == document.digest,
             "job recovery receipt differs from the interrupted release"
         );
+        let Artifact::Image { config_digest, .. } = &document.release.artifacts[&value.artifact]
+        else {
+            return Err(anyhow!("job recovery artifact is not an image"));
+        };
+        retained(runtime, value, installed)?;
         if receipt.phase == "completed" {
+            if runtime.exists("container", &receipt.container_name)? {
+                let actual = owned(runtime, &receipt, value, installed, config_digest)?;
+                ensure!(
+                    actual["State"]["Running"] == false
+                        && actual["State"]["Paused"] == false
+                        && actual["State"]["Pid"] == 0
+                        && actual["State"]["ExitCode"] == 0
+                        && ["exited", "stopped"]
+                            .contains(&actual["State"]["Status"].as_str().unwrap_or(""))
+                        && actual["State"]["FinishedAt"]
+                            .as_str()
+                            .is_some_and(|time| !time.is_empty() && !time.starts_with("0001-")),
+                    "completed job no longer has its proven terminal native state"
+                );
+            }
+            // Exit proof does not imply the later cleanup barrier succeeded.
+            // Reconcile the exact group without starting or replaying the job.
+            runtime.retire_group(&job_group(&receipt)?, cleanup_deadline())?;
             continue;
         }
         ensure!(
             (receipt.phase != "failed" || allow_failed),
             "failed job requires a corrected job identity before deployment"
         );
-        let Artifact::Image { config_digest, .. } = &document.release.artifacts[&value.artifact]
-        else {
-            return Err(anyhow!("job recovery artifact is not an image"));
-        };
-        retained(runtime, value, installed)?;
         let actual = owned(runtime, &receipt, value, installed, config_digest)?;
         let exit = actual["State"]["ExitCode"]
             .as_i64()
@@ -1042,8 +1070,10 @@ mod tests {
                 &self.document,
                 &self.installed,
                 "migrate",
-                &self.installed.operation_id,
-                Instant::now() + Duration::from_secs(30),
+                JobExecution {
+                    operation_id: &self.installed.operation_id,
+                    deadline: Instant::now() + Duration::from_secs(30),
+                },
                 runtime,
             )
         }
@@ -1455,6 +1485,48 @@ mod tests {
     }
 
     #[test]
+    fn completed_job_recovery_still_requires_exact_owned_terminal_state_and_retirement() {
+        let fixture = Fixture::new();
+        let mut runtime = Fake::new(&fixture);
+        runtime.fail_group = Some("retire");
+        assert!(fixture.run(&runtime).is_err());
+        let before = canonical(&serde_json::to_value(fixture.receipt().unwrap()).unwrap()).unwrap();
+        assert_eq!(fixture.receipt().unwrap().phase, "completed");
+        let effects = runtime.calls.borrow().len();
+        let recover = |runtime: &Fake<'_>| {
+            reconcile_with(
+                &fixture.store,
+                &fixture.document,
+                &fixture.installed,
+                &fixture.installed.operation_id,
+                runtime,
+                false,
+            )
+        };
+        assert!(recover(&runtime).is_err());
+        assert_eq!(runtime.calls.borrow().len(), effects);
+        runtime.fail_group = None;
+        let owned = runtime.container.borrow().as_ref().unwrap().clone();
+        runtime.container.borrow_mut().as_mut().unwrap()["Config"]["Labels"]["io.komizo.ownership"] =
+            json!("f".repeat(32));
+        assert!(recover(&runtime).is_err());
+        *runtime.container.borrow_mut() = Some(owned.clone());
+        runtime.container.borrow_mut().as_mut().unwrap()["State"]["Running"] = json!(true);
+        assert!(recover(&runtime).is_err());
+        *runtime.container.borrow_mut() = Some(owned);
+        recover(&runtime).unwrap();
+        assert_eq!(
+            canonical(&serde_json::to_value(fixture.receipt().unwrap()).unwrap()).unwrap(),
+            before
+        );
+        assert_eq!(runtime.calls.borrow().len(), effects);
+        assert_eq!(runtime.groups.borrow().last().unwrap().0, "retire");
+        *runtime.container.borrow_mut() = None;
+        recover(&runtime).unwrap();
+        assert_eq!(runtime.calls.borrow().len(), effects);
+    }
+
+    #[test]
     fn ephemeral_cleanup_preserves_receipts_and_requires_actual_owned_job_identity() {
         let mut fixture = Fixture::new();
         fixture.installed.instance = "pr-1".into();
@@ -1723,8 +1795,10 @@ mod tests {
                 &fixture.document,
                 &fixture.installed,
                 "migrate",
-                &fixture.installed.operation_id,
-                Instant::now() - Duration::from_secs(1),
+                JobExecution {
+                    operation_id: &fixture.installed.operation_id,
+                    deadline: Instant::now() - Duration::from_secs(1)
+                },
                 &runtime
             )
             .is_err()

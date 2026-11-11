@@ -273,12 +273,10 @@ pub fn health(application: &str, instance: &str, service: &str) -> Result<()> {
         .health
         .as_ref()
         .ok_or_else(|| anyhow!("service has no admitted healthcheck"))?;
-    let started = chrono::DateTime::parse_from_rfc3339(
-        value["State"]["StartedAt"]
-            .as_str()
-            .ok_or_else(|| anyhow!("service start time missing"))?,
-    )?
-    .timestamp();
+    let started_at = value["State"]["StartedAt"]
+        .as_str()
+        .ok_or_else(|| anyhow!("service start time missing"))?;
+    let started = chrono::DateTime::parse_from_rfc3339(started_at)?.timestamp();
     let now = controller::now()?;
     let interval = if now.saturating_sub(started) <= i64::from(health.start_period_seconds) {
         health
@@ -292,19 +290,20 @@ pub fn health(application: &str, instance: &str, service: &str) -> Result<()> {
         .join("probes")
         .join(namespace)
         .join(format!("{service}.json"));
-    if path.try_exists()? {
-        let previous = crate::strict::value(&store::read_protected(&path, 4096)?, 4096)?;
-        if previous["container_id"] == value["Id"]
-            && previous["checked_at"]
-                .as_i64()
-                .is_some_and(|t| now >= t && now - t < i64::from(interval))
-        {
-            return Ok(());
-        }
-    }
     let id = value["Id"]
         .as_str()
         .ok_or_else(|| anyhow!("service identity missing"))?;
+    let previous = if path.try_exists()? {
+        Some(crate::strict::value(
+            &store::read_protected(&path, 4096)?,
+            4096,
+        )?)
+    } else {
+        None
+    };
+    if !super::native::probe_due(previous.as_ref(), id, started_at, now, interval)? {
+        return Ok(());
+    }
     let probe = Engine {
         deadline: Instant::now() + Duration::from_secs(u64::from(health.timeout_seconds) + 15),
     };
@@ -334,7 +333,7 @@ pub fn health(application: &str, instance: &str, service: &str) -> Result<()> {
     store::atomic(
         &path,
         &serde_json::to_vec(
-            &json!({"kind":"komizo.probe","version":1,"container_id":id,"checked_at":now}),
+            &json!({"kind":"komizo.probe","version":1,"container_id":id,"started_at":started_at,"checked_at":now}),
         )?,
         0o600,
     )

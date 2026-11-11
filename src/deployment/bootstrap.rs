@@ -261,7 +261,7 @@ fn proxy_build(body: &[u8], platform: &str) -> Result<String> {
             && super::validation::hex(&value.tools_revision, 40)
             && value.platform == platform
             && ["linux/amd64", "linux/arm64"].contains(&platform)
-            && value.go_version == "1.27.3"
+            && value.go_version == "1.27.4"
             && value.caddy_version == "2.11.6"
             && value
                 .source_sha256
@@ -627,11 +627,11 @@ pub fn dns(args: &[String], output: &mut dyn Write) -> Result<()> {
             Instant::now() < deadline,
             "shared container DNS did not become ready"
         );
-        if let Some(pid) = dns_pid()? {
-            if Path::new(&format!("/proc/{pid}")).try_exists()? {
-                dns_guard()?;
-                break;
-            }
+        if let Some(pid) = dns_pid()?
+            && Path::new(&format!("/proc/{pid}")).try_exists()?
+        {
+            dns_guard()?;
+            break;
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -1722,7 +1722,7 @@ mod tests {
     fn proxy_receipt_binds_the_closed_native_source_and_compiler_identity() {
         let receipt = serde_json::json!({
             "kind":"komizo.proxy-build","version":1,"tools_revision":"a".repeat(40),
-            "platform":"linux/amd64","go_version":"1.27.3","caddy_version":"2.11.6",
+            "platform":"linux/amd64","go_version":"1.27.4","caddy_version":"2.11.6",
             "source_sha256":{"caddy.go.mod":format!("sha256:{}","b".repeat(64)),
                 "caddy.go.sum":format!("sha256:{}","c".repeat(64)),
                 "caddy-build.sh":format!("sha256:{}","d".repeat(64))},

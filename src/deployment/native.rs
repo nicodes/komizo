@@ -369,15 +369,15 @@ impl Drop for TaskFence {
     fn drop(&mut self) {
         use std::io::Write;
         let _ = self.kill.write_all(b"1");
-        if matches!(super::cgroups::empty(&self.group), Ok(true)) {
-            if let Some(channel) = self.channel.as_mut() {
-                let timeout = Some(Duration::from_millis(50));
-                let _ = channel.set_read_timeout(timeout);
-                let _ = channel.set_write_timeout(timeout);
-                let _ = channel.write_all(b"D");
-                let mut acknowledgement = [0_u8];
-                let _ = channel.read_exact(&mut acknowledgement);
-            }
+        if matches!(super::cgroups::empty(&self.group), Ok(true))
+            && let Some(channel) = self.channel.as_mut()
+        {
+            let timeout = Some(Duration::from_millis(50));
+            let _ = channel.set_read_timeout(timeout);
+            let _ = channel.set_write_timeout(timeout);
+            let _ = channel.write_all(b"D");
+            let mut acknowledgement = [0_u8];
+            let _ = channel.read_exact(&mut acknowledgement);
         }
     }
 }
@@ -425,11 +425,11 @@ fn spawn_task_entry(
                 return Err(std::io::Error::last_os_error());
             }
             task_process::child_limits(bound_output)?;
-            if let Some(channel) = &channel {
-                if libc::dup2(channel.as_raw_fd(), 3) != 3 || libc::fcntl(3, libc::F_SETFD, 0) != 0
-                {
-                    return Err(std::io::Error::last_os_error());
-                }
+            if let Some(channel) = &channel
+                && (libc::dup2(channel.as_raw_fd(), 3) != 3
+                    || libc::fcntl(3, libc::F_SETFD, 0) != 0)
+            {
+                return Err(std::io::Error::last_os_error());
             }
             Ok(())
         });
@@ -1999,28 +1999,48 @@ fn health_interval(health: &Health, started: &str, now: i64) -> Result<u32> {
     )
 }
 
-fn probe_due(
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProbeRecord {
+    kind: String,
+    version: u32,
+    container_id: String,
+    started_at: String,
+    checked_at: i64,
+}
+
+fn valid_probe_start(value: &str) -> bool {
+    value.len() <= 64
+        && chrono::DateTime::parse_from_rfc3339(value).is_ok_and(|at| at.timestamp() > 0)
+}
+
+pub(super) fn probe_due(
     previous: Option<&serde_json::Value>,
     id: &str,
+    started_at: &str,
     now: i64,
     interval: u32,
 ) -> Result<bool> {
+    ensure!(
+        hex(id, 64) && valid_probe_start(started_at),
+        "service probe generation is invalid"
+    );
     let Some(previous) = previous else {
         return Ok(true);
     };
+    let previous: ProbeRecord = serde_json::from_value(previous.clone())?;
     ensure!(
-        previous["kind"] == "komizo.probe"
-            && previous["version"] == 1
-            && previous["container_id"]
-                .as_str()
-                .is_some_and(|id| hex(id, 64))
-            && previous["checked_at"].as_i64().is_some_and(|time| time > 0),
+        previous.kind == "komizo.probe"
+            && previous.version == 1
+            && hex(&previous.container_id, 64)
+            && valid_probe_start(&previous.started_at)
+            && previous.checked_at > 0,
         "service probe metadata is invalid"
     );
-    Ok(!(previous["container_id"] == id
-        && previous["checked_at"]
-            .as_i64()
-            .is_some_and(|checked| now >= checked && now - checked < i64::from(interval))))
+    Ok(!(previous.container_id == id
+        && previous.started_at == started_at
+        && now >= previous.checked_at
+        && now - previous.checked_at < i64::from(interval)))
 }
 
 fn service_probe(
@@ -2028,11 +2048,15 @@ fn service_probe(
     policy: &Policy,
     installed: &Installed,
     name: &str,
-    record: &store::ContainerRecord,
     value: &serde_json::Value,
     health: &Health,
     engine: &Engine,
 ) -> Result<()> {
+    let record = installed
+        .resources
+        .containers
+        .get(name)
+        .ok_or_else(|| anyhow!("service probe has no protected record"))?;
     let (application, instance) = probe_lock_scope(installed, name)?;
     // A background probe never owns the application mutation lease. It drops
     // this separate probe lease when admission wins, so the lock order cannot
@@ -2056,7 +2080,10 @@ fn service_probe(
         now,
     )?;
     let previous = probe_record(store, installed, name)?;
-    if !probe_due(previous.as_ref(), &record.id, now, interval)? {
+    let started_at = value["State"]["StartedAt"]
+        .as_str()
+        .ok_or_else(|| anyhow!("service probe start identity missing"))?;
+    if !probe_due(previous.as_ref(), &record.id, started_at, now, interval)? {
         return Ok(());
     }
     let group = super::cgroups::service_probe_group(
@@ -2072,7 +2099,7 @@ fn service_probe(
         engine.deadline,
     )?;
     engine.health_in_group(&record.id, &group)?;
-    commit_probe(store, installed, name, &record.id, now)
+    commit_probe(store, installed, name, &record.id, started_at, now)
 }
 
 fn stopped_service(value: &serde_json::Value) -> Result<()> {
@@ -2207,9 +2234,7 @@ fn start_service(
                 value["State"]["Health"]["Status"] != "unhealthy",
                 "native service healthcheck failed"
             );
-            service_probe(
-                store, policy, installed, name, &record, &value, health, engine,
-            )?;
+            service_probe(store, policy, installed, name, &value, health, engine)?;
             std::thread::sleep(Duration::from_millis(100));
         }
         Ok(())
@@ -2485,12 +2510,13 @@ fn commit_probe(
     installed: &Installed,
     service: &str,
     id: &str,
+    started_at: &str,
     checked_at: i64,
 ) -> Result<()> {
     store::atomic(
         &probe_path(store, installed, service)?,
         &canonical(&json!({"kind":"komizo.probe",
-        "version":1,"container_id":id,"checked_at":checked_at}))?,
+        "version":1,"container_id":id,"started_at":started_at,"checked_at":checked_at}))?,
         0o600,
     )
 }
@@ -2610,7 +2636,16 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
                 now,
             )?;
             let previous = probe_record(&store, &frozen.installed, &scope.service)?;
-            if probe_due(previous.as_ref(), &frozen.record.id, now, interval)? {
+            let started_at = before["State"]["StartedAt"]
+                .as_str()
+                .ok_or_else(|| anyhow!("service probe generation missing"))?;
+            if probe_due(
+                previous.as_ref(),
+                &frozen.record.id,
+                started_at,
+                now,
+                interval,
+            )? {
                 let probe = super::cgroups::service_probe_group(
                     &scope.application,
                     &scope.instance,
@@ -2682,6 +2717,9 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
                 &current.installed,
                 &scope.service,
                 &current.record.id,
+                before["State"]["StartedAt"]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("service probe generation missing"))?,
                 checked,
             )?;
         }
@@ -3941,12 +3979,32 @@ mod recovery_tests {
         assert_eq!(health_interval(&health, started, epoch + 60).unwrap(), 30);
         assert!(health_interval(&health, "missing", epoch).is_err());
         let id = "a".repeat(64);
-        let previous =
-            json!({"kind":"komizo.probe","version":1,"container_id":id,"checked_at":epoch});
-        assert!(!probe_due(Some(&previous), &id, epoch + 29, 30).unwrap());
-        assert!(probe_due(Some(&previous), &id, epoch + 30, 30).unwrap());
-        assert!(probe_due(Some(&previous), &"b".repeat(64), epoch + 1, 30).unwrap());
-        assert!(probe_due(Some(&json!({})), &id, epoch, 30).is_err());
+        let previous = json!({"kind":"komizo.probe","version":1,"container_id":id,"started_at":started,"checked_at":epoch});
+        assert!(!probe_due(Some(&previous), &id, started, epoch + 29, 30).unwrap());
+        assert!(probe_due(Some(&previous), &id, started, epoch + 30, 30).unwrap());
+        assert!(probe_due(Some(&previous), &"b".repeat(64), started, epoch + 1, 30).unwrap());
+        assert!(probe_due(Some(&json!({})), &id, started, epoch, 30).is_err());
+        // Native restarts preserve CID. The old generation must not suppress
+        // the first probe for an hour when the new start period is zero.
+        assert!(!probe_due(Some(&previous), &id, started, epoch + 1, 3600).unwrap());
+        assert!(
+            probe_due(
+                Some(&previous),
+                &id,
+                "2026-11-11T00:00:01Z",
+                epoch + 1,
+                3600
+            )
+            .unwrap()
+        );
+        let mut legacy = previous.clone();
+        legacy.as_object_mut().unwrap().remove("started_at");
+        assert!(probe_due(Some(&legacy), &id, started, epoch + 1, 3600).is_err());
+        let mut foreign = previous.clone();
+        foreign["unexpected"] = json!(true);
+        assert!(probe_due(Some(&foreign), &id, started, epoch + 1, 3600).is_err());
+        assert!(probe_due(None, &id, "invalid", epoch, 3600).is_err());
+        assert!(probe_due(None, "foreign", started, epoch, 3600).is_err());
     }
 
     #[test]

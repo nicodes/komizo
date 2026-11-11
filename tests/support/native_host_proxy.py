@@ -24,7 +24,7 @@ def run(arguments,**options):
 
 def identity(info):
     lines=info.splitlines()
-    if not lines or lines[0].split()[-1]!='go1.27.3':raise ValueError('proxy compiler build identity differs')
+    if not lines or lines[0].split()[-1]!='go1.27.4':raise ValueError('proxy compiler build identity differs')
     rows=[line.strip().split('\t') for line in lines[1:]]
     if [row for row in rows if row[0]=='path']!=[['path','github.com/caddyserver/caddy/v2/cmd/caddy']]:raise ValueError('proxy entrypoint differs')
     modules=[row for row in rows if len(row)>=2 and row[0] in {'mod','dep'} and row[1]=='github.com/caddyserver/caddy/v2']
@@ -35,6 +35,32 @@ def identity(info):
     for key,value in {'GOOS':'linux','GOARCH':'amd64','CGO_ENABLED':'0','-trimpath':'true'}.items():
         if [flag for flag in flags if flag.split('=',1)[0]==key]!=[key+'='+value]:raise ValueError('proxy target/compiler settings differ')
     return modules[0][0]=='mod'
+
+
+def audit_report(report,destination,provenance,judge):
+    """Retain bounded public scanner evidence before its unchanged strict gate."""
+    if not isinstance(report,bytes) or len(report)>16<<20:
+        raise ValueError('proxy binary audit exceeds metadata bound')
+    allowed={'tools_revision','platform','go_version','caddy_version','source_sha256','binary_sha256'}
+    if set(provenance)!=allowed:
+        raise ValueError('proxy audit provenance exposes undeclared fields')
+    directory=destination.parent/'security'
+    if directory.is_symlink():raise ValueError('proxy audit evidence directory is linked')
+    directory.mkdir(mode=0o700,exist_ok=True)
+    raw=directory/(destination.name+'.govulncheck.json')
+    metadata=directory/(destination.name+'.provenance.json')
+    if any(p.exists() or p.is_symlink() for p in [raw,metadata]):
+        raise ValueError('fresh proxy audit evidence required')
+    observation={'kind':'komizo.proxy-security-observation','version':1,'accepted':False,
+        **provenance,'report_file':raw.name,'report_size_bytes':len(report),
+        'report_sha256':'sha256:'+hashlib.sha256(report).hexdigest()}
+    body=json.dumps(observation,sort_keys=True,separators=(',',':')).encode()
+    if len(body)>65536:raise ValueError('proxy audit provenance exceeds metadata bound')
+    for path,value in [(raw,report),(metadata,body)]:
+        with path.open('xb') as output:
+            os.fchmod(output.fileno(),0o600);output.write(value)
+    if judge(report.decode())['reached']:
+        raise ValueError('proxy contains vulnerable linked symbols')
 
 
 def main():
@@ -53,7 +79,7 @@ def main():
         if body!=run([*command,'show',TOOLS+':helpers/'+name]):raise ValueError('proxy source differs from accepted Git bytes')
         files[name]=body
     compiler=Path(run(['go','env','GOROOT'],text=True).strip())/'bin'/'go'
-    if run([str(compiler),'env','GOVERSION'],text=True).strip()!='go1.27.3':raise ValueError('proxy requires exact Go1.27.3')
+    if run([str(compiler),'env','GOVERSION'],text=True).strip()!='go1.27.4':raise ValueError('proxy requires exact Go1.27.4')
     scanner=shutil.which('govulncheck')
     if not scanner:raise ValueError('proxy requires the explicitly installed pinned binary scanner')
     destination.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
@@ -78,11 +104,13 @@ def main():
         if len(report)>16<<20:raise ValueError('proxy binary audit exceeds metadata bound')
         spec=importlib.util.spec_from_file_location('accepted_proxy_scanner',tools/'helpers'/'scan-image.py')
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-        if module.judge_report(report.decode())['reached']:raise ValueError('proxy contains vulnerable linked symbols')
+        audit_report(report,destination,{'tools_revision':TOOLS,'platform':'linux/amd64','go_version':'1.27.4','caddy_version':'2.11.6',
+            'source_sha256':{name:'sha256:'+hashlib.sha256(body).hexdigest() for name,body in files.items()},
+            'binary_sha256':'sha256:'+hashlib.sha256(raw).hexdigest()},module.judge_report)
         for name,target in [('caddy.go.mod','go.mod'),('caddy.go.sum','go.sum'),('caddy-build.sh','build.sh')]:
             if (root/target).read_bytes()!=files[name]:raise ValueError('proxy build changed accepted input bytes')
         destination.write_bytes(raw);destination.chmod(0o755)
-        receipt={'kind':'komizo.proxy-build','version':1,'tools_revision':TOOLS,'platform':'linux/amd64','go_version':'1.27.3','caddy_version':'2.11.6',
+        receipt={'kind':'komizo.proxy-build','version':1,'tools_revision':TOOLS,'platform':'linux/amd64','go_version':'1.27.4','caddy_version':'2.11.6',
             'source_sha256':{name:'sha256:'+hashlib.sha256(body).hexdigest() for name,body in files.items()},'binary_sha256':'sha256:'+hashlib.sha256(raw).hexdigest()}
         path=destination.with_name(destination.name+'.json');path.write_bytes(json.dumps(receipt,sort_keys=True,separators=(',',':')).encode());path.chmod(0o644)
     print('Exact locked proxy source, compiler, native ELF and linked-symbol audit passed.')
