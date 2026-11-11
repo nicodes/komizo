@@ -683,6 +683,57 @@ def instance_memory_events(path):
             raise ValueError('memory stress instance parent was retired or replaced')
 
 
+def pid_stress_recovered(source,record,leaf,workload,baseline,deadline,observation):
+    import errno
+    fields={'id':'.ID','running':'.State.Running','paused':'.State.Paused','pid':'.State.Pid',
+        'cgroup':'.State.CgroupPath','parent':'.HostConfig.CgroupParent'}
+    fields.update({key:'(index .Config.Labels "io.komizo.'+key+'")'
+        for key in ('application','instance','service','release','ownership')})
+    projection='{'+','.join('"'+key+'":{{json '+field+'}}' for key,field in fields.items())+'}'
+    expected={'id':record['id'],'parent':workload,'application':'livebox','instance':'production',
+        'service':'api','release':source['release_digest'],'ownership':record['ownership']}
+    while time.monotonic()<deadline:
+        state=observation['pid_cleanup']={'state':'waiting'}
+        try:count=int((leaf/'pids.current').read_text())
+        except OSError as error:
+            if error.errno not in {errno.ENOENT,errno.ENODEV}:
+                state.update(state='payload_read_error',errno=error.errno);raise
+            state['state']='payload_absent' if error.errno==errno.ENOENT else 'payload_retired';count=None
+        state['pids_current']=count
+        if count==0:state['state']='payload_empty'
+        elif count is not None and count>baseline:state['state']='pid_count_not_recovered'
+        if count is not None and 0<count<=baseline:
+            remaining=deadline-time.monotonic()
+            if remaining<=0:break
+            try:
+                result=run(['podman','--remote=false','container','inspect','--format',projection,record['id']],
+                    ok=False,timeout=min(1,remaining))
+            except subprocess.TimeoutExpired:state['state']='inspect_timeout'
+            else:
+                state['inspect_returncode']=result.returncode
+                if result.returncode:state['state']='inspect_failed'
+                else:
+                    if len(result.stdout)>8192:raise ValueError('PID cleanup inspection exceeds its closed bound')
+                    value=json.loads(result.stdout)
+                    if (not isinstance(value,dict) or set(value)!=set(fields)
+                            or any(value[key]!=wanted for key,wanted in expected.items())):
+                        state['state']='identity_refused';raise ValueError('PID cleanup container ownership changed')
+                    if (type(value['running']) is not bool or type(value['paused']) is not bool
+                            or type(value['pid']) is not int or not 0<=value['pid']<1<<31):
+                        state['state']='state_refused';raise ValueError('PID cleanup native state is invalid')
+                    state.update(running=value['running'],paused=value['paused'],pid=value['pid'])
+                    if value['running'] and value['cgroup']!=workload+'/libpod-'+record['id']:
+                        state['state']='identity_refused';raise ValueError('PID cleanup payload ownership changed')
+                    if (value['running'] and not value['paused'] and value['pid']>1
+                            and value['cgroup']==workload+'/libpod-'+record['id']):
+                        if installed('livebox')!=source:
+                            state['state']='source_refused';raise ValueError('PID cleanup installed identity changed')
+                        if time.monotonic()<deadline:state['state']='ready';return
+        remaining=deadline-time.monotonic()
+        if remaining>0:time.sleep(min(.2,remaining))
+    raise ValueError('PID stress did not recover its exact live container within the original cleanup deadline')
+
+
 def resource_stress(report):
     app='livebox';source=installed(app);record=source['resources']['containers']['api']
     namespace=hashlib.sha256(b'livebox\0production').hexdigest()[:20]
@@ -703,12 +754,23 @@ def resource_stress(report):
     previous=event('pids.events','max')
     # Sleeping children have a finite lifetime even when the shell cannot fork
     # another process. The stress stays below this application's PID ceiling.
-    run(['podman','--remote=false','exec',record['name'],'/bin/busybox','sh','-c',
+    pid_result=run(['podman','--remote=false','exec',record['name'],'/bin/busybox','sh','-c',
         'i=0; while [ "$i" -lt 80 ]; do /bin/busybox sleep 2 & i=$((i+1)); done; wait'],ok=False,timeout=20)
-    if event('pids.events','max')<=previous:raise ValueError('actual application PID ceiling did not refuse excess children')
+    cleanup_deadline=time.monotonic()+10
+    pid_pressure=submit_failure(pid_result);pid_stderr=pid_result.stderr[-2048:].lower()
+    pid_pressure['stderr_classes']=[name for name,patterns in {
+        'fork_refused':(b"can't fork",b'cannot fork'),'resource_unavailable':(b'resource temporarily unavailable',),
+        'exec_not_running':(b'can only create exec sessions on running containers',b'container state improper'),
+        'oci_runtime':(b'oci runtime',),'killed':(b'killed',)}.items() if any(pattern in pid_stderr for pattern in patterns)]
+    observation={'container_id':actual['Id'],'container_cgroup':str(leaf),'memory_events_cgroup':str(path),
+        'baseline_pids':baseline_pids,'pid_pressure':pid_pressure,
+        'before_pid_events':previous,'after_pid_events':event('pids.events','max'),'pid_cleanup':{'state':'not_started'}}
+    write(ROOT/'resource-stress.json',observation)
+    if observation['after_pid_events']<=previous:raise ValueError('actual application PID ceiling did not refuse excess children')
     # A shell refused another fork can exit while its finite children remain.
     # Finish the PID experiment before asking a new exec to allocate memory.
-    until(lambda:int((leaf/'pids.current').read_text())<=baseline_pids,seconds=10)
+    try:pid_stress_recovered(source,record,leaf,workload,baseline_pids,cleanup_deadline,observation)
+    finally:write(ROOT/'resource-stress.json',observation)
     def counters(stream):
         stream.seek(0);return {key:int(value) for key,value in (line.split() for line in stream.read().splitlines())}
     # Hierarchical instance counters retain descendant OOM events when the
@@ -719,9 +781,7 @@ def resource_stress(report):
             'BEGIN {x="0123456789"; for (i=0;i<9;i++) x=x x; while (1) a[++n]=x n}'],ok=False,timeout=30)
         after=counters(events)
     if installed(app)!=source:raise ValueError('memory stress installed identity changed')
-    write(ROOT/'resource-stress.json',{'container_id':actual['Id'],'container_cgroup':str(leaf),
-        'memory_events_cgroup':str(path),
-        'baseline_pids':baseline_pids,'before_memory_events':before,'after_memory_events':after,
+    write(ROOT/'resource-stress.json',{**observation,'before_memory_events':before,'after_memory_events':after,
         'exit_code':result.returncode,'stderr':result.stderr.decode(errors='replace')[:2048]})
     if result.returncode==0 or after.get('oom_kill',0)<=before.get('oom_kill',0):
         raise ValueError('actual application memory ceiling did not isolate excess allocation')

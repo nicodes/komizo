@@ -491,10 +491,11 @@ class ResourceMemoryEvents(unittest.TestCase):
         source_file=Path(__file__).parents[1]/'support/native_host_runtime.py'
         node=next(node for node in ast.parse(source_file.read_text()).body
             if isinstance(node,ast.FunctionDef) and node.name=='resource_stress')
-        for changed,delta,status,error in [(True,1,137,'installed identity'),
-                (False,0,137,'memory ceiling'),(False,1,0,'memory ceiling')]:
+        for changed,delta,status,error,blocked in [(True,1,137,'installed identity',False),
+                (False,0,137,'memory ceiling',False),(False,1,0,'memory ceiling',False),
+                (False,1,137,'cleanup not ready',True)]:
             with self.subTest(changed=changed,delta=delta,status=status),tempfile.TemporaryDirectory() as temporary:
-                root=Path(temporary);cid='a'*64;owner='b'*32;calls=[];reads=[]
+                root=Path(temporary);cid='a'*64;owner='b'*32;calls=[];reads=[];writes=[]
                 group='/komizo/production/kmz-'+hashlib.sha256(b'livebox\0production').hexdigest()[:20]
                 parent=root/group.removeprefix('/');parent.mkdir(mode=0o700,parents=True)
                 workload=group+'/service-api-'+owner;leaf=root/workload.removeprefix('/')/('libpod-'+cid);leaf.mkdir(parents=True)
@@ -514,13 +515,97 @@ class ResourceMemoryEvents(unittest.TestCase):
                     calls.append((argv,options))
                     if argv[5]=='sh':(parent/'pids.events').write_text('max 1\n')
                     else:(parent/'memory.events').write_text('oom_kill '+str(delta)+'\n')
-                    return SimpleNamespace(returncode=status,stderr=b'')
+                    stderr=b"private-fixture-sentinel can't fork: Resource temporarily unavailable" if argv[5]=='sh' else b''
+                    return SimpleNamespace(returncode=status,stderr=stderr,stdout=b'')
+                def recovered(*arguments):
+                    if blocked:raise ValueError('cleanup not ready')
                 namespace={'hashlib':hashlib,'Path':lambda value:root if str(value)=='/sys/fs/cgroup' else Path(value),
                     'installed':installed,'container':lambda record:actual,'run':run,'instance_memory_events':self.events(),
-                    'until':lambda predicate,seconds:self.assertTrue(predicate()),'ROOT':root,'write':lambda *args:None}
+                    'until':lambda predicate,seconds:self.assertTrue(predicate()),'ROOT':root,
+                    'write':lambda path,value:writes.append(json.loads(json.dumps(value))),
+                    'submit_failure':lambda result:{'returncode':result.returncode},
+                    'pid_stress_recovered':recovered,'time':SimpleNamespace(monotonic=lambda:0)}
                 exec(compile(ast.Module(body=[node],type_ignores=[]),str(source_file),'exec'),namespace)
                 with self.assertRaisesRegex(ValueError,error):namespace['resource_stress']({})
-                self.assertEqual(len(calls),2);self.assertEqual(calls[1][1],{'ok':False,'timeout':30})
+                self.assertEqual(len(calls),1 if blocked else 2)
+                if blocked:
+                    self.assertIn('pid_pressure',writes[-1]);self.assertNotIn('before_memory_events',writes[-1])
+                    self.assertEqual(writes[-1]['pid_pressure']['stderr_classes'],['fork_refused','resource_unavailable'])
+                    self.assertNotIn('private-fixture-sentinel',json.dumps(writes[-1]))
+                else:self.assertEqual(calls[1][1],{'ok':False,'timeout':30})
+
+    def recovery(self,root,count=1):
+        source_file=Path(__file__).parents[1]/'support/native_host_runtime.py'
+        node=next(node for node in ast.parse(source_file.read_text()).body
+            if isinstance(node,ast.FunctionDef) and node.name=='pid_stress_recovered')
+        leaf=root/'payload';leaf.mkdir();(leaf/'pids.current').write_text(str(count))
+        source={'release_digest':'sha256:'+'c'*64};record={'id':'a'*64,'ownership':'b'*32}
+        workload='/komizo/production/kmz-fixture/service-api-'+record['ownership'];clock=[0.0];calls=[];observation={}
+        value={'id':record['id'],'parent':workload,'application':'livebox','instance':'production','service':'api',
+            'release':source['release_digest'],'ownership':record['ownership'],'running':True,'paused':False,
+            'pid':123,'cgroup':workload+'/libpod-'+record['id']}
+        def run(argv,**options):
+            calls.append((argv,options));return SimpleNamespace(returncode=0,stdout=json.dumps(value).encode())
+        namespace={'time':SimpleNamespace(monotonic=lambda:clock[0],sleep=lambda delay:clock.__setitem__(0,clock[0]+delay)),
+            'json':json,'subprocess':subprocess,'run':run,'installed':lambda app:source}
+        exec(compile(ast.Module(body=[node],type_ignores=[]),str(source_file),'exec'),namespace)
+        return SimpleNamespace(function=namespace['pid_stress_recovered'],namespace=namespace,clock=clock,calls=calls,
+            observation=observation,value=value,leaf=leaf,args=(source,record,leaf,workload,1,10.0,observation))
+
+    def test_dead_zero_pid_or_missing_payload_never_starts_an_inspection_or_memory_pressure(self):
+        for missing in (False,True):
+            with self.subTest(missing=missing),tempfile.TemporaryDirectory() as temporary:
+                context=self.recovery(Path(temporary),0)
+                if missing:(context.leaf/'pids.current').unlink()
+                with self.assertRaisesRegex(ValueError,'original cleanup deadline'):context.function(*context.args)
+                self.assertEqual(context.calls,[]);self.assertEqual(context.clock[0],10)
+
+    def test_live_exact_scope_is_required_and_foreign_payload_or_source_refuses(self):
+        for changed in (None,'id','cgroup','source'):
+            with self.subTest(changed=changed),tempfile.TemporaryDirectory() as temporary:
+                context=self.recovery(Path(temporary))
+                if changed=='source':context.namespace['installed']=lambda app:{'changed':True}
+                elif changed:context.value[changed]='foreign'
+                if changed:
+                    with self.assertRaisesRegex(ValueError,'ownership changed|installed identity'):context.function(*context.args)
+                else:
+                    context.function(*context.args);self.assertEqual(context.observation['pid_cleanup']['state'],'ready')
+                self.assertEqual(len(context.calls),1)
+                argv,options=context.calls[0];self.assertEqual(argv[-1],'a'*64)
+                self.assertEqual(options,{'ok':False,'timeout':1});self.assertNotIn('.Env',argv[-2])
+
+    def test_readonly_inspection_uses_remaining_original_deadline_without_retry(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            context=self.recovery(Path(temporary));context.clock[0]=9.75
+            def timeout(argv,**options):
+                context.calls.append((argv,options));context.clock[0]=10
+                raise subprocess.TimeoutExpired(argv,options['timeout'])
+            context.namespace['run']=timeout
+            with self.assertRaisesRegex(ValueError,'original cleanup deadline'):context.function(*context.args)
+            self.assertEqual(len(context.calls),1);self.assertEqual(context.calls[0][1]['timeout'],.25)
+            self.assertEqual(context.observation['pid_cleanup']['state'],'inspect_timeout')
+            context.calls.clear()
+            with patch.object(Path,'read_text',side_effect=AssertionError('expired gate must not read')):
+                with self.assertRaisesRegex(ValueError,'original cleanup deadline'):context.function(*context.args)
+            self.assertEqual(context.calls,[])
+
+    def test_payload_enodev_can_recover_but_unknown_errno_refuses_immediately(self):
+        import errno
+        with tempfile.TemporaryDirectory() as temporary:
+            context=self.recovery(Path(temporary));original=Path.read_text;reads=[]
+            def retiring(path,*args,**options):
+                reads.append(path)
+                if len(reads)==1:raise OSError(errno.ENODEV,'private-fixture-sentinel')
+                return original(path,*args,**options)
+            with patch.object(Path,'read_text',new=retiring):context.function(*context.args)
+            self.assertEqual(len(context.calls),1);self.assertEqual(context.observation['pid_cleanup']['state'],'ready')
+            self.assertLess(context.clock[0],10);self.assertNotIn('private-fixture-sentinel',json.dumps(context.observation))
+            context.calls.clear();context.clock[0]=0
+            with patch.object(Path,'read_text',side_effect=OSError(errno.EIO,'private-fixture-sentinel')):
+                with self.assertRaises(OSError) as caught:context.function(*context.args)
+            self.assertEqual(caught.exception.errno,errno.EIO);self.assertEqual(context.calls,[])
+            self.assertEqual(context.clock[0],0);self.assertEqual(context.observation['pid_cleanup']['errno'],errno.EIO)
+            self.assertNotIn('private-fixture-sentinel',json.dumps(context.observation))
 
 
 class ProxyRefreshObserver(unittest.TestCase):
