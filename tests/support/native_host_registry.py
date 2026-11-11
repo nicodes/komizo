@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import shutil
 import ssl
+import subprocess
 import tarfile
 
 MANIFEST = 'application/vnd.oci.image.manifest.v1+json'
@@ -42,17 +43,33 @@ def static(root, app, revision, *, unsafe=False):
     return {'kind':'archive','reference':reference,'digest':identity,'size_bytes':len(payload),'media_type':STATIC}
 
 
+def image_sources():
+    for executable,required in [('/bin/busybox.static',{'sh','wget','nc','timeout','sleep','touch'}),
+            ('/bin/busybox-extras',{'httpd'})]:
+        result=subprocess.run([executable,'--list'],capture_output=True,timeout=5,check=True,
+            env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LANG':'C.UTF-8'})
+        if not required.issubset(set(result.stdout.decode().splitlines())):
+            raise ValueError('signed fixture binary lacks required applets: '+executable)
+    return {name:Path(source).read_bytes() for name,source in [
+        ('bin/busybox','/bin/busybox.static'),('bin/busybox-extras','/bin/busybox-extras'),
+        ('lib/ld-musl-x86_64.so.1','/lib/ld-musl-x86_64.so.1')]}
+
+
 def image(root, app, revision, *, repository=None):
+    sources=image_sources()  # Refuse an unusable producer before any image blobs are created.
     data=io.BytesIO()
     with tarfile.open(fileobj=data,mode='w:',format=tarfile.USTAR_FORMAT) as archive:
-        for name in ['bin','www','www/cgi-bin','data']:
+        for name in ['bin','lib','www','www/cgi-bin','data']:
             info=tarfile.TarInfo(name);info.type=tarfile.DIRTYPE;info.mode=0o755;info.uid=info.gid=10001;archive.addfile(info)
         cgi=b'#!/bin/busybox sh\nprintf "Content-Type: text/plain\\r\\n\\r\\n%s\\n" "$HTTP_X_FORWARDED_FOR"\n'
-        for name,body,mode in [('bin/busybox',Path('/bin/busybox.static').read_bytes(),0o755),
+        dispatcher=b'#!/bin/busybox sh\nif [ "${1-}" = httpd ]; then shift; exec /bin/busybox-extras httpd "$@"; fi\nexec /bin/busybox "$@"\n'
+        for name,body,mode in [*[(name,body,0o755) for name,body in sources.items()],
+                ('bin/fixture-entrypoint',dispatcher,0o755),
                 ('www/index.html',(app+' '+revision).encode(),0o644),('www/cgi-bin/who',cgi,0o755)]:
             info=tarfile.TarInfo(name);info.size=len(body);info.mode=mode;info.uid=info.gid=10001;archive.addfile(info,io.BytesIO(body))
+        info=tarfile.TarInfo('lib/libc.musl-x86_64.so.1');info.type=tarfile.SYMTYPE;info.linkname='ld-musl-x86_64.so.1';info.uid=info.gid=10001;archive.addfile(info)
     raw=data.getvalue();layer=gzip.compress(raw,mtime=0)
-    config=canonical({'architecture':'amd64','os':'linux','config':{'User':'10001:10001','Entrypoint':['/bin/busybox'],
+    config=canonical({'architecture':'amd64','os':'linux','config':{'User':'10001:10001','Entrypoint':['/bin/fixture-entrypoint'],
         'Env':['PATH=/bin'],'Labels':{'org.opencontainers.image.source':'https://github.com/'+(repository or 'example/'+app),'org.opencontainers.image.revision':revision}},
         'rootfs':{'type':'layers','diff_ids':[digest(raw)]}})
     config_id=blob(root,config);layer_id=blob(root,layer)

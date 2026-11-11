@@ -1630,10 +1630,25 @@ mod tests {
         for rule in [
             "/usr/share/ca-certificates/ r,",
             "/usr/share/ca-certificates/** r,",
+            "/usr/local/share/ca-certificates/ r,",
+            "/usr/local/share/ca-certificates/** r,",
         ] {
             assert!(proxy.lines().any(|line| line.trim() == rule));
         }
         assert!(!dns.contains("/usr/share/ca-certificates"));
+        assert!(!dns.contains("/usr/local/share/ca-certificates"));
+        assert_eq!(
+            dns.lines()
+                .map(str::trim)
+                .filter(|line| line.contains("/sys/fs/cgroup"))
+                .collect::<Vec<_>>(),
+            [
+                "/sys/fs/cgroup/cpu.max r,",
+                "/sys/fs/cgroup/komizo/cpu.max r,",
+                "/sys/fs/cgroup/komizo/control/cpu.max r,",
+                "/sys/fs/cgroup/komizo/control/dns/cpu.max r,",
+            ]
+        );
         assert!(!text.contains("capability,"));
         assert!(!text.contains("file,"));
         assert!(!text.contains("#include <abstractions/base>"));

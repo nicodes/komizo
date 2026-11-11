@@ -9,6 +9,7 @@ import tempfile
 import time
 import subprocess
 import socket
+import tarfile
 import sys
 from types import SimpleNamespace
 import unittest
@@ -165,6 +166,72 @@ class NativeGuestReadinessEvidence(unittest.TestCase):
             'role':'proxy','boot_id':boot,'pid':123,'stage':'proxy_guard','errno':None,'error':'guard'}
         path=directory/'proxy.startup.json';path.write_text(json.dumps(value));path.chmod(0o600)
         return module,directory,boot,path,value
+
+    def failure_observer(self):
+        if os.name!='posix':self.skipTest('owned process group observer runs on Unix')
+        spec=importlib.util.spec_from_file_location('native_failure_observer',Path(__file__).parents[1]/'support/native_host_acceptance.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        return module,{'Id':'a'*64,'State':{'ExitCode':127,'Error':'native exit','OOMKilled':False}}
+
+    def test_fixture_http_image_keeps_static_applets_and_refuses_missing_httpd_before_blobs(self):
+        spec=importlib.util.spec_from_file_location('native_image_registry',Path(__file__).parents[1]/'support/native_host_registry.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        original=subprocess.run
+        def missing_httpd(arguments,**options):
+            listing='sh\nwget\nnc\ntimeout\nsleep\ntouch' if arguments[0]=='/bin/busybox.static' else 'telnet'
+            return original([sys.executable,'-I','-B','-c','print('+repr(listing)+')'],**options)
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            with patch.object(module.subprocess,'run',side_effect=missing_httpd):
+                with self.assertRaisesRegex(ValueError,'lacks required applets'):
+                    module.image(root,'mailroom','a'*40)
+            self.assertEqual(list(root.iterdir()),[])
+            sources={'bin/busybox':b'exact-static-core','bin/busybox-extras':b'exact-extras','lib/ld-musl-x86_64.so.1':b'exact-musl'}
+            with patch.object(module,'image_sources',return_value=sources):artifact=module.image(root,'mailroom','a'*40)
+            manifest=json.loads((root/'blobs'/artifact['digest'][7:]).read_bytes())
+            config=json.loads((root/'blobs'/manifest['config']['digest'][7:]).read_bytes())
+            self.assertEqual(config['config']['Entrypoint'],['/bin/fixture-entrypoint'])
+            with tarfile.open(root/'blobs'/manifest['layers'][0]['digest'][7:],'r:gz') as archive:
+                for name,value in sources.items():self.assertEqual(archive.extractfile(name).read(),value)
+                self.assertEqual(archive.getmember('lib/libc.musl-x86_64.so.1').linkname,'ld-musl-x86_64.so.1')
+                dispatcher=archive.extractfile('bin/fixture-entrypoint').read()
+                self.assertIn(b'exec /bin/busybox-extras httpd "$@"',dispatcher)
+                self.assertIn(b'exec /bin/busybox "$@"',dispatcher)
+                self.assertTrue(archive.extractfile('www/cgi-bin/who').read().startswith(b'#!/bin/busybox sh\n'))
+
+    def test_failed_owned_container_streams_are_bounded_and_scrubbed_before_export(self):
+        module,selected=self.failure_observer();original=subprocess.Popen;children=[]
+        token='runtime-'+'b'*32;password='c'*48;verifier='SCRAM-SHA-256$4096:c2FsdA==$c3RvcmVk:c2VydmVy'
+        class PrivateConfig:
+            def get(self,*args):raise AssertionError('observer read configuration or environment')
+        selected['Config']=PrivateConfig();selected['State']['Error']='native exit '+token
+        text=('old line\n'*4000)+token+' '+password+' '+verifier+'\nactual exit 127\n'
+        def child(arguments,**options):
+            self.assertEqual(arguments,['/usr/bin/podman','--remote=false','logs','--tail','64','a'*64])
+            command='import os;os.write(1,'+repr(text.encode())+');os.write(2,b"bounded stderr\\n")'
+            value=original([sys.executable,'-I','-B','-c',command],**options);children.append(value);return value
+        with patch.object(module.subprocess,'Popen',side_effect=child):result=module.fixture_failure_observation(selected,time.monotonic()+3)
+        self.assertEqual((result['exit_code'],result['error'],result['oom_killed']),(127,'native exit [redacted]',False))
+        self.assertIn('actual exit 127',result['logs']['stdout']);self.assertIn('[redacted]',result['logs']['stdout'])
+        for name in ['stdout','stderr']:
+            self.assertLessEqual(len(result['logs'][name].encode()),8192);self.assertLessEqual(len(result['logs'][name].splitlines()),64)
+        self.assertTrue(result['logs']['stdout_truncated']);self.assertEqual(result['logs']['command_exit_code'],0)
+        for secret in [token,password,verifier]:self.assertNotIn(secret,json.dumps(result))
+        self.assertTrue(all(value.poll() is not None for value in children))
+
+    def test_observer_shared_deadline_kills_and_reaps_only_its_owned_child(self):
+        module,selected=self.failure_observer();original=subprocess.Popen;children=[]
+        def child(arguments,**options):
+            value=original([sys.executable,'-I','-B','-c','import time;time.sleep(10)'],**options);children.append(value);return value
+        start=time.monotonic()
+        with patch.object(module.subprocess,'Popen',side_effect=child):result=module.fixture_failure_observation(selected,start+0.15)
+        self.assertTrue(result['logs']['timed_out']);self.assertLess(time.monotonic()-start,1.5)
+        self.assertTrue(all(value.poll() is not None for value in children))
+        with patch.object(module.subprocess,'Popen',side_effect=AssertionError('expired observer launched a child')):
+            self.assertEqual(module.fixture_failure_observation(selected,start)['logs'],{'state':'deadline_expired'})
+            self.assertEqual(module.fixture_failure_observation({**selected,'Id':'foreign'},start),{'state':'refused'})
+            selected['State']['Error']='-----BEGIN TEST PRIVATE KEY----- fixture-only marker'
+            self.assertEqual(module.fixture_failure_observation(selected,start)['error'],'[redacted fixture key]')
 
     def test_exact_private_diagnostic_and_embedded_source_preserve_only_closed_metadata(self):
         module,directory,boot,path,value=self.startup_fixture()

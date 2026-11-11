@@ -376,7 +376,64 @@ def runtime():
     fixture_runtime.prepare()
 
 
+def fixture_failure_observation(selected, deadline):
+    """Observe only one already-inspected synthetic CID, within the shared deadline."""
+    import re
+    import selectors
+    import signal
+    def scrub(raw, truncated=False):
+        if truncated:raw=raw.partition(b'\n')[2]
+        text=raw.decode(errors='replace')
+        if 'PRIVATE KEY' in text:return '[redacted fixture key]'
+        text=re.sub(r'(?:runtime|migration)-[a-f0-9]{32}|(?<![a-fA-F0-9])[a-fA-F0-9]{48}(?![a-fA-F0-9])', '[redacted]', text)
+        text=re.sub(r'SCRAM-SHA-256\$[^\s]+|md5[a-fA-F0-9]{32}', '[redacted verifier]', text)
+        return ''.join(text.splitlines(keepends=True)[-64:]).encode()[-8192:].decode(errors='ignore')
+    identity=selected.get('Id')
+    if not isinstance(identity,str) or not re.fullmatch('[a-f0-9]{64}',identity):return {'state':'refused'}
+    state=selected.get('State',{})
+    result={'exit_code':state.get('ExitCode') if type(state.get('ExitCode')) is int else None,
+        'error':scrub(state.get('Error','').encode()) if isinstance(state.get('Error',''),str) else None,
+        'oom_killed':state.get('OOMKilled') if type(state.get('OOMKilled')) is bool else None}
+    if time.monotonic()>=deadline:return {**result,'logs':{'state':'deadline_expired'}}
+    tails={name:bytearray() for name in ['stdout','stderr']};sizes={name:0 for name in tails}
+    process=None;timed_out=False
+    try:
+        process=subprocess.Popen(['/usr/bin/podman','--remote=false','logs','--tail','64',identity],
+            stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True,
+            env={'PATH':'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin','HOME':'/root','LANG':'C.UTF-8'})
+        with selectors.DefaultSelector() as selector:
+            for name in tails:
+                pipe=getattr(process,name);os.set_blocking(pipe.fileno(),False);selector.register(pipe,selectors.EVENT_READ,name)
+            while selector.get_map():
+                remaining=deadline-time.monotonic()
+                if remaining<=0:timed_out=True;break
+                for key,_ in selector.select(remaining):
+                    chunk=os.read(key.fd,16384)
+                    if not chunk:selector.unregister(key.fileobj);continue
+                    name=key.data;sizes[name]+=len(chunk);tails[name].extend(chunk)
+                    del tails[name][:-8192]
+        if not timed_out:
+            try:process.wait(timeout=max(0.001,deadline-time.monotonic()))
+            except subprocess.TimeoutExpired:timed_out=True
+        result['logs']={'state':'observed','timed_out':timed_out,
+            **{name:scrub(bytes(tails[name]),sizes[name]>8192) for name in tails},
+            **{name+'_truncated':sizes[name]>8192 for name in tails}}
+    except (OSError,subprocess.SubprocessError):result['logs']={'state':'unavailable'}
+    finally:
+        if process is not None:
+            try:
+                if process.poll() is None:
+                    try:os.killpg(process.pid,signal.SIGKILL)
+                    except ProcessLookupError:pass
+                    process.wait(timeout=1)  # One final reap reserve, inside the unchanged 15s SSH cap.
+                if result.get('logs',{}).get('state')=='observed':result['logs']['command_exit_code']=process.returncode
+            except (OSError,subprocess.SubprocessError):result['logs']={'state':'unavailable','observer_reaped':False}
+            for name in tails:getattr(process,name).close()
+    return result
+
+
 def evidence():
+    deadline=time.monotonic()+12  # Existing SSH observer cap is 15s, not a fresh budget per CID.
     files={}
     for pattern in ['capacity-observation.json','readiness-*.json','proxy-active-*.caddy','shared-dns.json','postgres-wrapper.json','postgres-diagnostic.json','postgres-initial.json','apparmor-boundary.json','deadline-observation.json','interrupted-deadline-observation.json','log-observation.json','task-deadline.json','task-helper-cleanup.json','task-start-observation.json','resource-stress.json']:
         for path in list(ROOT.glob(pattern))[:16]:
@@ -392,16 +449,21 @@ def evidence():
             value=json.loads(failure.read_bytes());row['failure']={key:value[key] for key in ['kind','version','operation_id','phase','code','context','observed_at'] if key in value}
         operations.append(row)
     containers=[]
-    for item in json.loads(run(['podman','--remote=false','ps','--all','--format=json']).stdout)[:32]:
+    for item in json.loads(run(['podman','--remote=false','ps','--all','--format=json'],timeout=max(0.001,deadline-time.monotonic())).stdout)[:32]:
+        if time.monotonic()>=deadline:break
         identity=item.get('Id') or item.get('ID') or item.get('id')
         if not isinstance(identity,str) or not __import__('re').fullmatch('[a-f0-9]{64}',identity):continue
-        selected=json.loads(run(['podman','--remote=false','container','inspect',identity]).stdout)[0]
+        selected=json.loads(run(['podman','--remote=false','container','inspect',identity],timeout=max(0.001,deadline-time.monotonic())).stdout)[0]
+        if selected.get('Id')!=identity:continue
         labels=selected.get('Config',{}).get('Labels',{}) or {}
         if not labels.get('io.komizo.application'):continue
         pid=selected['State']['Pid'];label=Path('/proc/'+str(pid)+'/attr/current')
-        containers.append({'id':selected['Id'],'application':labels['io.komizo.application'],'instance':labels.get('io.komizo.instance'),
+        row={'id':selected['Id'],'application':labels['io.komizo.application'],'instance':labels.get('io.komizo.instance'),
             'service':labels.get('io.komizo.service'),'profile':selected.get('AppArmorProfile'),
-            'pid':pid,'state':selected['State']['Status'],'kernel_label':label.read_text().strip() if pid and label.is_file() else None})
+            'pid':pid,'state':selected['State']['Status'],'kernel_label':label.read_text().strip() if pid and label.is_file() else None}
+        if selected['State']['Status'] in {'exited','stopped','dead','created'}:
+            row['failure_observation']=fixture_failure_observation(selected,deadline) if sum('failure_observation' in value for value in containers)<4 else {'state':'count_limit'}
+        containers.append(row)
     assets={}
     for path in list(Path('/var/lib/komizo-assets').rglob('*'))[:128]:
         stat=path.lstat();assets[str(path)]={'mode':oct(stat.st_mode&0o7777),'uid':stat.st_uid,'gid':stat.st_gid,'size':stat.st_size}

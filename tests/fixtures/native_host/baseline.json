@@ -38,6 +38,7 @@
     "shadow",
     "shadow-subids",
     "busybox-static",
+    "busybox-extras=1.37.0-r31",
     "python3",
     "curl",
     "ca-certificates",
