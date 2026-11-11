@@ -707,7 +707,13 @@ pub fn restore_instance_allocation(
 }
 
 pub fn caddy_validate(config: &Path, deadline: Instant) -> Result<()> {
+    let entered = Instant::now();
+    let entry_remaining_ms = deadline.saturating_duration_since(entered).as_millis();
     super::bootstrap::proxy_guard()?;
+    let guard_elapsed_ms = entered.elapsed().as_millis();
+    let after_guard_remaining_ms = deadline
+        .saturating_duration_since(Instant::now())
+        .as_millis();
     let mut command = Command::new("/usr/local/bin/caddy");
     command.env_clear().env("PATH", "/usr/bin:/bin").args([
         "adapt",
@@ -718,8 +724,12 @@ pub fn caddy_validate(config: &Path, deadline: Instant) -> Result<()> {
             .to_str()
             .ok_or_else(|| anyhow!("invalid proxy staging path"))?,
     ]);
+    let capture_started = Instant::now();
     let output = crate::process::capture(&mut command, None, 256 << 10, deadline, || false)
-        .context("native proxy configuration adaptation process")?;
+        .with_context(|| format!(
+            "native proxy configuration adaptation process (entry_remaining_ms={entry_remaining_ms}, guard_elapsed_ms={guard_elapsed_ms}, after_guard_remaining_ms={after_guard_remaining_ms}, capture_elapsed_ms={})",
+            capture_started.elapsed().as_millis()
+        ))?;
     ensure!(
         output.status.success(),
         "proxy rejected staged serving configuration: {}",
@@ -732,7 +742,13 @@ pub fn caddy_validate(config: &Path, deadline: Instant) -> Result<()> {
 }
 
 pub fn caddy_reload(deadline: Instant) -> Result<()> {
+    let entered = Instant::now();
+    let entry_remaining_ms = deadline.saturating_duration_since(entered).as_millis();
     super::bootstrap::proxy_guard()?;
+    let guard_elapsed_ms = entered.elapsed().as_millis();
+    let after_guard_remaining_ms = deadline
+        .saturating_duration_since(Instant::now())
+        .as_millis();
     let mut command = Command::new("/usr/local/bin/caddy");
     command.env_clear().env("PATH", "/usr/bin:/bin").args([
         "reload",
@@ -743,8 +759,12 @@ pub fn caddy_reload(deadline: Instant) -> Result<()> {
         "--address",
         PROXY_SOCKET,
     ]);
+    let capture_started = Instant::now();
     let output = crate::process::capture(&mut command, None, 256 << 10, deadline, || false)
-        .context("native proxy reload acknowledgment process")?;
+        .with_context(|| format!(
+            "native proxy reload acknowledgment process (entry_remaining_ms={entry_remaining_ms}, guard_elapsed_ms={guard_elapsed_ms}, after_guard_remaining_ms={after_guard_remaining_ms}, capture_elapsed_ms={})",
+            capture_started.elapsed().as_millis()
+        ))?;
     ensure!(
         output.status.success(),
         "proxy refused the staged serving configuration"

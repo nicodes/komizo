@@ -498,7 +498,7 @@ impl NotificationEndpoint {
                 && current.st_mode == pinned.mode()
                 && current.st_uid == pinned.uid()
                 && current.st_gid == pinned.gid()
-                && current.st_nlink == pinned.nlink(),
+                && current.st_nlink == 1,
             "infrastructure notification endpoint changed before retirement"
         );
         Ok(true)
