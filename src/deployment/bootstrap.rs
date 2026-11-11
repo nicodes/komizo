@@ -1038,15 +1038,19 @@ fn lookup(database: &str, name: &str, deadline: Instant) -> Result<Option<String
     }
 }
 
+fn managed_group_members(name: &str, members: &str) -> bool {
+    members.is_empty() || members == name
+}
+
 fn account(name: &str, home: &str, shell: &str, deadline: Instant) -> Result<u32> {
     if lookup("group", name, deadline)?.is_none() {
         command("/usr/sbin/addgroup", &["-S", name], deadline)?;
     }
     let group =
         lookup("group", name, deadline)?.ok_or_else(|| anyhow!("system group is missing"))?;
-    let group = group.trim_end().split(':').collect::<Vec<_>>();
+    let group = group.trim_end_matches('\n').split(':').collect::<Vec<_>>();
     ensure!(
-        group.len() == 4 && group[0] == name && group[3].is_empty(),
+        group.len() == 4 && group[0] == name && managed_group_members(name, group[3]),
         "submission groups may not contain other accounts"
     );
     let gid = group[2].parse::<u32>()?;
@@ -1438,6 +1442,22 @@ pub fn install(public_keys: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn managed_group_members_accept_only_empty_or_the_exact_account() {
+        let name = "komizo-submit";
+        assert!(super::managed_group_members(name, ""));
+        assert!(super::managed_group_members(name, name));
+        for members in [
+            "foreign",
+            "komizo-submit,foreign",
+            "komizo-submit,komizo-submit",
+            "komizo-submit,",
+            " komizo-submit",
+            "komizo-submit ",
+        ] {
+            assert!(!super::managed_group_members(name, members));
+        }
+    }
     use super::*;
     fn key(byte: u8) -> String {
         let mut blob = b"\0\0\0\x0bssh-ed25519\0\0\0\x20".to_vec();
