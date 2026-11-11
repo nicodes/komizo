@@ -1,5 +1,6 @@
 """The test SDK retains exact public bytes and never forwards the API token."""
 import ast
+from contextlib import contextmanager
 import hashlib
 import importlib.util
 import io
@@ -447,6 +448,79 @@ class SubmitFailureDiagnostics(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'"stdout_bytes": 0'):functions['submit']({'action':'stop','timeout_seconds':1})
             else:self.assertEqual(functions['submit']({'action':'stop','timeout_seconds':1}),expected)
             self.assertEqual(len(calls),1)
+
+
+class ResourceMemoryEvents(unittest.TestCase):
+    def events(self):
+        source=Path(__file__).parents[1]/'support/native_host_runtime.py'
+        node=next(node for node in ast.parse(source.read_text()).body
+            if isinstance(node,ast.FunctionDef) and node.name=='instance_memory_events')
+        namespace={'contextmanager':contextmanager}
+        exec(compile(ast.Module(body=[node],type_ignores=[]),str(source),'exec'),namespace)
+        return namespace['instance_memory_events']
+
+    def test_same_instance_counter_fd_retains_delta_after_payload_directory_removal(self):
+        if os.geteuid()!=0:self.skipTest('owned parent counter fixture requires sudo Linux CI')
+        with tempfile.TemporaryDirectory() as temporary:
+            parent=Path(temporary)/'instance';parent.mkdir(mode=0o700)
+            events=parent/'memory.events';events.write_text('oom_kill 0\n')
+            payload=parent/'libpod-fixture';payload.mkdir();(payload/'memory.events').write_text('oom_kill 0\n')
+            with self.events()(parent) as stream:
+                original=os.fstat(stream.fileno());before=int(stream.read().split()[1])
+                (payload/'memory.events').unlink();payload.rmdir()
+                events.write_text('oom_kill 1\n');stream.seek(0);after=int(stream.read().split()[1])
+                current=os.fstat(stream.fileno())
+                self.assertEqual((current.st_dev,current.st_ino),(original.st_dev,original.st_ino))
+                self.assertGreater(after,before)
+
+    def test_retired_replaced_linked_or_writable_instance_parent_refuses(self):
+        if os.geteuid()!=0:self.skipTest('owned parent counter fixture requires sudo Linux CI')
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);parent=root/'instance';parent.mkdir(mode=0o700)
+            (parent/'memory.events').write_text('oom_kill 0\n')
+            with self.assertRaisesRegex(ValueError,'retired or replaced'),self.events()(parent):
+                parent.rename(root/'retired');parent.mkdir(mode=0o700)
+                (parent/'memory.events').write_text('oom_kill 1\n')
+            link=root/'link';link.symlink_to(parent,target_is_directory=True)
+            with self.assertRaisesRegex(ValueError,'protected'),self.events()(link):pass
+            parent.chmod(0o777)
+            with self.assertRaisesRegex(ValueError,'protected'),self.events()(parent):pass
+
+    def test_pressure_requires_unchanged_source_nonzero_exit_and_positive_oom_delta(self):
+        if os.geteuid()!=0:self.skipTest('owned parent counter fixture requires sudo Linux CI')
+        source_file=Path(__file__).parents[1]/'support/native_host_runtime.py'
+        node=next(node for node in ast.parse(source_file.read_text()).body
+            if isinstance(node,ast.FunctionDef) and node.name=='resource_stress')
+        for changed,delta,status,error in [(True,1,137,'installed identity'),
+                (False,0,137,'memory ceiling'),(False,1,0,'memory ceiling')]:
+            with self.subTest(changed=changed,delta=delta,status=status),tempfile.TemporaryDirectory() as temporary:
+                root=Path(temporary);cid='a'*64;owner='b'*32;calls=[];reads=[]
+                group='/komizo/production/kmz-'+hashlib.sha256(b'livebox\0production').hexdigest()[:20]
+                parent=root/group.removeprefix('/');parent.mkdir(mode=0o700,parents=True)
+                workload=group+'/service-api-'+owner;leaf=root/workload.removeprefix('/')/('libpod-'+cid);leaf.mkdir(parents=True)
+                (leaf/'pids.current').write_text('1\n');(parent/'pids.events').write_text('max 0\n')
+                (parent/'memory.events').write_text('oom_kill 0\n')
+                record={'id':cid,'name':'fixture','ownership':owner}
+                source={'application':'livebox','instance':'production','release_digest':'sha256:'+'c'*64,
+                    'resources':{'containers':{'api':record}}}
+                labels={'io.komizo.'+key:value for key,value in {'application':'livebox','instance':'production',
+                    'service':'api','ownership':owner,'release':source['release_digest']}.items()}
+                actual={'Id':cid,'State':{'CgroupPath':str(leaf.relative_to(root))},
+                    'HostConfig':{'CgroupParent':workload},'Config':{'Labels':labels}}
+                def installed(app):
+                    reads.append(app)
+                    return {**source,'release_digest':'changed'} if changed and len(reads)>1 else source
+                def run(argv,**options):
+                    calls.append((argv,options))
+                    if argv[5]=='sh':(parent/'pids.events').write_text('max 1\n')
+                    else:(parent/'memory.events').write_text('oom_kill '+str(delta)+'\n')
+                    return SimpleNamespace(returncode=status,stderr=b'')
+                namespace={'hashlib':hashlib,'Path':lambda value:root if str(value)=='/sys/fs/cgroup' else Path(value),
+                    'installed':installed,'container':lambda record:actual,'run':run,'instance_memory_events':self.events(),
+                    'until':lambda predicate,seconds:self.assertTrue(predicate()),'ROOT':root,'write':lambda *args:None}
+                exec(compile(ast.Module(body=[node],type_ignores=[]),str(source_file),'exec'),namespace)
+                with self.assertRaisesRegex(ValueError,error):namespace['resource_stress']({})
+                self.assertEqual(len(calls),2);self.assertEqual(calls[1][1],{'ok':False,'timeout':30})
 
 
 class ProxyRefreshObserver(unittest.TestCase):

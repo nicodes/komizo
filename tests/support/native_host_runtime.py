@@ -2,6 +2,7 @@
 """Real native release effects against a private fixture registry inside the VM."""
 import copy
 import hashlib
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -669,14 +670,35 @@ def failures(report):
         'worker_deadline_stops_job':'passed','unsafe_archive':'passed'})
 
 
+@contextmanager
+def instance_memory_events(path):
+    import stat
+    before=path.lstat()
+    if not stat.S_ISDIR(before.st_mode) or before.st_uid!=0 or before.st_mode&0o022:
+        raise ValueError('memory stress instance parent is not protected')
+    with (path/'memory.events').open() as events:
+        yield events
+        after=path.lstat()
+        if (after.st_dev,after.st_ino,after.st_uid,after.st_mode)!=(before.st_dev,before.st_ino,before.st_uid,before.st_mode):
+            raise ValueError('memory stress instance parent was retired or replaced')
+
+
 def resource_stress(report):
-    app='livebox';record=installed(app)['resources']['containers']['api']
+    app='livebox';source=installed(app);record=source['resources']['containers']['api']
     namespace=hashlib.sha256(b'livebox\0production').hexdigest()[:20]
     group='/komizo/production/kmz-'+namespace
     path=Path('/sys/fs/cgroup')/group.removeprefix('/')
     def event(file,key):return int(dict(line.split() for line in (path/file).read_text().splitlines())[key])
     actual=container(record)
     leaf=Path('/sys/fs/cgroup')/actual['State']['CgroupPath'].removeprefix('/')
+    workload=group+'/service-api-'+record['ownership']
+    if (source['application']!=app or source['instance']!='production'
+            or set(source['resources']['containers'])!={'api'} or actual['Id']!=record['id']
+            or actual['HostConfig']['CgroupParent']!=workload
+            or leaf!=path/('service-api-'+record['ownership'])/('libpod-'+record['id'])
+            or any(actual['Config']['Labels'].get('io.komizo.'+key)!=value for key,value in
+                {'application':app,'instance':'production','service':'api','release':source['release_digest'],'ownership':record['ownership']}.items())):
+        raise ValueError('memory stress target escaped its exact owned instance')
     baseline_pids=int((leaf/'pids.current').read_text())
     previous=event('pids.events','max')
     # Sleeping children have a finite lifetime even when the shell cannot fork
@@ -689,14 +711,16 @@ def resource_stress(report):
     until(lambda:int((leaf/'pids.current').read_text())<=baseline_pids,seconds=10)
     def counters(stream):
         stream.seek(0);return {key:int(value) for key,value in (line.split() for line in stream.read().splitlines())}
-    # Observe the actual bounded container. An already-open event fd also
-    # survives native cgroup teardown if the whole container is the OOM victim.
-    with (leaf/'memory.events').open() as events:
+    # Hierarchical instance counters retain descendant OOM events when the
+    # bounded payload cgroup is removed during its supervised recovery.
+    with instance_memory_events(path) as events:
         before=counters(events)
         result=run(['podman','--remote=false','exec',record['name'],'/bin/busybox','awk',
             'BEGIN {x="0123456789"; for (i=0;i<9;i++) x=x x; while (1) a[++n]=x n}'],ok=False,timeout=30)
         after=counters(events)
+    if installed(app)!=source:raise ValueError('memory stress installed identity changed')
     write(ROOT/'resource-stress.json',{'container_id':actual['Id'],'container_cgroup':str(leaf),
+        'memory_events_cgroup':str(path),
         'baseline_pids':baseline_pids,'before_memory_events':before,'after_memory_events':after,
         'exit_code':result.returncode,'stderr':result.stderr.decode(errors='replace')[:2048]})
     if result.returncode==0 or after.get('oom_kill',0)<=before.get('oom_kill',0):
