@@ -43,6 +43,7 @@ def proxy_stack_projection(raw, deadline=None):
         'semacquire':'semaphore','sync.Mutex.Lock':'mutex','sync.RWMutex.Lock':'mutex',
         'chan receive':'channel_receive','chan send':'channel_send','sleep':'sleep',
         'GC worker (idle)':'gc_idle','GC assist wait':'gc_wait'}
+    def priority(name):return any(word in name.lower() for word in ['load','config','stop','cleanup'])
     rows=[];current=None
     for index,line in enumerate(raw.decode(errors='replace').splitlines()):
         if deadline is not None and index%64==0 and time.monotonic()>=deadline:raise TimeoutError()
@@ -51,7 +52,7 @@ def proxy_stack_projection(raw, deadline=None):
             if len(rows)>=512:break
             current={'id':int(header[1]),'state':states.get(header[2].split(',',1)[0],'other'),'functions':[]}
             rows.append(current)
-        elif current is not None and len(current['functions'])<12 and not line.startswith(('\t','created by ')) and '(' in line:
+        elif current is not None and not line.startswith(('\t','created by ')) and '(' in line:
             symbol,_,tail=line.partition('(')
             if symbol.endswith('.'):
                 receiver,separator,tail=tail.partition(').')
@@ -62,8 +63,12 @@ def proxy_stack_projection(raw, deadline=None):
             if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_./*()\[\]]{0,255}',symbol):continue
             name=symbol.rsplit('/',1)[-1]
             if '.' in name and not name.endswith('.go') and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_.*()\[\]]{0,95}',name):
-                current['functions'].append(name)
-    rows.sort(key=lambda row:(not any(any(word in name.lower() for word in ['load','config','stop','cleanup']) for name in row['functions']),row['id']))
+                functions=current['functions']
+                if len(functions)<12:functions.append(name)
+                elif priority(name) and name not in functions:
+                    replace=next((index for index in range(11,-1,-1) if not priority(functions[index])),None)
+                    if replace is not None:functions[replace]=name
+    rows.sort(key=lambda row:(not any(priority(name) for name in row['functions']),row['id']))
     selected=rows[:24]
     return {'state':'observed','goroutines':selected,'omitted':len(rows)-len(selected),
         'goroutine_limit_reached':len(rows)==512,'raw_limit_reached':len(raw)==512<<10}
@@ -150,53 +155,89 @@ def proxy_admin_profile(deadline, stop):
     import socket
     import stat
     import struct
-    if stop.is_set() or time.monotonic()>=deadline:raise TimeoutError()
-    def start_ticks():
-        if time.monotonic()>=deadline or stop.is_set():raise TimeoutError()
-        with (Path('/proc')/str(pid)/'stat').open('rb') as source:body=source.read(4097)
-        if len(body)>4096:raise ValueError('proxy process metadata exceeds bound')
-        return int(body.decode().rsplit(') ',1)[1].split()[19])
-    account=pwd.getpwnam('komizo-proxy');pid=service_pid('komizo-proxy')
-    birth=start_ticks()
-    if birth<=0:raise ValueError('proxy start identity missing')
-    directory=Path('/run/komizo-proxy');path=directory/'admin.sock'
-    parent=directory.lstat();metadata=path.lstat()
-    if (account.pw_uid<=0 or account.pw_gid<=0 or not stat.S_ISDIR(parent.st_mode)
-            or (parent.st_uid,parent.st_gid)!=(account.pw_uid,account.pw_gid) or stat.S_IMODE(parent.st_mode)!=0o700
-            or not stat.S_ISSOCK(metadata.st_mode) or (metadata.st_uid,metadata.st_gid)!=(account.pw_uid,account.pw_gid)
-            or metadata.st_nlink!=1 or stat.S_IMODE(metadata.st_mode) not in {0o600,0o700}):
-        raise ValueError('proxy admin socket is not private')
-    with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as connection:
-        remaining=deadline-time.monotonic()
-        if remaining<=0 or stop.is_set():raise TimeoutError()
-        connection.settimeout(min(.2,remaining))
-        connection.connect(str(path))
-        peer=struct.unpack('3i',connection.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))
-        if peer!=(pid,account.pw_uid,account.pw_gid) or service_pid('komizo-proxy')!=pid:raise ValueError('proxy admin peer differs')
-        remaining=deadline-time.monotonic()
-        if remaining<=0 or stop.is_set():raise TimeoutError()
-        connection.settimeout(min(.2,remaining))
-        connection.sendall(b'GET /debug/pprof/goroutine?debug=2 HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n')
-        raw=bytearray()
-        while len(raw)<512<<10:
+    stage='deadline';http_status=None
+    try:
+        if stop.is_set() or time.monotonic()>=deadline:raise TimeoutError()
+        def start_ticks():
+            if time.monotonic()>=deadline or stop.is_set():raise TimeoutError()
+            with (Path('/proc')/str(pid)/'stat').open('rb') as source:body=source.read(4097)
+            if len(body)>4096:raise ValueError('proxy process metadata exceeds bound')
+            return int(body.decode().rsplit(') ',1)[1].split()[19])
+        stage='account'
+        account=pwd.getpwnam('komizo-proxy')
+        stage='service_identity'
+        pid=service_pid('komizo-proxy')
+        birth=start_ticks()
+        if birth<=0:raise ValueError('proxy start identity missing')
+        stage='socket_metadata'
+        directory=Path('/run/komizo-proxy');path=directory/'admin.sock'
+        parent=directory.lstat();metadata=path.lstat()
+        stage='socket_identity'
+        if (account.pw_uid<=0 or account.pw_gid<=0 or not stat.S_ISDIR(parent.st_mode)
+                or (parent.st_uid,parent.st_gid)!=(account.pw_uid,account.pw_gid) or stat.S_IMODE(parent.st_mode)!=0o700
+                or not stat.S_ISSOCK(metadata.st_mode) or (metadata.st_uid,metadata.st_gid)!=(account.pw_uid,account.pw_gid)
+                or metadata.st_nlink!=1 or stat.S_IMODE(metadata.st_mode) not in {0o200,0o600,0o700}):
+            raise ValueError('proxy admin socket is not private')
+        with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as connection:
             remaining=deadline-time.monotonic()
             if remaining<=0 or stop.is_set():raise TimeoutError()
             connection.settimeout(min(.2,remaining))
-            try:chunk=connection.recv(min(8192,(512<<10)-len(raw)))
-            except socket.timeout:continue
-            if not chunk:break
-            raw.extend(chunk)
-            if b'\r\n\r\n' not in raw and len(raw)>16384:raise ValueError('proxy HTTP headers exceed bound')
-        header,separator,body=raw.partition(b'\r\n\r\n')
-        if not separator or len(header)>16384 or not header.startswith((b'HTTP/1.0 200 ',b'HTTP/1.1 200 ')) or b'transfer-encoding:' in header.lower():raise ValueError('proxy profile response refused')
-        limited=len(raw)==512<<10
-        if limited and not body.endswith(b'\n'):body=body.rpartition(b'\n')[0]+b'\n'
-        fields=('st_dev','st_ino','st_mode','st_uid','st_gid','st_nlink');current=path.lstat()
-        if any(getattr(current,key)!=getattr(metadata,key) for key in fields) or service_pid('komizo-proxy')!=pid or start_ticks()!=birth:raise ValueError('proxy admin identity changed')
-        result={'peer_pid':pid,'peer_start_ticks':birth,**proxy_stack_projection(body,deadline)}
-        result['raw_limit_reached']=limited
-        if time.monotonic()>=deadline or stop.is_set():raise TimeoutError()
-        return result
+            stage='connect'
+            connection.connect(str(path))
+            stage='peer'
+            peer=struct.unpack('3i',connection.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))
+            if peer!=(pid,account.pw_uid,account.pw_gid) or service_pid('komizo-proxy')!=pid:raise ValueError('proxy admin peer differs')
+            remaining=deadline-time.monotonic()
+            if remaining<=0 or stop.is_set():raise TimeoutError()
+            connection.settimeout(min(.2,remaining))
+            stage='request'
+            connection.sendall(b'GET /debug/pprof/goroutine?debug=2 HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n')
+            stage='response'
+            raw=bytearray()
+            while len(raw)<512<<10:
+                remaining=deadline-time.monotonic()
+                if remaining<=0 or stop.is_set():raise TimeoutError()
+                connection.settimeout(min(.2,remaining))
+                try:chunk=connection.recv(min(8192,(512<<10)-len(raw)))
+                except socket.timeout:continue
+                if not chunk:break
+                raw.extend(chunk)
+                if b'\r\n\r\n' not in raw and len(raw)>16384:raise ValueError('proxy HTTP headers exceed bound')
+            stage='http'
+            header,separator,body=raw.partition(b'\r\n\r\n')
+            status_fields=header.partition(b'\r\n')[0].split(b' ',2)
+            if (len(status_fields)>=2 and status_fields[0] in (b'HTTP/1.0',b'HTTP/1.1')
+                    and len(status_fields[1])==3 and status_fields[1].isdigit()):
+                candidate=int(status_fields[1])
+                if 100<=candidate<=599:http_status=candidate
+            if not separator or len(header)>16384 or not header.startswith((b'HTTP/1.0 200 ',b'HTTP/1.1 200 ')) or b'transfer-encoding:' in header.lower():raise ValueError('proxy profile response refused')
+            limited=len(raw)==512<<10
+            if limited and not body.endswith(b'\n'):body=body.rpartition(b'\n')[0]+b'\n'
+            stage='identity_recheck'
+            fields=('st_dev','st_ino','st_mode','st_uid','st_gid','st_nlink');current=path.lstat()
+            if any(getattr(current,key)!=getattr(metadata,key) for key in fields) or service_pid('komizo-proxy')!=pid or start_ticks()!=birth:raise ValueError('proxy admin identity changed')
+            stage='projection'
+            result={'peer_pid':pid,'peer_start_ticks':birth,**proxy_stack_projection(body,deadline)}
+            result['raw_limit_reached']=limited
+            if time.monotonic()>=deadline or stop.is_set():raise TimeoutError()
+            return result
+
+    except Exception as error:
+        error.proxy_observer_stage=stage
+        error.proxy_observer_http_status=http_status
+        raise
+
+
+def proxy_observer_failure(error):
+    stages={'deadline','account','service_identity','socket_metadata','socket_identity','connect',
+        'peer','request','response','http','identity_recheck','projection'}
+    stage=getattr(error,'proxy_observer_stage',None)
+    errno=getattr(error,'errno',None)
+    status=getattr(error,'proxy_observer_http_status',None)
+    return {'state':'deadline_expired' if isinstance(error,TimeoutError) else 'unavailable',
+        'stage':stage if isinstance(stage,str) and stage in stages else 'unavailable',
+        'errno':errno if type(errno) is int and 0<=errno<=4095 else None,
+        'http_status':status if type(status) is int and 100<=status<=599 else None}
 
 
 def proxy_refresh_observation(operation, stop):
@@ -207,7 +248,7 @@ def proxy_refresh_observation(operation, stop):
     for key,observe in [('controller_children',lambda:proxy_cli_snapshot(min(deadline,time.monotonic()+1))),
             ('proxy_profile',lambda:proxy_admin_profile(deadline,stop))]:
         try:value[key]=observe()
-        except Exception as error:value[key]={'state':'deadline_expired' if isinstance(error,TimeoutError) else 'unavailable'}
+        except Exception as error:value[key]=proxy_observer_failure(error)
     if len(json.dumps(value,separators=(',',':')).encode())>48<<10:
         return {**{key:value[key] for key in ['kind','version','diagnostic_only','operation_id','phase']},'state':'export_limit_refused'}
     return value

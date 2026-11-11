@@ -426,7 +426,7 @@ class ProxyRefreshObserver(unittest.TestCase):
     def functions(self):
         source=Path(__file__).parents[1]/'support/native_host_runtime.py'
         tree=ast.parse(source.read_text())
-        names={'proxy_stack_projection','proxy_cli_role','proxy_cli_snapshot','proxy_admin_profile','proxy_refresh_observation'}
+        names={'proxy_stack_projection','proxy_cli_role','proxy_cli_snapshot','proxy_admin_profile','proxy_observer_failure','proxy_refresh_observation'}
         namespace={'os':os,'Path':Path,'json':json,'time':time,'service_pid':lambda role:123}
         exec(compile(ast.Module(body=[node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name in names],type_ignores=[]),str(source),'exec'),namespace)
         return namespace
@@ -445,6 +445,15 @@ class ProxyRefreshObserver(unittest.TestCase):
         self.assertLess(len(json.dumps(selected).encode()),48<<10)
         with self.assertRaises(ValueError):functions['proxy_stack_projection'](b'x'*((512<<10)+1))
 
+    def test_late_configuration_frames_replace_only_nonpriority_slots_within_the_existing_cap(self):
+        project=self.functions()['proxy_stack_projection']
+        ordinary=b''.join(f'net/http.frame{i}(0xbeef)\n'.encode() for i in range(20))
+        body=b'goroutine 1 [semacquire]:\n'+ordinary+b'github.com/caddyserver/caddy/v2.changeConfig(0xbeef)\n'
+        result=project(body);functions=result['goroutines'][0]['functions']
+        self.assertEqual(len(functions),12);self.assertIn('v2.changeConfig',functions)
+        self.assertIn('http.frame0',functions);self.assertNotIn('http.frame11',functions)
+        self.assertLess(len(json.dumps(result).encode()),48<<10)
+
     def test_only_the_two_fixed_caddy_argv_shapes_are_classified(self):
         classify=self.functions()['proxy_cli_role']
         adapt=['/usr/local/bin/caddy','adapt','--adapter','caddyfile','--config','/var/lib/komizo/proxy-staged.caddy']
@@ -453,11 +462,11 @@ class ProxyRefreshObserver(unittest.TestCase):
         for altered in [adapt+['private-value'],['caddy',*adapt[1:]],adapt[:-1]+['/private/config'],reload[:-1]+['unix//private/socket']]:
             self.assertIsNone(classify(altered))
 
-    def admin_fixture(self, peer=(123,1,1)):
+    def admin_fixture(self, peer=(123,1,1), mode=0o200):
         import stat
         import struct
         functions=self.functions();clock=[0.0];calls=[]
-        metadata=SimpleNamespace(st_dev=1,st_ino=2,st_mode=stat.S_IFSOCK|0o600,st_uid=1,st_gid=1,st_nlink=1)
+        metadata=SimpleNamespace(st_dev=1,st_ino=2,st_mode=stat.S_IFSOCK|mode,st_uid=1,st_gid=1,st_nlink=1)
         class FixedPath:
             def __init__(self,value):self.value=str(value)
             def __truediv__(self,value):return FixedPath(self.value+'/'+str(value))
@@ -482,6 +491,44 @@ class ProxyRefreshObserver(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'peer'):functions['proxy_admin_profile'](4,threading.Event())
         self.assertFalse(any(kind=='send' for kind,_ in calls))
 
+    def test_caddy_default_owner_write_socket_and_existing_private_modes_remain_exact(self):
+        for mode in [0o200,0o600,0o700]:
+            functions,clock,calls,connection=self.admin_fixture(mode=mode)
+            class Response(connection):
+                body=b'HTTP/1.0 200 OK\r\n\r\ngoroutine 1 [running]:\nnet/http.worker(0xbeef)\n'
+                def recv(self,count):body=self.body;self.body=b'';return body
+            with patch('pwd.getpwnam',return_value=SimpleNamespace(pw_uid=1,pw_gid=1)),patch.object(socket,'socket',return_value=Response()):
+                result=functions['proxy_admin_profile'](4,threading.Event())
+            self.assertEqual(result['goroutines'][0]['functions'],['http.worker'])
+            self.assertEqual(sum(kind=='send' for kind,_ in calls),1)
+        for mode in [0,0o400,0o660,0o777]:
+            functions,clock,calls,connection=self.admin_fixture(mode=mode)
+            with patch('pwd.getpwnam',return_value=SimpleNamespace(pw_uid=1,pw_gid=1)),patch.object(socket,'socket',return_value=connection()):
+                with self.assertRaises(ValueError) as caught:functions['proxy_admin_profile'](4,threading.Event())
+            self.assertEqual(functions['proxy_observer_failure'](caught.exception)['stage'],'socket_identity')
+            self.assertFalse(any(kind in {'connect','send'} for kind,_ in calls))
+
+    def test_failure_projection_reports_closed_stage_errno_and_http_status_without_private_text(self):
+        import errno
+        functions,clock,calls,connection=self.admin_fixture()
+        class Denied(connection):
+            def connect(self,path):raise OSError(errno.EACCES,'private-socket-path-and-error')
+        with patch('pwd.getpwnam',return_value=SimpleNamespace(pw_uid=1,pw_gid=1)),patch.object(socket,'socket',return_value=Denied()):
+            with self.assertRaises(OSError) as caught:functions['proxy_admin_profile'](4,threading.Event())
+        self.assertEqual(functions['proxy_observer_failure'](caught.exception),
+            {'state':'unavailable','stage':'connect','errno':errno.EACCES,'http_status':None})
+        class Refused(connection):
+            body=b'HTTP/1.0 403 Forbidden\r\nSecret: private-header\r\n\r\nprivate-response-body'
+            def recv(self,count):body=self.body;self.body=b'';return body
+        with patch('pwd.getpwnam',return_value=SimpleNamespace(pw_uid=1,pw_gid=1)),patch.object(socket,'socket',return_value=Refused()):
+            with self.assertRaises(ValueError) as caught:functions['proxy_admin_profile'](4,threading.Event())
+        result=functions['proxy_observer_failure'](caught.exception)
+        self.assertEqual(result,{'state':'unavailable','stage':'http','errno':None,'http_status':403})
+        self.assertNotIn('private',json.dumps(result))
+        error=OSError(100000,'private-error');error.proxy_observer_stage=['private-stage'];error.proxy_observer_http_status=True
+        self.assertEqual(functions['proxy_observer_failure'](error),
+            {'state':'unavailable','stage':'unavailable','errno':None,'http_status':None})
+
     def test_one_get_respects_the_original_four_second_deadline_and_expired_probe_touches_nothing(self):
         functions,clock,calls,connection=self.admin_fixture()
         with patch('pwd.getpwnam',return_value=SimpleNamespace(pw_uid=1,pw_gid=1)),patch.object(socket,'socket',return_value=connection()):
@@ -500,8 +547,8 @@ class ProxyRefreshObserver(unittest.TestCase):
         functions.update(proxy_cli_snapshot=children,proxy_admin_profile=profile)
         result=functions['proxy_refresh_observation']('a'*32,threading.Event())
         self.assertEqual(calls,[('children',11),('profile',14)])
-        self.assertEqual(result['controller_children'],{'state':'unavailable'})
-        self.assertEqual(result['proxy_profile'],{'state':'deadline_expired'})
+        self.assertEqual(result['controller_children'],{'state':'unavailable','stage':'unavailable','errno':None,'http_status':None})
+        self.assertEqual(result['proxy_profile'],{'state':'deadline_expired','stage':'unavailable','errno':None,'http_status':None})
         self.assertTrue(result['diagnostic_only']);self.assertNotIn('private',json.dumps(result))
 
     def test_http_raw_cap_marks_partial_profile_and_drops_the_incomplete_final_frame(self):
@@ -531,7 +578,7 @@ class ProxyRefreshObserver(unittest.TestCase):
                 self.skipTest('local namespace cannot assign the nonroot admin identity')
             script='''import os,socket,sys
 os.setgroups([]);os.setgid(1);os.setuid(1);os.umask(0o077)
-s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);s.bind(sys.argv[1]+'/admin.sock');s.listen(1);s.settimeout(3)
+s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);s.bind(sys.argv[1]+'/admin.sock');os.chmod(sys.argv[1]+'/admin.sock',0o200);s.listen(1);s.settimeout(3)
 c,_=s.accept();c.settimeout(2);request=b''
 while b'\\r\\n\\r\\n' not in request:request+=c.recv(4096)
 assert request==b'GET /debug/pprof/goroutine?debug=2 HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n'

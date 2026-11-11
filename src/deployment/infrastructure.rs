@@ -359,8 +359,238 @@ pub fn stop(role: Role, deadline: Instant) -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
+fn lifecycle_lock(role: Role) -> Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    bootstrap::runtime_directories()?;
+    startup_root()?;
+    let path = Path::new(DIRECTORY).join(format!("{}.lifecycle.lock", role.name()));
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file()
+            && metadata.uid() == 0
+            && metadata.gid() == 0
+            && metadata.nlink() == 1
+            && metadata.mode() & 0o7777 == 0o600,
+        "infrastructure lifecycle lock is not protected"
+    );
+    ensure!(
+        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0,
+        "fixed infrastructure lifecycle is already changing"
+    );
+    Ok(file)
+}
+#[cfg(not(target_os = "linux"))]
+fn lifecycle_lock(_: Role) -> Result<fs::File> {
+    Err(anyhow!(
+        "fixed infrastructure requires the supported Alpine host"
+    ))
+}
+
+fn notification_parent() -> Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let parent = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open("/run/openrc")?;
+    let metadata = parent.metadata()?;
+    ensure!(
+        OpenRcParent {
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+            mode: metadata.mode(),
+        }
+        .protected(),
+        "infrastructure notification parent is not protected"
+    );
+    openrc_parent_acl_absent(&parent)?;
+    Ok(parent)
+}
+
+#[cfg(target_os = "linux")]
+struct NotificationEndpoint {
+    parent: File,
+    socket: File,
+    metadata: fs::Metadata,
+    name: std::ffi::CString,
+}
+#[cfg(target_os = "linux")]
+impl NotificationEndpoint {
+    fn protected(metadata: &fs::Metadata, proxy: Option<(u32, u32)>) -> bool {
+        NotificationSocket {
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+            mode: metadata.mode(),
+        }
+        .retirable(metadata.nlink(), proxy)
+    }
+
+    fn capture(
+        parent: File,
+        name: std::ffi::CString,
+        proxy: Option<(u32, u32)>,
+    ) -> Result<Option<Self>> {
+        let descriptor = unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if descriptor < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::NotFound {
+                return Ok(None);
+            }
+            return Err(error.into());
+        }
+        let socket = unsafe { File::from_raw_fd(descriptor) };
+        let metadata = socket.metadata()?;
+        ensure!(
+            Self::protected(&metadata, proxy),
+            "infrastructure notification endpoint is not owned"
+        );
+        Ok(Some(Self {
+            parent,
+            socket,
+            metadata,
+            name,
+        }))
+    }
+
+    fn unchanged(&self) -> Result<bool> {
+        let mut current: libc::stat = unsafe { std::mem::zeroed() };
+        let result = unsafe {
+            libc::fstatat(
+                self.parent.as_raw_fd(),
+                self.name.as_ptr(),
+                &mut current,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        };
+        if result != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::NotFound {
+                return Ok(false);
+            }
+            return Err(error.into());
+        }
+        let pinned = self.socket.metadata()?;
+        ensure!(
+            pinned.dev() == self.metadata.dev()
+                && pinned.ino() == self.metadata.ino()
+                && pinned.mode() == self.metadata.mode()
+                && pinned.uid() == self.metadata.uid()
+                && pinned.gid() == self.metadata.gid()
+                && pinned.nlink() == self.metadata.nlink(),
+            "pinned notification endpoint changed before retirement"
+        );
+        ensure!(
+            current.st_dev == pinned.dev()
+                && current.st_ino == pinned.ino()
+                && current.st_mode == pinned.mode()
+                && current.st_uid == pinned.uid()
+                && current.st_gid == pinned.gid()
+                && current.st_nlink == pinned.nlink(),
+            "infrastructure notification endpoint changed before retirement"
+        );
+        Ok(true)
+    }
+
+    fn retire(self, mut quiescent: impl FnMut() -> Result<()>) -> Result<()> {
+        quiescent()?;
+        if !self.unchanged()? {
+            return Ok(());
+        }
+        let connection = UnixDatagram::unbound()?;
+        connection.set_nonblocking(true)?;
+        // Resolve through the held, already verified parent directory, rather
+        // than looking up a possibly replaced absolute parent a second time.
+        let path = format!(
+            "/proc/self/fd/{}/{}",
+            self.parent.as_raw_fd(),
+            self.name.to_str()?
+        );
+        match connection.connect(path) {
+            Ok(()) => {
+                return Err(anyhow!(
+                    "infrastructure notification endpoint is still live"
+                ));
+            }
+            Err(error) if error.raw_os_error() == Some(libc::ECONNREFUSED) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                ensure!(
+                    !self.unchanged()?,
+                    "notification endpoint disappeared ambiguously"
+                );
+                return Ok(());
+            }
+            Err(error) => return Err(error.into()),
+        }
+        quiescent()?;
+        if !self.unchanged()? {
+            return Ok(());
+        }
+        let result = unsafe { libc::unlinkat(self.parent.as_raw_fd(), self.name.as_ptr(), 0) };
+        if result != 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err(error.into());
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn notification_quiescent(role: Role) -> Result<()> {
+    ensure!(
+        supervisor_pid(role)?.is_none(),
+        "infrastructure notification still has an owned monitor"
+    );
+    // Expiry shares its leaf with independent task guardians. Their survival
+    // never authorizes killing or emptying that leaf during endpoint cleanup.
+    if role != Role::Expiry {
+        ensure!(
+            cgroups::empty(&role.group())?,
+            "missing infrastructure monitor left an unsupervised process"
+        );
+    }
+    Ok(())
+}
+#[cfg(target_os = "linux")]
+fn retire_notification(role: Role) -> Result<()> {
+    notification_quiescent(role)?;
+    let parent = notification_parent()?;
+    let name = std::ffi::CString::new(format!("supervise-{}.sock", role.service()))?;
+    let proxy = if role == Role::Proxy {
+        Some(bootstrap::proxy_identity()?)
+    } else {
+        None
+    };
+    if let Some(endpoint) = NotificationEndpoint::capture(parent, name, proxy)? {
+        endpoint.retire(|| notification_quiescent(role))?;
+    }
+    Ok(())
+}
+#[cfg(not(target_os = "linux"))]
+fn retire_notification(_: Role) -> Result<()> {
+    Err(anyhow!(
+        "fixed infrastructure requires the supported Alpine host"
+    ))
+}
+
+#[cfg(target_os = "linux")]
 pub fn stop_owned(role: Role) -> Result<()> {
     bootstrap::infrastructure_files_guard()?;
+    let _lifecycle = lifecycle_lock(role)?;
     let Some(pid) = supervisor_pid(role)? else {
         if role != Role::Expiry {
             ensure!(
@@ -368,7 +598,7 @@ pub fn stop_owned(role: Role) -> Result<()> {
                 "missing infrastructure monitor left an unsupervised process"
             );
         }
-        return Ok(());
+        return retire_notification(role);
     };
     let descriptor = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) } as i32;
     ensure!(
@@ -412,7 +642,7 @@ pub fn stop_owned(role: Role) -> Result<()> {
             if role != Role::Expiry {
                 cgroups::kill_infrastructure(&role.group(), deadline)?;
             }
-            return Ok(());
+            return retire_notification(role);
         }
         ensure!(
             Instant::now() < deadline,
@@ -554,10 +784,12 @@ pub fn supervise(value: &str) -> Result<()> {
         "infrastructure supervision requires the owner identity"
     );
     bootstrap::infrastructure_files_guard()?;
+    let _lifecycle = lifecycle_lock(role)?;
     ensure!(
         !active(role)?,
         "fixed infrastructure supervisor is already active"
     );
+    retire_notification(role)?;
     // A diagnostic is never execution authority. Foreign/malformed records are
     // preserved and never alter this original startup result or deadline.
     let _ = clear_startup(role);
@@ -634,6 +866,15 @@ impl NotificationSocket {
                     self.uid == uid && self.gid == gid && self.mode & 0o7777 == 0o600
                 }))
     }
+    #[cfg(target_os = "linux")]
+    fn retirable(self, links: u64, proxy: Option<(u32, u32)>) -> bool {
+        self.mode & 0o170000 == 0o140000
+            && links == 1
+            && ((self.uid == 0 && self.gid == 0 && [0o600, 0o700].contains(&(self.mode & 0o7777)))
+                || proxy.is_some_and(|(uid, gid)| {
+                    self.uid == uid && self.gid == gid && self.mode & 0o7777 == 0o600
+                }))
+    }
 }
 impl OpenRcParent {
     fn protected(self) -> bool {
@@ -669,7 +910,6 @@ fn openrc_parent_acl_absent(_: &fs::File) -> Result<()> {
     ))
 }
 fn notification(role: Role, stage: &mut StartupStage) -> Result<Option<String>> {
-    use std::os::unix::fs::OpenOptionsExt;
     *stage = StartupStage::NotificationEnvironment;
     let address =
         std::env::var("NOTIFY_SOCKET").context("fixed infrastructure notification environment")?;
@@ -691,21 +931,7 @@ fn notification(role: Role, stage: &mut StartupStage) -> Result<Option<String>> 
         "infrastructure notification socket is not protected"
     );
     *stage = StartupStage::NotificationParent;
-    let parent = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
-        .open("/run/openrc")?;
-    let parent_metadata = parent.metadata()?;
-    ensure!(
-        OpenRcParent {
-            uid: parent_metadata.uid(),
-            gid: parent_metadata.gid(),
-            mode: parent_metadata.mode(),
-        }
-        .protected(),
-        "infrastructure notification parent is not protected"
-    );
-    openrc_parent_acl_absent(&parent)?;
+    let _parent = notification_parent()?;
     *stage = StartupStage::NotificationIdentity;
     let proxy = if role == Role::Proxy {
         Some(bootstrap::proxy_identity()?)
@@ -1025,6 +1251,173 @@ fn dns_runner(_: Option<&str>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    fn synthetic_notification(root: &Path) -> (UnixDatagram, NotificationEndpoint) {
+        let name = "supervise-komizo-controller.sock";
+        let socket = UnixDatagram::bind(root.join(name)).unwrap();
+        fs::set_permissions(root.join(name), fs::Permissions::from_mode(0o600)).unwrap();
+        let endpoint = NotificationEndpoint::capture(
+            File::open(root).unwrap(),
+            std::ffi::CString::new(name).unwrap(),
+            Some((unsafe { libc::geteuid() }, unsafe { libc::getegid() })),
+        )
+        .unwrap()
+        .unwrap();
+        (socket, endpoint)
+    }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn stopped_notification_is_retired_and_the_same_name_can_bind_again() {
+        let root = tempfile::tempdir().unwrap();
+        let (socket, endpoint) = synthetic_notification(root.path());
+        drop(socket);
+        let mut checks = 0;
+        endpoint
+            .retire(|| {
+                checks += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(checks, 2);
+        let socket =
+            UnixDatagram::bind(root.path().join("supervise-komizo-controller.sock")).unwrap();
+        drop(socket);
+    }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn live_notification_and_unproven_monitor_or_leaf_are_never_removed() {
+        let root = tempfile::tempdir().unwrap();
+        let (_socket, endpoint) = synthetic_notification(root.path());
+        let inode = endpoint.metadata.ino();
+        assert!(endpoint.retire(|| Ok(())).is_err());
+        assert_eq!(
+            fs::symlink_metadata(root.path().join("supervise-komizo-controller.sock"))
+                .unwrap()
+                .ino(),
+            inode
+        );
+        for message in ["owned monitor is live", "dedicated leaf is populated"] {
+            let (socket, endpoint) = {
+                let nested = root.path().join(message.replace(' ', "-"));
+                fs::create_dir(&nested).unwrap();
+                synthetic_notification(&nested)
+            };
+            let parent = endpoint.parent.try_clone().unwrap();
+            let name = endpoint.name.clone();
+            drop(socket);
+            assert!(endpoint.retire(|| Err(anyhow!(message))).is_err());
+            assert!(
+                NotificationEndpoint::capture(
+                    parent,
+                    name,
+                    Some((unsafe { libc::geteuid() }, unsafe { libc::getegid() }))
+                )
+                .unwrap()
+                .is_some()
+            );
+        }
+    }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn ready_notification_disappearance_is_idempotent_but_replacement_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let (socket, endpoint) = synthetic_notification(root.path());
+        let path = root.path().join("supervise-komizo-controller.sock");
+        fs::remove_file(&path).unwrap();
+        endpoint.retire(|| Ok(())).unwrap();
+        drop(socket);
+        let (socket, endpoint) = synthetic_notification(root.path());
+        fs::remove_file(&path).unwrap();
+        let replacement = UnixDatagram::bind(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let inode = fs::symlink_metadata(&path).unwrap().ino();
+        assert!(endpoint.retire(|| Ok(())).is_err());
+        assert_eq!(fs::symlink_metadata(&path).unwrap().ino(), inode);
+        drop((socket, replacement));
+    }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn endpoint_metadata_changes_and_untrusted_objects_are_preserved() {
+        use std::os::unix::fs::symlink;
+        let root = tempfile::tempdir().unwrap();
+        let (socket, endpoint) = synthetic_notification(root.path());
+        let path = root.path().join("supervise-komizo-controller.sock");
+        drop(socket);
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(endpoint.retire(|| Ok(())).is_err());
+        fs::remove_file(&path).unwrap();
+        let capture = || {
+            NotificationEndpoint::capture(
+                File::open(root.path()).unwrap(),
+                std::ffi::CString::new("supervise-komizo-controller.sock").unwrap(),
+                Some((unsafe { libc::geteuid() }, unsafe { libc::getegid() })),
+            )
+        };
+        assert!(capture().unwrap().is_none());
+        fs::write(&path, "ordinary file").unwrap();
+        assert!(capture().is_err());
+        fs::remove_file(&path).unwrap();
+        symlink("missing-target", &path).unwrap();
+        assert!(capture().is_err());
+        fs::remove_file(&path).unwrap();
+        let socket = UnixDatagram::bind(&path).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o666)).unwrap();
+        assert!(capture().is_err());
+        assert_eq!(fs::symlink_metadata(&path).unwrap().mode() & 0o777, 0o666);
+        drop(socket);
+    }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn endpoint_owner_and_alias_guards_are_strict() {
+        let socket = |uid, gid, mode| NotificationSocket { uid, gid, mode };
+        assert!(socket(0, 0, 0o140700).retirable(1, None));
+        assert!(socket(0, 0, 0o140600).retirable(1, None));
+        assert!(socket(1001, 1002, 0o140600).retirable(1, Some((1001, 1002))));
+        for (uid, gid, mode, links) in [
+            (1, 0, 0o140600, 1),
+            (0, 1, 0o140600, 1),
+            (0, 0, 0o140666, 1),
+            (0, 0, 0o140700, 2),
+            (0, 0, 0o100600, 1),
+            (1001, 1003, 0o140600, 1),
+            (1003, 1002, 0o140600, 1),
+            (1001, 1002, 0o140700, 1),
+        ] {
+            assert!(!socket(uid, gid, mode).retirable(links, Some((1001, 1002))));
+        }
+        let root = tempfile::tempdir().unwrap();
+        let (_socket, endpoint) = synthetic_notification(root.path());
+        let metadata = &endpoint.metadata;
+        let wrong_owner = (
+            metadata.uid().wrapping_add(1),
+            metadata.gid().wrapping_add(1),
+        );
+        if metadata.uid() != 0 || metadata.gid() != 0 {
+            assert!(!NotificationEndpoint::protected(metadata, None));
+            assert!(!NotificationEndpoint::protected(
+                metadata,
+                Some(wrong_owner)
+            ));
+        }
+        assert!(
+            !NotificationSocket {
+                uid: wrong_owner.0,
+                gid: wrong_owner.1,
+                mode: 0o140600
+            }
+            .owned(None)
+        );
+        fs::hard_link(
+            root.path().join("supervise-komizo-controller.sock"),
+            root.path().join("alias.sock"),
+        )
+        .unwrap();
+        assert!(!NotificationEndpoint::protected(
+            &endpoint.socket.metadata().unwrap(),
+            Some((metadata.uid(), metadata.gid()))
+        ));
+        assert!(endpoint.retire(|| Ok(())).is_err());
+    }
     #[test]
     fn startup_diagnostics_serialize_only_closed_facts_and_preserve_no_private_error_text() {
         let sentinel = "PRIVATE_ENV_AND_CONFIGURATION_SENTINEL";
