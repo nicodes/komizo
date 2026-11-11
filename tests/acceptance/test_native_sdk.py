@@ -6,6 +6,9 @@ import json
 from pathlib import Path
 import tempfile
 import time
+import subprocess
+import sys
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import urllib.error
@@ -70,6 +73,53 @@ class NativeSdk(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary,patch.object(sdk,'SIZE',1):
             with self.assertRaisesRegex(ValueError,'size or deadline'):
                 sdk.download(Path(temporary)/'archive','read-token',time.monotonic()+5,Opener())
+
+
+class NativeGuestReadinessEvidence(unittest.TestCase):
+    def guest(self, statement):
+        spec=importlib.util.spec_from_file_location('native_guest_readiness',Path(__file__).parents[1]/'support/native_host_vm.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        guest=module.Guest.__new__(module.Guest)
+        guest.command=lambda command,**options: subprocess.run([sys.executable,'-I','-B','-c',statement],**options)
+        return module,guest
+
+    def test_original_failing_child_retains_only_a_bounded_stderr_tail(self):
+        module,guest=self.guest("import sys;sys.stderr.write('x'*5000+'Permission denied (publickey).');sys.exit(255)")
+        with patch.object(module.time,'monotonic',side_effect=[0,0,2,2]):
+            with self.assertRaisesRegex(ValueError,'Permission denied') as result:
+                guest.ready(SimpleNamespace(poll=lambda:None),1)
+        self.assertIn('"returncode": 255',str(result.exception))
+        self.assertLess(len(str(result.exception)),4500)
+
+    def test_original_successful_child_remains_a_success(self):
+        module,guest=self.guest("print('fixture cloud-ready')")
+        with patch.object(module.time,'monotonic',return_value=0):
+            guest.ready(SimpleNamespace(poll=lambda:None),1)
+
+    def test_first_and_last_real_child_errors_survive_without_loosening_the_deadline(self):
+        module,guest=self.guest('')
+        messages=iter(['initial handshake failure','final public-key failure'])
+        guest.command=lambda command,**options: subprocess.run([sys.executable,'-I','-B','-c',
+            'import sys;sys.stderr.write('+repr(next(messages))+');sys.exit(255)'],**options)
+        with tempfile.TemporaryDirectory() as directory:
+            evidence=Path(directory)/'ssh.json'
+            with patch.object(module.time,'monotonic',side_effect=[0,0,0,0,0,2,2]),patch.object(module.time,'sleep'):
+                with self.assertRaisesRegex(ValueError,'final public-key failure'):
+                    guest.ready(SimpleNamespace(poll=lambda:None),1,evidence=evidence)
+            record=json.loads(evidence.read_bytes())
+            self.assertIs(record['ready'],False);self.assertEqual(record['attempts'],2)
+            self.assertEqual(record['first'],{'returncode':255,'stderr':'initial handshake failure'})
+            self.assertEqual(record['last'],{'returncode':255,'stderr':'final public-key failure'})
+            self.assertEqual(evidence.stat().st_mode&0o777,0o600)
+
+    def test_dummy_root_enrollment_retains_only_key_authentication(self):
+        module,_=self.guest('')
+        key='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDummyDisposablePublicKey'
+        user=module.fixture_root_user(key)
+        self.assertEqual(user['ssh_authorized_keys'],[key])
+        self.assertIs(user['lock_passwd'],False)
+        self.assertEqual(user['hashed_passwd'],'*')
+        self.assertNotIn('plain_text_passwd',user)
 
 
 if __name__=='__main__':unittest.main()

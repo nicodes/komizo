@@ -73,6 +73,14 @@ def parent_lifetime(parent):
     if os.getppid()!=parent:os.kill(os.getpid(),signal.SIGKILL)
 
 
+def fixture_root_user(public_key):
+    # Linux OpenSSH rejects a shadow account prefixed with '!'. Cloud-init
+    # locks existing users by default; '*' keeps passwords unusable while
+    # allowing only the disposable authorized key with ssh_pwauth disabled.
+    return {'name': 'root', 'lock_passwd': False, 'hashed_passwd': '*',
+        'ssh_authorized_keys': [public_key]}
+
+
 def key(directory, name):
     path = directory / name
     run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(path)])
@@ -131,25 +139,48 @@ class Guest:
         arguments[arguments.index('-p')] = '-P'
         run(['scp', '-q', *arguments, 'root@127.0.0.1:' + source, str(target)], timeout=120)
 
-    def ready(self, process, deadline):
+    def ready(self, process, deadline, *, evidence=None):
         observation = {'state': 'no authenticated SSH response'}
-        while time.monotonic() < deadline:
-            if process.poll() is not None:
-                raise ValueError('disposable guest stopped before SSH readiness')
-            try:
-                result = self.command('test -f /root/native-host/cloud-ready && cloud-init status --wait',
-                    timeout=max(.01, min(15, deadline - time.monotonic())), capture_output=True, check=False)
-                observation = {'returncode': result.returncode}
-                if result.returncode == 0:
-                    return
-            except subprocess.TimeoutExpired:
-                observation = {'state': 'cloud setup or SSH command timed out'}
-            except (subprocess.SubprocessError, OSError):
-                observation = {'state': 'SSH transport unavailable'}
-            remaining = deadline - time.monotonic()
-            if remaining > 0:
-                time.sleep(min(1, remaining))
-        raise ValueError('disposable guest readiness deadline expired: ' + json.dumps(observation, sort_keys=True))
+        first = None
+        attempts = 0
+        ready = False
+        try:
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    raise ValueError('disposable guest stopped before SSH readiness')
+                attempts += 1
+                try:
+                    result = self.command('test -f /root/native-host/cloud-ready && cloud-init status --wait',
+                        timeout=max(.01, min(15, deadline - time.monotonic())), capture_output=True, check=False)
+                    # Only dummy fixture material exists here. Preserve the
+                    # original SSH error without exporting argv/environment.
+                    observation = {'returncode': result.returncode,
+                        'stderr': result.stderr[-4096:].decode(errors='replace')}
+                    if first is None: first = observation
+                    if result.returncode == 0:
+                        ready = True
+                        return
+                except subprocess.TimeoutExpired as error:
+                    observation = {'state': 'cloud setup or SSH command timed out',
+                        'stderr': (error.stderr or b'')[-4096:].decode(errors='replace')}
+                except (subprocess.SubprocessError, OSError):
+                    observation = {'state': 'SSH transport unavailable'}
+                if first is None: first = observation
+                remaining = deadline - time.monotonic()
+                if remaining > 0:
+                    time.sleep(min(1, remaining))
+            raise ValueError('disposable guest readiness deadline expired: ' + json.dumps(observation, sort_keys=True))
+        finally:
+            if evidence is not None:
+                record = {'kind': 'komizo.disposable-guest-ssh-observations', 'version': 1,
+                    'ready': ready, 'attempts': attempts, 'first': first, 'last': observation}
+                try:
+                    with evidence.open('x') as output:
+                        os.fchmod(output.fileno(), 0o600)
+                        output.write(json.dumps(record, sort_keys=True) + '\n')
+                except OSError:
+                    # Optional evidence never replaces the original result.
+                    pass
 
     def boot_diagnostics(self):
         # Fixed read-only boot observations contain no process argv, environment
@@ -486,7 +517,10 @@ def main():
         capture_bundle=sources.bundle(directory,recipient)
         profile=directory/'profile.json';profile.write_text(json.dumps(sources.profile(args.profile)))
         user_data = {'disable_root': False, 'ssh_pwauth': False,
-            'users': [{'name': 'root', 'ssh_authorized_keys': [owner.with_suffix('.pub').read_text().strip()]}],
+            # Cloud/package failures must remain observable if initial SSH
+            # never becomes usable. No owner material enters this fixture.
+            'output': {'all': '| tee -a /var/log/cloud-init-output.log /dev/ttyS0'},
+            'users': [fixture_root_user(owner.with_suffix('.pub').read_text().strip())],
             'ssh_keys': {'ed25519_private': host.read_text(), 'ed25519_public': host.with_suffix('.pub').read_text().strip()},
             'runcmd': [['sh', '-ec',
                 'install -d -m 700 /root/native-host /root/native-host/apk-cache; '
@@ -527,7 +561,7 @@ def main():
             disposable.process=process
             try:
                 print('Booting the disposable guest and waiting for its bounded cloud setup',flush=True)
-                guest.ready(process, time.monotonic() + 600)
+                guest.ready(process, time.monotonic() + 600, evidence=args.output/'initial-ssh.json')
                 guest.copy(ROOT/'tests/support/native_host_alpine.py', '/root/native-host/alpine-boot.py')
                 guest.command('mountpoint -q /sys/kernel/security || mount -t securityfs securityfs /sys/kernel/security')
                 guest.command('python3 -I -B /root/native-host/alpine-boot.py', timeout=30)

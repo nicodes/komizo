@@ -1168,13 +1168,13 @@ mod tests {
                 actual["State"]["Running"] != true || self.escaped_process.is_none(),
                 "synthetic payload or monitor escaped its cgroup"
             );
-            if let Some(exit) = self.fresh_terminal {
-                if actual["State"]["Running"] == true {
-                    let mut terminal = actual.clone();
-                    terminal["State"] = json!({"Running":false,"Paused":false,"Pid":0,"Status":"exited",
-                        "ExitCode":exit,"FinishedAt":"2026-01-01T00:00:00Z"});
-                    return Ok(Some(terminal));
-                }
+            if let Some(exit) = self.fresh_terminal
+                && actual["State"]["Running"] == true
+            {
+                let mut terminal = actual.clone();
+                terminal["State"] = json!({"Running":false,"Paused":false,"Pid":0,"Status":"exited",
+                    "ExitCode":exit,"FinishedAt":"2026-01-01T00:00:00Z"});
+                return Ok(Some(terminal));
             }
             Ok(None)
         }
