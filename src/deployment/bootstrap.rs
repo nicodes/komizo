@@ -6,7 +6,7 @@ use super::{
     system::{self, System},
     validation::document_digest,
 };
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1120,8 +1120,11 @@ fn directory(path: &str, mode: u32) -> Result<()> {
         );
     }
     if !path.try_exists()? {
-        fs::create_dir(path)?;
-        fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
+        fs::create_dir(path)
+            .with_context(|| format!("create protected bootstrap directory {}", path.display()))?;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).with_context(|| {
+            format!("set protected bootstrap directory mode {}", path.display())
+        })?;
     }
     let info = fs::symlink_metadata(path)?;
     ensure!(
@@ -1307,6 +1310,7 @@ pub fn install(public_keys: &Path) -> Result<()> {
         ("/usr/local/libexec/komizo-network", 0o755),
         ("/etc/containers", 0o755),
         ("/etc/apparmor.d", 0o755),
+        ("/usr/share/doc", 0o755),
         ("/usr/share/doc/komizo", 0o755),
         ("/etc/containers/containers.conf.d", 0o755),
     ] {
