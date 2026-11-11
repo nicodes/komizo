@@ -132,10 +132,33 @@ fn start_ticks(stat: &str, pid: u32) -> Result<u64> {
     Ok(ticks)
 }
 #[cfg(any(target_os = "linux", test))]
-fn group_text(body: &str, expected: &str) -> Result<()> {
+fn group_text(body: &str, expected: &str, role: &'static str) -> Result<()> {
+    let observed = body.strip_suffix('\n').unwrap_or(body);
+    // Error context describes only bounded kernel cgroup paths already read
+    // for this check. Malformed or arbitrary proc contents are never echoed.
+    let path = |value: &str| {
+        value.len() <= 1024
+            && value.starts_with('/')
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"/_.-".contains(&byte))
+            && (value == "/"
+                || value[1..].split('/').all(|part| {
+                    !part.is_empty() && part.len() <= 255 && ![".", ".."].contains(&part)
+                }))
+    };
+    let actual_path = observed
+        .strip_prefix("0::")
+        .filter(|value| path(value))
+        .unwrap_or("<unavailable>");
+    let expected_path = if path(expected) {
+        expected
+    } else {
+        "<unavailable>"
+    };
     ensure!(
-        body.strip_suffix('\n').unwrap_or(body) == format!("0::{expected}"),
-        "workload process is outside its exact owned cgroup"
+        observed == format!("0::{expected}"),
+        "workload {role} process is outside its exact owned cgroup (expected {expected_path}; observed {actual_path})"
     );
     Ok(())
 }
@@ -389,10 +412,12 @@ mod linux {
         group_text(
             &String::from_utf8(payload.read("cgroup", 4096)?)?,
             &format!("{}/libpod-{id}", group.relative()),
+            "payload",
         )?;
         group_text(
             &String::from_utf8(monitor.read("cgroup", 4096)?)?,
             &format!("{}/conmon", group.relative()),
+            "monitor",
         )?;
         monitor.conmon(&id)?;
         if let Some(limits) = limits {
@@ -479,7 +504,8 @@ mod tests {
         assert!(
             group_text(
                 &format!("0::{}/conmon\n", group.relative()),
-                &format!("{}/conmon", group.relative())
+                &format!("{}/conmon", group.relative()),
+                "monitor"
             )
             .is_ok()
         );
@@ -488,8 +514,32 @@ mod tests {
             "0::/foreign/conmon\n",
             "0::/expected\n0::/expected\n",
         ] {
-            assert!(group_text(bad, "/expected").is_err());
+            assert!(group_text(bad, "/expected", "payload").is_err());
         }
+    }
+    #[test]
+    fn cgroup_failure_context_keeps_roles_and_only_bounded_kernel_paths() {
+        for role in ["payload", "monitor"] {
+            let error = group_text("0::/komizo/control/controller\n", "/expected", role)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(&format!("workload {role} process")));
+            assert!(error.contains("expected /expected; observed /komizo/control/controller"));
+        }
+        for body in [
+            "0::/foreign\n0::/private-marker\n".to_owned(),
+            "0::/private marker\n".to_owned(),
+            "0::/../private-marker\n".to_owned(),
+            format!("0::/{}private-marker\n", "x".repeat(1024)),
+        ] {
+            let error = group_text(&body, "/expected", "payload")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("observed <unavailable>"));
+            assert!(!error.contains("private-marker"));
+            assert!(error.len() < 256);
+        }
+        assert!(group_text("0::/expected\n", "/expected", "payload").is_ok());
     }
     #[test]
     fn monitor_argv_binds_cid_runtime_and_finite_log_size() {
