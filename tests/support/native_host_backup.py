@@ -149,7 +149,7 @@ subprocess.Popen(['podman','--remote=false','--cgroup-manager=cgroupfs','run','-
     '--read-only','--read-only-tmpfs=false','--cap-drop=all','--security-opt=no-new-privileges','--user=10001:10001',
     '--memory=16m','--memory-swap=16m','--cpu-period=1000000','--cpu-quota=100000','--pids-limit=16',
     '--label=io.komizo.fixture.operation='+identity,'--volume='+volume+':/data:rw','--entrypoint=/bin/busybox',
-    resource['image_config_digest'],'sh','-c','trap "" TERM; echo entered > /data/task-helper-started; sleep 12; echo late > /data/task-helper-late'],
+    resource['image_config_digest'],'sh','-c','trap "" TERM; echo entered > /data/task-helper-started; /bin/busybox sleep 12; echo late > /data/task-helper-late'],
     stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 end=time.monotonic()+5
 while time.monotonic()<end:

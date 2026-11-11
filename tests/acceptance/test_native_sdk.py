@@ -175,19 +175,21 @@ class NativeGuestReadinessEvidence(unittest.TestCase):
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
         return module,{'Id':'a'*64,'State':{'ExitCode':127,'Error':'native exit','OOMKilled':False}}
 
-    def test_fixture_http_image_keeps_static_applets_and_refuses_missing_httpd_before_blobs(self):
+    def test_fixture_http_image_keeps_static_applets_and_refuses_missing_required_applets_before_blobs(self):
         spec=importlib.util.spec_from_file_location('native_image_registry',Path(__file__).parents[1]/'support/native_host_registry.py')
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
         original=subprocess.run
-        def missing_httpd(arguments,**options):
-            listing='sh\nwget\nnc\ntimeout\nsleep\ntouch' if arguments[0]=='/bin/busybox.static' else 'telnet'
+        def missing_applet(arguments,**options):
+            applets={'sh','cat','awk','wget','nc','nslookup','sha256sum','timeout','sleep','touch'} if arguments[0]=='/bin/busybox.static' else {'httpd','telnet'}
+            listing='\n'.join(sorted(applets-{missing}))
             return original([sys.executable,'-I','-B','-c','print('+repr(listing)+')'],**options)
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary)
-            with patch.object(module.subprocess,'run',side_effect=missing_httpd):
-                with self.assertRaisesRegex(ValueError,'lacks required applets'):
-                    module.image(root,'mailroom','a'*40)
-            self.assertEqual(list(root.iterdir()),[])
+            for missing in ['cat','nslookup','awk','sha256sum','httpd']:
+                with self.subTest(missing=missing),patch.object(module.subprocess,'run',side_effect=missing_applet):
+                    with self.assertRaisesRegex(ValueError,'lacks required applets'):
+                        module.image(root,'mailroom','a'*40)
+                self.assertEqual(list(root.iterdir()),[])
             sources={'bin/busybox':b'exact-static-core','bin/busybox-extras':b'exact-extras','lib/ld-musl-x86_64.so.1':b'exact-musl'}
             with patch.object(module,'image_sources',return_value=sources):artifact=module.image(root,'mailroom','a'*40)
             manifest=json.loads((root/'blobs'/artifact['digest'][7:]).read_bytes())

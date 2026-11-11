@@ -328,7 +328,7 @@ def apparmor_boundary(app,report):
         '--cap-drop=all','--security-opt=no-new-privileges','--user=10001:10001','--memory=32m','--memory-swap=32m',
         '--pids-limit=16','--cpu-period=1000000','--cpu-quota=100000','--cgroup-parent='+parent,
         '--label=io.komizo.fixture=signal-boundary','--entrypoint=/bin/busybox']
-    default_helper=run([*prefix,actual['Image'],'sh','-ec',"cat /proc/self/attr/current; trap 'echo delivered' URG; kill -URG $$"])
+    default_helper=run([*prefix,actual['Image'],'sh','-ec',"/bin/busybox cat /proc/self/attr/current; trap 'echo delivered' URG; kill -URG $$"])
     if default_helper.stdout.decode().strip().splitlines()!=[label,'delivered']:
         raise ValueError('root Podman helper default does not preserve the reviewed profile and SIGURG')
     foreign_file=ROOT/'apparmor-foreign'
@@ -338,7 +338,7 @@ def apparmor_boundary(app,report):
         # Different LSM profile, but deliberately the same PID namespace and UID:
         # the denial must not rely solely on namespace or UID separation.
         foreign=run([*prefix,'--security-opt=apparmor=komizo-native-negative','--pid=container:'+actual['Id'],actual['Image'],'sh','-ec',
-            'cat /proc/self/attr/current; test -r /proc/1/status; if kill -URG 1; then exit 9; fi'])
+            '/bin/busybox cat /proc/self/attr/current; test -r /proc/1/status; if kill -URG 1; then exit 9; fi'])
         victim=subprocess.Popen(['setpriv','--reuid=10001','--regid=10001','--clear-groups','--no-new-privs','/bin/sleep','30'],
             env={'PATH':'/usr/bin:/bin'},stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         try:

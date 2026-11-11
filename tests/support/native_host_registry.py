@@ -44,7 +44,7 @@ def static(root, app, revision, *, unsafe=False):
 
 
 def image_sources():
-    for executable,required in [('/bin/busybox.static',{'sh','wget','nc','timeout','sleep','touch'}),
+    for executable,required in [('/bin/busybox.static',{'sh','cat','awk','wget','nc','nslookup','sha256sum','timeout','sleep','touch'}),
             ('/bin/busybox-extras',{'httpd'})]:
         result=subprocess.run([executable,'--list'],capture_output=True,timeout=5,check=True,
             env={'PATH':'/usr/sbin:/usr/bin:/sbin:/bin','LANG':'C.UTF-8'})
