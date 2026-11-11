@@ -422,4 +422,136 @@ class SubmitFailureDiagnostics(unittest.TestCase):
             self.assertEqual(len(calls),1)
 
 
+class ProxyRefreshObserver(unittest.TestCase):
+    def functions(self):
+        source=Path(__file__).parents[1]/'support/native_host_runtime.py'
+        tree=ast.parse(source.read_text())
+        names={'proxy_stack_projection','proxy_cli_role','proxy_cli_snapshot','proxy_admin_profile','proxy_refresh_observation'}
+        namespace={'os':os,'Path':Path,'json':json,'time':time,'service_pid':lambda role:123}
+        exec(compile(ast.Module(body=[node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name in names],type_ignores=[]),str(source),'exec'),namespace)
+        return namespace
+
+    def test_stack_projection_never_exports_arguments_addresses_paths_or_unknown_states(self):
+        functions=self.functions();secret='private-fixture-sentinel'
+        body=(f'goroutine 9 [IO wait, 3 minutes]:\nnet/http.(*conn).serve(0xdeadbeef, {secret})\n\t/private/{secret}.go:91\n'
+            f'goroutine 4 [{secret}]:\ngithub.com/caddyserver/caddy/v2.(*App).Stop({secret}(0xdeadbeef))\n\t/private/source.go:82\n').encode()
+        result=functions['proxy_stack_projection'](body);text=json.dumps(result)
+        self.assertEqual(result['goroutines'][0],{'id':4,'state':'other','functions':['v2.(*App).Stop']})
+        self.assertEqual(result['goroutines'][1]['functions'],['http.(*conn).serve'])
+        for private in [secret,'deadbeef','/private/','source.go']:self.assertNotIn(private,text)
+        many=b''.join(f'goroutine {i+1} [select]:\nnet/http.worker(0xbeef)\n'.encode() for i in range(100))
+        selected=functions['proxy_stack_projection'](many)
+        self.assertEqual(len(selected['goroutines']),24);self.assertEqual(selected['omitted'],76)
+        self.assertLess(len(json.dumps(selected).encode()),48<<10)
+        with self.assertRaises(ValueError):functions['proxy_stack_projection'](b'x'*((512<<10)+1))
+
+    def test_only_the_two_fixed_caddy_argv_shapes_are_classified(self):
+        classify=self.functions()['proxy_cli_role']
+        adapt=['/usr/local/bin/caddy','adapt','--adapter','caddyfile','--config','/var/lib/komizo/proxy-staged.caddy']
+        reload=['/usr/local/bin/caddy','reload','--adapter','caddyfile','--config','/etc/komizo-proxy/Caddyfile','--address','unix//run/komizo-proxy/admin.sock']
+        self.assertEqual(classify(adapt),'adapt');self.assertEqual(classify(reload),'reload')
+        for altered in [adapt+['private-value'],['caddy',*adapt[1:]],adapt[:-1]+['/private/config'],reload[:-1]+['unix//private/socket']]:
+            self.assertIsNone(classify(altered))
+
+    def admin_fixture(self, peer=(123,1,1)):
+        import stat
+        import struct
+        functions=self.functions();clock=[0.0];calls=[]
+        metadata=SimpleNamespace(st_dev=1,st_ino=2,st_mode=stat.S_IFSOCK|0o600,st_uid=1,st_gid=1,st_nlink=1)
+        class FixedPath:
+            def __init__(self,value):self.value=str(value)
+            def __truediv__(self,value):return FixedPath(self.value+'/'+str(value))
+            def __str__(self):return self.value
+            def lstat(self):
+                return SimpleNamespace(st_mode=stat.S_IFDIR|0o700,st_uid=1,st_gid=1) if self.value=='/run/komizo-proxy' else metadata
+            def open(self,*_):return io.BytesIO(b'123 (caddy) S '+b'1 '*18+b'99 0\n')
+        class Connection:
+            def __enter__(self):return self
+            def __exit__(self,*_):pass
+            def settimeout(self,value):self.timeout=value;calls.append(('timeout',value))
+            def connect(self,path):calls.append(('connect',path))
+            def getsockopt(self,*_):return struct.pack('3i',*peer)
+            def sendall(self,body):calls.append(('send',body))
+            def recv(self,count):clock[0]+=self.timeout;raise socket.timeout()
+        functions.update(Path=FixedPath,time=SimpleNamespace(monotonic=lambda:clock[0]))
+        return functions,clock,calls,Connection
+
+    def test_wrong_admin_peer_never_receives_the_readonly_request(self):
+        functions,clock,calls,connection=self.admin_fixture((124,1,1))
+        with patch('pwd.getpwnam',return_value=SimpleNamespace(pw_uid=1,pw_gid=1)),patch.object(socket,'socket',return_value=connection()):
+            with self.assertRaisesRegex(ValueError,'peer'):functions['proxy_admin_profile'](4,threading.Event())
+        self.assertFalse(any(kind=='send' for kind,_ in calls))
+
+    def test_one_get_respects_the_original_four_second_deadline_and_expired_probe_touches_nothing(self):
+        functions,clock,calls,connection=self.admin_fixture()
+        with patch('pwd.getpwnam',return_value=SimpleNamespace(pw_uid=1,pw_gid=1)),patch.object(socket,'socket',return_value=connection()):
+            with self.assertRaises(TimeoutError):functions['proxy_admin_profile'](4,threading.Event())
+        requests=[value for kind,value in calls if kind=='send']
+        self.assertEqual(requests,[b'GET /debug/pprof/goroutine?debug=2 HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n'])
+        self.assertLessEqual(clock[0],4.001)
+        with patch('pwd.getpwnam',side_effect=AssertionError('expired probe read identity')):
+            with self.assertRaises(TimeoutError):functions['proxy_admin_profile'](clock[0],threading.Event())
+
+    def test_diagnostic_failures_are_closed_and_share_one_budget(self):
+        functions=self.functions();clock=[10.0];calls=[]
+        functions['time']=SimpleNamespace(monotonic=lambda:clock[0])
+        def children(deadline):calls.append(('children',deadline));clock[0]=11;raise ValueError('private-child-arguments')
+        def profile(deadline,stop):calls.append(('profile',deadline));raise TimeoutError('private-stack')
+        functions.update(proxy_cli_snapshot=children,proxy_admin_profile=profile)
+        result=functions['proxy_refresh_observation']('a'*32,threading.Event())
+        self.assertEqual(calls,[('children',11),('profile',14)])
+        self.assertEqual(result['controller_children'],{'state':'unavailable'})
+        self.assertEqual(result['proxy_profile'],{'state':'deadline_expired'})
+        self.assertTrue(result['diagnostic_only']);self.assertNotIn('private',json.dumps(result))
+
+    def test_http_raw_cap_marks_partial_profile_and_drops_the_incomplete_final_frame(self):
+        functions,clock,calls,connection=self.admin_fixture()
+        prefix=b'HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\n\r\ngoroutine 1 [running]:\nnet/http.worker(0xbeef)\n'
+        raw=prefix+b'net/http.Incomplete(private-fixture-sentinel'+b'x'*((512<<10)-len(prefix)-42)
+        raw=raw[:512<<10].ljust(512<<10,b'x')
+        class Response(connection):
+            def __init__(self):self.offset=0
+            def recv(self,count):
+                chunk=raw[self.offset:self.offset+count];self.offset+=len(chunk);return chunk
+        with patch('pwd.getpwnam',return_value=SimpleNamespace(pw_uid=1,pw_gid=1)),patch.object(socket,'socket',return_value=Response()):
+            result=functions['proxy_admin_profile'](4,threading.Event())
+        self.assertTrue(result['raw_limit_reached'])
+        self.assertEqual(result['goroutines'][0]['functions'],['http.worker'])
+        self.assertNotIn('private',json.dumps(result));self.assertEqual(sum(kind=='send' for kind,_ in calls),1)
+
+    def test_real_unix_dummy_profile_preserves_only_safe_frames(self):
+        if sys.platform!='linux' or os.geteuid()!=0:self.skipTest('real nonroot Unix admin peer is qualified in sudo Linux CI')
+        functions=self.functions()
+        with tempfile.TemporaryDirectory() as temporary:
+            directory=Path(temporary);directory.chmod(0o700)
+            try:os.chown(directory,1,1)
+            except OSError as error:
+                if error.errno not in {1,22}:raise
+                if 'SUDO_UID' in os.environ:self.fail('sudo CI requires the real nonroot admin peer fixture')
+                self.skipTest('local namespace cannot assign the nonroot admin identity')
+            script='''import os,socket,sys
+os.setgroups([]);os.setgid(1);os.setuid(1);os.umask(0o077)
+s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);s.bind(sys.argv[1]+'/admin.sock');s.listen(1);s.settimeout(3)
+c,_=s.accept();c.settimeout(2);request=b''
+while b'\\r\\n\\r\\n' not in request:request+=c.recv(4096)
+assert request==b'GET /debug/pprof/goroutine?debug=2 HTTP/1.0\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n'
+c.sendall(b'HTTP/1.0 200 OK\\r\\nContent-Type: text/plain\\r\\n\\r\\ngoroutine 7 [IO wait]:\\nnet/http.(*conn).serve(0xbeef, private-fixture-sentinel)\\n\\t/private/source.go:7\\n');c.close();s.close()
+'''
+            child=subprocess.Popen([sys.executable,'-I','-B','-c',script,str(directory)],stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+            try:
+                end=time.monotonic()+2
+                while not (directory/'admin.sock').exists():
+                    if child.poll() is not None or time.monotonic()>=end:self.fail('owned Unix fixture failed to start')
+                    time.sleep(.01)
+                functions['Path']=lambda value:directory if str(value)=='/run/komizo-proxy' else Path(value)
+                functions['service_pid']=lambda role:child.pid
+                with patch('pwd.getpwnam',return_value=SimpleNamespace(pw_uid=1,pw_gid=1)):
+                    result=functions['proxy_admin_profile'](time.monotonic()+2,threading.Event())
+                self.assertEqual(result['goroutines'],[{'id':7,'state':'io_wait','functions':['http.(*conn).serve']}])
+                self.assertNotIn('private',json.dumps(result));self.assertEqual(child.wait(timeout=1),0)
+            finally:
+                if child.poll() is None:child.kill();child.wait(timeout=1)
+                child.stderr.close()
+
+
 if __name__=='__main__':unittest.main(verbosity=2)

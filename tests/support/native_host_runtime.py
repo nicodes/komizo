@@ -36,6 +36,183 @@ def until(check, seconds=30):
     raise ValueError('native runtime fixture deadline expired')
 
 
+def proxy_stack_projection(raw, deadline=None):
+    import re
+    if len(raw)>512<<10:raise ValueError('proxy profile exceeds its fixed raw bound')
+    states={'running':'running','runnable':'runnable','IO wait':'io_wait','select':'select',
+        'semacquire':'semaphore','sync.Mutex.Lock':'mutex','sync.RWMutex.Lock':'mutex',
+        'chan receive':'channel_receive','chan send':'channel_send','sleep':'sleep',
+        'GC worker (idle)':'gc_idle','GC assist wait':'gc_wait'}
+    rows=[];current=None
+    for index,line in enumerate(raw.decode(errors='replace').splitlines()):
+        if deadline is not None and index%64==0 and time.monotonic()>=deadline:raise TimeoutError()
+        header=re.fullmatch(r'goroutine ([0-9]{1,16}) \[([^\]\r\n]{1,160})\]:',line)
+        if header:
+            if len(rows)>=512:break
+            current={'id':int(header[1]),'state':states.get(header[2].split(',',1)[0],'other'),'functions':[]}
+            rows.append(current)
+        elif current is not None and len(current['functions'])<12 and not line.startswith(('\t','created by ')) and '(' in line:
+            symbol,_,tail=line.partition('(')
+            if symbol.endswith('.'):
+                receiver,separator,tail=tail.partition(').')
+                if not separator or not re.fullmatch(r'\*?[A-Za-z_][A-Za-z0-9_\[\].*]{0,95}',receiver):continue
+                method,separator,_=tail.partition('(')
+                if not separator:continue
+                symbol+='('+receiver+').'+method
+            if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_./*()\[\]]{0,255}',symbol):continue
+            name=symbol.rsplit('/',1)[-1]
+            if '.' in name and not name.endswith('.go') and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_.*()\[\]]{0,95}',name):
+                current['functions'].append(name)
+    rows.sort(key=lambda row:(not any(any(word in name.lower() for word in ['load','config','stop','cleanup']) for name in row['functions']),row['id']))
+    selected=rows[:24]
+    return {'state':'observed','goroutines':selected,'omitted':len(rows)-len(selected),
+        'goroutine_limit_reached':len(rows)==512,'raw_limit_reached':len(raw)==512<<10}
+
+
+def proxy_cli_role(arguments):
+    if arguments==['/usr/local/bin/caddy','adapt','--adapter','caddyfile','--config','/var/lib/komizo/proxy-staged.caddy']:return 'adapt'
+    if arguments==['/usr/local/bin/caddy','reload','--adapter','caddyfile','--config','/etc/komizo-proxy/Caddyfile','--address','unix//run/komizo-proxy/admin.sock']:return 'reload'
+    return None
+
+
+def proxy_cli_snapshot(deadline):
+    import stat
+    if time.monotonic()>=deadline:raise TimeoutError()
+    def read(path,limit):
+        if time.monotonic()>=deadline:raise TimeoutError()
+        with path.open('rb') as source:body=source.read(limit+1)
+        if len(body)>limit:raise ValueError('process metadata exceeds fixed bound')
+        return body
+    def identity(pid):
+        base=Path('/proc')/str(pid)
+        fields=read(base/'stat',4096).decode().rsplit(') ',1)[1].split()
+        uid=next(line for line in read(base/'status',8192).decode().splitlines() if line.startswith('Uid:'))
+        if set(map(int,uid.split()[1:]))!={0}:raise ValueError('child owner differs')
+        # An exited, still-unreaped child can have detached from its cgroup.
+        # Count that owned zombie without inventing its unavailable executable.
+        group=None if fields[0]=='Z' else read(base/'cgroup',512)
+        return int(fields[1]),int(fields[19]),fields[0],group
+    controller=service_pid('komizo-controller');_,birth,_,group=identity(controller)
+    if group!=b'0::/komizo/control/controller\n':raise ValueError('controller group differs')
+    tasks=[]
+    for task in (Path('/proc')/str(controller)/'task').iterdir():
+        if len(tasks)>=128:raise ValueError('controller task inventory exceeds bound')
+        if task.name.isascii() and task.name.isdecimal():tasks.append(task)
+    children=set()
+    for task in tasks:
+        values=read(task/'children',4096).split()
+        if any(not value.isdigit() or len(value)>10 for value in values):raise ValueError('invalid direct child identity')
+        children.update(map(int,values))
+        if len(children)>64:raise ValueError('controller child inventory exceeds bound')
+    binary=Path('/usr/local/bin/caddy');protected=binary.lstat()
+    if not stat.S_ISREG(protected.st_mode) or protected.st_uid or protected.st_gid or protected.st_mode&0o022 or protected.st_nlink!=1:raise ValueError('proxy executable is not protected')
+    result={'state':'observed','controller_pid':controller,'controller_start_ticks':birth,'total_children':len(children),
+        'verified_children':0,'zombie_children':0,'unclassified_children':0,'unverified_children':0,'states':{},'caddy':[]}
+    names={'R':'running','S':'sleeping','D':'disk_wait','Z':'zombie','T':'stopped','t':'stopped','X':'dead','I':'idle'}
+    waits={'do_wait':'child_wait','pipe_read':'pipe_read','unix_stream_read_generic':'socket_read',
+        'futex_wait_queue':'futex','futex_wait_queue_me':'futex','ep_poll':'poll','do_epoll_wait':'poll',
+        'poll_schedule_timeout':'poll','wait_woken':'wait','hrtimer_nanosleep':'sleep','0':'running_or_hidden'}
+    for pid in sorted(children):
+        if time.monotonic()>=deadline:
+            result['state']='deadline_expired';break
+        descriptor=None
+        try:
+            descriptor=os.pidfd_open(pid);parent,start,state,group=identity(pid)
+            if parent!=controller or start<=0:raise ValueError('child parent changed')
+            if state!='Z' and group!=b'0::/komizo/control/controller\n':raise ValueError('child group differs')
+            if identity(pid)[:2]!=(controller,start):raise ValueError('child generation changed')
+            result['verified_children']+=1;label=names.get(state,'other')
+            result['states'][label]=result['states'].get(label,0)+1
+            if state=='Z':result['zombie_children']+=1
+            result['unclassified_children']+=1
+            base=Path('/proc')/str(pid)
+            actual=(base/'exe').stat()
+            if (actual.st_dev,actual.st_ino)!=(protected.st_dev,protected.st_ino):continue
+            arguments=read(base/'cmdline',8192).removesuffix(b'\0').decode().split('\0')
+            role=proxy_cli_role(arguments)
+            if role is None:continue
+            wchan=waits.get(read(base/'wchan',128).decode().strip(),'other')
+            after_parent,after_start,after_state,after_group=identity(pid)
+            if (after_parent,after_start)!=(controller,start):raise ValueError('child generation changed')
+            if after_state!='Z' and after_group!=b'0::/komizo/control/controller\n':raise ValueError('child group changed')
+            result['unclassified_children']-=1
+            result['caddy'].append({'role':role,'pid':pid,'start_ticks':start,'process_state':names.get(after_state,'other'),'wchan':wchan})
+        except (OSError,ValueError,IndexError,StopIteration,UnicodeError):pass
+        finally:
+            if descriptor is not None:os.close(descriptor)
+    result['unverified_children']=len(children)-result['verified_children']
+    if service_pid('komizo-controller')!=controller or identity(controller)[1]!=birth:raise ValueError('controller generation changed')
+    return result
+
+
+def proxy_admin_profile(deadline, stop):
+    import pwd
+    import socket
+    import stat
+    import struct
+    if stop.is_set() or time.monotonic()>=deadline:raise TimeoutError()
+    def start_ticks():
+        if time.monotonic()>=deadline or stop.is_set():raise TimeoutError()
+        with (Path('/proc')/str(pid)/'stat').open('rb') as source:body=source.read(4097)
+        if len(body)>4096:raise ValueError('proxy process metadata exceeds bound')
+        return int(body.decode().rsplit(') ',1)[1].split()[19])
+    account=pwd.getpwnam('komizo-proxy');pid=service_pid('komizo-proxy')
+    birth=start_ticks()
+    if birth<=0:raise ValueError('proxy start identity missing')
+    directory=Path('/run/komizo-proxy');path=directory/'admin.sock'
+    parent=directory.lstat();metadata=path.lstat()
+    if (account.pw_uid<=0 or account.pw_gid<=0 or not stat.S_ISDIR(parent.st_mode)
+            or (parent.st_uid,parent.st_gid)!=(account.pw_uid,account.pw_gid) or stat.S_IMODE(parent.st_mode)!=0o700
+            or not stat.S_ISSOCK(metadata.st_mode) or (metadata.st_uid,metadata.st_gid)!=(account.pw_uid,account.pw_gid)
+            or metadata.st_nlink!=1 or stat.S_IMODE(metadata.st_mode) not in {0o600,0o700}):
+        raise ValueError('proxy admin socket is not private')
+    with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as connection:
+        remaining=deadline-time.monotonic()
+        if remaining<=0 or stop.is_set():raise TimeoutError()
+        connection.settimeout(min(.2,remaining))
+        connection.connect(str(path))
+        peer=struct.unpack('3i',connection.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))
+        if peer!=(pid,account.pw_uid,account.pw_gid) or service_pid('komizo-proxy')!=pid:raise ValueError('proxy admin peer differs')
+        remaining=deadline-time.monotonic()
+        if remaining<=0 or stop.is_set():raise TimeoutError()
+        connection.settimeout(min(.2,remaining))
+        connection.sendall(b'GET /debug/pprof/goroutine?debug=2 HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n')
+        raw=bytearray()
+        while len(raw)<512<<10:
+            remaining=deadline-time.monotonic()
+            if remaining<=0 or stop.is_set():raise TimeoutError()
+            connection.settimeout(min(.2,remaining))
+            try:chunk=connection.recv(min(8192,(512<<10)-len(raw)))
+            except socket.timeout:continue
+            if not chunk:break
+            raw.extend(chunk)
+            if b'\r\n\r\n' not in raw and len(raw)>16384:raise ValueError('proxy HTTP headers exceed bound')
+        header,separator,body=raw.partition(b'\r\n\r\n')
+        if not separator or len(header)>16384 or not header.startswith((b'HTTP/1.0 200 ',b'HTTP/1.1 200 ')) or b'transfer-encoding:' in header.lower():raise ValueError('proxy profile response refused')
+        limited=len(raw)==512<<10
+        if limited and not body.endswith(b'\n'):body=body.rpartition(b'\n')[0]+b'\n'
+        fields=('st_dev','st_ino','st_mode','st_uid','st_gid','st_nlink');current=path.lstat()
+        if any(getattr(current,key)!=getattr(metadata,key) for key in fields) or service_pid('komizo-proxy')!=pid or start_ticks()!=birth:raise ValueError('proxy admin identity changed')
+        result={'peer_pid':pid,'peer_start_ticks':birth,**proxy_stack_projection(body,deadline)}
+        result['raw_limit_reached']=limited
+        if time.monotonic()>=deadline or stop.is_set():raise TimeoutError()
+        return result
+
+
+def proxy_refresh_observation(operation, stop):
+    import re
+    if not re.fullmatch('[a-f0-9]{32}',operation):raise ValueError('invalid diagnostic operation')
+    deadline=time.monotonic()+4
+    value={'kind':'komizo.proxy-refresh-observation','version':1,'diagnostic_only':True,'operation_id':operation,'phase':'activating'}
+    for key,observe in [('controller_children',lambda:proxy_cli_snapshot(min(deadline,time.monotonic()+1))),
+            ('proxy_profile',lambda:proxy_admin_profile(deadline,stop))]:
+        try:value[key]=observe()
+        except Exception as error:value[key]={'state':'deadline_expired' if isinstance(error,TimeoutError) else 'unavailable'}
+    if len(json.dumps(value,separators=(',',':')).encode())>48<<10:
+        return {**{key:value[key] for key in ['kind','version','diagnostic_only','operation_id','phase']},'state':'export_limit_refused'}
+    return value
+
+
 def submit_failure(value):
     import re
     # Preserve only this command's result. Never export a response body, request,
@@ -56,13 +233,21 @@ def submit(body):
     stop=threading.Event();worker=None
     if body['action']=='deploy':
         def sample():
-            observations=[];previous=None
+            observations=[];previous=None;activating_since=None;proxy_sampled=False
             operation=hashlib.sha256(('komizo-operation-v1\0'+body['application']+'\0'+body['instance']+'\0'+body['nonce']).encode()).hexdigest()[:32]
             operation_path=Path('/var/lib/komizo/operations/'+operation+'.json')
             url=body['release']['workload']['readiness'][0]['url']
             while not stop.is_set():
                 try:
-                    phase=json.loads(operation_path.read_text()).get('phase') if operation_path.exists() else 'not_admitted'
+                    record=json.loads(operation_path.read_text()) if operation_path.exists() else {}
+                    phase=record.get('phase','not_admitted')
+                    now=time.monotonic()
+                    if phase!='activating' or record.get('operation_id')!=operation:activating_since=None
+                    elif activating_since is None:activating_since=now
+                    elif not proxy_sampled and now-activating_since>=10:
+                        proxy_sampled=True
+                        diagnostic=proxy_refresh_observation(operation,stop)
+                        if not stop.is_set():write(ROOT/'proxy-refresh-observation.json',diagnostic)
                     try:
                         with urllib.request.urlopen(url,timeout=2) as response:
                             observed={'phase':phase,'status':response.status,'release_digest':response.headers.get('X-Komizo-Release'),
