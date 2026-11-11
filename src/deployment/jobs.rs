@@ -181,7 +181,12 @@ trait Runtime {
         cleanup_deadline: std::time::Instant,
     ) -> Result<()>;
     fn run(&self, arguments: &[&str]) -> Result<Vec<u8>>;
-    fn start(&self, id: &str, deadline: std::time::Instant) -> Result<()>;
+    fn start(
+        &self,
+        id: &str,
+        monitor: &super::cgroups::Group,
+        deadline: std::time::Instant,
+    ) -> Result<()>;
     fn exists(&self, kind: &str, name: &str) -> Result<bool>;
     fn inspect(&self, kind: &str, name: &str) -> Result<serde_json::Value>;
     fn retained(&self, kind: &str, record: &store::ObjectRecord) -> Result<()>;
@@ -221,12 +226,16 @@ impl Runtime for super::engine::Engine {
     fn run(&self, arguments: &[&str]) -> Result<Vec<u8>> {
         self.run(arguments)
     }
-    fn start(&self, id: &str, deadline: std::time::Instant) -> Result<()> {
+    fn start(
+        &self,
+        id: &str,
+        monitor: &super::cgroups::Group,
+        deadline: std::time::Instant,
+    ) -> Result<()> {
         Self {
             deadline: deadline.min(self.deadline),
         }
-        .run(&["start", id])?;
-        Ok(())
+        .start_in_group(id, monitor)
     }
     fn exists(&self, kind: &str, name: &str) -> Result<bool> {
         self.exists(kind, name)
@@ -245,6 +254,16 @@ fn cleanup_deadline() -> std::time::Instant {
 
 fn job_group(receipt: &Receipt) -> Result<super::cgroups::Group> {
     super::cgroups::workload_group(
+        &receipt.application,
+        &receipt.instance,
+        super::cgroups::WorkloadKind::Job,
+        &receipt.job,
+        &receipt.ownership,
+    )
+}
+
+fn job_monitor_group(receipt: &Receipt) -> Result<super::cgroups::Group> {
+    super::cgroups::workload_monitor_group(
         &receipt.application,
         &receipt.instance,
         super::cgroups::WorkloadKind::Job,
@@ -587,9 +606,11 @@ fn run_with(
     save(store, &receipt)?;
     let group = job_group(&receipt)?;
     runtime.prepare_group(&group, group_limits)?;
+    let monitor = job_monitor_group(&receipt)?;
     let mut before_start = None;
     let mut start_attempted = false;
     let effect = (|| -> Result<()> {
+        runtime.prepare_group(&monitor, group_limits)?;
         let output = runtime.run(&arguments.iter().map(String::as_str).collect::<Vec<_>>())?;
         let id = std::str::from_utf8(&output)?.trim();
         ensure!(
@@ -614,7 +635,7 @@ fn run_with(
             "job preparation exhausted its native lifetime reservation; start refused"
         );
         start_attempted = true;
-        runtime.start(&receipt.container_id, start_deadline)?;
+        runtime.start(&receipt.container_id, &monitor, start_deadline)?;
         owned(runtime, &receipt, value, installed, config_digest)?;
         receipt.phase = "running".into();
         save(store, &receipt)?;
@@ -1128,19 +1149,29 @@ mod tests {
                 .fixture
                 .receipt()
                 .expect("intent precedes cgroup allocation");
-            assert_eq!(group, &job_group(&receipt)?);
+            let monitor = group == &job_monitor_group(&receipt)?;
+            assert!(monitor || group == &job_group(&receipt)?);
             let expected = if self.fixture.installed.instance == "production" {
                 &self.fixture.policy.limits
             } else {
                 &self.fixture.policy.previews.as_ref().unwrap().limits
             };
             assert_eq!(limits.memory_bytes, expected.memory_bytes);
+            assert_eq!(limits.memory_swap_bytes, expected.memory_swap_bytes);
             assert_eq!(limits.milli_cpus, expected.milli_cpus);
-            self.groups
-                .borrow_mut()
-                .push(("prepare".into(), group.relative().into()));
+            assert_eq!(limits.pids, expected.pids);
+            self.groups.borrow_mut().push((
+                if monitor {
+                    "prepare-monitor"
+                } else {
+                    "prepare"
+                }
+                .into(),
+                group.relative().into(),
+            ));
             ensure!(
-                self.fail_group != Some("prepare"),
+                self.fail_group != Some("prepare")
+                    && !(monitor && self.fail_group == Some("monitor")),
                 "synthetic cgroup allocation failure"
             );
             Ok(())
@@ -1224,11 +1255,27 @@ mod tests {
             );
             Ok(())
         }
-        fn start(&self, id: &str, deadline: Instant) -> Result<()> {
+        fn start(
+            &self,
+            id: &str,
+            monitor: &super::super::cgroups::Group,
+            deadline: Instant,
+        ) -> Result<()> {
             ensure!(
                 Instant::now() < deadline,
                 "synthetic start deadline expired"
             );
+            let receipt = self.fixture.receipt().unwrap();
+            assert_eq!(id, receipt.container_id);
+            assert_eq!(monitor, &job_monitor_group(&receipt)?);
+            assert!(
+                self.groups
+                    .borrow()
+                    .contains(&("prepare-monitor".into(), monitor.relative().into()))
+            );
+            self.groups
+                .borrow_mut()
+                .push(("start-monitor".into(), monitor.relative().into()));
             self.run(&["start", id])?;
             Ok(())
         }
@@ -1251,6 +1298,8 @@ mod tests {
                     assert!(args.contains(&"--pull=never"));
                     assert!(args.contains(&"--read-only"));
                     assert!(args.contains(&"--timeout"));
+                    assert!(args.contains(&"--cgroups=no-conmon"));
+                    assert!(!args.contains(&"--cgroups=enabled"));
                     assert!(args.contains(&"--cgroup-parent"));
                     assert!(args.contains(&"--env-file"));
                     assert!(!args.join(" ").contains("do-not-log-this"));
@@ -1423,6 +1472,8 @@ mod tests {
             let runtime = Fake::new(&fixture);
             let receipt = fixture.run(&runtime).unwrap();
             let group = job_group(&receipt).unwrap();
+            let monitor = job_monitor_group(&receipt).unwrap();
+            assert_eq!(monitor.relative(), format!("{}/conmon", group.relative()));
             let service = super::super::cgroups::workload_group(
                 "mailroom",
                 instance,
@@ -1435,7 +1486,25 @@ mod tests {
             let events = runtime.groups.borrow();
             assert_eq!(events.first().unwrap().0, "prepare");
             assert_eq!(events.last().unwrap().0, "retire");
-            assert!(events.iter().all(|(_, parent)| parent == group.relative()));
+            for (kind, parent) in events.iter() {
+                let expected = if ["prepare-monitor", "start-monitor"].contains(&kind.as_str()) {
+                    monitor.relative()
+                } else {
+                    group.relative()
+                };
+                assert_eq!(parent, expected);
+            }
+            assert_eq!(
+                events[1],
+                ("prepare-monitor".into(), monitor.relative().into())
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|(kind, _)| kind == "start-monitor")
+                    .count(),
+                1
+            );
             assert_eq!(
                 events.iter().filter(|(kind, _)| kind == "verify").count(),
                 3
@@ -1452,7 +1521,7 @@ mod tests {
     }
     #[test]
     fn unprepared_or_foreign_job_parent_refuses_execution_and_cleanup_failure_blocks_success() {
-        for phase in ["prepare", "retire", "foreign"] {
+        for phase in ["prepare", "monitor", "retire", "foreign"] {
             let fixture = Fixture::new();
             let mut runtime = Fake::new(&fixture);
             if phase == "foreign" {
@@ -1462,8 +1531,12 @@ mod tests {
             }
             assert!(fixture.run(&runtime).is_err());
             let calls = runtime.calls.borrow();
-            if phase == "prepare" {
+            if ["prepare", "monitor"].contains(&phase) {
                 assert!(calls.is_empty());
+            }
+            if phase == "monitor" {
+                assert_eq!(runtime.groups.borrow().last().unwrap().0, "retire");
+                assert_eq!(fixture.receipt().unwrap().phase, "uncertain");
             }
             if phase == "foreign" {
                 assert_eq!(calls.len(), 1);

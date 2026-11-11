@@ -205,7 +205,7 @@ fn native_service_configs_preserve_literal_arguments_without_ports_or_repull() {
     assert_eq!(config.command, doc.release.workload.services["api"].command);
     assert!(config.command.contains(&"literal %n $HOST_SECRET".into()));
     assert!(config.options.contains(&"--pull=never".into()));
-    assert!(config.options.contains(&"--cgroups=enabled".into()));
+    assert!(config.options.contains(&"--cgroups=no-conmon".into()));
     assert!(config.options.contains(&"--log-driver=k8s-file".into()));
     assert!(
         config

@@ -85,7 +85,7 @@ pub fn options(
         "--http-proxy=false".into(),
         "--restart=no".into(),
         "--image-volume=ignore".into(),
-        "--cgroups=enabled".into(),
+        "--cgroups=no-conmon".into(),
         "--log-driver=k8s-file".into(),
         "--log-opt=max-size=1048576".into(),
         "--user".into(),

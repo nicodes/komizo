@@ -149,6 +149,19 @@ pub fn service_probe_group(
     Ok(group)
 }
 
+pub fn workload_monitor_group(
+    application: &str,
+    instance: &str,
+    kind: WorkloadKind,
+    logical: &str,
+    ownership: &str,
+) -> Result<Group> {
+    let mut group = workload_group(application, instance, kind, logical, ownership)?;
+    group.relative.push_str("/conmon");
+    group.branch = false;
+    Ok(group)
+}
+
 pub fn task_group(kind: &str, operation: &str) -> Result<Group> {
     ensure!(
         ["backup", "prepare", "reconcile"].contains(&kind) && hex(operation, 32),
@@ -683,6 +696,42 @@ mod tests {
         assert!(kill_entry(&root_group()).is_err());
         assert!(kill_entry(&pool_group(Pool::Control)).is_err());
         assert!(kill_entry(&control_leaf(ControlLeaf::Watchdogs)).is_err());
+    }
+
+    #[test]
+    fn workload_monitor_leaves_bind_the_complete_workload_identity() {
+        for kind in [WorkloadKind::Service, WorkloadKind::Job] {
+            for instance in ["production", "pr-7"] {
+                let ownership = "a".repeat(32);
+                let parent = workload_group("mailroom", instance, kind, "api", &ownership).unwrap();
+                let monitor =
+                    workload_monitor_group("mailroom", instance, kind, "api", &ownership).unwrap();
+                assert_eq!(monitor.relative(), format!("{}/conmon", parent.relative()));
+                assert!(!monitor.branch);
+                assert!(monitor.disposable);
+                assert_ne!(monitor, control_leaf(ControlLeaf::Controller));
+            }
+        }
+        assert!(
+            workload_monitor_group(
+                "mailroom",
+                "production",
+                WorkloadKind::Service,
+                "../foreign",
+                &"a".repeat(32)
+            )
+            .is_err()
+        );
+        assert!(
+            workload_monitor_group(
+                "mailroom",
+                "production",
+                WorkloadKind::Job,
+                "api",
+                "foreign"
+            )
+            .is_err()
+        );
     }
 
     #[test]

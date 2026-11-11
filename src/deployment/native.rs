@@ -2198,8 +2198,16 @@ fn start_service(
             // Preserve the former pre-start authority, retained data, exact
             // image/snapshot and completed/healthy dependency fences.
             observation::guard(&installed.application, &installed.instance, name)?;
+            let monitor = super::cgroups::workload_monitor_group(
+                &installed.application,
+                &installed.instance,
+                super::cgroups::WorkloadKind::Service,
+                name,
+                &record.ownership,
+            )?;
+            system.prepare_group(&monitor, limits, &Default::default())?;
             start_attempted = true;
-            engine.run(&["start", &record.id])?;
+            engine.start_in_group(&record.id, &monitor)?;
         }
         loop {
             ensure!(
@@ -2837,7 +2845,19 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
         )?;
         advance_service_epoch(&store, &current.installed)?;
         let started = (|| -> Result<()> {
-            command.run(&["start", &current.record.id])?;
+            let monitor = super::cgroups::workload_monitor_group(
+                &scope.application,
+                &scope.instance,
+                super::cgroups::WorkloadKind::Service,
+                &scope.service,
+                &current.record.ownership,
+            )?;
+            system.prepare_group(
+                &monitor,
+                instance_limits(&current.policy, &scope.instance)?,
+                &Default::default(),
+            )?;
+            command.start_in_group(&current.record.id, &monitor)?;
             let after = command
                 .owned_container(
                     &current.record,

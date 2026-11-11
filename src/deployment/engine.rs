@@ -237,6 +237,52 @@ impl Engine {
         crate::process::capture(&mut command, None, 4 << 20, self.deadline, || false)
             .map_err(|_| anyhow!("native engine process failed or exceeded its deadline"))
     }
+    /// Bind this owned child and every forked monitor before either timeout or
+    /// Podman executes. No existing process is selected or moved by PID.
+    fn capture_in_group(
+        &self,
+        arguments: &[&str],
+        group: &super::cgroups::Group,
+    ) -> Result<crate::process::Captured> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::{fd::AsRawFd, unix::process::CommandExt};
+            let entry = super::cgroups::process_entry(group)?;
+            let mut command = self.command(arguments)?;
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::write(entry.as_raw_fd(), b"0".as_ptr().cast(), 1) != 1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            crate::process::capture(&mut command, None, 4 << 20, self.deadline, || false)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (arguments, group);
+            Err(anyhow!(
+                "native process placement requires the supported Alpine host"
+            ))
+        }
+    }
+    pub fn start_in_group(&self, id: &str, monitor: &super::cgroups::Group) -> Result<()> {
+        ensure!(
+            hex(id, 64),
+            "native start requires an exact owned container ID"
+        );
+        let output = self.capture_in_group(&["start", id], monitor)?;
+        ensure!(
+            output.status.success(),
+            "native engine operation refused: {}",
+            String::from_utf8_lossy(&output.stderr)
+                .chars()
+                .take(2048)
+                .collect::<String>()
+        );
+        Ok(())
+    }
     pub fn logs(&self, id: &str, maximum: usize) -> Result<(Vec<u8>, Vec<u8>)> {
         use std::{cell::RefCell, io::Write, rc::Rc};
         ensure!(
@@ -331,34 +377,12 @@ impl Engine {
             hex(id, 64),
             "native health probe requires an exact owned container ID"
         );
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::{fd::AsRawFd, unix::process::CommandExt};
-            let entry = super::cgroups::process_entry(group)?;
-            let mut command = self.command(&["healthcheck", "run", id])?;
-            unsafe {
-                command.pre_exec(move || {
-                    if libc::write(entry.as_raw_fd(), b"0".as_ptr().cast(), 1) != 1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
-            let output =
-                crate::process::capture(&mut command, None, 4 << 20, self.deadline, || false)?;
-            ensure!(
-                matches!(output.status.code(), Some(0 | 1)),
-                "native health probe could not complete"
-            );
-            Ok(())
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = group;
-            Err(anyhow!(
-                "native health probe requires the supported Alpine host"
-            ))
-        }
+        let output = self.capture_in_group(&["healthcheck", "run", id], group)?;
+        ensure!(
+            matches!(output.status.code(), Some(0 | 1)),
+            "native health probe could not complete"
+        );
+        Ok(())
     }
     pub fn json(&self, arguments: &[&str]) -> Result<Value> {
         crate::strict::value(&self.run(arguments)?, 4 << 20)
@@ -707,6 +731,26 @@ pub fn service_mounts(
 #[cfg(test)]
 mod host_tests {
     use super::*;
+    #[test]
+    fn scoped_start_refuses_names_and_delegated_branches_before_execution() {
+        let engine = Engine {
+            deadline: Instant::now() + Duration::from_secs(1),
+        };
+        let group = super::super::cgroups::root_group();
+        for id in ["container-name", "", "../foreign", &"a".repeat(63)] {
+            let error = engine.start_in_group(id, &group).unwrap_err();
+            assert!(error.to_string().contains("exact owned container ID"));
+        }
+        let error = engine.start_in_group(&"a".repeat(64), &group).unwrap_err();
+        #[cfg(target_os = "linux")]
+        assert!(
+            error
+                .to_string()
+                .contains("process cannot enter a delegated resource branch")
+        );
+        #[cfg(not(target_os = "linux"))]
+        assert!(error.to_string().contains("supported Alpine host"));
+    }
     #[test]
     fn alpine_baseline_accepts_patch_updates_but_not_another_distro_or_minor() {
         for version in ["3.24", "3.24.0", "3.24.3", "3.24.99"] {
