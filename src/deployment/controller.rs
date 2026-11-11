@@ -651,7 +651,7 @@ mod lease_tests {
     use super::*;
 
     fn store() -> (tempfile::TempDir, Store) {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let store = Store::new(directory.path().join("state")).unwrap();
         (directory, store)
     }
