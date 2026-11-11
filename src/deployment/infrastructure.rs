@@ -615,7 +615,46 @@ fn signals() -> Result<()> {
     Ok(())
 }
 
+struct OpenRcParent {
+    uid: u32,
+    gid: u32,
+    mode: u32,
+}
+impl OpenRcParent {
+    fn protected(self) -> bool {
+        // OpenRC's fixed administrative state directory is root:root 0775 on
+        // Alpine. Only this parent trusts root-group writes; the notification
+        // socket and every Komizo-owned path retain their stricter modes.
+        self.uid == 0 && self.gid == 0 && self.mode & 0o170000 == 0o040000 && self.mode & 0o002 == 0
+    }
+}
+#[cfg(target_os = "linux")]
+fn openrc_parent_acl_absent(parent: &fs::File) -> Result<()> {
+    let result = unsafe {
+        libc::fgetxattr(
+            parent.as_raw_fd(),
+            c"system.posix_acl_access".as_ptr(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    ensure!(result < 0, "OpenRC notification parent has an access ACL");
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error().is_some_and(|code| {
+        code == libc::ENODATA || code == libc::EOPNOTSUPP || code == libc::ENOTSUP
+    }) {
+        return Ok(());
+    }
+    Err(error).context("cannot verify the fixed OpenRC parent ACL")
+}
+#[cfg(not(target_os = "linux"))]
+fn openrc_parent_acl_absent(_: &fs::File) -> Result<()> {
+    Err(anyhow!(
+        "OpenRC parent verification requires the supported Alpine host"
+    ))
+}
 fn notification(role: Role, stage: &mut StartupStage) -> Result<Option<String>> {
+    use std::os::unix::fs::OpenOptionsExt;
     *stage = StartupStage::NotificationEnvironment;
     let address =
         std::env::var("NOTIFY_SOCKET").context("fixed infrastructure notification environment")?;
@@ -637,14 +676,21 @@ fn notification(role: Role, stage: &mut StartupStage) -> Result<Option<String>> 
         "infrastructure notification socket is not protected"
     );
     *stage = StartupStage::NotificationParent;
-    let parent = fs::symlink_metadata("/run/openrc")?;
+    let parent = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open("/run/openrc")?;
+    let metadata = parent.metadata()?;
     ensure!(
-        parent.is_dir()
-            && !parent.file_type().is_symlink()
-            && parent.uid() == 0
-            && parent.mode() & 0o022 == 0,
+        OpenRcParent {
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+            mode: metadata.mode(),
+        }
+        .protected(),
         "infrastructure notification parent is not protected"
     );
+    openrc_parent_acl_absent(&parent)?;
     *stage = StartupStage::NotificationIdentity;
     let proxy = if role == Role::Proxy {
         Some(bootstrap::proxy_identity()?)
@@ -1023,6 +1069,91 @@ mod tests {
         diagnostic.errno = None;
         diagnostic.stage = StartupStage::Files;
         assert!(diagnostic.validate(Role::Proxy).is_err());
+    }
+    #[test]
+    fn openrc_parent_trusts_only_the_fixed_root_administrative_group() {
+        for mode in [0o755, 0o775] {
+            assert!(
+                OpenRcParent {
+                    uid: 0,
+                    gid: 0,
+                    mode: 0o040000 | mode,
+                }
+                .protected()
+            );
+        }
+        for parent in [
+            OpenRcParent {
+                uid: 1,
+                gid: 0,
+                mode: 0o040775,
+            },
+            OpenRcParent {
+                uid: 0,
+                gid: 1,
+                mode: 0o040775,
+            },
+            OpenRcParent {
+                uid: 0,
+                gid: 0,
+                mode: 0o040777,
+            },
+            OpenRcParent {
+                uid: 0,
+                gid: 0,
+                mode: 0o120775,
+            },
+            OpenRcParent {
+                uid: 0,
+                gid: 0,
+                mode: 0o100775,
+            },
+        ] {
+            assert!(!parent.protected());
+        }
+    }
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn openrc_parent_fd_refuses_a_real_access_acl() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = fs::File::open(root.path()).unwrap();
+        openrc_parent_acl_absent(&parent).unwrap();
+        // Linux UAPI posix_acl_xattr: version 2 and little-endian tag/perm/id.
+        // A named entry for our own mapped UID needs no foreign UID mapping.
+        let mut acl = 2_u32.to_le_bytes().to_vec();
+        for (tag, permissions, identity) in [
+            (0x01_u16, 7_u16, u32::MAX),
+            (0x02, 7, unsafe { libc::getuid() }),
+            (0x04, 7, u32::MAX),
+            (0x10, 7, u32::MAX),
+            (0x20, 5, u32::MAX),
+        ] {
+            acl.extend(tag.to_le_bytes());
+            acl.extend(permissions.to_le_bytes());
+            acl.extend(identity.to_le_bytes());
+        }
+        let result = unsafe {
+            libc::fsetxattr(
+                parent.as_raw_fd(),
+                c"system.posix_acl_access".as_ptr(),
+                acl.as_ptr().cast(),
+                acl.len(),
+                0,
+            )
+        };
+        if result != 0 {
+            let error = std::io::Error::last_os_error();
+            if error
+                .raw_os_error()
+                .is_some_and(|code| code == libc::EOPNOTSUPP || code == libc::ENOTSUP)
+            {
+                eprintln!("test filesystem does not support POSIX access ACLs");
+                return;
+            }
+            panic!("cannot prepare the owned access ACL control: {error}");
+        }
+        assert_eq!(parent.metadata().unwrap().mode() & 0o777, 0o775);
+        assert!(openrc_parent_acl_absent(&parent).is_err());
     }
     #[test]
     fn infrastructure_roles_close_program_paths_and_monitor_scopes() {
