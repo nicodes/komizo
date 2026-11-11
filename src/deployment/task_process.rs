@@ -1,5 +1,7 @@
 //! Reap exact owned children without making failed task cleanup wait forever.
-use anyhow::{Result, ensure};
+use anyhow::Result;
+#[cfg(any(target_os = "linux", test))]
+use anyhow::ensure;
 #[cfg(any(target_os = "linux", test))]
 use std::process::Command;
 use std::{
