@@ -6,9 +6,11 @@ use super::{
     store,
     system::System,
 };
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
+use serde::{Deserialize, Serialize};
 use std::{
     fs,
+    io::{Read, Seek, SeekFrom, Write},
     os::unix::{
         fs::{FileTypeExt, MetadataExt, PermissionsExt},
         net::UnixDatagram,
@@ -31,12 +33,226 @@ const SUPERVISOR: &str = "/sbin/supervise-daemon";
 pub const DIRECTORY: &str = "/run/komizo-infrastructure";
 const PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Role {
     Controller,
     Proxy,
     Dns,
     Expiry,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StartupStage {
+    Files,
+    Leaf,
+    Monitor,
+    Parent,
+    Notification,
+    ProxyGuard,
+    Confinement,
+    Exec,
+    Runner,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum StartupError {
+    Io,
+    Guard,
+    Pending,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StartupDiagnostic {
+    kind: String,
+    version: u32,
+    diagnostic_only: bool,
+    role: Role,
+    boot_id: String,
+    pid: u32,
+    stage: StartupStage,
+    errno: Option<i32>,
+    error: StartupError,
+}
+impl StartupDiagnostic {
+    fn new(
+        role: Role,
+        stage: StartupStage,
+        boot_id: String,
+        pid: u32,
+        error: &anyhow::Error,
+    ) -> Self {
+        let io = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<std::io::Error>());
+        Self {
+            kind: "komizo.infrastructure-startup-diagnostic".into(),
+            version: 1,
+            diagnostic_only: true,
+            role,
+            boot_id,
+            pid,
+            stage,
+            errno: io.and_then(std::io::Error::raw_os_error),
+            // Never serialize an arbitrary error Display: it can contain an
+            // environment selector or configuration value. Only closed facts
+            // from this exact failed entry are retained.
+            error: if io.is_some() {
+                StartupError::Io
+            } else {
+                StartupError::Guard
+            },
+        }
+    }
+    fn validate(&self, role: Role) -> Result<()> {
+        ensure!(
+            self.kind == "komizo.infrastructure-startup-diagnostic"
+                && self.version == 1
+                && self.diagnostic_only
+                && self.role == role
+                && self.pid > 1
+                && self.boot_id.len() == 36
+                && self.boot_id.bytes().enumerate().all(|(index, byte)| {
+                    if [8, 13, 18, 23].contains(&index) {
+                        byte == b'-'
+                    } else {
+                        byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+                    }
+                }),
+            "startup diagnostic scope is invalid"
+        );
+        ensure!(
+            !matches!(self.error, StartupError::Pending)
+                || (matches!(self.stage, StartupStage::Exec) && self.errno.is_none()),
+            "pending startup diagnostic has an invalid outcome"
+        );
+        Ok(())
+    }
+}
+fn startup_path(role: Role) -> std::path::PathBuf {
+    Path::new(DIRECTORY).join(format!("{}.startup.json", role.name()))
+}
+fn startup_root() -> Result<()> {
+    for name in ["/", "/run", DIRECTORY] {
+        let metadata = fs::symlink_metadata(name)?;
+        ensure!(
+            metadata.is_dir()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == 0
+                && metadata.gid() == 0
+                && metadata.mode() & 0o022 == 0
+                && (name != DIRECTORY || metadata.mode() & 0o7777 == 0o700),
+            "startup diagnostic directory is not protected"
+        );
+    }
+    Ok(())
+}
+fn startup_file(path: &Path, role: Role) -> Result<fs::Metadata> {
+    ensure!(
+        path == startup_path(role),
+        "startup diagnostic escaped its fixed role path"
+    );
+    startup_root()?;
+    let metadata = fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.is_file()
+            && !metadata.file_type().is_symlink()
+            && metadata.uid() == 0
+            && metadata.gid() == 0
+            && metadata.nlink() == 1
+            && metadata.mode() & 0o7777 == 0o600
+            && metadata.len() > 0
+            && metadata.len() <= 4096,
+        "startup diagnostic is not an owned bounded file"
+    );
+    Ok(metadata)
+}
+fn clear_startup(role: Role) -> Result<()> {
+    let path = startup_path(role);
+    if !path.try_exists()? {
+        return Ok(());
+    }
+    let metadata = startup_file(&path, role)?;
+    let diagnostic: StartupDiagnostic =
+        serde_json::from_slice(&bootstrap::protected_file(&path, 4096)?)?;
+    diagnostic.validate(role)?;
+    let current = startup_file(&path, role)?;
+    ensure!(
+        metadata.dev() == current.dev() && metadata.ino() == current.ino(),
+        "startup diagnostic changed before owned retirement"
+    );
+    fs::remove_file(path)?;
+    Ok(())
+}
+fn startup_boot() -> Result<String> {
+    let mut boot_id = String::new();
+    fs::File::open("/proc/sys/kernel/random/boot_id")?
+        .take(38)
+        .read_to_string(&mut boot_id)?;
+    Ok(boot_id.trim_end().into())
+}
+fn startup_slot(role: Role) -> Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    startup_root()?;
+    let mut diagnostic = StartupDiagnostic::new(
+        role,
+        StartupStage::Exec,
+        startup_boot()?,
+        std::process::id(),
+        &anyhow!("pending fixed execution"),
+    );
+    diagnostic.error = StartupError::Pending;
+    diagnostic.validate(role)?;
+    let body = serde_json::to_vec(&diagnostic)?;
+    ensure!(
+        body.len() <= 4096,
+        "startup diagnostic exceeds its finite bound"
+    );
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(startup_path(role))?;
+    file.write_all(&body)?;
+    Ok(file)
+}
+fn record_startup(
+    role: Role,
+    stage: StartupStage,
+    error: &anyhow::Error,
+    slot: Option<&mut fs::File>,
+) -> Result<()> {
+    let mut fallback;
+    let file = if let Some(file) = slot {
+        file
+    } else {
+        fallback = startup_slot(role)?;
+        &mut fallback
+    };
+    let metadata = file.metadata()?;
+    ensure!(
+        metadata.is_file()
+            && metadata.uid() == 0
+            && metadata.gid() == 0
+            && metadata.nlink() == 1
+            && metadata.mode() & 0o7777 == 0o600
+            && metadata.len() <= 4096,
+        "startup diagnostic descriptor is not protected"
+    );
+    let diagnostic =
+        StartupDiagnostic::new(role, stage, startup_boot()?, std::process::id(), error);
+    diagnostic.validate(role)?;
+    let body = serde_json::to_vec(&diagnostic)?;
+    ensure!(
+        body.len() <= 4096,
+        "startup diagnostic exceeds its finite bound"
+    );
+    file.seek(SeekFrom::Start(0))?;
+    file.set_len(0)?;
+    file.write_all(&body)?;
+    Ok(())
 }
 impl Role {
     pub fn parse(value: &str) -> Result<Self> {
@@ -120,7 +336,13 @@ fn invoke(role: Role, action: &str, deadline: Instant) -> Result<()> {
     let result = crate::process::capture(&mut command, None, 65536, deadline, || false)?;
     ensure!(
         result.status.success(),
-        "fixed infrastructure service operation failed"
+        "fixed infrastructure {} {action} failed ({}): {}",
+        role.name(),
+        result.status,
+        String::from_utf8_lossy(&result.stderr)
+            .chars()
+            .take(2048)
+            .collect::<String>()
     );
     Ok(())
 }
@@ -331,6 +553,9 @@ pub fn supervise(value: &str) -> Result<()> {
         !active(role)?,
         "fixed infrastructure supervisor is already active"
     );
+    // A diagnostic is never execution authority. Foreign/malformed records are
+    // preserved and never alter this original startup result or deadline.
+    let _ = clear_startup(role);
     bootstrap::public_root_file(Path::new(SUPERVISOR), 32 << 20, 0o755)?;
     let capacity: Capacity = serde_json::from_slice(&bootstrap::protected_file(
         Path::new("/etc/komizo/capacity.json"),
@@ -444,11 +669,25 @@ pub fn run(value: &str) -> Result<()> {
         unsafe { libc::geteuid() } == 0,
         "fixed infrastructure requires the owner identity"
     );
-    bootstrap::infrastructure_files_guard()?;
-    process_group(std::process::id(), &role.group())?;
+    let mut stage = StartupStage::Files;
+    let mut slot = None;
+    let result = run_fixed(role, &mut stage, &mut slot);
+    if let Err(error) = &result {
+        let _ = record_startup(role, stage, error, slot.as_mut());
+    }
+    result
+}
+fn run_fixed(role: Role, stage: &mut StartupStage, slot: &mut Option<fs::File>) -> Result<()> {
+    bootstrap::infrastructure_files_guard().context("fixed infrastructure startup files")?;
+    *stage = StartupStage::Leaf;
+    process_group(std::process::id(), &role.group())
+        .context("fixed infrastructure startup leaf")?;
+    *stage = StartupStage::Monitor;
     let deadline = Instant::now() + Duration::from_secs(2);
     let monitor = loop {
-        if let Some(monitor) = supervisor_pid(role)? {
+        if let Some(monitor) =
+            supervisor_pid(role).context("fixed infrastructure startup monitor")?
+        {
             break monitor;
         }
         ensure!(
@@ -457,6 +696,7 @@ pub fn run(value: &str) -> Result<()> {
         );
         std::thread::sleep(Duration::from_millis(10));
     };
+    *stage = StartupStage::Parent;
     ensure!(
         unsafe { libc::getppid() } as u32 == monitor,
         "fixed service was not started by its owned supervisor"
@@ -464,7 +704,8 @@ pub fn run(value: &str) -> Result<()> {
     unsafe {
         libc::umask(0o077);
     }
-    let notification = notification(role)?;
+    *stage = StartupStage::Notification;
+    let notification = notification(role).context("fixed infrastructure startup notification")?;
     match role {
         Role::Controller => {
             let mut process = command(CLI);
@@ -472,10 +713,12 @@ pub fn run(value: &str) -> Result<()> {
             if let Some(address) = notification {
                 process.env("NOTIFY_SOCKET", address);
             }
-            Err(process.exec().into())
+            *stage = StartupStage::Exec;
+            Err(process.exec()).context("fixed infrastructure controller execution")
         }
         Role::Proxy => {
-            bootstrap::proxy_guard()?;
+            *stage = StartupStage::ProxyGuard;
+            bootstrap::proxy_guard().context("fixed infrastructure startup proxy provenance")?;
             let mut process = command("/usr/local/bin/caddy");
             process
                 .current_dir("/var/lib/komizo-proxy")
@@ -490,14 +733,28 @@ pub fn run(value: &str) -> Result<()> {
                     "--adapter",
                     "caddyfile",
                 ]);
-            bootstrap::confine(&mut process, true)?;
+            // exec() runs pre_exec in this same worker. Retain one root-owned
+            // CLOEXEC descriptor before any credential change so even a later
+            // failed syscall can report only its closed facts. Successful exec
+            // closes the capability; a pending record never proves success.
+            *slot = startup_slot(role).ok();
+            *stage = StartupStage::Confinement;
+            bootstrap::confine(&mut process, true)
+                .context("fixed infrastructure startup confinement")?;
             if let Some(address) = notification {
                 process.env("NOTIFY_SOCKET", address);
             }
-            Err(process.exec().into())
+            *stage = StartupStage::Exec;
+            Err(process.exec()).context("fixed infrastructure proxy execution")
         }
-        Role::Dns => dns_runner(notification.as_deref()),
-        Role::Expiry => expiry_runner(notification.as_deref()),
+        Role::Dns => {
+            *stage = StartupStage::Runner;
+            dns_runner(notification.as_deref()).context("fixed infrastructure DNS runner")
+        }
+        Role::Expiry => {
+            *stage = StartupStage::Runner;
+            expiry_runner(notification.as_deref()).context("fixed infrastructure expiry runner")
+        }
     }
 }
 
@@ -689,6 +946,68 @@ fn dns_runner(_: Option<&str>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn startup_diagnostics_serialize_only_closed_facts_and_preserve_no_private_error_text() {
+        let sentinel = "PRIVATE_ENV_AND_CONFIGURATION_SENTINEL";
+        let error = anyhow::Error::from(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            sentinel,
+        ))
+        .context(sentinel);
+        let diagnostic = StartupDiagnostic::new(
+            Role::Proxy,
+            StartupStage::Exec,
+            "11111111-1111-1111-1111-111111111111".into(),
+            u32::MAX,
+            &error,
+        );
+        diagnostic.validate(Role::Proxy).unwrap();
+        let body = serde_json::to_vec(&diagnostic).unwrap();
+        assert!(body.len() < 4096);
+        assert!(!String::from_utf8_lossy(&body).contains(sentinel));
+        let mut value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 9);
+        assert_eq!(value["error"], "io");
+        assert_eq!(value["diagnostic_only"], true);
+        assert!(diagnostic.validate(Role::Controller).is_err());
+        value["environment"] = serde_json::json!(sentinel);
+        assert!(serde_json::from_value::<StartupDiagnostic>(value).is_err());
+        let diagnostic = StartupDiagnostic::new(
+            Role::Proxy,
+            StartupStage::Exec,
+            "11111111-1111-1111-1111-111111111111".into(),
+            123,
+            &std::io::Error::from_raw_os_error(libc::EACCES).into(),
+        );
+        assert_eq!(diagnostic.errno, Some(libc::EACCES));
+    }
+    #[test]
+    fn startup_diagnostic_paths_refuse_foreign_roles_before_any_filesystem_access() {
+        for path in [
+            Path::new("/tmp/foreign-startup.json").to_path_buf(),
+            startup_path(Role::Dns),
+        ] {
+            let error = startup_file(&path, Role::Proxy).unwrap_err();
+            assert!(error.to_string().contains("fixed role path"));
+        }
+    }
+    #[test]
+    fn pending_exec_diagnostic_is_explicit_unknown_outcome_and_never_has_an_errno() {
+        let mut diagnostic = StartupDiagnostic::new(
+            Role::Proxy,
+            StartupStage::Exec,
+            "11111111-1111-1111-1111-111111111111".into(),
+            123,
+            &anyhow!("not serialized"),
+        );
+        diagnostic.error = StartupError::Pending;
+        diagnostic.validate(Role::Proxy).unwrap();
+        diagnostic.errno = Some(libc::EACCES);
+        assert!(diagnostic.validate(Role::Proxy).is_err());
+        diagnostic.errno = None;
+        diagnostic.stage = StartupStage::Files;
+        assert!(diagnostic.validate(Role::Proxy).is_err());
+    }
     #[test]
     fn infrastructure_roles_close_program_paths_and_monitor_scopes() {
         for bad in [

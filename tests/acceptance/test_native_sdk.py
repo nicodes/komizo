@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import time
@@ -128,6 +129,56 @@ class NativeGuestReadinessEvidence(unittest.TestCase):
         self.assertIs(configuration['ssh_pwauth'],False)
         self.assertIs(configuration['disable_root'],False)
         self.assertNotIn('output',configuration)
+
+    def startup_fixture(self):
+        if sys.platform!='linux' or not hasattr(os,'geteuid') or os.geteuid()!=0:
+            self.skipTest('real private-root metadata controls run in the dedicated sudo Linux fixture step')
+        module,_=self.guest('')
+        temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
+        directory=Path(temporary.name);directory.chmod(0o700)
+        boot='11111111-1111-1111-1111-111111111111'
+        value={'kind':'komizo.infrastructure-startup-diagnostic','version':1,'diagnostic_only':True,
+            'role':'proxy','boot_id':boot,'pid':123,'stage':'proxy_guard','errno':None,'error':'guard'}
+        path=directory/'proxy.startup.json';path.write_text(json.dumps(value));path.chmod(0o600)
+        return module,directory,boot,path,value
+
+    def test_exact_private_diagnostic_and_embedded_source_preserve_only_closed_metadata(self):
+        module,directory,boot,path,value=self.startup_fixture()
+        result=module.startup_diagnostics(directory,boot)
+        self.assertEqual(result['proxy'],value)
+        self.assertEqual(result['controller'],{'state':'absent'})
+        namespace={}
+        exec(module.inspect.getsource(module.startup_diagnostics),namespace)
+        self.assertEqual(namespace['startup_diagnostics'](directory,boot),result)
+        pending={**value,'stage':'exec','error':'pending'}
+        path.write_text(json.dumps(pending))
+        self.assertEqual(module.startup_diagnostics(directory,boot)['proxy'],pending)
+        self.assertNotIn('accepted',pending)
+
+    def test_diagnostic_tampering_public_permissions_links_and_extra_fields_never_export_data(self):
+        module,directory,boot,path,value=self.startup_fixture()
+        for key,item in [('role','controller'),('boot_id','22222222-2222-2222-2222-222222222222'),
+                ('version',True),('pid',True),('stage','not-allowed'),('diagnostic_only',False),
+                ('errno','fixture-private-marker'),('error','fixture-private-marker'),('error','pending'),
+                ('environment','fixture-private-marker')]:
+            with self.subTest(key=key):
+                path.write_text(json.dumps({**value,key:item}));path.chmod(0o600)
+                result=module.startup_diagnostics(directory,boot)
+                self.assertEqual(result['proxy'],{'state':'refused'})
+                self.assertNotIn('fixture-private-marker',json.dumps(result))
+        path.write_text(json.dumps(value));path.chmod(0o644)
+        self.assertEqual(module.startup_diagnostics(directory,boot)['proxy'],{'state':'refused'})
+        path.chmod(0o600);path.write_bytes(b'x'*4097)
+        self.assertEqual(module.startup_diagnostics(directory,boot)['proxy'],{'state':'refused'})
+        path.unlink();os.mkfifo(path,0o600)
+        self.assertEqual(module.startup_diagnostics(directory,boot)['proxy'],{'state':'refused'})
+        path.unlink();other=directory/'other';other.write_text(json.dumps(value));other.chmod(0o600)
+        path.symlink_to(other)
+        self.assertEqual(module.startup_diagnostics(directory,boot)['proxy'],{'state':'refused'})
+        path.unlink();os.link(other,path)
+        self.assertEqual(module.startup_diagnostics(directory,boot)['proxy'],{'state':'refused'})
+        directory.chmod(0o755)
+        self.assertEqual(module.startup_diagnostics(directory,boot)['proxy'],{'state':'unavailable'})
 
 
 if __name__=='__main__':unittest.main()

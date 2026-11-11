@@ -4,6 +4,7 @@ import argparse
 import ctypes
 import hashlib
 import importlib.util
+import inspect
 import json
 import math
 import os
@@ -86,6 +87,65 @@ def fixture_cloud_options():
     # console publisher helper is absent; its display is not authentication.
     return {'disable_root': False, 'ssh_pwauth': False,
         'ssh': {'emit_keys_to_console': False}}
+
+
+def startup_diagnostics(directory=None, boot_id=None):
+    """Read only the four fixed, private, non-authoritative startup records."""
+    import json
+    import os
+    from pathlib import Path
+    import re
+    import stat
+    roles = ('controller', 'proxy', 'dns', 'expiry')
+    directory = Path('/run/komizo-infrastructure') if directory is None else Path(directory)
+    boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip() if boot_id is None else boot_id
+    result = {}
+    def pairs(items):
+        value = {}
+        for key, item in items:
+            if key in value: raise ValueError('duplicate diagnostic field')
+            value[key] = item
+        return value
+    try:
+        info = directory.stat()
+        if (any(p.is_symlink() for p in [directory, *directory.parents])
+                or not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_gid != 0
+                or stat.S_IMODE(info.st_mode) != 0o700):
+            raise ValueError('private diagnostic directory differs')
+    except (OSError, ValueError):
+        return {role: {'state': 'unavailable'} for role in roles}
+    for role in roles:
+        try:
+            descriptor = os.open(directory / (role + '.startup.json'), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, 'rb') as stream:
+                before = os.fstat(stream.fileno())
+                if (not stat.S_ISREG(before.st_mode) or before.st_uid != 0 or before.st_gid != 0
+                        or stat.S_IMODE(before.st_mode) != 0o600 or before.st_nlink != 1
+                        or not 0 < before.st_size <= 4096):
+                    raise ValueError('private bounded diagnostic required')
+                raw = stream.read(4097)
+                after = os.fstat(stream.fileno())
+            if (len(raw) != before.st_size or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                    != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)):
+                raise ValueError('diagnostic changed')
+            value = json.loads(raw, object_pairs_hook=pairs)
+            if (not isinstance(value, dict) or set(value) != {'kind', 'version', 'diagnostic_only', 'role', 'boot_id', 'pid', 'stage', 'errno', 'error'}
+                    or value['kind'] != 'komizo.infrastructure-startup-diagnostic'
+                    or type(value['version']) is not int or value['version'] != 1 or value['diagnostic_only'] is not True
+                    or value['role'] != role or value['boot_id'] != boot_id
+                    or re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', value['boot_id']) is None
+                    or type(value['pid']) is not int or value['pid'] <= 1
+                    or value['stage'] not in {'files', 'leaf', 'monitor', 'parent', 'notification', 'proxy_guard', 'confinement', 'exec', 'runner'}
+                    or not (value['errno'] is None or type(value['errno']) is int)
+                    or value['error'] not in {'io', 'guard', 'pending'}
+                    or value['error'] == 'pending' and (value['stage'] != 'exec' or value['errno'] is not None)):
+                raise ValueError('diagnostic schema differs')
+            result[role] = value
+        except FileNotFoundError:
+            result[role] = {'state': 'absent'}
+        except (OSError, ValueError, TypeError):
+            result[role] = {'state': 'refused'}
+    return result
 
 
 def key(directory, name):
@@ -193,15 +253,17 @@ class Guest:
         # Fixed read-only boot observations contain no process argv, environment
         # or private controller state. Each command and its exported bytes are
         # bounded independently, even when the OS has pending start jobs.
-        script = '''import json, pathlib, subprocess, tempfile
+        script = inspect.getsource(startup_diagnostics) + '''\nimport json, pathlib, subprocess, tempfile
 commands = {
     'cloud_init': ['cloud-init', 'status', '--long', '--format=json'],
     'openrc': ['rc-status', '--all'],
     'apparmor': ['rc-service', 'apparmor', 'status'],
     'cloud_log': ['tail', '-c', '32768', '/var/log/cloud-init-output.log'],
+    'service_log': ['tail', '-c', '16384', '/var/log/messages', '/var/log/rc.log'],
     'kernel': ['cat', '/sys/kernel/security/lsm', '/sys/module/apparmor/parameters/enabled'],
 }
 record = {'version': 1, 'boot_id': pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip(), 'observations': {}}
+record['infrastructure_startup'] = startup_diagnostics(boot_id=record['boot_id'])
 for name, argv in commands.items():
     with tempfile.TemporaryFile() as output:
         try:

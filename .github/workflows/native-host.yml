@@ -26,7 +26,7 @@ jobs:
       - name: Verify the pinned SDK transport boundary
         timeout-minutes: 1
         run: |
-          python3 -I -B tests/acceptance/test_native_sdk.py
+          sudo -n /usr/bin/python3 -I -B tests/acceptance/test_native_sdk.py
           python3 -I -B -m unittest discover -s tests/acceptance -p test_native_release.py
       - name: Authenticate the exact SDK through the official asset API
         timeout-minutes: 2
