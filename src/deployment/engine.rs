@@ -10,6 +10,19 @@ use std::{
 pub struct Engine {
     pub deadline: Instant,
 }
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum HealthProbe {
+    Completed,
+    Unavailable125,
+}
+
+fn health_probe_status(code: Option<i32>) -> Result<HealthProbe> {
+    match code {
+        Some(0 | 1) => Ok(HealthProbe::Completed),
+        Some(125) => Ok(HealthProbe::Unavailable125),
+        _ => Err(anyhow!("native health probe could not complete")),
+    }
+}
 pub fn workload_group(value: &Value, group: &super::cgroups::Group) -> Result<()> {
     super::workload_guard::verify(value, group)
 }
@@ -374,15 +387,25 @@ impl Engine {
     /// probe leaf before any executable or health effect can run.
     pub fn health_in_group(&self, id: &str, group: &super::cgroups::Group) -> Result<()> {
         ensure!(
+            self.health_probe_in_group(id, group)? == HealthProbe::Completed,
+            "native health probe could not complete"
+        );
+        Ok(())
+    }
+    /// A completed Podman internal error is an unavailable observation, not a
+    /// health result. Maintenance must prove the live workload again before
+    /// leaving it alone; activation and owner probes retain the strict wrapper.
+    pub(super) fn health_probe_in_group(
+        &self,
+        id: &str,
+        group: &super::cgroups::Group,
+    ) -> Result<HealthProbe> {
+        ensure!(
             hex(id, 64),
             "native health probe requires an exact owned container ID"
         );
         let output = self.capture_in_group(&["healthcheck", "run", id], group)?;
-        ensure!(
-            matches!(output.status.code(), Some(0 | 1)),
-            "native health probe could not complete"
-        );
-        Ok(())
+        health_probe_status(output.status.code())
     }
     pub fn json(&self, arguments: &[&str]) -> Result<Value> {
         crate::strict::value(&self.run(arguments)?, 4 << 20)
@@ -731,6 +754,24 @@ pub fn service_mounts(
 #[cfg(test)]
 mod host_tests {
     use super::*;
+    #[test]
+    fn only_a_completed_internal_probe_error_is_an_unavailable_observation() {
+        assert_eq!(
+            health_probe_status(Some(0)).unwrap(),
+            HealthProbe::Completed
+        );
+        assert_eq!(
+            health_probe_status(Some(1)).unwrap(),
+            HealthProbe::Completed
+        );
+        assert_eq!(
+            health_probe_status(Some(125)).unwrap(),
+            HealthProbe::Unavailable125
+        );
+        for status in [None, Some(2), Some(124), Some(126), Some(127), Some(137)] {
+            assert!(health_probe_status(status).is_err());
+        }
+    }
     #[test]
     fn scoped_start_refuses_names_and_delegated_branches_before_execution() {
         let engine = Engine {

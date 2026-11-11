@@ -2563,6 +2563,22 @@ fn commit_backoff(store: &Store, snapshot: &ServiceSnapshot, service: &str) -> R
     )
 }
 
+fn health_observation(status: &str, unavailable: bool) -> Result<Option<bool>> {
+    ensure!(
+        ["healthy", "starting", "unhealthy"].contains(&status),
+        "service health state missing"
+    );
+    // An actual unhealthy result remains actionable even if this particular
+    // command was unavailable. Never promote a stale healthy result to success.
+    Ok(if status == "unhealthy" {
+        Some(false)
+    } else if unavailable {
+        None
+    } else {
+        Some(true)
+    })
+}
+
 // Each queued scope owns its dedupe slot until every observation/commit ends.
 // Probe and authority CLIs run outside the application mutation lease.
 fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
@@ -2619,7 +2635,7 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
         &frozen.document.release.workload.services[&scope.service],
     )?;
     let mut checked_at = None;
-    let observed = (|| -> Result<bool> {
+    let observed = (|| -> Result<Option<bool>> {
         super::engine::workload_limits(
             &before,
             &group,
@@ -2627,7 +2643,7 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
         )?;
         if before["State"]["Running"] != true {
             stopped_service(&before)?;
-            return Ok(false);
+            return Ok(Some(false));
         }
         super::cgroups::verify(
             &group,
@@ -2635,6 +2651,7 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
             &Default::default(),
         )?;
         if let Some(health) = &frozen.config.health {
+            let mut unavailable = false;
             let now = controller::now()?;
             let interval = health_interval(
                 health,
@@ -2666,8 +2683,10 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
                             + Duration::from_secs(u64::from(health.timeout_seconds) + 15),
                     ),
                 };
-                command.health_in_group(&frozen.record.id, &probe)?;
-                checked_at = Some(now);
+                match command.health_probe_in_group(&frozen.record.id, &probe)? {
+                    super::engine::HealthProbe::Completed => checked_at = Some(now),
+                    super::engine::HealthProbe::Unavailable125 => unavailable = true,
+                }
             }
             let after = Engine {
                 deadline: deadline.min(Instant::now() + Duration::from_secs(20)),
@@ -2681,19 +2700,39 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
             .ok_or_else(|| anyhow!("service disappeared during health observation"))?;
             if after["State"]["Running"] != true {
                 stopped_service(&after)?;
-                return Ok(false);
+                return Ok(Some(false));
+            }
+            if unavailable {
+                // Resource pressure can prevent a probe from starting. Only a
+                // fresh proof of this same live generation permits retaining
+                // it without an observation; failed confinement still cleans up.
+                ensure!(
+                    same_service_generation(&before, &after),
+                    "service generation changed during unavailable health probe"
+                );
+                super::engine::service_mounts(
+                    &after,
+                    &frozen.record,
+                    &frozen.document.release.workload.services[&scope.service],
+                )?;
+                super::engine::workload_limits(
+                    &after,
+                    &group,
+                    &frozen.document.release.workload.services[&scope.service].limits,
+                )?;
+                super::cgroups::verify(
+                    &group,
+                    instance_limits(&frozen.policy, &scope.instance)?,
+                    &Default::default(),
+                )?;
             }
             let status = after["State"]["Health"]["Status"].as_str().unwrap_or("");
-            ensure!(
-                ["healthy", "starting", "unhealthy"].contains(&status),
-                "service health state missing"
-            );
-            Ok(status != "unhealthy")
+            health_observation(status, unavailable)
         } else {
-            Ok(true)
+            Ok(Some(true))
         }
     })();
-    let restart = matches!(observed, Ok(false));
+    let restart = matches!(observed, Ok(Some(false)));
     let stopped = {
         let Some(_lease) =
             controller::maintenance_lease(&store, &scope.application, &scope.instance)?
@@ -2732,7 +2771,7 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
             )?;
         }
         match observed {
-            Ok(true) => return Ok(()),
+            Ok(Some(true) | None) => return Ok(()),
             Err(error) => {
                 commit_backoff(&store, &current, &scope.service)?;
                 advance_service_epoch(&store, &current.installed)?;
@@ -2743,7 +2782,7 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
                 }
                 return Err(error);
             }
-            Ok(false) => {
+            Ok(Some(false)) => {
                 if !service_backoff(&store, &current, &scope.service)? {
                     return Ok(());
                 }
@@ -4025,6 +4064,23 @@ mod recovery_tests {
         assert!(probe_due(Some(&foreign), &id, started, epoch + 1, 3600).is_err());
         assert!(probe_due(None, &id, "invalid", epoch, 3600).is_err());
         assert!(probe_due(None, "foreign", started, epoch, 3600).is_err());
+    }
+
+    #[test]
+    fn unavailable_health_observations_never_promote_stale_success_or_hide_failure() {
+        for status in ["healthy", "starting"] {
+            assert_eq!(health_observation(status, true).unwrap(), None);
+            assert_eq!(health_observation(status, false).unwrap(), Some(true));
+        }
+        for unavailable in [true, false] {
+            assert_eq!(
+                health_observation("unhealthy", unavailable).unwrap(),
+                Some(false)
+            );
+            for unknown in ["", "missing", "exited", "private-sentinel"] {
+                assert!(health_observation(unknown, unavailable).is_err());
+            }
+        }
     }
 
     #[test]
