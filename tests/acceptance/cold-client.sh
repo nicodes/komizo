@@ -31,7 +31,7 @@ import json,re
 from pathlib import Path
 capabilities=json.loads(Path('capabilities.json').read_bytes())
 assert capabilities['kind']=='komizo.capabilities' and capabilities['version']==1
-assert capabilities['host']=={'os':'debian','version':'13','engine':'podman','rootful':True}
+assert capabilities['host']=={'os':'alpine','version':'3.24','engine':'podman','rootful':True}
 assert capabilities['commands']=={'status':'read','inspect':'read','logs':'read','ui':'local','request':'typed',
  'start':'effect','stop':'effect','restart':'effect','backup':'effect'}
 assert re.fullmatch(r'komizo [A-Za-z0-9.+_-]{1,128}\n',Path('version.txt').read_text())

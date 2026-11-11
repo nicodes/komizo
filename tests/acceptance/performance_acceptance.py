@@ -1,8 +1,13 @@
-"""Validate actual fixed-budget measurements from the disposable Debian guest."""
+"""Validate actual fixed-budget measurements from the disposable Alpine guest."""
 import math
 import re
 
-SCOPE="one CPU and one GiB disposable Debian guest; synthetic PostgreSQL/API/static workload, finite background load and cold owner reads"
+ROLES={'controller':'/komizo/control/controller','controller-supervisor':'/komizo/control/controller',
+    'proxy':'/komizo/proxy/server','proxy-supervisor':'/komizo/proxy/server',
+    'dns':'/komizo/control/dns','dns-runner':'/komizo/control/dns','dns-supervisor':'/komizo/control/dns',
+    'expiry':'/komizo/control/watchdogs','expiry-supervisor':'/komizo/control/watchdogs'}
+
+SCOPE="one CPU and one GiB disposable Alpine guest; synthetic PostgreSQL/API/static workload, finite background load and cold owner reads"
 
 
 def evaluate(metrics, budget):
@@ -21,17 +26,17 @@ def evaluate(metrics, budget):
     if type(metrics['load_hot_bytes']) is not int or metrics['load_hot_bytes']!=budget['load_memory_bytes'] or type(metrics['load_cpu_usec']) is not int or metrics['load_cpu_usec']<1_000_000:
         raise ValueError('positive bounded memory/CPU load was not observed')
     rows=metrics['control_processes']
-    if metrics['control_services_running']!={'controller':True,'proxy':True} or any(value is not True for value in metrics['control_services_running'].values()) or not isinstance(rows,list) or not 3<=len(rows)<=32:
+    if metrics['control_services_running']!={'controller':True,'proxy':True} or any(value is not True for value in metrics['control_services_running'].values()) or not isinstance(rows,list) or len(rows)!=len(ROLES):
         raise ValueError('complete native controller/proxy/DNS identities were not observed')
-    if sum(row['role']=='controller' for row in rows)!=1 or sum(row['role']=='proxy' for row in rows)!=1 or not any(row['role']=='dns' for row in rows):
+    if len({row['role'] for row in rows})!=len(ROLES) or {row['role'] for row in rows}!=set(ROLES):
         raise ValueError('native control process roles differ')
     if len({row['pid'] for row in rows})!=len(rows) or sum(row['pss_bytes'] for row in rows)!=metrics['idle_control_pss_bytes']:
         raise ValueError('native control process accounting is incomplete')
     for row in rows:
         if set(row)!={'role','pid','pss_bytes','executable_sha256','cgroup'}:raise ValueError('control process metadata contains an unapproved field')
-        if (row['role'] not in {'controller','proxy','dns'} or type(row['pid']) is not int or row['pid']<=0 or type(row['pss_bytes']) is not int or row['pss_bytes']<=0
+        if (row['role'] not in ROLES or type(row['pid']) is not int or row['pid']<=0 or type(row['pss_bytes']) is not int or row['pss_bytes']<=0
                 or not re.fullmatch('[a-f0-9]{64}',row['executable_sha256'])
-                or not row['cgroup'].startswith('/komizo.slice/komizo-'+('proxy' if row['role']=='proxy' else 'control')+'.slice/')):
+                or row['cgroup']!=ROLES[row['role']]):
             raise ValueError('native control executable or protected pool differs')
     if metrics['oom_events_unchanged'] is not True or metrics['owned_load_removed'] is not True:raise ValueError('finite performance load did not preserve its boundary')
     return True

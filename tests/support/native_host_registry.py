@@ -48,7 +48,7 @@ def image(root, app, revision, *, repository=None):
         for name in ['bin','www','www/cgi-bin','data']:
             info=tarfile.TarInfo(name);info.type=tarfile.DIRTYPE;info.mode=0o755;info.uid=info.gid=10001;archive.addfile(info)
         cgi=b'#!/bin/busybox sh\nprintf "Content-Type: text/plain\\r\\n\\r\\n%s\\n" "$HTTP_X_FORWARDED_FOR"\n'
-        for name,body,mode in [('bin/busybox',Path('/bin/busybox').read_bytes(),0o755),
+        for name,body,mode in [('bin/busybox',Path('/bin/busybox.static').read_bytes(),0o755),
                 ('www/index.html',(app+' '+revision).encode(),0o644),('www/cgi-bin/who',cgi,0o755)]:
             info=tarfile.TarInfo(name);info.size=len(body);info.mode=mode;info.uid=info.gid=10001;archive.addfile(info,io.BytesIO(body))
     raw=data.getvalue();layer=gzip.compress(raw,mtime=0)

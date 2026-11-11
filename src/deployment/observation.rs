@@ -17,6 +17,35 @@ use std::{
 pub const STATE: &str = "/var/lib/komizo";
 pub const POLICIES: &str = "/etc/komizo/apps";
 
+pub(crate) fn service_configuration(
+    store: &Store,
+    installed: &Installed,
+    service: &str,
+    record: &store::ContainerRecord,
+) -> Result<units::ServiceConfig> {
+    let path = units::config_path(&record.name)?;
+    system::verify_unit(
+        store,
+        &path,
+        &installed.application,
+        &installed.instance,
+        &record.unit_sha256,
+    )?;
+    let config = units::ServiceConfig::parse(&store::read_protected(&path, 1 << 20)?)?;
+    ensure!(
+        config.application == installed.application
+            && config.instance == installed.instance
+            && config.service == service
+            && config.release_digest == installed.release_digest
+            && config.release_digest == record.release_digest
+            && config.ownership == record.ownership
+            && config.container_name == record.name
+            && config.image_id == record.config_digest,
+        "protected service configuration escaped the installed creation record"
+    );
+    Ok(config)
+}
+
 pub fn owned(
     store: &Store,
     application: &str,
@@ -41,14 +70,21 @@ pub fn owned(
         .containers
         .get(service)
         .ok_or_else(|| anyhow!("service has no protected creation record"))?;
-    let unit = Path::new(system::QUADLETS).join(format!(
-        "{}-{service}.container",
-        units::namespace(application, instance)?
-    ));
-    system::verify_unit(store, &unit, application, instance, &record.unit_sha256)?;
+    service_configuration(store, &installed, service, record)?;
     let value = engine
         .owned_container(record, application, instance, service)?
         .ok_or_else(|| anyhow!("owned service is not present"))?;
+    super::engine::workload_limits(
+        &value,
+        &super::cgroups::workload_group(
+            application,
+            instance,
+            super::cgroups::WorkloadKind::Service,
+            service,
+            &record.ownership,
+        )?,
+        &document.release.workload.services[service].limits,
+    )?;
     super::engine::service_mounts(&value, record, &document.release.workload.services[service])?;
     for mount in &document.release.workload.services[service].volumes {
         engine.owned_object(
@@ -165,16 +201,7 @@ fn guard_with(application: &str, instance: &str, service: &str, dependencies: bo
         .containers
         .get(service)
         .ok_or_else(|| anyhow!("service creation record missing"))?;
-    system::verify_unit(
-        &store,
-        &Path::new(system::QUADLETS).join(format!(
-            "{}-{service}.container",
-            units::namespace(application, instance)?
-        )),
-        application,
-        instance,
-        &record.unit_sha256,
-    )?;
+    service_configuration(&store, &installed, service, record)?;
     let engine = Engine {
         deadline: Instant::now() + Duration::from_secs(20),
     };
@@ -281,7 +308,29 @@ pub fn health(application: &str, instance: &str, service: &str) -> Result<()> {
     let probe = Engine {
         deadline: Instant::now() + Duration::from_secs(u64::from(health.timeout_seconds) + 15),
     };
-    probe.health(id)?;
+    let (policy, _) = controller::policy(Path::new(POLICIES), application)?;
+    policy.admit(&document.release, instance)?;
+    let allocation = if instance == "production" {
+        &policy.limits
+    } else {
+        &policy
+            .previews
+            .as_ref()
+            .ok_or_else(|| anyhow!("preview health allocation missing"))?
+            .limits
+    };
+    let record = installed
+        .resources
+        .containers
+        .get(service)
+        .ok_or_else(|| anyhow!("health creation record missing"))?;
+    let group =
+        super::cgroups::service_probe_group(application, instance, service, &record.ownership)?;
+    system::System {
+        deadline: probe.deadline,
+    }
+    .prepare_group(&group, allocation, &Default::default())?;
+    probe.health_in_group(id, &group)?;
     store::atomic(
         &path,
         &serde_json::to_vec(
@@ -315,16 +364,7 @@ pub fn logs(application: &str, instance: &str, service: &str) -> Result<Value> {
             .containers
             .get(service)
             .ok_or_else(|| anyhow!("service has no protected creation record"))?;
-        system::verify_unit(
-            &store,
-            &Path::new(system::QUADLETS).join(format!(
-                "{}-{service}.container",
-                units::namespace(application, instance)?
-            )),
-            application,
-            instance,
-            &record.unit_sha256,
-        )?;
+        service_configuration(&store, &installed, service, record)?;
         engine
             .owned_container(record, application, instance, service)?
             .and_then(|value| value["Id"].as_str().map(str::to_owned))
@@ -334,35 +374,42 @@ pub fn logs(application: &str, instance: &str, service: &str) -> Result<Value> {
         hex(&id, 64),
         "log selection has no exact recorded container ID"
     );
-    let mut command = std::process::Command::new("/usr/bin/journalctl");
-    command
-        .env_clear()
-        .env("PATH", "/usr/bin:/bin")
-        .env("LANG", "C.UTF-8")
-        .args(["--quiet", "--no-pager", "--output=cat", "--lines=200"])
-        .arg(format!("CONTAINER_ID_FULL={id}"));
-    let result = crate::process::capture(&mut command, None, 256 << 10, deadline, || false)?;
-    ensure!(
-        result.status.success(),
-        "bounded native log observation failed"
-    );
-    // The capture retains a byte tail. It may begin in the middle of a UTF-8
-    // character or a secret, so protect that boundary before trimming lines.
-    let bytes = result.stdout.as_slice();
-    let first = bytes
-        .iter()
-        .position(|b| b & 0xc0 != 0x80)
-        .unwrap_or(bytes.len());
-    let text = redact_all(
-        &installed,
-        &document,
-        &String::from_utf8_lossy(&bytes[first..]),
-        bytes.len() == LOG_BYTES,
-    )?;
+    let (stdout, stderr) = engine.logs(&id, LOG_BYTES)?;
+    let text = render_logs(&installed, &document, &stdout, &stderr)?;
     let text = log_tail(&text);
     Ok(
         json!({"kind":"komizo.logs","version":1,"application":application,"instance":instance,"service":service,"release_digest":installed.release_digest,"container_id":id,"text":text}),
     )
+}
+
+fn render_logs(
+    installed: &Installed,
+    document: &ReleaseDocument,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Result<String> {
+    // Redact each stream before combining it. Interleaving raw read chunks
+    // could split a secret with bytes from the other stream.
+    let render = |bytes: &[u8]| -> Result<String> {
+        let first = bytes
+            .iter()
+            .position(|b| b & 0xc0 != 0x80)
+            .unwrap_or(bytes.len());
+        redact_all(
+            installed,
+            document,
+            &String::from_utf8_lossy(&bytes[first..]),
+            bytes.len() == LOG_BYTES,
+        )
+    };
+    let mut text = render(stdout)?;
+    if !stderr.is_empty() {
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&render(stderr)?);
+    }
+    Ok(text)
 }
 
 pub(crate) fn redact(
@@ -552,6 +599,19 @@ mod tests {
         assert!(value.starts_with(forged));
         assert!(!value.contains("private-token"));
         assert!(value.ends_with("[redacted] [redacted]"));
+        // The two pipes can arrive in interleaved chunks. Their reconstruction
+        // must precede redaction, so stderr cannot split a stdout credential.
+        let stdout = [b"private-token-".as_slice(), b"value"].concat();
+        let combined = render_logs(
+            &installed,
+            &document,
+            &stdout,
+            b"untrusted stderr private-token\n",
+        )
+        .unwrap();
+        assert!(!combined.contains("private-token"));
+        assert!(combined.contains("untrusted stderr [redacted]"));
+
         let value = redact(&installed, &document, &"private-token-value".repeat(50000)).unwrap();
         assert!(value.len() <= LOG_BYTES);
         let value = redact_all(&installed, &document, "token-value\nnext", true).unwrap();

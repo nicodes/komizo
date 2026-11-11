@@ -302,3 +302,70 @@ fn terminal_acknowledgment_releases_the_instance_before_unrelated_maintenance() 
     assert!(wait(&c.store, &second).ok);
     assert_eq!(backend.calls.load(Ordering::Acquire), 2);
 }
+
+#[test]
+fn long_effect_does_not_suspend_independent_maintenance() {
+    struct WaitingEffect {
+        started: mpsc::SyncSender<()>,
+        release: Mutex<mpsc::Receiver<()>>,
+        maintained: mpsc::SyncSender<()>,
+    }
+    impl Backend for WaitingEffect {
+        fn execute(
+            &self,
+            store: &Store,
+            _: &Policy,
+            _: &Job,
+            operation: &mut Operation,
+        ) -> Result<()> {
+            controller::advance(store, operation, "staging")?;
+            self.started.send(())?;
+            self.release
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(4))?;
+            for phase in ["jobs", "installing", "activating", "readiness", "ready"] {
+                controller::advance(store, operation, phase)?;
+            }
+            Ok(())
+        }
+        fn maintenance(&self, _: &Store) -> Result<()> {
+            let _ = self.maintained.try_send(());
+            Ok(())
+        }
+    }
+    let (_dir, original, _gate, _calls, request) = setup(false);
+    let state = original.store.root.clone();
+    let policies = original.policies.clone();
+    drop(original);
+    let (started_tx, started_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let (maintained_tx, maintained_rx) = mpsc::sync_channel(1);
+    let c = Coordinator::new(
+        state,
+        policies,
+        Arc::new(WaitingEffect {
+            started: started_tx,
+            release: Mutex::new(release_rx),
+            maintained: maintained_tx,
+        }),
+    )
+    .unwrap();
+    let id = store::operation_identity(&serde_json::from_value(request.clone()).unwrap()).unwrap();
+    drop(
+        c.admit(
+            serde_json::to_vec(&request).unwrap(),
+            0,
+            1000,
+            &mut |_| panic!(),
+        )
+        .unwrap(),
+    );
+    started_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    maintained_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("maintenance was blocked behind an effect");
+    assert_eq!(c.store.operation(&id).unwrap().phase, "staging");
+    release_tx.send(()).unwrap();
+    assert!(wait(&c.store, &id).ok);
+}

@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import native_release
 import test_native_release as fixtures
 from candidate_evidence import CANDIDATE_STEPS, BOUNDED_STEPS, export
-from performance_acceptance import SCOPE, evaluate
+from performance_acceptance import ROLES, SCOPE, evaluate
 from release_acceptance import REQUIRED_STEPS, validate, validate_bundle
 
 ENGINE = Path(__file__).parent
@@ -41,12 +41,12 @@ class AcceptanceGuards(unittest.TestCase):
         files = native_release.inventory(self.archives, self.source, self.release)
         host, proxy = files['komizo-box_Linux_x86_64']['sha256'], files['caddy_Linux_x86_64']['sha256']
         self.metrics = {'guest_memory_bytes': self.budget['guest_memory_bytes'], 'guest_milli_cpus': self.budget['guest_milli_cpus'],
-            'setup_seconds': 30, 'deployment_seconds': 2, 'idle_control_pss_bytes': 48 << 20,
+            'setup_seconds': 30, 'deployment_seconds': 2, 'idle_control_pss_bytes': 54 << 20,
             'route_seconds': [.1] * 5, 'operator_seconds': [.2] * 5, 'load_hot_bytes': 64 << 20,
             'load_cpu_usec': 2_000_000, 'oom_events_unchanged': True, 'owned_load_removed': True,
-            'control_processes': [dict(role=role, pid=index, pss_bytes=16 << 20, executable_sha256=digest,
-                cgroup='/komizo.slice/komizo-' + ('proxy' if role == 'proxy' else 'control') + '.slice/owned.service')
-                for index, (role, digest) in enumerate([('controller', host), ('proxy', proxy), ('dns', 'd' * 64)], 1)],
+            'control_processes': [dict(role=role,pid=index,pss_bytes=6<<20,
+                executable_sha256=proxy if role=='proxy' else host if role in {'controller','dns-runner','expiry'} else 'd'*64,
+                cgroup=group) for index,(role,group) in enumerate(ROLES.items(),1)],
             'control_services_running': {'controller': True, 'proxy': True}}
         self.native = {'version': 1, 'release': self.release, 'source': self.source, 'candidate_cli': None,
             'signed_release_acceptance': True, 'cli_sha256': files['komizo_Linux_x86_64.tar.gz']['executable_sha256'],
@@ -236,7 +236,7 @@ class NativeBootGuards(unittest.TestCase):
             fixture=importlib.util.module_from_spec(spec)
             write=Mock(side_effect=lambda path,value:Path(path).write_text(json.dumps(value)))
             with patch.dict(sys.modules,{'acceptance':SimpleNamespace(ROOT=root,MiB=1<<20,BINARY='/fixture/box',
-                    run=Mock(),write=write,actual_boundaries=Mock(),capacity=Mock()),'fixture_registry':SimpleNamespace()}):
+                    run=Mock(),write=write,actual_boundaries=Mock(),capacity=Mock(),service_active=Mock(),service_pid=Mock(),restart_controller=Mock(),profile_probe=Mock()),'fixture_registry':SimpleNamespace(),'fixture_tasks':SimpleNamespace(stop=Mock())}):
                 spec.loader.exec_module(fixture)
             fixture.setup_registry=Mock();fixture.host_policy=Mock();fixture.release=Mock()
             fixture.deploy=Mock(return_value=(None,{'ok':True,'release_digest':'sha256:'+'a'*64}))
@@ -317,7 +317,7 @@ class NativeCaptureGuards(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('network_fixture', ENGINE.parent / 'support/native_host_runtime.py')
         fixture = importlib.util.module_from_spec(spec)
         with patch.dict(sys.modules, {'acceptance': SimpleNamespace(ROOT=Path('/fixture'), MiB=1 << 20, BINARY='/fixture/box',
-                run=run, write=Mock(), actual_boundaries=Mock(), capacity=Mock()),
+                run=run, write=Mock(), actual_boundaries=Mock(), capacity=Mock(),service_active=Mock(),service_pid=Mock(),restart_controller=Mock(),profile_probe=Mock()),
                 'fixture_registry': SimpleNamespace(canonical=canonical, digest=digest)}):
             spec.loader.exec_module(fixture)
         fixture.Path = lambda name: SimpleNamespace(read_text=lambda: files[name])

@@ -243,7 +243,13 @@ fn unit(old: Option<&str>, new: Option<&str>) -> UnitIntent {
         application: APP.into(),
         instance: "production".into(),
         operation_id: Some("b".repeat(32)),
-        path: "/etc/containers/systemd/owned-api.container".into(),
+        path: units::config_path(&format!(
+            "{}-api",
+            units::namespace(APP, "production").unwrap()
+        ))
+        .unwrap()
+        .to_string_lossy()
+        .into_owned(),
         old: old.map(version),
         new: new.map(version),
         phase: "pending".into(),
@@ -446,14 +452,20 @@ fn framework_reconciliation_consumes_only_exact_scope_and_untagged_intents() {
     tagged.identity = "d".repeat(32);
     tagged.application = "platform".into();
     tagged.instance = "proxy".into();
-    tagged.path = "/etc/systemd/system/tagged.service".into();
+    tagged.path = units::config_path(&format!("komizo-backup-{}.service", "b".repeat(32)))
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
     save_unit(&store, &tagged);
     let mut foreign = unit(None, Some("capacity"));
     foreign.identity = "c".repeat(32);
     foreign.application = "platform".into();
     foreign.instance = "capacity".into();
     foreign.operation_id = None;
-    foreign.path = "/etc/systemd/system/capacity.slice".into();
+    foreign.path = units::config_path("cgroup-root")
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
     save_unit(&store, &foreign);
 
     system::reconcile_framework_units_with(&store, APP, "production", &files).unwrap();

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assert the native host boundary from inside the disposable Debian guest."""
+"""Assert the native host boundary from inside the disposable Alpine guest."""
 import hashlib
 import json
 import os
@@ -11,8 +11,8 @@ import time
 
 ROOT = Path('/root/native-host')
 BINARY = '/usr/local/bin/komizo-box'
-CONTROLLER = 'komizo-controller.service'
-PROXY = 'komizo-proxy.service'
+CONTROLLER = 'komizo-controller'
+PROXY = 'komizo-proxy'
 MiB = 1 << 20
 
 
@@ -32,8 +32,90 @@ def write(path, value, mode=0o600):
         stream.write(body)
 
 
-def show(unit, field):
-    return run(['systemctl','show',unit,'--property='+field,'--value']).stdout.decode().strip()
+def process_status(pid):
+    return dict(line.split(':',1) for line in Path('/proc',str(pid),'status').read_text().splitlines() if ':' in line)
+
+
+def process_group(pid):
+    rows=Path('/proc',str(pid),'cgroup').read_text().splitlines()
+    if len(rows)!=1 or not rows[0].startswith('0::/'):
+        raise ValueError('native process lacks its exact unified cgroup')
+    return rows[0][3:]
+
+
+def service_pid(service):
+    roles={'komizo-controller':('/komizo/control/controller',BINARY),
+        'komizo-proxy':('/komizo/proxy/server','/usr/local/bin/caddy'),
+        'komizo-dns':('/komizo/control/dns',BINARY),
+        'komizo-expiry':('/komizo/control/watchdogs',BINARY)}
+    if service not in roles:raise ValueError('unknown fixed OpenRC service')
+    group, executable=roles[service]
+    path=Path('/run/komizo-infrastructure')/(service+'.pid')
+    metadata=path.lstat()
+    if not path.is_file() or path.is_symlink() or metadata.st_uid!=0 or metadata.st_nlink!=1 or metadata.st_mode&0o022 or metadata.st_size>32:
+        raise ValueError('OpenRC supervisor PID file is not protected')
+    monitor=int(path.read_text())
+    if monitor<=1 or Path('/proc',str(monitor),'exe').resolve()!=Path('/sbin/supervise-daemon').resolve():
+        raise ValueError('fixed OpenRC monitor executable differs')
+    if process_group(monitor)!=group or set(map(int,process_status(monitor)['Uid'].split()))!={0}:
+        raise ValueError('OpenRC monitor escaped its root identity or resource leaf')
+    children=Path('/proc',str(monitor),'task',str(monitor),'children').read_text().split()
+    if len(children)!=1:raise ValueError('OpenRC monitor lacks its unique live worker')
+    pid=int(children[0]);status=process_status(pid)
+    if int(status['PPid'])!=monitor or status['State'].strip().startswith('Z') or process_group(pid)!=group:
+        raise ValueError('OpenRC worker parent/lifetime/cgroup differs')
+    if Path('/proc',str(pid),'exe').resolve()!=Path(executable).resolve():
+        raise ValueError('fixed infrastructure worker executable differs')
+    return pid
+
+
+def service_active(service):
+    if run(['rc-service',service,'status'],ok=False).returncode:return False
+    try:return service_pid(service)>1
+    except (OSError,ValueError):return False
+
+
+def restart_controller():
+    pid=service_pid(CONTROLLER);descriptor=os.pidfd_open(pid)
+    try:
+        if service_pid(CONTROLLER)!=pid:raise ValueError('controller identity changed before its owned kill')
+        __import__('signal').pidfd_send_signal(descriptor,__import__('signal').SIGKILL)
+    finally:os.close(descriptor)
+    deadline=time.monotonic()+30
+    while not service_active(CONTROLLER) or service_pid(CONTROLLER)==pid:
+        if time.monotonic()>=deadline:raise ValueError('OpenRC did not supervise the killed controller')
+        time.sleep(.1)
+
+
+def dns_pid():
+    runner=service_pid('komizo-dns')
+    children=Path('/proc',str(runner),'task',str(runner),'children').read_text().split()
+    if len(children)!=1:raise ValueError('fixed DNS runner lacks its unique owned child')
+    pid=int(children[0])
+    if (Path('/proc',str(pid),'exe').resolve()!=Path('/usr/libexec/podman/aardvark-dns').resolve()
+            or process_group(pid)!='/komizo/control/dns' or int(process_status(pid)['PPid'])!=runner):
+        raise ValueError('actual shared DNS child escaped its fixed supervision')
+    return pid
+
+
+def group_empty(group):
+    path=Path('/sys/fs/cgroup')/group.removeprefix('/')/'cgroup.events'
+    return not path.exists() or 'populated 0' in path.read_text().splitlines()
+
+
+def task_completed(kind, operation):
+    import re
+    if kind not in {'backup','prepare','reconcile'} or not re.fullmatch('[a-f0-9]{32}',operation):
+        raise ValueError('invalid exact protected task selector')
+    root=Path('/var/lib/komizo/journal')/operation
+    intent=json.loads((root/(kind+'-task.json')).read_bytes())
+    completed=json.loads((root/(kind+'-completed.json')).read_bytes())
+    unit='komizo-'+kind+'-'+operation+'.service'
+    if (intent['unit']!=unit or type(completed.get('exit_code')) is not int
+            or completed!={'unit_sha256':intent['unit_sha256'],'exit_code':0}
+            or not group_empty('/komizo/control/'+unit)):
+        raise ValueError('protected task lacks its exact successful exit and empty resource group')
+    return completed
 
 
 def measured_memory():
@@ -102,12 +184,44 @@ def inspect(body=None, user=None):
     except ValueError:raise ValueError('native submission did not return one typed response') from None
 
 
+def profile_probe(profile, user, readable, denied, writes=()):
+    # Enter the exact already-loaded profile without changing its executable
+    # allowlist. All inputs are synthetic public fixture paths, not owner data.
+    if profile not in {'komizo-proxy','komizo-dns'}:raise ValueError('unknown fixed profile probe')
+    import pwd
+    identity=pwd.getpwnam(user)
+    program = r"""import json,os,sys
+profile,uid,gid,readable,denied,writes=json.loads(sys.argv[1])
+os.setgroups([]);os.setgid(gid);os.setuid(uid)
+for path in writes:
+ fd=os.open(path,os.O_WRONLY|os.O_APPEND);os.close(fd)
+with open('/proc/self/attr/current','w') as output:output.write('changeprofile '+profile)
+with open('/proc/self/attr/current') as source:label=source.read().strip()
+assert label==profile+' (enforce)'
+for path in readable:
+ with open(path,'rb') as source:assert source.read(4096)
+for path in denied:
+ try:
+  with open(path,'rb') as source:source.read(1)
+ except PermissionError:pass
+ else:raise ValueError('enforcing profile admitted a protected read')
+for path in writes:
+ try:
+  with open(path,'ab') as output:output.write(b'unexpected')
+ except PermissionError:pass
+ else:raise ValueError('enforcing profile admitted an asset write')
+print(json.dumps({'label':label,'reads_refused':len(denied),'writes_refused':len(writes)}))
+"""
+    result=run(['/usr/bin/python3','-I','-B','-c',program,json.dumps([profile,identity.pw_uid,identity.pw_gid,readable,denied,list(writes)])])
+    return json.loads(result.stdout)
+
+
 def actual_boundaries(expected,*,phase='bootstrap'):
     record_capacity(expected,phase)
     for unit, allocation in [(CONTROLLER,expected['control']),(PROXY,expected['proxy'])]:
-        if show(unit,'ActiveState')!='active':raise ValueError('native service is not active')
-        group=show(unit,'ControlGroup')
-        if not group.startswith('/komizo.slice/komizo-'):raise ValueError('infrastructure escaped protected parent slice')
+        if not service_active(unit):raise ValueError('native service is not active')
+        group=process_group(service_pid(unit))
+        if group!={'komizo-controller':'/komizo/control/controller','komizo-proxy':'/komizo/proxy/server'}[unit]:raise ValueError('infrastructure escaped its fixed resource leaf')
         slice_group=Path('/sys/fs/cgroup')/str(Path(group).parent).removeprefix('/')
         limits=allocation['limits'];controls=allocation['controls']
         expected_files={'memory.max':str(limits['memory_bytes']), 'memory.swap.max':str(limits['memory_swap_bytes']-limits['memory_bytes']), 'memory.low':str(controls['memory_low_bytes']),
@@ -117,35 +231,58 @@ def actual_boundaries(expected,*,phase='bootstrap'):
         quota,period=map(int,(slice_group/'cpu.max').read_text().split())
         if quota*1000 != limits['milli_cpus']*period:raise ValueError('actual infrastructure CPU bound differs')
     uid=int(run(['id','-u','komizo-proxy']).stdout)
-    pid=int(show(PROXY,'MainPID'))
+    pid=service_pid(PROXY)
     statuses=dict(line.split(':',1) for line in Path('/proc/'+str(pid)+'/status').read_text().splitlines() if ':' in line)
     if uid==0 or set(map(int,statuses['Uid'].split()))!={uid}:raise ValueError('proxy is not running as its actual unprivileged UID')
-    if int(statuses['CapEff'].strip(),16) & ~(1 << 10):raise ValueError('proxy effective capabilities exceed low-port binding')
-    controller=int(show(CONTROLLER,'MainPID'))
-    for name in ['cmdline','environ']:
-        response=run(['nsenter','--target',str(pid),'--mount','--','runuser','-u','komizo-proxy','--',
-            'cat','/proc/'+str(controller)+'/'+name],ok=False)
-        if response.returncode==0 or response.stdout:raise ValueError('actual proxy service can read another UID process metadata')
-    run(['nsenter','--target',str(pid),'--mount','--','runuser','-u','komizo-proxy','--','test','-r','/proc/self/status'])
-    if show(CONTROLLER,'KillMode')!='process' or show(CONTROLLER,'Type')!='notify':raise ValueError('controller supervision contract differs')
+    for field in ['CapEff','CapPrm','CapInh','CapAmb','CapBnd']:
+        if int(statuses[field].strip(),16)!=(1<<10):raise ValueError('actual proxy capability set differs: '+field)
+    if statuses['NoNewPrivs'].strip()!='1' or statuses['Seccomp'].strip()!='2':raise ValueError('actual proxy lacks NNP/seccomp')
+    if Path('/proc',str(pid),'attr/current').read_text().strip()!='komizo-proxy (enforce)':raise ValueError('actual proxy profile is not enforcing')
+    controller=service_pid(CONTROLLER)
     for path in ['/var/lib/komizo/private-acceptance','/etc/komizo/controller.json']:
         if run(['runuser','-u','komizo-proxy','--','test','-r',path],ok=False).returncode==0:raise ValueError('proxy can read protected controller state')
     if run(['runuser','-u','komizo-proxy','--','test','-r','/var/lib/komizo-assets/public-acceptance'],ok=False).returncode:
         raise ValueError('proxy cannot read installed public assets')
-    if run(['nsenter','--target',str(pid),'--mount','--','touch','/var/lib/komizo-assets/unexpected-write'],ok=False).returncode==0:
-        raise ValueError('actual proxy mount namespace permits writes to public assets')
+    if run(['runuser','-u','komizo-proxy','--','touch','/var/lib/komizo-assets/unexpected-write'],ok=False).returncode==0:
+        raise ValueError('actual proxy UID permits writes to public assets')
+    canary=Path('/var/lib/komizo-assets/profile-write-fixture');write(canary,b'unchanged',0o666)
+    try:
+        profile_probe('komizo-proxy','komizo-proxy',['/var/lib/komizo-assets/public-acceptance','/proc/self/status'],
+            ['/var/lib/komizo/private-acceptance','/etc/komizo/controller.json',
+             '/proc/'+str(controller)+'/cmdline','/proc/'+str(controller)+'/environ'],[str(canary)])
+        if canary.read_bytes()!=b'unchanged':raise ValueError('enforcing profile changed the public write canary')
+    finally:canary.unlink()
     if run(['runuser','-u','komizo-submit','--','test','-r','/var/lib/komizo/private-acceptance'],ok=False).returncode==0:
         raise ValueError('submission identity can read controller secrets')
-    if show(PROXY,'Requires').split().count(CONTROLLER):raise ValueError('proxy lifetime depends on controller lifetime')
+    proxy_script=Path('/etc/init.d/komizo-proxy').read_text()
+    if 'komizo-controller' in proxy_script:raise ValueError('proxy lifetime depends on the controller')
+    if not service_active('komizo-expiry'):raise ValueError('independent expiry is not supervised')
+    # DNS is deliberately lazy: its first live proof follows actual networking.
+    if phase=='bootstrap':return
+    if not service_active('komizo-dns'):raise ValueError('real network lacks supervised DNS')
+    child=dns_pid();status=process_status(child)
+    for field in ['CapEff','CapPrm','CapInh','CapAmb','CapBnd']:
+        if int(status[field].strip(),16)!=(1<<10):raise ValueError('actual DNS capability set differs')
+    if (status['NoNewPrivs'].strip()!='1' or status['Seccomp'].strip()!='2'
+            or Path('/proc',str(child),'attr/current').read_text().strip()!='komizo-dns (enforce)'):
+        raise ValueError('actual DNS confinement differs')
 
 
 def prepare():
     baseline=json.loads((ROOT/'baseline.json').read_text())
     os_release=dict(line.split('=',1) for line in Path('/etc/os-release').read_text().splitlines() if '=' in line)
-    if os_release['ID'].strip('"')!='debian' or os_release['VERSION_ID'].strip('"')!=baseline['debian_version']:
-        raise ValueError('guest differs from supported Debian baseline')
+    if os_release['ID'].strip('"')!='alpine' or os_release['VERSION_ID'].strip('"')!=baseline['alpine_version']:
+        raise ValueError('guest differs from the signed Alpine baseline')
     version=run(['podman','--remote=false','version','--format={{.Client.Version}}']).stdout.decode().strip()
-    if version!=baseline['podman_version']:raise ValueError('guest must exercise the declared distro Podman version')
+    if version!=baseline['podman_version']:raise ValueError('guest must exercise the declared signed APK Podman version')
+    if run(['apk','info','-v','podman']).stdout.decode().strip()!='podman-'+baseline['podman_package']:
+        raise ValueError('actual Podman APK version differs from its tested closure')
+    if Path('/sys/module/apparmor/parameters/enabled').read_text().strip()!='Y' or 'apparmor' not in Path('/sys/kernel/security/lsm').read_text().strip().split(','):
+        raise ValueError('guest lacks its actually enabled AppArmor LSM')
+    run(['rc-service','apparmor','status'])
+    host=json.loads(run(['/usr/bin/podman','--remote=false','info','--format=json']).stdout)['host']
+    if host['cgroupManager']!='cgroupfs' or host['cgroupVersion']!='v2':
+        raise ValueError('actual native engine is outside unified cgroupfs')
     if run(['stat','-fc','%T','/sys/fs/cgroup']).stdout.strip()!=b'cgroup2fs':raise ValueError('guest does not have real unified cgroup v2')
     directory=Path('/etc/komizo');directory.mkdir(mode=0o700,exist_ok=True);directory.chmod(0o700)
     expected=capacity();write(directory/'capacity.json',expected)
@@ -221,9 +358,10 @@ def prepare():
     report={'kind':'komizo.native-host-acceptance','version':1,'ok':False,
         'scope':'bootstrap, peer boundary, proxy isolation, actual kernel limits, real reboot',
         'profile':json.loads((ROOT/'profile.json').read_text())['profile'],
-        'runtime_acceptance':False,'baseline':baseline,'network_backend':network,
+        'runtime_acceptance':False,'baseline':baseline,'actual_platform':{'os_release':os_release,'kernel':run(['uname','-r']).stdout.decode().strip(),
+            'openrc':run(['apk','info','-v','openrc']).stdout.decode().strip(),'apparmor_enabled':True,'engine_cgroup_manager':host['cgroupManager']},'network_backend':network,
         'checks':{'supported_host':'passed','root_peer':'passed','forged_owner_peer':'passed','proxy_uid':'passed',
-            'proxy_mount_write_refusal':'passed','proxy_process_metadata_isolation':'passed','secret_isolation':'passed',
+            'proxy_asset_write_refusal':'passed','proxy_process_metadata_isolation':'passed','secret_isolation':'passed',
             'kernel_limits':'passed','unsafe_filesystem':'passed','idempotent_install':'passed','managed_bootstrap_upgrade':'passed','foreign_bootstrap_bytes_refused':'passed',
             'apparmor_override_refused':'passed','typed_dns_helper_refusal':'passed','native_proxy_source_receipt':'passed','unprivileged_proxy_digest_guard':'passed'}}
     write(ROOT/'report.json',report)
@@ -268,9 +406,9 @@ def evidence():
 
 def verify_reboot():
     expected=json.loads(Path('/etc/komizo/capacity.json').read_text())
-    actual_boundaries(expected,phase='post-reboot')
     import fixture_runtime
     fixture_runtime.verify_reboot()
+    actual_boundaries(expected,phase='post-reboot')
     report=json.loads((ROOT/'report.json').read_text())
     if report['profile']=='functional':
         expected_release=report['installed']['mailroom']

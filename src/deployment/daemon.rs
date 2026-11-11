@@ -120,12 +120,28 @@ pub fn run(args: &[String], input: &mut dyn Read, output: &mut dyn Write) -> Res
     match mode.as_str() {
         "release" | "application" | "policy" => commands::offline(args, output),
         "dns" => bootstrap::dns(flags, output),
-        "task-run" => {
+        "task-run" | "task-watch" => {
             ensure!(
                 flags.len() == 4 && flags[0] == "--operation" && flags[2] == "--task",
                 "protected task execution requires its exact operation and task kind"
             );
-            native::task_run(&flags[1], &flags[3])
+            if mode == "task-watch" {
+                native::task_watch(&flags[1], &flags[3])
+            } else {
+                native::task_run(&flags[1], &flags[3])
+            }
+        }
+        "infrastructure-supervise" | "infrastructure-run" | "infrastructure-stop" => {
+            ensure!(
+                flags.len() == 1
+                    && ["controller", "proxy", "dns", "expiry"].contains(&flags[0].as_str()),
+                "infrastructure requires its fixed protected role"
+            );
+            match mode.as_str() {
+                "infrastructure-supervise" => bootstrap::infrastructure_supervise(&flags[0]),
+                "infrastructure-stop" => bootstrap::infrastructure_stop(&flags[0]),
+                _ => bootstrap::infrastructure_run(&flags[0]),
+            }
         }
         "dns-guard" => {
             ensure!(flags.is_empty(), "DNS guard does not accept arguments");

@@ -1,4 +1,4 @@
-//! An absolute kernel timer owns a protected task's complete systemd cgroup.
+//! An absolute kernel timer owns a protected task's complete cgroup.
 use anyhow::{Result, ensure};
 use std::{
     fs,
@@ -63,7 +63,7 @@ pub fn deadline(deadline: Instant, maximum_seconds: u32) -> Result<(String, u64)
 
 #[cfg(any(target_os = "linux", test))]
 fn group(text: &str, unit: &str) -> Result<String> {
-    let expected = format!("/komizo.slice/komizo-control.slice/{unit}");
+    let expected = format!("/komizo/control/{unit}");
     ensure!(
         text.trim() == format!("0::{expected}/runner"),
         "protected task is outside its exact service cgroup"
@@ -92,8 +92,8 @@ mod linux {
                 libc::write(fd, b"1".as_ptr().cast(), 1);
             }
         }
-        // The unit's KillSignal=SIGKILL is a second boundary if the kernel write
-        // fails. No task code resumes after a delivered expiry signal.
+        // The separate owner watchdog remains armed even if this runner dies.
+        // No task code resumes after a delivered expiry signal.
         unsafe {
             libc::_exit(124);
         }
@@ -378,19 +378,14 @@ mod tests {
     #[test]
     fn group_is_the_exact_operation_service_never_its_shared_parent() {
         let unit = "komizo-backup-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.service";
-        assert!(
-            group(
-                &format!("0::/komizo.slice/komizo-control.slice/{unit}/runner\n"),
-                unit
-            )
-            .is_ok()
-        );
+        assert!(group(&format!("0::/komizo/control/{unit}/runner\n"), unit).is_ok());
         for body in [
             "0::/",
             "0::/komizo.slice/komizo-control.slice",
+            "0::/komizo/control",
             "0::/system.slice/other.service",
-            "0::/komizo.slice/komizo-control.slice/foreign.service",
-            "0::/komizo.slice/komizo-control.slice/foreign.service\n0::/",
+            "0::/komizo/control/foreign.service",
+            "0::/komizo/control/foreign.service\n0::/",
         ] {
             assert!(group(body, unit).is_err());
         }

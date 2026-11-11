@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Accept exact authenticated standalone bytes on real disposable Debian guests."""
+"""Accept exact authenticated standalone bytes on real disposable Alpine guests."""
 import argparse
 import hashlib
 import json

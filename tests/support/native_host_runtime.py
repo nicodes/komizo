@@ -11,8 +11,14 @@ import threading
 import time
 import urllib.request
 
-from acceptance import ROOT, BINARY, MiB, run, write, actual_boundaries, capacity
+from acceptance import ROOT, BINARY, MiB, run, write, actual_boundaries, capacity, service_active, service_pid, restart_controller, profile_probe
 import fixture_registry as registry
+try:
+    import fixture_tasks
+except ModuleNotFoundError:
+    import importlib.util
+    _task_spec=importlib.util.spec_from_file_location('fixture_tasks',Path(__file__).with_name('native_host_fixture.py'))
+    fixture_tasks=importlib.util.module_from_spec(_task_spec);_task_spec.loader.exec_module(fixture_tasks)
 
 
 def limits(memory=32,cpu=200,pids=32):
@@ -190,11 +196,10 @@ def setup_registry():
     warm.write_text('{\n admin off\n storage file_system /var/lib/komizo-proxy/data\n auto_https disable_redirects\n}\nwarmup.localhost:9443 {\n tls internal\n respond 200\n}\n');warm.chmod(0o644)
     # Public configuration is copied outside root's private fixture directory.
     public=Path('/etc/komizo-proxy/warmup.Caddyfile');public.write_bytes(warm.read_bytes());public.chmod(0o644)
-    run(['systemd-run','--unit=native-fixture-pki','--uid=komizo-proxy','--gid=komizo-proxy','--property=MemoryMax=128M',
-        '--property=TasksMax=64','/usr/local/bin/caddy','run','--config',str(public),'--adapter','caddyfile'])
+    fixture_tasks.start('native-fixture-pki',['/usr/local/bin/caddy','run','--config',str(public),'--adapter','caddyfile'],user='komizo-proxy',seconds=60)
     ca=Path('/var/lib/komizo-proxy/data/pki/authorities/local/root.crt')
     until(lambda:ca.is_file())
-    run(['systemctl','stop','native-fixture-pki.service'])
+    fixture_tasks.stop('native-fixture-pki')
     trust=Path('/usr/local/share/ca-certificates/komizo-native-fixture.crt');trust.write_bytes(ca.read_bytes())
     run(['update-ca-certificates'])
     key=ROOT/'registry.key';csr=ROOT/'registry.csr';certificate=ROOT/'registry.crt';extension=ROOT/'registry.extensions'
@@ -204,8 +209,7 @@ def setup_registry():
         '-CAcreateserial','-out',str(certificate),'-days','2','-extfile',str(extension)])
     key.chmod(0o600)
     (ROOT/'registry').mkdir(exist_ok=True)
-    run(['systemd-run','--unit=native-fixture-registry','--property=MemoryMax=128M','--property=TasksMax=64',
-        '/usr/bin/python3',str(ROOT/'fixture_registry.py'),'--root',str(ROOT/'registry'),'--cert',str(certificate),'--key',str(key)])
+    fixture_tasks.start('native-fixture-registry',['/usr/bin/python3',str(ROOT/'fixture_registry.py'),'--root',str(ROOT/'registry'),'--cert',str(certificate),'--key',str(key)],seconds=1200)
     def ready():
         try:urllib.request.urlopen('https://registry.fixture.test:5443/v2/',timeout=2)
         except urllib.error.HTTPError as error:return error.code==404
@@ -230,21 +234,23 @@ def shared_dns(stage):
             executable=(process/'exe').resolve()
             if executable.name!='aardvark-dns':continue
             group=next(line[3:] for line in (process/'cgroup').read_text().splitlines() if line.startswith('0::'))
-            constrained=['nsenter','--target',process.name,'--mount','--','setpriv','--bounding-set=-all','--inh-caps=-all',
-                '--ambient-caps=-all','--no-new-privs','--']
-            # Observe the DNS sandbox without the outer fixture root's DAC
-            # override. NET_BIND_SERVICE adds no filesystem read authority.
-            run([*constrained,'test','-r','/etc/resolv.conf'])
+            # Read the actual daemon's kernel domain, UID, NNP/seccomp and five
+            # capability sets; then exercise this exact loaded profile with a
+            # root-owned readable synthetic secret (DAC alone would allow it).
             status=dict(line.split(':',1) for line in (process/'status').read_text().splitlines() if ':' in line)
-            if int(status['CapEff'].strip(),16)&~(1<<10):raise ValueError('shared DNS has capabilities beyond low-port binding')
-            private_unreadable=all(run([*constrained,'test','-r',private],ok=False).returncode!=0
-                for private in ['/var/lib/komizo/private-acceptance','/etc/komizo/controller.json','/etc/shadow'])
+            if ((process/'attr/current').read_text().strip()!='komizo-dns (enforce)'
+                    or status['NoNewPrivs'].strip()!='1' or status['Seccomp'].strip()!='2'
+                    or any(int(status[field].strip(),16)!=(1<<10) for field in ['CapEff','CapPrm','CapInh','CapAmb','CapBnd'])):
+                raise ValueError('actual shared DNS confinement differs')
+            proof=profile_probe('komizo-dns','root',['/etc/resolv.conf','/proc/self/status'],
+                ['/var/lib/komizo/private-acceptance','/etc/komizo/controller.json','/etc/shadow'])
+            private_unreadable=proof['reads_refused']==3
             rows.append({'pid':int(process.name),'cgroup':group,'executable_sha256':hashlib.sha256(executable.read_bytes()).hexdigest(),
                 'private_state_unreadable':private_unreadable})
         except (OSError,StopIteration):continue
     path=ROOT/'shared-dns.json';observations=json.loads(path.read_text()) if path.exists() else []
     observations.append({'stage':stage,'processes':rows});write(path,observations)
-    return bool(rows) and all(row['cgroup'].startswith('/komizo.slice/komizo-control.slice/') and row['private_state_unreadable'] for row in rows)
+    return bool(rows) and all(row['cgroup']=='/komizo/control/dns' and row['private_state_unreadable'] for row in rows)
 
 
 def cross_network_refused(source,target,service,port,*,source_instance='production',target_instance='production'):
@@ -309,7 +315,7 @@ def apparmor_boundary(app,report):
         raise ValueError('root Podman helper default does not preserve the reviewed profile and SIGURG')
     foreign_file=ROOT/'apparmor-foreign'
     write(foreign_file,Path('/etc/apparmor.d/komizo-workload').read_bytes().replace(b'komizo-workload',b'komizo-native-negative'))
-    run(['/usr/sbin/apparmor_parser','-r',str(foreign_file)],timeout=10)
+    run(['/usr/bin/apparmor_parser','-r',str(foreign_file)],timeout=10)
     try:
         # Different LSM profile, but deliberately the same PID namespace and UID:
         # the denial must not rely solely on namespace or UID separation.
@@ -329,7 +335,7 @@ def apparmor_boundary(app,report):
             try:victim.wait(timeout=5)
             except subprocess.TimeoutExpired:victim.kill();victim.wait(timeout=5)
     finally:
-        run(['/usr/sbin/apparmor_parser','-R',str(foreign_file)],timeout=10)
+        run(['/usr/bin/apparmor_parser','-R',str(foreign_file)],timeout=10)
         foreign_file.unlink()
     write(ROOT/'apparmor-boundary.json',{'service_label':label,'foreign_profile_label':foreign.stdout.decode().strip(),'helper_default_label':default_helper.stdout.decode().splitlines()[0],'no_new_privileges':True,'same_uid_host_signal_baseline':'passed',
         'same_profile_sigurg':'passed','foreign_profile_refused':'passed','host_signal_refused':'passed'})
@@ -358,8 +364,7 @@ def failures(report):
             return any(json.loads(path.read_text()).get('phase')=='running' for path in Path('/var/lib/komizo/jobs').rglob('*.json')
                 if json.loads(path.read_text()).get('application')=='hungjob')
         until(running,seconds=20)
-        run(['systemctl','kill','--signal=KILL','--kill-whom=main','komizo-controller.service'])
-        until(lambda:run(['systemctl','is-active','komizo-controller.service'],ok=False).stdout.strip()==b'active')
+        restart_controller()
         operation=hashlib.sha256(('komizo-operation-v1\0hungjob\0production\0'+body['nonce']).encode()).hexdigest()[:32]
         observed=submit(request('hungjob','inspect',body['release_digest'],operation=operation))
         if observed.get('phase')!='needs_reconciliation' or count('hungjob')!=1:raise ValueError('interrupted data job lost its durable uncertainty fence')
@@ -415,8 +420,7 @@ def failures(report):
 def resource_stress(report):
     app='livebox';record=installed(app)['resources']['containers']['api']
     namespace=hashlib.sha256(b'livebox\0production').hexdigest()[:20]
-    unit='komizo-production-i'+namespace+'.slice'
-    group=run(['systemctl','show',unit,'--property=ControlGroup','--value']).stdout.decode().strip()
+    group='/komizo/production/kmz-'+namespace
     path=Path('/sys/fs/cgroup')/group.removeprefix('/')
     def event(file,key):return int(dict(line.split() for line in (path/file).read_text().splitlines())[key])
     actual=container(record)
@@ -471,7 +475,7 @@ def bounded_prepare():
     report['runtime_acceptance']=False
     report['remaining']=['bounded performance and owner-client observations']
     write(ROOT/'report.json',report)
-    run(['systemctl','stop','native-fixture-registry.service'])
+    fixture_tasks.stop('native-fixture-registry')
 
 
 def prepare():
@@ -505,8 +509,7 @@ def prepare():
     run(['podman','--remote=false','exec',api,'/bin/busybox','nslookup',db])
     if b'a'*40 not in run(['podman','--remote=false','exec',api,'/bin/busybox','wget','-q','-O-','http://db:8080/']).stdout:
         raise ValueError('same-network service TCP traffic was not preserved')
-    run(['systemctl','kill','--signal=KILL','--kill-whom=main','komizo-controller.service'])
-    until(lambda:run(['systemctl','is-active','komizo-controller.service'],ok=False).stdout.strip()==b'active')
+    restart_controller()
     dns_accounted=shared_dns('after-controller-death') and dns_accounted
     if before!={name:container(value)['Id'] for name,value in installed('mailroom')['resources']['containers'].items()}:
         raise ValueError('controller death replaced supervised application containers')
@@ -550,7 +553,7 @@ def prepare():
     resource_stress(report)
     write(ROOT/'report.json',report)
     fixture_preview.expire(report)
-    run(['systemctl','stop','native-fixture-registry.service'])
+    fixture_tasks.stop('native-fixture-registry')
     report['runtime_acceptance']=False
     report['remaining']=['small-host capacity acceptance']
     report['installed']={'static':result['release_digest'],'mailroom':ready['release_digest'],'prepared':prepared['release_digest'],
@@ -567,10 +570,10 @@ def verify_reboot():
         until(lambda:fixture_postgres.query('SELECT value FROM evidence')==b'retained native row',seconds=60)
         if fixture_postgres.query('SELECT count(*) FROM evidence')!=b'1':raise ValueError('bounded initialized PostgreSQL job replayed at boot')
         if not shared_dns('bounded-offline-reboot'):raise ValueError('bounded reboot lost shared DNS accounting')
-        if run(['systemctl','is-active','native-fixture-registry.service'],ok=False).stdout.strip()==b'active':raise ValueError('bounded reboot unexpectedly started registry')
+        if fixture_tasks.populated('/native-fixture/native-fixture-registry'):raise ValueError('bounded reboot unexpectedly started registry')
         report['checks'].update({'bounded_full_postgresql_offline_reboot':'passed','postgresql_initialization_not_replayed':'passed'})
         write(ROOT/'report.json',report);return
-    if run(['systemctl','is-active','native-fixture-registry.service'],ok=False).stdout.strip()==b'active':raise ValueError('fixture registry must remain offline after reboot')
+    if fixture_tasks.populated('/native-fixture/native-fixture-registry'):raise ValueError('fixture registry must remain offline after reboot')
     if b'a'*40 not in fetch('staticbox',accepted['static']):raise ValueError('static release did not survive offline reboot')
     until(lambda:b'a'*40 in fetch('livebox',accepted['running']),seconds=60)
     record=installed('mailroom')

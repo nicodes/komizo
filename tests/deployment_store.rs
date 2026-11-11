@@ -168,7 +168,7 @@ fn protected_store_refuses_linked_and_other_writable_records() {
 }
 
 #[test]
-fn native_units_escape_manager_expansion_and_do_not_publish_ports_or_repull() {
+fn native_service_configs_preserve_literal_arguments_without_ports_or_repull() {
     let mut value: serde_json::Value =
         serde_json::from_str(include_str!("fixtures/deployment/release.json")).unwrap();
     value["workload"]["services"]["api"]["command"] = json!([
@@ -201,31 +201,52 @@ fn native_units_escape_manager_expansion_and_do_not_publish_ports_or_repull() {
         secrets: &BTreeMap::new(),
         ingress: None,
     };
-    let unit = units::quadlet(&doc, "api", &bindings, false).unwrap();
-    assert!(unit.contains("%%n $$HOST_SECRET"));
-    assert!(unit.contains("--pull=never"));
-    assert!(unit.contains("--remote=false"));
-    assert!(unit.contains("--health-interval\" \"disable"));
-    let (probe, timer) = units::health_units(
-        "mailroom",
-        "production",
-        "api",
-        doc.release.workload.services["api"]
-            .health
-            .as_ref()
-            .unwrap(),
-    )
-    .unwrap();
-    assert!(probe.contains(&format!(
-        "Slice={}",
-        units::slice("mailroom", "production").unwrap()
-    )));
-    assert!(timer.contains("OnUnitInactiveSec=2s"));
+    let config = units::service_config(&doc, "api", &bindings, false).unwrap();
+    assert_eq!(config.command, doc.release.workload.services["api"].command);
+    assert!(config.command.contains(&"literal %n $HOST_SECRET".into()));
+    assert!(config.options.contains(&"--pull=never".into()));
+    assert!(config.options.contains(&"--cgroups=enabled".into()));
+    assert!(config.options.contains(&"--log-driver=k8s-file".into()));
     assert!(
-        !unit.contains("PublishPort")
-            && !unit.contains("WantedBy=")
-            && !unit.contains("AutoUpdate=")
+        config
+            .options
+            .contains(&"--log-opt=max-size=1048576".into())
     );
+    let parent = config
+        .options
+        .windows(2)
+        .find(|pair| pair[0] == "--cgroup-parent")
+        .unwrap();
+    assert_eq!(
+        parent[1],
+        komizo::deployment::cgroups::workload_group(
+            "mailroom",
+            "production",
+            komizo::deployment::cgroups::WorkloadKind::Service,
+            "api",
+            &"e".repeat(32)
+        )
+        .unwrap()
+        .relative()
+    );
+    assert!(parent[1].starts_with("/komizo/production/"));
+    assert_eq!(
+        config.health.as_ref().unwrap().start_interval_seconds,
+        Some(2)
+    );
+    assert!(!config.wanted);
+    assert!(
+        !config
+            .options
+            .iter()
+            .any(|arg| arg.starts_with("--publish") || arg == "-p")
+    );
+    let encoded = config.bytes().unwrap();
+    let decoded = units::ServiceConfig::parse(&encoded).unwrap();
+    assert_eq!(decoded.bytes().unwrap(), encoded);
+    let mut foreign: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    foreign["unknown"] = true.into();
+    assert!(units::ServiceConfig::parse(&serde_json::to_vec(&foreign).unwrap()).is_err());
     assert_ne!(
         units::namespace("mailroom", "production").unwrap(),
         units::namespace("mailroom", "pr-1").unwrap()

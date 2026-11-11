@@ -20,26 +20,28 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub const CONTROLLER: &str = "komizo-controller.service";
-pub const PROXY: &str = "komizo-proxy.service";
+pub const CONTROLLER: &str = "komizo-controller";
+pub const PROXY: &str = "komizo-proxy";
 const SHELL: &str = "/usr/local/libexec/komizo-submit-shell";
 const CONFIG: &str = "/etc/komizo";
 const LEDGER: &str = "/etc/komizo/bootstrap.json";
 const KEYS: &str = "/etc/ssh/komizo-submit/authorized_keys";
 const CLI: &str = "/usr/local/bin/komizo-box";
-const DNS_BINARY: &str = "/usr/lib/podman/aardvark-dns";
-const DNS_CONFIG: &str = "/run/containers/networks/aardvark-dns";
-const DNS_SERVICE: &str = "komizo-dns.service";
+pub(crate) const DNS_BINARY: &str = "/usr/libexec/podman/aardvark-dns";
+pub(crate) const DNS_CONFIG: &str = "/run/containers/networks/aardvark-dns";
+const DNS_SERVICE: &str = "komizo-dns";
 const DNS_HELPER: &str = "/usr/local/libexec/komizo-network/aardvark-dns";
 const ENGINE_CONFIG: &str = "/etc/containers/containers.conf.d/80-komizo-network.conf";
 const DNS_WRAPPER: &str = "#!/bin/sh\nexec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C.UTF-8 /usr/local/bin/komizo-box dns \"$@\"\n";
-const ENGINE_NETWORK: &str = "[containers]\napparmor_profile=\"komizo-workload\"\n[engine]\nhelper_binaries_dir=[\"/usr/local/libexec/komizo-network\",\"/usr/lib/podman\"]\n[network]\nnetwork_backend=\"netavark\"\ndns_bind_port=53\n";
+const ENGINE_NETWORK: &str = "[containers]\napparmor_profile=\"komizo-workload\"\n[engine]\ncgroup_manager=\"cgroupfs\"\nhelper_binaries_dir=[\"/usr/local/libexec/komizo-network\",\"/usr/libexec/podman\"]\n[network]\nnetwork_backend=\"netavark\"\ndns_bind_port=53\n";
 
 pub const WORKLOAD_PROFILE: &str = "komizo-workload";
 const APPARMOR_FILE: &str = "/etc/apparmor.d/komizo-workload";
-const APPARMOR_PARSER: &str = "/usr/sbin/apparmor_parser";
+const APPARMOR_PARSER: &str = "/usr/bin/apparmor_parser";
 const APPARMOR_POLICY: &[u8] = include_bytes!("apparmor-workload");
 const APPARMOR_LICENSE: &[u8] = include_bytes!("apparmor-workload.LICENSE");
+const INFRASTRUCTURE_PROFILE: &str = "/etc/apparmor.d/komizo-infrastructure";
+const INFRASTRUCTURE_POLICY: &[u8] = include_bytes!("apparmor-infrastructure");
 
 fn kernel_text(path: &Path, maximum: u64) -> Result<String> {
     let mut input = OpenOptions::new()
@@ -277,7 +279,7 @@ fn proxy_build(body: &[u8], platform: &str) -> Result<String> {
     Ok(value.binary_sha256)
 }
 
-fn public_root_file(path: &Path, maximum: u64, mode: u32) -> Result<fs::File> {
+pub(crate) fn public_root_file(path: &Path, maximum: u64, mode: u32) -> Result<fs::File> {
     ensure!(
         path.is_absolute(),
         "proxy provenance requires fixed absolute paths"
@@ -395,8 +397,33 @@ exec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C.UTF-8 /usr/local/bin/komizo-box s
 
 const SSH_CONFIG: &str = "# Managed native submission boundary. Owner root SSH remains separate.\nMatch User komizo-submit\n    AuthenticationMethods publickey\n    AuthorizedKeysFile /etc/ssh/komizo-submit/authorized_keys\n    PasswordAuthentication no\n    KbdInteractiveAuthentication no\n    PermitTTY no\n    DisableForwarding yes\n    AllowAgentForwarding no\n    AllowTcpForwarding no\n    X11Forwarding no\n    PermitTunnel no\n    PermitUserRC no\n    ForceCommand /usr/local/libexec/komizo-submit-shell\nMatch all\n";
 
-pub fn dns_unit() -> &'static str {
-    "[Unit]\nDescription=Komizo shared container DNS\n[Service]\nType=forking\nUser=root\nGroup=root\nUMask=0077\nPIDFile=/run/containers/networks/aardvark-dns/aardvark.pid\nExecStartPre=/usr/local/bin/komizo-box dns-guard\nExecStart=/usr/lib/podman/aardvark-dns --config /run/containers/networks/aardvark-dns -p 53 run\nSlice=komizo-control.slice\nRestart=on-failure\nRestartSec=2\nTimeoutStartSec=20\nTimeoutStopSec=10\nKillMode=control-group\nNoNewPrivileges=yes\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\nProtectSystem=strict\nProtectHome=yes\nPrivateTmp=yes\nPrivateDevices=yes\nProtectKernelTunables=yes\nProtectKernelModules=yes\nProtectKernelLogs=yes\nProtectControlGroups=yes\nProtectProc=invisible\nProcSubset=pid\nInaccessiblePaths=/etc/komizo /etc/ssh /etc/shadow /etc/gshadow /var/lib/komizo /var/lib/containers /var/lib/komizo-proxy /run/komizo\nRestrictSUIDSGID=yes\nLockPersonality=yes\nReadWritePaths=/run/containers/networks/aardvark-dns\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX\n"
+fn submission_settings(body: &[u8]) -> Result<()> {
+    let text = std::str::from_utf8(body)?;
+    for (key, expected) in [
+        ("authenticationmethods", "publickey"),
+        ("authorizedkeysfile", KEYS),
+        ("passwordauthentication", "no"),
+        ("kbdinteractiveauthentication", "no"),
+        ("permittty", "no"),
+        ("disableforwarding", "yes"),
+        ("allowagentforwarding", "no"),
+        ("allowtcpforwarding", "no"),
+        ("x11forwarding", "no"),
+        ("permittunnel", "no"),
+        ("permituserrc", "no"),
+        ("forcecommand", SHELL),
+    ] {
+        let values = text
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .filter_map(|(name, value)| (name == key).then_some(value))
+            .collect::<Vec<_>>();
+        ensure!(
+            values == [expected],
+            "effective SSH submission settings bypass the installed forced-command boundary"
+        );
+    }
+    Ok(())
 }
 
 fn dns_arguments(args: &[String]) -> Result<()> {
@@ -408,6 +435,22 @@ fn dns_arguments(args: &[String]) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn dns_pid() -> Result<Option<u32>> {
+    let path = Path::new(DNS_CONFIG).join("aardvark.pid");
+    if !path.try_exists()? {
+        return Ok(None);
+    }
+    let body = protected_file(&path, 32)?;
+    let text = std::str::from_utf8(&body)?;
+    ensure!(
+        !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit()),
+        "invalid rootful DNS process identity"
+    );
+    let pid = text.parse::<u32>()?;
+    ensure!(pid > 1, "invalid rootful DNS process identity");
+    Ok(Some(pid))
+}
+
 fn recorded_dns_files() -> Result<()> {
     let ledger: Ledger = serde_json::from_slice(&protected_file(Path::new(LEDGER), 65536)?)?;
     ensure!(
@@ -417,7 +460,7 @@ fn recorded_dns_files() -> Result<()> {
     for path in [
         DNS_HELPER.to_owned(),
         ENGINE_CONFIG.to_owned(),
-        format!("{}/{DNS_SERVICE}", system::UNITS),
+        format!("/etc/init.d/{DNS_SERVICE}"),
     ] {
         let identity = ledger
             .files
@@ -511,19 +554,15 @@ pub fn dns_guard() -> Result<()> {
         );
         let group = fs::read_to_string(entry.path().join("cgroup"))?;
         ensure!(
-            group.trim() == "0::/komizo.slice/komizo-control.slice/komizo-dns.service",
+            group.trim()
+                == format!(
+                    "0::{}",
+                    super::cgroups::control_leaf(super::cgroups::ControlLeaf::Dns).relative()
+                ),
             "shared container DNS is outside its protected budget"
         );
         recorded_dns_files()?;
-        let main = command(
-            "/usr/bin/systemctl",
-            &["show", DNS_SERVICE, "--property=MainPID", "--value"],
-            Instant::now() + Duration::from_secs(5),
-        )?;
-        ensure!(
-            std::str::from_utf8(&main)?.trim() == number.to_string(),
-            "container DNS is not supervised by its recorded service"
-        );
+        super::infrastructure::dns_supervision(number)?;
     }
     ensure!(
         observed || pid.is_none_or(|number| !Path::new(&format!("/proc/{number}")).exists()),
@@ -547,7 +586,7 @@ pub fn dns_configuration_guard() -> Result<()> {
     ensure!(
         info["host"]["networkBackendInfo"]["backend"] == "netavark"
             && info["host"]["networkBackendInfo"]["dns"]["path"] == DNS_HELPER
-            && info["host"]["networkBackendInfo"]["path"] == "/usr/lib/podman/netavark",
+            && info["host"]["networkBackendInfo"]["path"] == "/usr/libexec/podman/netavark",
         "Podman bypassed the owner-installed container network helper"
     );
     Ok(())
@@ -581,35 +620,330 @@ pub fn dns(args: &[String], output: &mut dyn Write) -> Result<()> {
             "container DNS configuration crosses an unsafe directory"
         );
     }
-    command(
-        "/usr/bin/systemctl",
-        &["start", DNS_SERVICE],
-        Instant::now() + Duration::from_secs(25),
-    )?;
-    let main = command(
-        "/usr/bin/systemctl",
-        &["show", DNS_SERVICE, "--property=MainPID", "--value"],
-        Instant::now() + Duration::from_secs(5),
-    )?;
-    let pid = std::str::from_utf8(&main)?.trim().parse::<u32>()?;
-    ensure!(
-        pid > 1 && fs::read_link(format!("/proc/{pid}/exe"))? == Path::new(DNS_BINARY),
-        "shared container DNS did not become ready"
-    );
+    let deadline = Instant::now() + Duration::from_secs(25);
+    super::infrastructure::start(super::infrastructure::Role::Dns, deadline)?;
+    loop {
+        ensure!(
+            Instant::now() < deadline,
+            "shared container DNS did not become ready"
+        );
+        if let Some(pid) = dns_pid()? {
+            if Path::new(&format!("/proc/{pid}")).try_exists()? {
+                dns_guard()?;
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
     dns_guard()
 }
 
-pub fn controller_unit() -> &'static str {
-    "[Unit]\nDescription=Komizo native controller\nWants=network-online.target komizo-proxy.service\nAfter=network-online.target komizo-proxy.service\nRequiresMountsFor=/var/lib/komizo /var/lib/containers\nStartLimitIntervalSec=60\nStartLimitBurst=5\n[Service]\nType=notify\nNotifyAccess=main\nUser=root\nGroup=root\nUMask=0077\nWorkingDirectory=/var/lib/komizo\nEnvironment=HOME=/root\nEnvironment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\nExecStart=/usr/local/bin/komizo-box daemon\nRestart=on-failure\nRestartSec=2\nTimeoutStartSec=120\nTimeoutStopSec=30\nKillMode=process\nSlice=komizo-control.slice\nDelegate=yes\n[Install]\nWantedBy=multi-user.target\n"
+pub fn infrastructure_supervise(role: &str) -> Result<()> {
+    super::infrastructure::supervise(role)
+}
+pub fn infrastructure_run(role: &str) -> Result<()> {
+    super::infrastructure::run(role)
+}
+pub fn infrastructure_stop(role: &str) -> Result<()> {
+    super::infrastructure::stop_owned(super::infrastructure::Role::parse(role)?)
 }
 
-pub fn proxy_unit() -> &'static str {
-    "[Unit]\nDescription=Komizo public ingress\nWants=network-online.target\nAfter=network-online.target\nRequiresMountsFor=/var/lib/komizo-assets /var/lib/komizo-proxy\n[Service]\nType=notify\nNotifyAccess=main\nUser=komizo-proxy\nGroup=komizo-proxy\nUMask=0077\nWorkingDirectory=/var/lib/komizo-proxy\nStateDirectory=komizo-proxy\nStateDirectoryMode=0700\nRuntimeDirectory=komizo-proxy\nRuntimeDirectoryMode=0700\nEnvironment=XDG_DATA_HOME=/var/lib/komizo-proxy/data\nEnvironment=XDG_CONFIG_HOME=/var/lib/komizo-proxy/config\nExecStartPre=/usr/local/bin/komizo-box proxy-guard\nExecStart=/usr/local/bin/caddy run --config /etc/komizo-proxy/Caddyfile --adapter caddyfile\nExecReload=/usr/local/bin/caddy reload --config /etc/komizo-proxy/Caddyfile --adapter caddyfile --address unix//run/komizo-proxy/admin.sock\nRestart=on-failure\nRestartSec=2\nTimeoutStopSec=10\nSlice=komizo-proxy.slice\nNoNewPrivileges=yes\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\nAmbientCapabilities=CAP_NET_BIND_SERVICE\nProtectSystem=strict\nProtectHome=yes\nProtectProc=invisible\nProcSubset=pid\nPrivateTmp=yes\nPrivateDevices=yes\nProtectKernelTunables=yes\nProtectKernelModules=yes\nProtectKernelLogs=yes\nProtectControlGroups=yes\nRestrictSUIDSGID=yes\nLockPersonality=yes\nMemoryDenyWriteExecute=yes\nSystemCallArchitectures=native\nRestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX\nReadOnlyPaths=/var/lib/komizo-assets /etc/komizo-proxy\nInaccessiblePaths=/var/lib/komizo /etc/komizo /run/komizo\n[Install]\nWantedBy=multi-user.target\n"
+#[cfg(target_os = "linux")]
+fn confinement_filter() -> Vec<libc::sock_filter> {
+    fn load(offset: u32) -> libc::sock_filter {
+        libc::sock_filter {
+            code: 0x20,
+            jt: 0,
+            jf: 0,
+            k: offset,
+        }
+    }
+    fn equal(value: u32, yes: u8, no: u8) -> libc::sock_filter {
+        libc::sock_filter {
+            code: 0x15,
+            jt: yes,
+            jf: no,
+            k: value,
+        }
+    }
+    fn ret(value: u32) -> libc::sock_filter {
+        libc::sock_filter {
+            code: 0x06,
+            jt: 0,
+            jf: 0,
+            k: value,
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    const ARCH: u32 = 0xc000_003e;
+    #[cfg(target_arch = "aarch64")]
+    const ARCH: u32 = 0xc000_00b7;
+    const DENY: u32 = 0x0005_0000 | libc::EPERM as u32;
+    let mut rules = vec![load(4), equal(ARCH, 1, 0), ret(0x8000_0000), load(0)];
+    #[cfg(target_arch = "x86_64")]
+    rules.extend([
+        libc::sock_filter {
+            code: 0x45,
+            jt: 0,
+            jf: 1,
+            k: 0x4000_0000,
+        },
+        ret(0x8000_0000),
+    ]);
+    for syscall in [
+        libc::SYS_mount,
+        libc::SYS_umount2,
+        libc::SYS_pivot_root,
+        libc::SYS_chroot,
+        libc::SYS_unshare,
+        libc::SYS_setns,
+        libc::SYS_ptrace,
+        libc::SYS_process_vm_readv,
+        libc::SYS_process_vm_writev,
+        libc::SYS_personality,
+        libc::SYS_bpf,
+        libc::SYS_perf_event_open,
+        libc::SYS_keyctl,
+        libc::SYS_add_key,
+        libc::SYS_request_key,
+        libc::SYS_userfaultfd,
+        libc::SYS_kexec_load,
+        libc::SYS_io_uring_setup,
+    ] {
+        rules.extend([equal(syscall as u32, 0, 1), ret(DENY)]);
+    }
+    // clone3's flags live behind a pointer: refuse with ENOSYS so libc/Go use
+    // clone, whose namespace flags can be checked without following pointers.
+    rules.extend([
+        equal(libc::SYS_clone3 as u32, 0, 1),
+        ret(0x0005_0000 | libc::ENOSYS as u32),
+    ]);
+    rules.extend([
+        equal(libc::SYS_clone as u32, 0, 3),
+        load(16),
+        libc::sock_filter {
+            code: 0x45,
+            jt: 0,
+            jf: 1,
+            k: (libc::CLONE_NEWUSER
+                | libc::CLONE_NEWNS
+                | libc::CLONE_NEWNET
+                | libc::CLONE_NEWPID
+                | libc::CLONE_NEWIPC
+                | libc::CLONE_NEWUTS
+                | libc::CLONE_NEWCGROUP) as u32,
+        },
+        ret(DENY),
+        load(0),
+    ]);
+    for syscall in [libc::SYS_mprotect, libc::SYS_pkey_mprotect] {
+        rules.extend([
+            equal(syscall as u32, 0, 3),
+            load(32),
+            libc::sock_filter {
+                code: 0x45,
+                jt: 0,
+                jf: 1,
+                k: libc::PROT_EXEC as u32,
+            },
+            ret(DENY),
+            load(0),
+        ]);
+    }
+    rules.extend([
+        equal(libc::SYS_mmap as u32, 0, 4),
+        load(32),
+        libc::sock_filter {
+            code: 0x54,
+            jt: 0,
+            jf: 0,
+            k: (libc::PROT_WRITE | libc::PROT_EXEC) as u32,
+        },
+        equal((libc::PROT_WRITE | libc::PROT_EXEC) as u32, 0, 1),
+        ret(DENY),
+        ret(0x7fff_0000),
+    ]);
+    rules
 }
 
-const EXPIRE_SERVICE: &str = "[Unit]\nDescription=Expire recorded Komizo previews\nWants=komizo-controller.service\nAfter=komizo-controller.service\n[Service]\nType=oneshot\nUser=root\nGroup=root\nUMask=0077\nExecStart=/usr/local/bin/komizo-box expire\nTimeoutStartSec=1500\nSlice=komizo-control.slice\n";
-const EXPIRE_TIMER: &str = "[Unit]\nDescription=Check protected preview expiry\n[Timer]\nOnBootSec=60\nOnUnitActiveSec=60\nAccuracySec=1\n[Install]\nWantedBy=timers.target\n";
-const TMPFILES: &[u8] = b"d /run/komizo 0750 root komizo-submit -\n";
+/// Authenticate each fixed script and confinement policy against both its
+/// compiled bytes and the owner-install ledger before service effects.
+pub(crate) fn infrastructure_files_guard() -> Result<()> {
+    let ledger: Ledger = serde_json::from_slice(&protected_file(Path::new(LEDGER), 65536)?)?;
+    ensure!(
+        ledger.kind == "komizo.bootstrap" && ledger.version == 1,
+        "native bootstrap identity missing"
+    );
+    let mut expected = vec![(
+        INFRASTRUCTURE_PROFILE.to_owned(),
+        INFRASTRUCTURE_POLICY.to_vec(),
+        0o644,
+    )];
+    for role in [
+        super::infrastructure::Role::Controller,
+        super::infrastructure::Role::Proxy,
+        super::infrastructure::Role::Dns,
+        super::infrastructure::Role::Expiry,
+    ] {
+        expected.push((
+            format!("/etc/init.d/{}", role.service()),
+            super::infrastructure::service_script(role).into_bytes(),
+            0o755,
+        ));
+    }
+    for (path, body, mode) in expected {
+        let record = ledger
+            .files
+            .get(&path)
+            .ok_or_else(|| anyhow!("fixed infrastructure is not owner installed"))?;
+        ensure!(
+            record.sha256 == document_digest(&body)
+                && record.mode == mode
+                && protected_file(Path::new(&path), 65536)? == body
+                && fs::symlink_metadata(path)?.mode() & 0o7777 == mode,
+            "fixed infrastructure boundary differs from its owner installation"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn confine(process: &mut Command, proxy: bool) -> Result<()> {
+    use std::os::unix::process::CommandExt;
+    infrastructure_files_guard()?;
+    let profiles = kernel_text(Path::new("/sys/kernel/security/apparmor/profiles"), 2 << 20)?;
+    let profile = if proxy { "komizo-proxy" } else { "komizo-dns" };
+    ensure!(
+        profiles
+            .lines()
+            .filter(|line| *line == format!("{profile} (enforce)"))
+            .count()
+            == 1,
+        "fixed infrastructure AppArmor profile is not enforcing"
+    );
+    let identity = if proxy {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let row = lookup("passwd", "komizo-proxy", deadline)?
+            .ok_or_else(|| anyhow!("proxy identity is missing"))?;
+        let fields = row.trim_end().split(':').collect::<Vec<_>>();
+        ensure!(
+            fields.len() == 7
+                && fields[0] == "komizo-proxy"
+                && fields[5] == "/var/lib/komizo-proxy"
+                && fields[6] == "/sbin/nologin",
+            "proxy identity differs from its fixed account"
+        );
+        let uid = fields[2].parse::<u32>()?;
+        let gid = fields[3].parse::<u32>()?;
+        ensure!(uid > 0 && gid > 0, "proxy identity must be unprivileged");
+        Some((uid, gid))
+    } else {
+        None
+    };
+    let last_cap = kernel_text(Path::new("/proc/sys/kernel/cap_last_cap"), 16)?
+        .trim()
+        .parse::<u32>()?;
+    ensure!(
+        (10..64).contains(&last_cap),
+        "unsupported kernel capability boundary"
+    );
+    let transition = format!("exec {profile}").into_bytes();
+    let filter = confinement_filter();
+    unsafe {
+        process.pre_exec(move || {
+            let check = |result: i32| -> std::io::Result<()> {
+                if result < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            };
+            check(libc::setgroups(0, std::ptr::null()))?;
+            // NOROOT and NO_SETUID_FIXUP locked: a later root exec cannot regain
+            // capabilities. Only low-port binding survives in all capability sets.
+            check(libc::prctl(libc::PR_SET_SECUREBITS, 1 | 2 | 4 | 8, 0, 0, 0))?;
+            for cap in 0..=last_cap {
+                if cap != 10 {
+                    check(libc::prctl(libc::PR_CAPBSET_DROP, cap, 0, 0, 0))?;
+                }
+            }
+            if let Some((uid, gid)) = identity {
+                check(libc::setgid(gid))?;
+                check(libc::setuid(uid))?;
+            }
+            #[repr(C)]
+            struct Header {
+                version: u32,
+                pid: i32,
+            }
+            #[repr(C)]
+            struct Data {
+                effective: u32,
+                permitted: u32,
+                inheritable: u32,
+            }
+            let header = Header {
+                version: 0x2008_0522,
+                pid: 0,
+            };
+            let data = [
+                Data {
+                    effective: 1 << 10,
+                    permitted: 1 << 10,
+                    inheritable: 1 << 10,
+                },
+                Data {
+                    effective: 0,
+                    permitted: 0,
+                    inheritable: 0,
+                },
+            ];
+            check(libc::syscall(libc::SYS_capset, &header, data.as_ptr()) as i32)?;
+            check(libc::prctl(
+                libc::PR_CAP_AMBIENT,
+                libc::PR_CAP_AMBIENT_CLEAR_ALL,
+                0,
+                0,
+                0,
+            ))?;
+            check(libc::prctl(
+                libc::PR_CAP_AMBIENT,
+                libc::PR_CAP_AMBIENT_RAISE,
+                10,
+                0,
+                0,
+            ))?;
+            check(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0))?;
+            // Resolve self in the child. An FD opened in the parent would select
+            // the parent's proc task even when inherited across fork.
+            let descriptor = libc::open(
+                c"/proc/self/attr/apparmor/exec".as_ptr(),
+                libc::O_WRONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            );
+            check(descriptor)?;
+            let written = libc::write(descriptor, transition.as_ptr().cast(), transition.len());
+            let failure = std::io::Error::last_os_error();
+            libc::close(descriptor);
+            if written != transition.len() as isize {
+                return Err(failure);
+            }
+            let program = libc::sock_fprog {
+                len: filter.len() as u16,
+                filter: filter.as_ptr().cast_mut(),
+            };
+            check(libc::prctl(libc::PR_SET_SECCOMP, 2, &program, 0, 0))?;
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn confine(_: &mut Command, _: bool) -> Result<()> {
+    Err(anyhow!(
+        "fixed infrastructure requires the supported Alpine host"
+    ))
+}
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -706,7 +1040,7 @@ fn lookup(database: &str, name: &str, deadline: Instant) -> Result<Option<String
 
 fn account(name: &str, home: &str, shell: &str, deadline: Instant) -> Result<u32> {
     if lookup("group", name, deadline)?.is_none() {
-        command("/usr/sbin/groupadd", &["--system", name], deadline)?;
+        command("/usr/sbin/addgroup", &["-S", name], deadline)?;
     }
     let group =
         lookup("group", name, deadline)?.ok_or_else(|| anyhow!("system group is missing"))?;
@@ -719,20 +1053,8 @@ fn account(name: &str, home: &str, shell: &str, deadline: Instant) -> Result<u32
     ensure!(gid > 0, "system group may not be root");
     if lookup("passwd", name, deadline)?.is_none() {
         command(
-            "/usr/sbin/useradd",
-            &[
-                "--system",
-                "--no-create-home",
-                "--home-dir",
-                home,
-                "--shell",
-                shell,
-                "--gid",
-                name,
-                "--password",
-                "*",
-                name,
-            ],
+            "/usr/sbin/adduser",
+            &["-S", "-D", "-H", "-h", home, "-s", shell, "-G", name, name],
             deadline,
         )?;
     }
@@ -756,6 +1078,29 @@ fn account(name: &str, home: &str, shell: &str, deadline: Instant) -> Result<u32
             == [group[2]],
         "system account has unexpected supplemental authority"
     );
+    if name == "komizo-submit" {
+        // BusyBox adduser -D writes '!', which Linux OpenSSH treats as an
+        // account lock even for public-key authentication without PAM.
+        // '*' cannot authenticate any password; the effective SSH Match also
+        // requires publickey and disables password/interactive authentication.
+        let mut process = Command::new("/usr/sbin/chpasswd");
+        process
+            .env_clear()
+            .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+            .env("LANG", "C.UTF-8")
+            .arg("-e");
+        let result = crate::process::capture(
+            &mut process,
+            Some(b"komizo-submit:*\n"),
+            4096,
+            deadline,
+            || false,
+        )?;
+        ensure!(
+            result.status.success(),
+            "cannot establish the fixed key-only submission identity"
+        );
+    }
     Ok(gid)
 }
 
@@ -789,7 +1134,86 @@ fn directory(path: &str, mode: u32) -> Result<()> {
     Ok(())
 }
 
-fn protected_file(path: &Path, maximum: usize) -> Result<Vec<u8>> {
+fn identity_directory(path: &str, uid: u32, gid: u32, mode: u32) -> Result<()> {
+    let destination = Path::new(path);
+    let parent = destination
+        .parent()
+        .ok_or_else(|| anyhow!("runtime directory lacks a parent"))?;
+    let info = fs::symlink_metadata(parent)?;
+    ensure!(
+        info.is_dir()
+            && !info.file_type().is_symlink()
+            && info.uid() == 0
+            && info.mode() & 0o022 == 0,
+        "runtime directory parent is unsafe"
+    );
+    if !destination.try_exists()? {
+        fs::create_dir(destination)?;
+        fs::set_permissions(destination, fs::Permissions::from_mode(mode))?;
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(destination)?;
+        use std::os::fd::AsRawFd;
+        ensure!(
+            unsafe { libc::fchown(file.as_raw_fd(), uid, gid) } == 0,
+            "cannot set fixed runtime directory ownership"
+        );
+    }
+    let info = fs::symlink_metadata(destination)?;
+    ensure!(
+        info.is_dir()
+            && !info.file_type().is_symlink()
+            && info.uid() == uid
+            && info.gid() == gid
+            && info.mode() & 0o7777 == mode,
+        "fixed runtime directory identity changed"
+    );
+    Ok(())
+}
+
+pub(crate) fn proxy_identity() -> Result<(u32, u32)> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let row = lookup("passwd", "komizo-proxy", deadline)?
+        .ok_or_else(|| anyhow!("proxy account is missing"))?;
+    let fields = row.trim_end().split(':').collect::<Vec<_>>();
+    ensure!(fields.len() == 7, "invalid proxy account");
+    let uid = fields[2].parse::<u32>()?;
+    let gid = fields[3].parse::<u32>()?;
+    ensure!(
+        uid > 0 && gid > 0,
+        "proxy runtime identity must be unprivileged"
+    );
+    ensure!(
+        fields[0] == "komizo-proxy"
+            && fields[5] == "/var/lib/komizo-proxy"
+            && fields[6] == "/sbin/nologin",
+        "proxy account differs from its fixed identity"
+    );
+    Ok((uid, gid))
+}
+
+pub(crate) fn runtime_directories() -> Result<()> {
+    let (uid, gid) = proxy_identity()?;
+    identity_directory("/var/lib/komizo-proxy", uid, gid, 0o700)?;
+    identity_directory("/run/komizo-proxy", uid, gid, 0o700)?;
+    directory(super::infrastructure::DIRECTORY, 0o700)?;
+    let config = crate::strict::value(
+        &protected_file(Path::new("/etc/komizo/controller.json"), 65536)?,
+        65536,
+    )?;
+    ensure!(
+        config["kind"] == "komizo.controller" && config["version"] == 1,
+        "invalid runtime submission identity"
+    );
+    let submit_gid = config["submission_gid"]
+        .as_u64()
+        .filter(|id| *id > 0 && *id <= u32::MAX as u64)
+        .ok_or_else(|| anyhow!("invalid submission group"))? as u32;
+    identity_directory("/run/komizo", 0, submit_gid, 0o750)
+}
+
+pub(crate) fn protected_file(path: &Path, maximum: usize) -> Result<Vec<u8>> {
     ensure!(
         path.is_absolute(),
         "bootstrap input requires an absolute owner path"
@@ -875,7 +1299,8 @@ pub fn install(public_keys: &Path) -> Result<()> {
         ("/etc/komizo/apps", 0o700),
         ("/etc/ssh/komizo-submit", 0o755),
         ("/var/lib/komizo", 0o700),
-        ("/run/komizo", 0o750),
+        (system::SERVICE_CONFIGS, 0o700),
+        (super::infrastructure::DIRECTORY, 0o700),
         ("/var/lib/komizo-assets", 0o755),
         ("/etc/komizo-proxy", 0o755),
         ("/usr/local/libexec", 0o755),
@@ -920,7 +1345,7 @@ pub fn install(public_keys: &Path) -> Result<()> {
     account(
         "komizo-proxy",
         "/var/lib/komizo-proxy",
-        "/usr/sbin/nologin",
+        "/sbin/nologin",
         deadline,
     )?;
     managed(&mut ledger, KEYS, &keys, 0o644)?;
@@ -938,19 +1363,24 @@ pub fn install(public_keys: &Path) -> Result<()> {
         SSH_CONFIG.as_bytes(),
         0o600,
     )?;
-    managed(&mut ledger, "/etc/tmpfiles.d/komizo.conf", TMPFILES, 0o644)?;
-    for (name, body) in [
-        (CONTROLLER, controller_unit()),
-        (PROXY, proxy_unit()),
-        (DNS_SERVICE, dns_unit()),
-        ("komizo-expire.service", EXPIRE_SERVICE),
-        ("komizo-expire.timer", EXPIRE_TIMER),
+    managed(
+        &mut ledger,
+        INFRASTRUCTURE_PROFILE,
+        INFRASTRUCTURE_POLICY,
+        0o644,
+    )?;
+    command(APPARMOR_PARSER, &["-r", INFRASTRUCTURE_PROFILE], deadline)?;
+    for role in [
+        super::infrastructure::Role::Controller,
+        super::infrastructure::Role::Proxy,
+        super::infrastructure::Role::Dns,
+        super::infrastructure::Role::Expiry,
     ] {
         managed(
             &mut ledger,
-            &format!("{}/{name}", system::UNITS),
-            body.as_bytes(),
-            0o644,
+            &format!("/etc/init.d/{}", role.service()),
+            super::infrastructure::service_script(role).as_bytes(),
+            0o755,
         )?;
     }
     let state = Store::new(Path::new("/var/lib/komizo").into())?;
@@ -974,13 +1404,31 @@ pub fn install(public_keys: &Path) -> Result<()> {
     }
     system::caddy_validate(Path::new(system::PROXY_CONFIG), deadline)?;
     command("/usr/sbin/sshd", &["-t"], deadline)?;
+    submission_settings(&command(
+        "/usr/sbin/sshd",
+        &[
+            "-T",
+            "-C",
+            "user=komizo-submit,host=localhost,addr=127.0.0.1",
+        ],
+        deadline,
+    )?)?;
     let system = System { deadline };
     system::host_pools(&state, &system, &capacity)?;
-    system.run(&["enable", CONTROLLER, PROXY, "komizo-expire.timer"])?;
-    system.start(PROXY)?;
-    system.start(CONTROLLER)?;
-    system.start("komizo-expire.timer")?;
-    system.run(&["reload", "ssh.service"])?;
+    infrastructure_files_guard()?;
+    for role in [
+        super::infrastructure::Role::Proxy,
+        super::infrastructure::Role::Controller,
+        super::infrastructure::Role::Expiry,
+    ] {
+        command(
+            "/sbin/rc-update",
+            &["add", role.service(), "default"],
+            deadline,
+        )?;
+        super::infrastructure::start(role, deadline)?;
+    }
+    command("/sbin/rc-service", &["sshd", "reload"], deadline)?;
     Ok(())
 }
 
@@ -991,6 +1439,36 @@ mod tests {
         let mut blob = b"\0\0\0\x0bssh-ed25519\0\0\0\x20".to_vec();
         blob.extend([byte; 32]);
         format!("ssh-ed25519 {} harmless comment\n", STANDARD.encode(blob))
+    }
+    #[test]
+    fn ssh_submission_requires_effective_match_settings_not_only_valid_syntax() {
+        let valid = b"authenticationmethods publickey\nauthorizedkeysfile /etc/ssh/komizo-submit/authorized_keys\npasswordauthentication no\nkbdinteractiveauthentication no\npermittty no\ndisableforwarding yes\nallowagentforwarding no\nallowtcpforwarding no\nx11forwarding no\npermittunnel no\npermituserrc no\nforcecommand /usr/local/libexec/komizo-submit-shell\n";
+        submission_settings(valid).unwrap();
+        assert!(submission_settings(b"").is_err());
+        let text = std::str::from_utf8(valid).unwrap();
+        assert!(
+            submission_settings(
+                text.replace("disableforwarding yes", "disableforwarding no")
+                    .as_bytes()
+            )
+            .is_err()
+        );
+        assert!(
+            submission_settings(
+                text.replace(
+                    "forcecommand /usr/local/libexec/komizo-submit-shell",
+                    "forcecommand none"
+                )
+                .as_bytes()
+            )
+            .is_err()
+        );
+        assert!(
+            submission_settings(
+                format!("{text}forcecommand /usr/local/libexec/komizo-submit-shell\n").as_bytes()
+            )
+            .is_err()
+        );
     }
     #[test]
     fn root_profile_configuration_is_literal_and_case_ambiguity_is_refused() {
@@ -1092,28 +1570,152 @@ mod tests {
         extra.push("/bin/sh".into());
         assert!(dns_arguments(&extra).is_err());
         assert!(dns_arguments(&[]).is_err());
-        assert!(dns_unit().contains("Slice=komizo-control.slice"));
-        assert!(!dns_unit().contains("Requires=komizo-controller"));
-        assert!(!dns_unit().contains("WantedBy="));
+        let script =
+            super::super::infrastructure::service_script(super::super::infrastructure::Role::Dns);
+        assert!(!script.contains("need komizo-controller"));
+        assert!(!script.contains("rc-update"));
     }
 
     #[test]
-    fn proxy_has_read_only_public_access_and_no_controller_authority() {
-        for value in [
-            "User=komizo-proxy",
-            "ProtectSystem=strict",
-            "ReadOnlyPaths=/var/lib/komizo-assets",
-            "InaccessiblePaths=/var/lib/komizo /etc/komizo /run/komizo",
-            "RuntimeDirectoryMode=0700",
-            "CapabilityBoundingSet=CAP_NET_BIND_SERVICE",
-            "Slice=komizo-proxy.slice",
-        ] {
-            assert!(proxy_unit().contains(value));
+    fn infrastructure_profiles_allow_only_the_two_fixed_daemons_and_owned_writes() {
+        let text = std::str::from_utf8(INFRASTRUCTURE_POLICY).unwrap();
+        for profile in ["profile komizo-proxy", "profile komizo-dns"] {
+            assert!(text.contains(profile));
         }
-        assert!(!proxy_unit().contains("Requires=komizo-controller"));
-        assert!(controller_unit().contains("Type=notify"));
-        assert!(controller_unit().contains("KillMode=process"));
-        assert!(controller_unit().contains("Slice=komizo-control.slice"));
+        for denied in [
+            "deny /etc/komizo/** rwklx",
+            "deny /var/lib/komizo/** rwklx",
+            "deny /root/** rwklx",
+            "deny /var/lib/containers/** rwklx",
+            "deny mount",
+        ] {
+            assert_eq!(text.matches(denied).count(), 2);
+        }
+        assert!(text.contains("owner /var/lib/komizo-proxy/** rwk"));
+        assert!(text.contains("owner /run/containers/networks/aardvark-dns/** rwk"));
+        assert!(!text.contains("capability,"));
+        assert!(!text.contains("file,"));
+        assert!(!text.contains("#include <abstractions/base>"));
+        assert!(!text.contains(".Private/**"));
+        assert!(!text.contains("ptrace (trace)"));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn sandbox_filter_denies_foreign_abi_namespaces_and_executable_writable_memory() {
+        // Evaluate the actual shipped cBPF instructions on synthetic seccomp
+        // metadata; no filter is installed in the test runner.
+        fn evaluate(nr: u32, arch: u32, args: [u64; 6]) -> u32 {
+            let mut data = Vec::from(nr.to_ne_bytes());
+            data.extend(arch.to_ne_bytes());
+            data.extend(0u64.to_ne_bytes());
+            for argument in args {
+                data.extend(argument.to_ne_bytes());
+            }
+            let code = confinement_filter();
+            let (mut pc, mut accumulator) = (0usize, 0u32);
+            for _ in 0..256 {
+                let instruction = &code[pc];
+                match instruction.code {
+                    0x20 => {
+                        accumulator = u32::from_ne_bytes(
+                            data[instruction.k as usize..instruction.k as usize + 4]
+                                .try_into()
+                                .unwrap(),
+                        );
+                        pc += 1;
+                    }
+                    0x15 => {
+                        pc += 1 + usize::from(if accumulator == instruction.k {
+                            instruction.jt
+                        } else {
+                            instruction.jf
+                        })
+                    }
+                    0x45 => {
+                        pc += 1 + usize::from(if accumulator & instruction.k != 0 {
+                            instruction.jt
+                        } else {
+                            instruction.jf
+                        })
+                    }
+                    0x54 => {
+                        accumulator &= instruction.k;
+                        pc += 1;
+                    }
+                    0x06 => return instruction.k,
+                    other => panic!("unexpected shipped filter opcode {other}"),
+                }
+            }
+            panic!("non-terminating sandbox filter")
+        }
+        #[cfg(target_arch = "x86_64")]
+        const ARCH: u32 = 0xc000_003e;
+        #[cfg(target_arch = "aarch64")]
+        const ARCH: u32 = 0xc000_00b7;
+        let allowed = 0x7fff_0000;
+        let denied = 0x0005_0000 | libc::EPERM as u32;
+        assert_eq!(evaluate(libc::SYS_read as u32, ARCH, [0; 6]), allowed);
+        assert_eq!(evaluate(libc::SYS_read as u32, 0, [0; 6]), 0x8000_0000);
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(
+            evaluate(libc::SYS_read as u32 | 0x4000_0000, ARCH, [0; 6]),
+            0x8000_0000
+        );
+        for nr in [
+            libc::SYS_mount,
+            libc::SYS_ptrace,
+            libc::SYS_personality,
+            libc::SYS_setns,
+        ] {
+            assert_eq!(evaluate(nr as u32, ARCH, [0; 6]), denied);
+        }
+        assert_eq!(
+            evaluate(
+                libc::SYS_clone as u32,
+                ARCH,
+                [libc::CLONE_NEWUSER as u64, 0, 0, 0, 0, 0]
+            ),
+            denied
+        );
+        assert_eq!(
+            evaluate(
+                libc::SYS_clone as u32,
+                ARCH,
+                [libc::CLONE_THREAD as u64, 0, 0, 0, 0, 0]
+            ),
+            allowed
+        );
+        assert_eq!(
+            evaluate(libc::SYS_clone3 as u32, ARCH, [0; 6]),
+            0x0005_0000 | libc::ENOSYS as u32
+        );
+        for nr in [libc::SYS_mprotect, libc::SYS_pkey_mprotect] {
+            assert_eq!(
+                evaluate(nr as u32, ARCH, [0, 0, libc::PROT_EXEC as u64, 0, 0, 0]),
+                denied
+            );
+            assert_eq!(
+                evaluate(nr as u32, ARCH, [0, 0, libc::PROT_READ as u64, 0, 0, 0]),
+                allowed
+            );
+        }
+        assert_eq!(
+            evaluate(
+                libc::SYS_mmap as u32,
+                ARCH,
+                [0, 0, (libc::PROT_WRITE | libc::PROT_EXEC) as u64, 0, 0, 0]
+            ),
+            denied
+        );
+        assert_eq!(
+            evaluate(
+                libc::SYS_mmap as u32,
+                ARCH,
+                [0, 0, (libc::PROT_READ | libc::PROT_EXEC) as u64, 0, 0, 0]
+            ),
+            allowed
+        );
     }
 
     #[test]
