@@ -32,6 +32,8 @@ profile komizo-proxy flags=(attach_disconnected,mediate_deleted) {
   /etc/resolv.conf r,
   /etc/nsswitch.conf r,
   /etc/ssl/** r,
+  /usr/share/ca-certificates/ r,
+  /usr/share/ca-certificates/** r,
   /proc/sys/net/core/somaxconn r,
   owner /proc/*/fd/ r,
   owner /proc/*/fd/** rw,

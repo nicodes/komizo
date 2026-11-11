@@ -33,7 +33,7 @@ const DNS_SERVICE: &str = "komizo-dns";
 const DNS_HELPER: &str = "/usr/local/libexec/komizo-network/aardvark-dns";
 const ENGINE_CONFIG: &str = "/etc/containers/containers.conf.d/80-komizo-network.conf";
 const DNS_WRAPPER: &str = "#!/bin/sh\nexec /usr/bin/env -i PATH=/usr/bin:/bin LANG=C.UTF-8 /usr/local/bin/komizo-box dns \"$@\"\n";
-const ENGINE_NETWORK: &str = "[containers]\napparmor_profile=\"komizo-workload\"\n[engine]\ncgroup_manager=\"cgroupfs\"\nhelper_binaries_dir=[\"/usr/local/libexec/komizo-network\",\"/usr/libexec/podman\"]\n[network]\nnetwork_backend=\"netavark\"\ndns_bind_port=53\n";
+const ENGINE_NETWORK: &str = "[containers]\napparmor_profile=\"komizo-workload\"\n[engine]\ncgroup_manager=\"cgroupfs\"\nhelper_binaries_dir=[\"/usr/local/libexec/komizo-network\",\"/usr/libexec/podman\"]\n[network]\nnetwork_backend=\"netavark\"\nfirewall_driver=\"nftables\"\ndns_bind_port=53\n";
 
 pub const WORKLOAD_PROFILE: &str = "komizo-workload";
 const APPARMOR_FILE: &str = "/etc/apparmor.d/komizo-workload";
@@ -1496,6 +1496,15 @@ mod tests {
     }
     #[test]
     fn root_profile_configuration_is_literal_and_case_ambiguity_is_refused() {
+        let configuration: toml::Value = toml::from_str(ENGINE_NETWORK).unwrap();
+        assert_eq!(
+            configuration["network"]["network_backend"].as_str(),
+            Some("netavark")
+        );
+        assert_eq!(
+            configuration["network"]["firewall_driver"].as_str(),
+            Some("nftables")
+        );
         assert_eq!(
             configured_profile(ENGINE_NETWORK.as_bytes())
                 .unwrap()
@@ -1617,6 +1626,14 @@ mod tests {
         }
         assert!(text.contains("owner /var/lib/komizo-proxy/** rwk"));
         assert!(text.contains("owner /run/containers/networks/aardvark-dns/** rwk"));
+        let (proxy, dns) = text.split_once("profile komizo-dns").unwrap();
+        for rule in [
+            "/usr/share/ca-certificates/ r,",
+            "/usr/share/ca-certificates/** r,",
+        ] {
+            assert!(proxy.lines().any(|line| line.trim() == rule));
+        }
+        assert!(!dns.contains("/usr/share/ca-certificates"));
         assert!(!text.contains("capability,"));
         assert!(!text.contains("file,"));
         assert!(!text.contains("#include <abstractions/base>"));
