@@ -192,7 +192,8 @@ def profile_probe(profile, user, readable, denied, writes=()):
     identity=pwd.getpwnam(user)
     program = r"""import json,os,sys
 profile,uid,gid,readable,denied,writes=json.loads(sys.argv[1])
-os.setgroups([]);os.setgid(gid);os.setuid(uid)
+assert os.getuid()==os.geteuid()==uid and os.getgid()==os.getegid()==gid and os.getgroups()==[]
+assert os.stat('/proc/self/attr/current').st_uid==uid
 for path in writes:
  fd=os.open(path,os.O_WRONLY|os.O_APPEND);os.close(fd)
 with open('/proc/self/attr/current','w') as output:output.write('changeprofile '+profile)
@@ -212,7 +213,10 @@ for path in writes:
  else:raise ValueError('enforcing profile admitted an asset write')
 print(json.dumps({'label':label,'reads_refused':len(denied),'writes_refused':len(writes)}))
 """
-    result=run(['/usr/bin/python3','-I','-B','-c',program,json.dumps([profile,identity.pw_uid,identity.pw_gid,readable,denied,list(writes)])])
+    # Apply credentials before exec, as the real daemon does, so the kernel
+    # gives this interpreter its own proc objects rather than root's objects.
+    result=run(['/usr/bin/python3','-I','-B','-c',program,json.dumps([profile,identity.pw_uid,identity.pw_gid,readable,denied,list(writes)])],
+        user=identity.pw_uid,group=identity.pw_gid,extra_groups=[])
     return json.loads(result.stdout)
 
 

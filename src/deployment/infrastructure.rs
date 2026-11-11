@@ -620,6 +620,21 @@ struct OpenRcParent {
     gid: u32,
     mode: u32,
 }
+struct NotificationSocket {
+    uid: u32,
+    gid: u32,
+    mode: u32,
+}
+impl NotificationSocket {
+    fn owned(self, proxy: Option<(u32, u32)>) -> bool {
+        self.mode & 0o170000 == 0o140000
+            && self.mode & 0o077 == 0
+            && (self.uid == 0
+                || proxy.is_some_and(|(uid, gid)| {
+                    self.uid == uid && self.gid == gid && self.mode & 0o7777 == 0o600
+                }))
+    }
+}
 impl OpenRcParent {
     fn protected(self) -> bool {
         // OpenRC's fixed administrative state directory is root:root 0775 on
@@ -664,7 +679,7 @@ fn notification(role: Role, stage: &mut StartupStage) -> Result<Option<String>> 
         "infrastructure notification escaped its fixed socket"
     );
     *stage = StartupStage::NotificationSocket;
-    let metadata = match fs::symlink_metadata(&address) {
+    let socket_metadata = match fs::symlink_metadata(&address) {
         Ok(metadata) => metadata,
         // OpenRC removes the startup socket after accepting READY=1. A later
         // supervised restart must not mint another startup admission.
@@ -672,7 +687,7 @@ fn notification(role: Role, stage: &mut StartupStage) -> Result<Option<String>> 
         Err(error) => return Err(error.into()),
     };
     ensure!(
-        metadata.file_type().is_socket() && metadata.mode() & 0o077 == 0,
+        socket_metadata.file_type().is_socket() && socket_metadata.mode() & 0o077 == 0,
         "infrastructure notification socket is not protected"
     );
     *stage = StartupStage::NotificationParent;
@@ -680,12 +695,12 @@ fn notification(role: Role, stage: &mut StartupStage) -> Result<Option<String>> 
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
         .open("/run/openrc")?;
-    let metadata = parent.metadata()?;
+    let parent_metadata = parent.metadata()?;
     ensure!(
         OpenRcParent {
-            uid: metadata.uid(),
-            gid: metadata.gid(),
-            mode: metadata.mode(),
+            uid: parent_metadata.uid(),
+            gid: parent_metadata.gid(),
+            mode: parent_metadata.mode(),
         }
         .protected(),
         "infrastructure notification parent is not protected"
@@ -698,10 +713,12 @@ fn notification(role: Role, stage: &mut StartupStage) -> Result<Option<String>> 
         None
     };
     ensure!(
-        metadata.uid() == 0
-            || proxy.is_some_and(|(uid, gid)| metadata.uid() == uid
-                && metadata.gid() == gid
-                && metadata.mode() & 0o7777 == 0o600),
+        NotificationSocket {
+            uid: socket_metadata.uid(),
+            gid: socket_metadata.gid(),
+            mode: socket_metadata.mode(),
+        }
+        .owned(proxy),
         "infrastructure notification is not a protected supervisor socket"
     );
     if let Some((uid, gid)) = proxy {
@@ -1111,6 +1128,28 @@ mod tests {
         ] {
             assert!(!parent.protected());
         }
+    }
+    #[test]
+    fn root_owned_openrc_parent_never_substitutes_for_notification_socket_ownership() {
+        assert!(
+            OpenRcParent {
+                uid: 0,
+                gid: 0,
+                mode: 0o040775
+            }
+            .protected()
+        );
+        let socket = |uid, gid, mode| NotificationSocket { uid, gid, mode };
+        assert!(!socket(0, 0, 0o040775).owned(None));
+        assert!(!socket(0, 0, 0o040700).owned(None));
+        assert!(!socket(0, 0, 0o140777).owned(None));
+        assert!(socket(0, 0, 0o140700).owned(None));
+        assert!(!socket(1002, 1002, 0o140700).owned(None));
+        assert!(!socket(1002, 1002, 0o140700).owned(Some((1001, 1001))));
+        assert!(socket(1001, 1001, 0o140600).owned(Some((1001, 1001))));
+        assert!(!socket(1001, 1002, 0o140600).owned(Some((1001, 1001))));
+        assert!(!socket(1002, 1001, 0o140600).owned(Some((1001, 1001))));
+        assert!(!socket(1001, 1001, 0o140700).owned(Some((1001, 1001))));
     }
     #[test]
     #[cfg(target_os = "linux")]

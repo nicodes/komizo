@@ -131,6 +131,29 @@ class NativeGuestReadinessEvidence(unittest.TestCase):
         self.assertIs(configuration['disable_root'],False)
         self.assertNotIn('output',configuration)
 
+    def test_profile_probe_exec_owns_its_proc_files_after_real_uid_handoff(self):
+        if sys.platform!='linux' or not hasattr(os,'geteuid') or os.geteuid()!=0:
+            self.skipTest('real UID handoff runs in the dedicated sudo Linux fixture step')
+        status=dict(line.split(':',1) for line in Path('/proc/self/status').read_text().splitlines() if ':' in line)
+        if int(status['CapEff'].strip(),16)&((1<<6)|(1<<7))!=((1<<6)|(1<<7)):
+            if 'SUDO_UID' in os.environ:self.fail('the dedicated sudo Linux fixture requires real SETUID/SETGID')
+            self.skipTest('this local sandbox lacks SETUID/SETGID; sudo Linux CI qualifies the real handoff')
+        import pwd
+        spec=importlib.util.spec_from_file_location('native_profile_probe',Path(__file__).parents[1]/'support/native_host_acceptance.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        identity=SimpleNamespace(pw_uid=65534,pw_gid=65534)
+        observation="import json,os;print(json.dumps({'uid':os.getuid(),'euid':os.geteuid(),'gid':os.getgid(),'egid':os.getegid(),'groups':os.getgroups(),'proc_attr_uid':os.stat('/proc/self/attr/current').st_uid}))"
+        old=subprocess.run(['/usr/bin/python3','-I','-B','-c',
+            'import os;os.setgroups([]);os.setgid(65534);os.setuid(65534);'+observation],
+            capture_output=True,timeout=5,check=True)
+        self.assertEqual(json.loads(old.stdout)['proc_attr_uid'],0)
+        def actual_child(arguments,**options):
+            arguments=arguments.copy();arguments[4]=observation
+            return subprocess.run(arguments,capture_output=True,timeout=5,check=True,**options)
+        with patch.object(pwd,'getpwnam',return_value=identity),patch.object(module,'run',side_effect=actual_child):
+            result=module.profile_probe('komizo-proxy','komizo-proxy',[],[])
+        self.assertEqual(result,{'uid':65534,'euid':65534,'gid':65534,'egid':65534,'groups':[],'proc_attr_uid':65534})
+
     def startup_fixture(self):
         if sys.platform!='linux' or not hasattr(os,'geteuid') or os.geteuid()!=0:
             self.skipTest('real private-root metadata controls run in the dedicated sudo Linux fixture step')
