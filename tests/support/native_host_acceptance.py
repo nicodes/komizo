@@ -275,7 +275,7 @@ def prepare():
         raise ValueError('guest differs from the signed Alpine baseline')
     version=run(['podman','--remote=false','version','--format={{.Client.Version}}']).stdout.decode().strip()
     if version!=baseline['podman_version']:raise ValueError('guest must exercise the declared signed APK Podman version')
-    if run(['apk','info','-v','podman']).stdout.decode().strip()!='podman-'+baseline['podman_package']:
+    if run(['apk','info','--installed','-v','podman']).stdout.decode().strip()!='podman-'+baseline['podman_package']:
         raise ValueError('actual Podman APK version differs from its tested closure')
     if Path('/sys/module/apparmor/parameters/enabled').read_text().strip()!='Y' or 'apparmor' not in Path('/sys/kernel/security/lsm').read_text().strip().split(','):
         raise ValueError('guest lacks its actually enabled AppArmor LSM')
@@ -359,7 +359,7 @@ def prepare():
         'scope':'bootstrap, peer boundary, proxy isolation, actual kernel limits, real reboot',
         'profile':json.loads((ROOT/'profile.json').read_text())['profile'],
         'runtime_acceptance':False,'baseline':baseline,'actual_platform':{'os_release':os_release,'kernel':run(['uname','-r']).stdout.decode().strip(),
-            'openrc':run(['apk','info','-v','openrc']).stdout.decode().strip(),'apparmor_enabled':True,'engine_cgroup_manager':host['cgroupManager']},'network_backend':network,
+            'openrc':run(['apk','info','--installed','-v','openrc']).stdout.decode().strip(),'apparmor_enabled':True,'engine_cgroup_manager':host['cgroupManager']},'network_backend':network,
         'checks':{'supported_host':'passed','root_peer':'passed','forged_owner_peer':'passed','proxy_uid':'passed',
             'proxy_asset_write_refusal':'passed','proxy_process_metadata_isolation':'passed','secret_isolation':'passed',
             'kernel_limits':'passed','unsafe_filesystem':'passed','idempotent_install':'passed','managed_bootstrap_upgrade':'passed','foreign_bootstrap_bytes_refused':'passed',

@@ -68,4 +68,32 @@ class FinishedLoadAccounting(unittest.TestCase):
                 self.assertFalse((self.root/'performance-metrics.json').exists())
 
 
+class InstalledApkBoundary(unittest.TestCase):
+    def test_actual_package_guard_selects_installed_identity_and_retains_exact_version_refusals(self):
+        baseline=json.loads((SUPPORT.parent/'fixtures/native_host/baseline.json').read_bytes())
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);(root/'baseline.json').write_text(json.dumps(baseline))
+            release=root/'os-release';release.write_text('ID=alpine\nVERSION_ID=3.24.3\n')
+            executable=root/'apk.py'
+            class GuardPassed(Exception):pass
+            class LsmBoundary:
+                def read_text(self):raise GuardPassed
+            def selected_path(value):
+                if str(value)=='/etc/os-release':return release
+                if str(value)=='/sys/module/apparmor/parameters/enabled':return LsmBoundary()
+                raise AssertionError('unexpected effect path '+str(value))
+            def command(arguments,**options):
+                if arguments[0]=='podman':return subprocess.CompletedProcess(arguments,0,b'5.8.10\n',b'')
+                self.assertEqual(arguments[0],'apk')
+                return subprocess.run([sys.executable,'-I','-B',str(executable),*arguments[1:]],capture_output=True,check=True)
+            for identity in ['podman-5.8.10-r0','podman-5.8.9-r0','other-5.8.10-r0',
+                    'podman-5.8.10-r0\npodman-5.8.10-r0','podman-5.8.10-r0 description:\nmetadata']:
+                executable.write_text('import sys\nprint('+repr(identity)+
+                    " if sys.argv[1:]==['info','--installed','-v','podman'] else 'podman descriptive package fields')\n")
+                with self.subTest(identity=identity),patch.object(acceptance,'ROOT',root), \
+                        patch.object(acceptance,'Path',side_effect=selected_path),patch.object(acceptance,'run',side_effect=command):
+                    with self.assertRaises(GuardPassed if identity=='podman-5.8.10-r0' else ValueError):
+                        acceptance.prepare()
+
+
 if __name__ == '__main__': unittest.main()
