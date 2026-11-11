@@ -135,7 +135,9 @@ def startup_diagnostics(directory=None, boot_id=None):
                     or value['role'] != role or value['boot_id'] != boot_id
                     or re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', value['boot_id']) is None
                     or type(value['pid']) is not int or value['pid'] <= 1
-                    or value['stage'] not in {'files', 'leaf', 'monitor', 'parent', 'notification', 'proxy_guard', 'confinement', 'exec', 'runner'}
+                    or value['stage'] not in {'files', 'leaf', 'monitor', 'parent', 'notification',
+                        'notification_environment', 'notification_address', 'notification_socket',
+                        'notification_parent', 'notification_identity', 'proxy_guard', 'confinement', 'exec', 'runner'}
                     or not (value['errno'] is None or type(value['errno']) is int)
                     or value['error'] not in {'io', 'guard', 'pending'}
                     or value['error'] == 'pending' and (value['stage'] != 'exec' or value['errno'] is not None)):
@@ -145,6 +147,30 @@ def startup_diagnostics(directory=None, boot_id=None):
             result[role] = {'state': 'absent'}
         except (OSError, ValueError, TypeError):
             result[role] = {'state': 'refused'}
+    return result
+
+
+def notification_metadata():
+    """Observe only the two fixed notification objects; never follow links."""
+    import os
+    import stat
+    result = {}
+    paths = ('/run/openrc', '/run/openrc/supervise-komizo-proxy.sock')
+    for index, path in enumerate(paths):
+        if index and result[paths[0]].get('type') != 'directory':
+            result[path] = {'state': 'refused'}
+            continue
+        try:
+            info = os.lstat(path)
+            expected = stat.S_ISDIR if index == 0 else stat.S_ISSOCK
+            if not expected(info.st_mode):
+                raise ValueError('fixed notification object has another type')
+            result[path] = {'uid': info.st_uid, 'gid': info.st_gid,
+                'mode': stat.S_IMODE(info.st_mode), 'type': 'directory' if index == 0 else 'socket'}
+        except FileNotFoundError:
+            result[path] = {'state': 'absent'}
+        except (OSError, ValueError):
+            result[path] = {'state': 'refused'}
     return result
 
 
@@ -253,7 +279,7 @@ class Guest:
         # Fixed read-only boot observations contain no process argv, environment
         # or private controller state. Each command and its exported bytes are
         # bounded independently, even when the OS has pending start jobs.
-        script = inspect.getsource(startup_diagnostics) + '''\nimport json, pathlib, subprocess, tempfile
+        script = inspect.getsource(startup_diagnostics) + '\n' + inspect.getsource(notification_metadata) + '''\nimport json, pathlib, subprocess, tempfile
 commands = {
     'cloud_init': ['cloud-init', 'status', '--long', '--format=json'],
     'openrc': ['rc-status', '--all'],
@@ -264,6 +290,7 @@ commands = {
 }
 record = {'version': 1, 'boot_id': pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip(), 'observations': {}}
 record['infrastructure_startup'] = startup_diagnostics(boot_id=record['boot_id'])
+record['notification_metadata'] = notification_metadata()
 for name, argv in commands.items():
     with tempfile.TemporaryFile() as output:
         try:

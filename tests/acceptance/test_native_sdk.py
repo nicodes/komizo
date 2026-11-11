@@ -8,6 +8,7 @@ from pathlib import Path
 import tempfile
 import time
 import subprocess
+import socket
 import sys
 from types import SimpleNamespace
 import unittest
@@ -150,6 +151,11 @@ class NativeGuestReadinessEvidence(unittest.TestCase):
         namespace={}
         exec(module.inspect.getsource(module.startup_diagnostics),namespace)
         self.assertEqual(namespace['startup_diagnostics'](directory,boot),result)
+        for stage in ['notification_environment','notification_address','notification_socket',
+                'notification_parent','notification_identity']:
+            with self.subTest(stage=stage):
+                current={**value,'stage':stage};path.write_text(json.dumps(current))
+                self.assertEqual(module.startup_diagnostics(directory,boot)['proxy'],current)
         pending={**value,'stage':'exec','error':'pending'}
         path.write_text(json.dumps(pending))
         self.assertEqual(module.startup_diagnostics(directory,boot)['proxy'],pending)
@@ -179,6 +185,38 @@ class NativeGuestReadinessEvidence(unittest.TestCase):
         self.assertEqual(module.startup_diagnostics(directory,boot)['proxy'],{'state':'refused'})
         directory.chmod(0o755)
         self.assertEqual(module.startup_diagnostics(directory,boot)['proxy'],{'state':'unavailable'})
+
+    def test_fixed_notification_snapshot_reports_real_modes_without_reading_or_following_objects(self):
+        if sys.platform!='linux':self.skipTest('Unix socket metadata fixture runs on Linux')
+        module,_=self.guest('')
+        first='/run/openrc';second=first+'/supervise-komizo-proxy.sock'
+        with tempfile.TemporaryDirectory() as temporary:
+            directory=Path(temporary)/'openrc';directory.mkdir(mode=0o755)
+            path=directory/'notify.sock'
+            with socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as listener:
+                listener.bind(str(path));path.chmod(0o755)
+                original=os.lstat;calls=[]
+                def fixed_lstat(value):
+                    calls.append(value)
+                    return original({first:directory,second:path}[value])
+                with patch.object(os,'lstat',side_effect=fixed_lstat):
+                    result=module.notification_metadata()
+                    namespace={};exec(module.inspect.getsource(module.notification_metadata),namespace)
+                    self.assertEqual(namespace['notification_metadata'](),result)
+                self.assertEqual(set(calls),{first,second})
+                self.assertEqual(result[first],{'uid':os.getuid(),'gid':os.getgid(),'mode':0o755,'type':'directory'})
+                self.assertEqual(result[second],{'uid':os.getuid(),'gid':os.getgid(),'mode':0o755,'type':'socket'})
+            path.unlink();path.symlink_to('private-target-not-read')
+            with patch.object(os,'lstat',side_effect=fixed_lstat):
+                self.assertEqual(module.notification_metadata()[second],{'state':'refused'})
+            path.unlink()
+            with patch.object(os,'lstat',side_effect=fixed_lstat):
+                self.assertEqual(module.notification_metadata()[second],{'state':'absent'})
+            directory.rmdir();directory.symlink_to('private-target-not-followed')
+            calls.clear()
+            with patch.object(os,'lstat',side_effect=fixed_lstat):
+                self.assertEqual(module.notification_metadata(),{first:{'state':'refused'},second:{'state':'refused'}})
+            self.assertEqual(calls,[first])
 
 
 if __name__=='__main__':unittest.main()

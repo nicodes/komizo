@@ -50,6 +50,11 @@ enum StartupStage {
     Monitor,
     Parent,
     Notification,
+    NotificationEnvironment,
+    NotificationAddress,
+    NotificationSocket,
+    NotificationParent,
+    NotificationIdentity,
     ProxyGuard,
     Confinement,
     Exec,
@@ -610,12 +615,16 @@ fn signals() -> Result<()> {
     Ok(())
 }
 
-fn notification(role: Role) -> Result<Option<String>> {
-    let address = std::env::var("NOTIFY_SOCKET")?;
+fn notification(role: Role, stage: &mut StartupStage) -> Result<Option<String>> {
+    *stage = StartupStage::NotificationEnvironment;
+    let address =
+        std::env::var("NOTIFY_SOCKET").context("fixed infrastructure notification environment")?;
+    *stage = StartupStage::NotificationAddress;
     ensure!(
         address == role.notification(),
         "infrastructure notification escaped its fixed socket"
     );
+    *stage = StartupStage::NotificationSocket;
     let metadata = match fs::symlink_metadata(&address) {
         Ok(metadata) => metadata,
         // OpenRC removes the startup socket after accepting READY=1. A later
@@ -623,23 +632,30 @@ fn notification(role: Role) -> Result<Option<String>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     };
+    ensure!(
+        metadata.file_type().is_socket() && metadata.mode() & 0o077 == 0,
+        "infrastructure notification socket is not protected"
+    );
+    *stage = StartupStage::NotificationParent;
     let parent = fs::symlink_metadata("/run/openrc")?;
+    ensure!(
+        parent.is_dir()
+            && !parent.file_type().is_symlink()
+            && parent.uid() == 0
+            && parent.mode() & 0o022 == 0,
+        "infrastructure notification parent is not protected"
+    );
+    *stage = StartupStage::NotificationIdentity;
     let proxy = if role == Role::Proxy {
         Some(bootstrap::proxy_identity()?)
     } else {
         None
     };
     ensure!(
-        parent.is_dir()
-            && !parent.file_type().is_symlink()
-            && parent.uid() == 0
-            && parent.mode() & 0o022 == 0
-            && metadata.file_type().is_socket()
-            && metadata.mode() & 0o077 == 0
-            && (metadata.uid() == 0
-                || proxy.is_some_and(|(uid, gid)| metadata.uid() == uid
-                    && metadata.gid() == gid
-                    && metadata.mode() & 0o7777 == 0o600)),
+        metadata.uid() == 0
+            || proxy.is_some_and(|(uid, gid)| metadata.uid() == uid
+                && metadata.gid() == gid
+                && metadata.mode() & 0o7777 == 0o600),
         "infrastructure notification is not a protected supervisor socket"
     );
     if let Some((uid, gid)) = proxy {
@@ -704,8 +720,8 @@ fn run_fixed(role: Role, stage: &mut StartupStage, slot: &mut Option<fs::File>) 
     unsafe {
         libc::umask(0o077);
     }
-    *stage = StartupStage::Notification;
-    let notification = notification(role).context("fixed infrastructure startup notification")?;
+    let notification =
+        notification(role, stage).context("fixed infrastructure startup notification")?;
     match role {
         Role::Controller => {
             let mut process = command(CLI);
