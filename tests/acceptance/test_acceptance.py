@@ -236,7 +236,7 @@ class NativeBootGuards(unittest.TestCase):
             fixture=importlib.util.module_from_spec(spec)
             write=Mock(side_effect=lambda path,value:Path(path).write_text(json.dumps(value)))
             with patch.dict(sys.modules,{'acceptance':SimpleNamespace(ROOT=root,MiB=1<<20,BINARY='/fixture/box',
-                    run=Mock(),write=write,actual_boundaries=Mock(),capacity=Mock(),service_active=Mock(),service_pid=Mock(),restart_controller=Mock(),profile_probe=Mock()),'fixture_registry':SimpleNamespace(),'fixture_tasks':SimpleNamespace(stop=Mock())}):
+                    run=Mock(),write=write,actual_boundaries=Mock(),capacity=Mock(),service_active=Mock(),service_pid=Mock(),restart_controller=Mock(),profile_probe=Mock(),ready_notifications_absent=Mock()),'fixture_registry':SimpleNamespace(),'fixture_tasks':SimpleNamespace(stop=Mock())}):
                 spec.loader.exec_module(fixture)
             fixture.setup_registry=Mock();fixture.host_policy=Mock();fixture.release=Mock()
             fixture.deploy=Mock(return_value=(None,{'ok':True,'release_digest':'sha256:'+'a'*64}))
@@ -317,7 +317,7 @@ class NativeCaptureGuards(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('network_fixture', ENGINE.parent / 'support/native_host_runtime.py')
         fixture = importlib.util.module_from_spec(spec)
         with patch.dict(sys.modules, {'acceptance': SimpleNamespace(ROOT=Path('/fixture'), MiB=1 << 20, BINARY='/fixture/box',
-                run=run, write=Mock(), actual_boundaries=Mock(), capacity=Mock(),service_active=Mock(),service_pid=Mock(),restart_controller=Mock(),profile_probe=Mock()),
+                run=run, write=Mock(), actual_boundaries=Mock(), capacity=Mock(),service_active=Mock(),service_pid=Mock(),restart_controller=Mock(),profile_probe=Mock(),ready_notifications_absent=Mock()),
                 'fixture_registry': SimpleNamespace(canonical=canonical, digest=digest)}):
             spec.loader.exec_module(fixture)
         fixture.Path = lambda name: SimpleNamespace(read_text=lambda: files[name])
