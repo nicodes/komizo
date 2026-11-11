@@ -1,4 +1,5 @@
 """The test SDK retains exact public bytes and never forwards the API token."""
+import ast
 import hashlib
 import importlib.util
 import io
@@ -6,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import threading
 import time
 import subprocess
 import socket
@@ -309,4 +311,113 @@ class NativeGuestReadinessEvidence(unittest.TestCase):
             self.assertEqual(calls,[first])
 
 
-if __name__=='__main__':unittest.main()
+class ControllerListenerReadiness(unittest.TestCase):
+    def module(self):
+        spec=importlib.util.spec_from_file_location('native_controller_readiness',Path(__file__).parents[1]/'support/native_host_acceptance.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        return module
+
+    def listener(self):
+        if sys.platform!='linux' or os.geteuid()!=0:
+            self.skipTest('real root Unix peer/metadata controls run in the dedicated sudo Linux fixture step')
+        temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
+        directory=Path(temporary.name);directory.chmod(0o750)
+        path=directory/'control.sock'
+        listener=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM);self.addCleanup(listener.close)
+        listener.bind(str(path));listener.listen(8);path.chmod(0o660)
+        try:os.chown(directory,0,1);os.chown(path,0,1)
+        except OSError as error:
+            if error.errno not in {1,22}:raise
+            if 'SUDO_UID' in os.environ:self.fail('dedicated sudo Linux fixture requires real protected socket ownership')
+            self.skipTest('this local sandbox cannot assign a nonzero managed socket group')
+        return directory,path,listener
+
+    def test_real_root_listener_is_bound_to_the_exact_new_worker_and_current_socket(self):
+        module=self.module();directory,path,_=self.listener();pid=os.getpid()
+        with patch.object(module,'Path',return_value=directory),patch('grp.getgrnam',return_value=SimpleNamespace(gr_gid=1)),patch.object(module,'service_pid',return_value=pid):
+            self.assertTrue(module.controller_listener_ready(pid,time.monotonic()+1))
+            self.assertFalse(module.controller_listener_ready(pid+1,time.monotonic()+1))
+        with patch.object(module,'Path',return_value=directory),patch('grp.getgrnam',return_value=SimpleNamespace(gr_gid=1)),patch.object(module,'service_pid',return_value=pid+1):
+            self.assertFalse(module.controller_listener_ready(pid+1,time.monotonic()+1))
+        with patch.object(module,'Path',return_value=directory),patch('grp.getgrnam',return_value=SimpleNamespace(gr_gid=1)),patch.object(module,'service_pid',side_effect=[pid,pid+1]):
+            self.assertFalse(module.controller_listener_ready(pid,time.monotonic()+1))
+
+    def test_world_access_links_foreign_groups_and_nonlisteners_cannot_satisfy_readiness(self):
+        module=self.module();directory,path,_=self.listener();pid=os.getpid()
+        with patch.object(module,'Path',return_value=directory),patch('grp.getgrnam',return_value=SimpleNamespace(gr_gid=1)),patch.object(module,'service_pid',return_value=pid):
+            for mode in [0o666,0o600,0o777]:
+                path.chmod(mode)
+                with self.subTest(mode=mode),self.assertRaisesRegex(ValueError,'metadata'):
+                    module.controller_listener_ready(pid,time.monotonic()+1)
+            path.chmod(0o660);os.chown(path,0,0)
+            with self.assertRaisesRegex(ValueError,'metadata'):module.controller_listener_ready(pid,time.monotonic()+1)
+            os.chown(path,1,1)
+            with self.assertRaisesRegex(ValueError,'metadata'):module.controller_listener_ready(pid,time.monotonic()+1)
+            os.chown(path,0,1);directory.chmod(0o777)
+            with self.assertRaisesRegex(ValueError,'metadata'):module.controller_listener_ready(pid,time.monotonic()+1)
+            directory.chmod(0o750)
+            path.unlink();path.write_bytes(b'never read this fixture content');path.chmod(0o660);os.chown(path,0,1)
+            with self.assertRaisesRegex(ValueError,'metadata'):module.controller_listener_ready(pid,time.monotonic()+1)
+            path.unlink();path.symlink_to('private-target-never-followed')
+            with self.assertRaisesRegex(ValueError,'metadata'):module.controller_listener_ready(pid,time.monotonic()+1)
+
+    def test_a_stale_socket_without_a_listener_refuses(self):
+        module=self.module();directory,path,listener=self.listener();listener.close();pid=os.getpid()
+        with patch.object(module,'Path',return_value=directory),patch('grp.getgrnam',return_value=SimpleNamespace(gr_gid=1)),patch.object(module,'service_pid',return_value=pid):
+            with self.assertRaises(ConnectionRefusedError):module.controller_listener_ready(pid,time.monotonic()+1)
+    def test_expired_budget_never_touches_or_connects_the_socket(self):
+        module=self.module();pid=os.getpid()
+        with patch.object(module,'Path',side_effect=AssertionError('expired probe touched the socket')):
+            self.assertFalse(module.controller_listener_ready(pid,time.monotonic()-1))
+
+    def test_restart_never_renews_the_original_deadline_or_repeats_the_owned_kill(self):
+        if sys.platform!='linux':self.skipTest('the production pidfd restart control requires Linux')
+        module=self.module()
+        with patch.object(module,'service_pid',side_effect=[100,100,200]),patch.object(os,'pidfd_open',return_value=9,create=True),patch.object(os,'close'),patch('signal.pidfd_send_signal',create=True) as kill,patch.object(module.time,'monotonic',side_effect=[10,10,40,40]),patch.object(module.time,'sleep') as sleep,patch.object(module,'controller_listener_ready',return_value=False) as ready:
+            with self.assertRaisesRegex(ValueError,'original deadline'):module.restart_controller()
+        ready.assert_called_once_with(200,40);kill.assert_called_once();sleep.assert_not_called()
+
+
+class SubmitFailureDiagnostics(unittest.TestCase):
+    def functions(self, run):
+        source=Path(__file__).parents[1]/'support/native_host_runtime.py'
+        tree=ast.parse(source.read_text())
+        selected=[node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name in {'submit_failure','submit'}]
+        namespace={'hashlib':hashlib,'json':json,'threading':threading,'run':run,'BINARY':'/usr/local/bin/komizo-box',
+            'registry':SimpleNamespace(canonical=lambda value:b'private request body')}
+        exec(compile(ast.Module(body=selected,type_ignores=[]),str(source),'exec'),namespace)
+        return namespace
+
+    def test_same_failed_result_retains_closed_metadata_without_request_response_or_stderr_data(self):
+        secret='fixture-private-sentinel';stdout=(secret+' proof body').encode()
+        stderr=('Error: Connection refused (os error 111) '+secret+' PRIVATE KEY '+('x'*10000)).encode()
+        stderr+=b' Connection refused (os error 111)'
+        calls=[]
+        def run(*arguments,**options):
+            calls.append((arguments,options));return subprocess.CompletedProcess([],7,stdout,stderr)
+        functions=self.functions(run)
+        with self.assertRaisesRegex(ValueError,'no JSON result') as failure:
+            functions['submit']({'action':'stop','timeout_seconds':30})
+        record=json.loads(str(failure.exception).split(': ',1)[1])
+        self.assertEqual(set(record),{'returncode','stdout_bytes','stdout_sha256','stderr'})
+        self.assertEqual(record['returncode'],7);self.assertEqual(record['stdout_bytes'],len(stdout))
+        self.assertEqual(record['stdout_sha256'],'sha256:'+hashlib.sha256(stdout).hexdigest())
+        self.assertIn('connection_refused',record['stderr']);self.assertIn('os_error=111',record['stderr'])
+        self.assertLessEqual(len(record['stderr']),512);self.assertNotIn(secret,str(failure.exception))
+        self.assertNotIn('PRIVATE KEY',str(failure.exception));self.assertNotIn('proof body',str(failure.exception))
+        self.assertEqual(len(calls),1);self.assertEqual(calls[0][1]['timeout'],65)
+        self.assertEqual(calls[0][1]['input'],b'private request body')
+
+    def test_valid_result_is_unchanged_and_empty_result_is_not_retried(self):
+        for body,expected in [(b'{"ok":true}',{'ok':True}),(b'',None)]:
+            calls=[]
+            def run(*arguments,**options):
+                calls.append(arguments);return subprocess.CompletedProcess([],0,body,b'')
+            functions=self.functions(run)
+            if expected is None:
+                with self.assertRaisesRegex(ValueError,'"stdout_bytes": 0'):functions['submit']({'action':'stop','timeout_seconds':1})
+            else:self.assertEqual(functions['submit']({'action':'stop','timeout_seconds':1}),expected)
+            self.assertEqual(len(calls),1)
+
+
+if __name__=='__main__':unittest.main(verbosity=2)

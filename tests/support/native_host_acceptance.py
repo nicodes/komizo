@@ -75,6 +75,34 @@ def service_active(service):
     except (OSError,ValueError):return False
 
 
+def controller_listener_ready(pid, deadline):
+    if time.monotonic()>=deadline:return False
+    import grp
+    import socket
+    import stat
+    import struct
+    if type(pid) is not int or pid<=1:raise ValueError('invalid new controller identity')
+    directory=Path('/run/komizo');path=directory/'control.sock'
+    gid=grp.getgrnam('komizo-submit').gr_gid
+    parent=directory.lstat();metadata=path.lstat()
+    if (gid<=0 or not stat.S_ISDIR(parent.st_mode) or parent.st_uid!=0 or parent.st_gid!=gid
+            or stat.S_IMODE(parent.st_mode)!=0o750 or not stat.S_ISSOCK(metadata.st_mode)
+            or metadata.st_uid!=0 or metadata.st_gid!=gid or metadata.st_nlink!=1
+            or stat.S_IMODE(metadata.st_mode)!=0o660):
+        raise ValueError('new controller listener metadata is not protected')
+    if service_pid(CONTROLLER)!=pid:return False
+    remaining=deadline-time.monotonic()
+    if remaining<=0:return False
+    with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as connection:
+        connection.settimeout(min(.2,remaining))
+        connection.connect(str(path))
+        peer=struct.unpack('3i',connection.getsockopt(socket.SOL_SOCKET,socket.SO_PEERCRED,12))
+        current=path.lstat()
+        fields=('st_dev','st_ino','st_mode','st_uid','st_gid','st_nlink')
+        if peer!=(pid,0,0) or any(getattr(current,key)!=getattr(metadata,key) for key in fields):return False
+        return service_pid(CONTROLLER)==pid and time.monotonic()<deadline
+
+
 def restart_controller():
     pid=service_pid(CONTROLLER);descriptor=os.pidfd_open(pid)
     try:
@@ -82,9 +110,14 @@ def restart_controller():
         __import__('signal').pidfd_send_signal(descriptor,__import__('signal').SIGKILL)
     finally:os.close(descriptor)
     deadline=time.monotonic()+30
-    while not service_active(CONTROLLER) or service_pid(CONTROLLER)==pid:
-        if time.monotonic()>=deadline:raise ValueError('OpenRC did not supervise the killed controller')
-        time.sleep(.1)
+    while time.monotonic()<deadline:
+        try:
+            current=service_pid(CONTROLLER)
+            if current!=pid and controller_listener_ready(current,deadline):return
+        except (OSError,ValueError):pass
+        remaining=deadline-time.monotonic()
+        if remaining>0:time.sleep(min(.1,remaining))
+    raise ValueError('OpenRC did not restore the exact new controller listener within its original deadline')
 
 
 def dns_pid():

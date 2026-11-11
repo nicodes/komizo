@@ -36,6 +36,22 @@ def until(check, seconds=30):
     raise ValueError('native runtime fixture deadline expired')
 
 
+def submit_failure(value):
+    import re
+    # Preserve only this command's result. Never export a response body, request,
+    # environment, proof or arbitrary stderr through the diagnostic path.
+    stderr=value.stderr[-2048:].decode(errors='replace').lower()
+    known={'connection_refused':'connection refused','connection_reset':'connection reset',
+        'socket_missing':'no such file or directory','permission_denied':'permission denied',
+        'deadline':'deadline','timed_out':'timed out','host_refused':'host refused submission',
+        'broken_pipe':'broken pipe'}
+    errors=[key for key,text in known.items() if text in stderr]
+    errors+=['os_error='+number for number in sorted(set(re.findall(r'\bos error ([0-9]{1,3})\b',stderr)))[:8]]
+    if value.stderr:errors.append('[remaining stderr redacted]')
+    return {'returncode':value.returncode,'stdout_bytes':len(value.stdout),
+        'stdout_sha256':'sha256:'+hashlib.sha256(value.stdout).hexdigest(),'stderr':'; '.join(errors)[:512]}
+
+
 def submit(body):
     stop=threading.Event();worker=None
     if body['action']=='deploy':
@@ -65,7 +81,9 @@ def submit(body):
         worker=threading.Thread(target=sample,daemon=True);worker.start()
     try:
         value=run([BINARY,'submit'],input=registry.canonical(body),ok=False,timeout=body['timeout_seconds']+35)
-        return json.loads(value.stdout)
+        try:return json.loads(value.stdout)
+        except (json.JSONDecodeError,UnicodeDecodeError):
+            raise ValueError('native submit returned no JSON result: '+json.dumps(submit_failure(value),sort_keys=True)) from None
     finally:
         stop.set()
         if worker is not None:worker.join(timeout=3)
