@@ -11,7 +11,7 @@ import threading
 import time
 import urllib.request
 
-from acceptance import ROOT, BINARY, MiB, run, write, actual_boundaries, capacity, service_active, service_pid, restart_controller, profile_probe
+from acceptance import ROOT, BINARY, MiB, run, write, actual_boundaries, capacity, service_active, service_pid, restart_controller, profile_probe, ready_notifications_absent
 import fixture_registry as registry
 try:
     import fixture_tasks
@@ -722,6 +722,7 @@ def bounded_prepare():
     fixture_postgres.prepare(report)
     apparmor_boundary('pgbox',report)
     if not shared_dns('bounded-full-postgresql-workload'):raise ValueError('bounded shared DNS escaped infrastructure accounting')
+    ready_notifications_absent()
     report['checks']['shared_dns_control_budget']='passed'
     report['installed']={'static':receipt['release_digest']}
     report['runtime_acceptance']=False
@@ -757,6 +758,7 @@ def prepare():
     cross_network_refused('mailroom','livebox','api',8080)
     records=installed('mailroom')['resources']['containers'];before={name:container(value)['Id'] for name,value in records.items()}
     dns_accounted=shared_dns('before-controller-death')
+    ready_notifications_absent()
     api=records['api']['name'];db=records['db']['name']
     run(['podman','--remote=false','exec',api,'/bin/busybox','nslookup',db])
     if b'a'*40 not in run(['podman','--remote=false','exec',api,'/bin/busybox','wget','-q','-O-','http://db:8080/']).stdout:

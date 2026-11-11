@@ -75,6 +75,13 @@ def service_active(service):
     except (OSError,ValueError):return False
 
 
+def ready_notifications_absent():
+    for service in (CONTROLLER,PROXY,'komizo-dns','komizo-expiry'):
+        if not service_active(service):raise ValueError('fixed service has not reported ready')
+        if os.path.lexists(Path('/run/openrc')/('supervise-'+service+'.sock')):
+            raise ValueError('ready fixed service retained its one-shot notification path')
+
+
 def controller_listener_ready(pid, deadline):
     if time.monotonic()>=deadline:return False
     import grp
@@ -303,6 +310,7 @@ def actual_boundaries(expected,*,phase='bootstrap'):
     if (status['NoNewPrivs'].strip()!='1' or status['Seccomp'].strip()!='2'
             or Path('/proc',str(child),'attr/current').read_text().strip()!='komizo-dns (enforce)'):
         raise ValueError('actual DNS confinement differs')
+    ready_notifications_absent()
 
 
 def prepare():

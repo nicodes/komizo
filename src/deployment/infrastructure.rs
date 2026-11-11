@@ -699,7 +699,7 @@ pub fn supervisor_pid(role: Role) -> Result<Option<u32>> {
     process_group(pid, &role.group())?;
     let argv = fs::read(format!("{proc}/cmdline"))?;
     let expected = supervisor_arguments(role);
-    let expected = std::iter::once(SUPERVISOR.to_owned())
+    let expected = std::iter::once(role.service().to_owned())
         .chain(expected)
         .flat_map(|s| s.into_bytes().into_iter().chain([0]))
         .collect::<Vec<_>>();
@@ -824,6 +824,10 @@ pub fn supervise(value: &str) -> Result<()> {
     }
     let mut process = command(SUPERVISOR);
     process
+        // OpenRC 0.63.2 binds readiness by service name but retires it by
+        // argv[0]. Give both paths the same fixed role so later Caddy status
+        // notifications fail promptly after the one-shot readiness handoff.
+        .arg0(role.service())
         .env("RC_SVCNAME", role.service())
         .env("RC_SVCDIR", "/run/openrc")
         .args(supervisor_arguments(role));

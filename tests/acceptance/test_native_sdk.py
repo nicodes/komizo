@@ -319,6 +319,33 @@ class ControllerListenerReadiness(unittest.TestCase):
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
         return module
 
+    def test_ready_notification_paths_must_be_absent_including_dangling_links(self):
+        module=self.module()
+        with tempfile.TemporaryDirectory() as temporary:
+            directory=Path(temporary);path=directory/'supervise-komizo-proxy.sock'
+            with patch.object(module,'Path',return_value=directory),patch.object(module,'service_active',return_value=True) as active:
+                module.ready_notifications_absent()
+                roles=('komizo-controller','komizo-proxy','komizo-dns','komizo-expiry')
+                self.assertEqual([args[0] for args,_ in active.call_args_list],list(roles))
+                for role in roles:
+                    selected=directory/('supervise-'+role+'.sock')
+                    with self.subTest(role=role),socket.socket(socket.AF_UNIX,socket.SOCK_DGRAM) as listener:
+                        listener.bind(str(selected))
+                        with self.assertRaisesRegex(ValueError,'retained'):module.ready_notifications_absent()
+                    selected.unlink()
+                path.symlink_to(directory/'absent-target')
+                with self.assertRaisesRegex(ValueError,'retained'):module.ready_notifications_absent()
+                path.unlink();path.write_bytes(b'foreign')
+                with self.assertRaisesRegex(ValueError,'retained'):module.ready_notifications_absent()
+                path.unlink();path.mkdir()
+                with self.assertRaisesRegex(ValueError,'retained'):module.ready_notifications_absent()
+
+    def test_unready_services_never_satisfy_notification_cleanup(self):
+        module=self.module()
+        with patch.object(module,'service_active',return_value=False),patch.object(module.os.path,'lexists') as present:
+            with self.assertRaisesRegex(ValueError,'reported ready'):module.ready_notifications_absent()
+            present.assert_not_called()
+
     def listener(self):
         if sys.platform!='linux' or os.geteuid()!=0:
             self.skipTest('real root Unix peer/metadata controls run in the dedicated sudo Linux fixture step')
