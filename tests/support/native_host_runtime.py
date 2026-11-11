@@ -245,10 +245,18 @@ def proxy_refresh_observation(operation, stop):
     if not re.fullmatch('[a-f0-9]{32}',operation):raise ValueError('invalid diagnostic operation')
     deadline=time.monotonic()+4
     value={'kind':'komizo.proxy-refresh-observation','version':1,'diagnostic_only':True,'operation_id':operation,'phase':'activating'}
-    for key,observe in [('controller_children',lambda:proxy_cli_snapshot(min(deadline,time.monotonic()+1))),
-            ('proxy_profile',lambda:proxy_admin_profile(deadline,stop))]:
-        try:value[key]=observe()
-        except Exception as error:value[key]=proxy_observer_failure(error)
+    try:value['controller_children']=proxy_cli_snapshot(min(deadline,time.monotonic()+1))
+    except Exception as error:value['controller_children']=proxy_observer_failure(error)
+    children=value['controller_children']
+    reloads=[row for row in children.get('caddy',[]) if row.get('role')=='reload'
+        and row.get('process_state') in {'running','sleeping','disk_wait','idle'}]
+    if children.get('state')!='observed':
+        value['proxy_profile']={'state':'not_observed','reason':'child_observation_unavailable'}
+    elif len(reloads)!=1:
+        value['proxy_profile']={'state':'not_observed','reason':'reload_child_absent' if not reloads else 'reload_child_ambiguous'}
+    else:
+        try:value['proxy_profile']=proxy_admin_profile(deadline,stop)
+        except Exception as error:value['proxy_profile']=proxy_observer_failure(error)
     if len(json.dumps(value,separators=(',',':')).encode())>48<<10:
         return {**{key:value[key] for key in ['kind','version','diagnostic_only','operation_id','phase']},'state':'export_limit_refused'}
     return value
@@ -285,7 +293,7 @@ def submit(body):
                     now=time.monotonic()
                     if phase!='activating' or record.get('operation_id')!=operation:activating_since=None
                     elif activating_since is None:activating_since=now
-                    elif not proxy_sampled and now-activating_since>=10:
+                    elif not proxy_sampled and now-activating_since>=60:
                         proxy_sampled=True
                         diagnostic=proxy_refresh_observation(operation,stop)
                         if not stop.is_set():write(ROOT/'proxy-refresh-observation.json',diagnostic)

@@ -543,13 +543,44 @@ class ProxyRefreshObserver(unittest.TestCase):
         functions=self.functions();clock=[10.0];calls=[]
         functions['time']=SimpleNamespace(monotonic=lambda:clock[0])
         def children(deadline):calls.append(('children',deadline));clock[0]=11;raise ValueError('private-child-arguments')
-        def profile(deadline,stop):calls.append(('profile',deadline));raise TimeoutError('private-stack')
+        def profile(deadline,stop):self.fail('unavailable child evidence must not send the profile request')
         functions.update(proxy_cli_snapshot=children,proxy_admin_profile=profile)
         result=functions['proxy_refresh_observation']('a'*32,threading.Event())
-        self.assertEqual(calls,[('children',11),('profile',14)])
+        self.assertEqual(calls,[('children',11)])
         self.assertEqual(result['controller_children'],{'state':'unavailable','stage':'unavailable','errno':None,'http_status':None})
-        self.assertEqual(result['proxy_profile'],{'state':'deadline_expired','stage':'unavailable','errno':None,'http_status':None})
+        self.assertEqual(result['proxy_profile'],{'state':'not_observed','reason':'child_observation_unavailable'})
         self.assertTrue(result['diagnostic_only']);self.assertNotIn('private',json.dumps(result))
+
+    def test_profile_requires_exactly_one_live_owned_reload_child(self):
+        functions=self.functions();live={'role':'reload','process_state':'sleeping'}
+        cases=[({'state':'observed','caddy':[]},'reload_child_absent'),
+            ({'state':'observed','caddy':[{'role':'adapt','process_state':'running'}]},'reload_child_absent'),
+            ({'state':'observed','caddy':[live,live]},'reload_child_ambiguous')]
+        cases += [({'state':'observed','caddy':[{'role':'reload','process_state':state}]},'reload_child_absent')
+            for state in ('zombie','dead','other','stopped')]
+        cases.append(({'state':'deadline_expired','caddy':[live]},'child_observation_unavailable'))
+        for snapshot,reason in cases:
+            with self.subTest(snapshot=snapshot):
+                functions['proxy_cli_snapshot']=lambda deadline:snapshot
+                functions['proxy_admin_profile']=lambda deadline,stop:self.fail('unproven reload must not send the profile request')
+                result=functions['proxy_refresh_observation']('a'*32,threading.Event())
+                self.assertEqual(result['proxy_profile'],{'state':'not_observed','reason':reason})
+
+    def test_one_live_reload_profiles_once_with_the_original_deadline(self):
+        functions=self.functions();clock=[10.0];calls=[];stop=threading.Event()
+        functions['time']=SimpleNamespace(monotonic=lambda:clock[0])
+        def children(deadline):
+            calls.append(('children',deadline));clock[0]=11
+            return {'state':'observed','caddy':[{'role':'adapt','process_state':'running'},
+                {'role':'reload','process_state':'sleeping'}]}
+        def profile(deadline,actual_stop):
+            calls.append(('profile',deadline));self.assertIs(actual_stop,stop)
+            raise TimeoutError('private-stack')
+        functions.update(proxy_cli_snapshot=children,proxy_admin_profile=profile)
+        result=functions['proxy_refresh_observation']('a'*32,stop)
+        self.assertEqual(calls,[('children',11),('profile',14)])
+        self.assertEqual(result['proxy_profile'],{'state':'deadline_expired','stage':'unavailable','errno':None,'http_status':None})
+        self.assertNotIn('private',json.dumps(result))
 
     def test_http_raw_cap_marks_partial_profile_and_drops_the_incomplete_final_frame(self):
         functions,clock,calls,connection=self.admin_fixture()
