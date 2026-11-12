@@ -333,7 +333,80 @@ time.sleep(600)
             child.stdout.close();child.stderr.close()
 
 
+def restored_first_start(report):
+    """First activation of owner-transferred data has no old runtime parent."""
+    app='restored'
+    with Path('/etc/hosts').open('a') as output:output.write('127.0.0.1 '+app+'.localhost\n')
+    policy=runtime.host_policy(app)
+    helpers=json.loads((ROOT/'profile.json').read_text())['backup_helpers']
+    if set(helpers)!={'snapshot.py','postgres-recovery.py'} or any(
+            not isinstance(value,str) or not __import__('re').fullmatch('[a-f0-9]{64}',value) for value in helpers.values()):
+        raise ValueError('restored-start capture requires its immutable recovery helpers')
+    body=CAPTURE.replace(b'__RECOVERY_HELPERS__',registry.canonical(helpers)).replace(
+        b"assert app=='secretbox' and instance=='production'",b"assert app=='restored' and instance=='production'")
+    program=ROOT/'capture-restored.py';write(program,body,0o700)
+    policy['backup']={'program':str(program),'sha256':registry.digest(body),'timeout_seconds':30,
+        'max_export_bytes':1<<20,'services':['db']}
+    write('/etc/komizo/apps/'+app+'.json',policy)
+    document=runtime.release(app,'a'*40,dynamic=True)
+    identity=registry.digest(registry.canonical(document))
+    prepared=runtime.submit(runtime.request(app,'data-prepare',identity,release=document))
+    if prepared.get('phase')!='prepared_stopped' or not prepared.get('ok'):
+        raise ValueError('restored first-start data preparation failed: '+json.dumps(prepared))
+    resources=runtime.installed(app)['resources']
+    for record in resources['containers'].values():
+        if run(['podman','--remote=false','container','exists',record['name']],ok=False).returncode!=1:
+            raise ValueError('restored first-start fixture has a prior service container')
+    volume=resources['volumes']['data']
+    mount=Path(run(['podman','--remote=false','volume','inspect',volume['name'],'--format={{.Mountpoint}}']).stdout.decode().strip())
+    if any(mount.iterdir()):raise ValueError('restored fixture expected a new empty retained volume')
+    # Simulate the disposable owner's file transfer, not an earlier application
+    # activation. The capture program requires this exact pre-migration value.
+    seed=b'accepted\n';retained=mount/'count';retained.write_bytes(seed)
+    os.chown(retained,10001,10001);os.chmod(retained,0o600)
+    os.chown(mount,10001,10001);os.chmod(mount,0o700)
+    snapshot=registry.digest(b'synthetic-owner-retained-file-transfer')
+    verification={'kind':'komizo.data-verification','version':1,'application':app,'instance':'production',
+        'release_digest':identity,'volumes':resources['volumes'],'snapshot_sha256':snapshot,'created_at':int(time.time()),
+        'checks':{'database':'passed','authorization':'passed','files':'passed'},
+        'observations':{'fixture':'synthetic-native-retained-file-transfer','retained_sha256':registry.digest(seed)}}
+    verification_hash=registry.digest(registry.canonical(verification))
+    reports=Path('/var/lib/komizo/data-evidence/reports');reports.mkdir(mode=0o700,parents=True,exist_ok=True)
+    write(reports/(verification_hash[7:]+'.json'),verification)
+    evidence={'kind':'komizo.data-evidence','version':1,'application':app,'instance':'production','release_digest':identity,
+        'volumes':resources['volumes'],'created_at':int(time.time()),
+        'source':{'kind':'transfer','snapshot_sha256':snapshot,'verification_sha256':verification_hash}}
+    write('/var/lib/komizo/data-evidence/'+app+'--production.json',evidence)
+    accepted=runtime.submit(runtime.request(app,'data-accept',identity,data_evidence=registry.digest(registry.canonical(evidence))))
+    if not accepted.get('ok') or runtime.installed(app)['desired_running'] or retained.read_bytes()!=seed:
+        raise ValueError('restored first-start data acceptance changed stopped data')
+    staged=runtime.submit(runtime.request(app,'deploy',identity,release=document))
+    if not staged.get('ok') or staged.get('phase')!='prepared_stopped' or retained.read_bytes()!=seed:
+        raise ValueError('restored first-start source staging executed migration')
+    namespace='kmz-'+hashlib.sha256((app+'\0production').encode()).hexdigest()[:20]
+    parent=Path('/sys/fs/cgroup/komizo/production')/namespace
+    if parent.exists() or parent.is_symlink():raise ValueError('restored fixture already has a runtime instance parent')
+    started=runtime.submit(runtime.request(app,'start',identity))
+    backup=started.get('backup',{})
+    if (not started.get('ok') or started.get('phase')!='ready' or not parent.is_dir()
+            or backup.get('status')!='ready' or backup.get('release_digest')!=identity
+            or started.get('previous_release_digest')!=identity or runtime.count(app)!=2):
+        raise ValueError('restored first Start failed backup-before-migration: '+json.dumps(started))
+    # The protected capture asserted one retained row; initialization has now
+    # appended the second. Both source-bound encrypted exports remain readable.
+    if sorted(value['name'] for value in backup['files'])!=['receipt.json','snapshot.cms']:
+        raise ValueError('restored first Start lacks its complete protected backup')
+    for metadata in backup['files']:export(app,identity,started['operation_id'],metadata)
+    if b'a'*40 not in runtime.fetch(app,identity):raise ValueError('restored first Start did not activate its selected source')
+    runtime.application_limits(app)
+    stopped=runtime.submit(runtime.request(app,'stop',identity))
+    if not stopped.get('ok') or stopped.get('phase')!='prepared_stopped' or runtime.count(app)!=2:
+        raise ValueError('restored first-start cleanup did not retain stopped data')
+    report['checks']['restored_first_start_backup_before_migration']='passed'
+
+
 def prepare(report):
+    restored_first_start(report)
     capture('secretbox',report,'synthetic-sqlite-package-v2')
     if runtime.count('secretbox')!=1:raise ValueError('protected capture changed retained data')
     interrupted_deadline(report)
