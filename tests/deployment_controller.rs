@@ -301,9 +301,11 @@ fn terminal_acknowledgment_releases_the_instance_before_unrelated_maintenance() 
         drop(writer);
         let _ = finished_tx.send(result);
     });
+    finished_rx.recv_timeout(remaining()).unwrap().unwrap();
+    acknowledgment.join().unwrap();
     let mut bytes = Vec::new();
     loop {
-        reader.set_read_timeout(Some(remaining())).unwrap();
+        let _ = remaining();
         let mut buffer = [0; 4096];
         let count = reader.read(&mut buffer).unwrap();
         if count == 0 {
@@ -315,8 +317,6 @@ fn terminal_acknowledgment_releases_the_instance_before_unrelated_maintenance() 
             "terminal acknowledgment exceeded its test bound"
         );
     }
-    finished_rx.recv_timeout(remaining()).unwrap().unwrap();
-    acknowledgment.join().unwrap();
     let acknowledged: Operation = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(acknowledged.operation_id, first);
     assert_eq!(acknowledged.phase, "ready");
