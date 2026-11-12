@@ -32,6 +32,107 @@ def run(argv, *, timeout=60, **options):
     return subprocess.run(argv, check=options.pop('check',True), timeout=timeout, **options)
 
 
+def native_failure_observation(evidence, journal, profile, source, binary_sha):
+    """Project already-collected synthetic facts; never export raw guest records."""
+    result={'kind':'komizo.native-fixture-failure','version':1,'profile':profile if profile in {'functional','bounded'} else 'unobserved',
+        'source':{'revision':source if isinstance(source,str) and re.fullmatch('[a-f0-9]{40}',source) else None,
+            'binary_sha256':binary_sha if isinstance(binary_sha,str) and re.fullmatch('[a-f0-9]{64}',binary_sha) else None}}
+    def unobserved(reason):return {'state':'unobserved','reason':reason}
+    def text(value,maximum):
+        if not isinstance(value,str):return unobserved('invalid_text')
+        if len(value)>65536:return unobserved('oversized_text')
+        original=value
+        if '-----BEGIN' in value or 'PRIVATE KEY' in value:value='[redacted fixture PEM]'
+        elif re.search(r'(?i)\b(?:host|dbname|password|dsn)\s*=',value):value='[redacted fixture connection parameters]'
+        else:
+            value=re.sub(r'(?i)(?:runtime|migration)-[a-f0-9]{32}|(?<![a-f0-9])[a-f0-9]{48}(?![a-f0-9])|SCRAM-SHA-256\$[^\s]+|md5[a-f0-9]{32}',
+                '[redacted fixture secret]',value)
+            value=re.sub(r'(?i)\b(?:postgres(?:ql)?|https?|ssh)://[^\s]+','[redacted fixture URL]',value)
+        return {'state':'observed','text':value[:maximum],'truncated':len(value)>maximum,
+            'sha256':hashlib.sha256(original.encode()).hexdigest()}
+    def token(value,pattern):return value if isinstance(value,str) and re.fullmatch(pattern,value) else None
+    try:
+        if not isinstance(evidence,bytes) or len(evidence)>1<<20:raise ValueError('missing_or_oversized_evidence')
+        def unique(pairs):
+            result={}
+            for key,value in pairs:
+                if key in result:raise ValueError('duplicate_field')
+                result[key]=value
+            return result
+        raw=json.loads(evidence,object_pairs_hook=unique)
+        if (not isinstance(raw,dict) or raw.get('kind')!='komizo.native-fixture-evidence'
+                or type(raw.get('version')) is not int or raw['version']!=1):raise ValueError('unknown_evidence_shape')
+        operations=raw.get('operations');containers=raw.get('containers')
+        if (not isinstance(operations,list) or not isinstance(containers,list)
+                or len(operations)>32 or len(containers)>32):raise ValueError('invalid_inventory')
+        failures=[]
+        for item in operations:
+            if (not isinstance(item,dict) or item.get('kind')!='komizo.operation'
+                    or type(item.get('version')) is not int or item['version']!=1):raise ValueError('invalid_operation')
+            failure=item.get('failure')
+            if failure is None:continue
+            identity=token(item.get('operation_id'),'[a-f0-9]{32}')
+            app=token(item.get('application'),'[a-z][a-z0-9-]{0,62}')
+            instance=token(item.get('instance'),r'production|pr-[1-9][0-9]*')
+            if (not identity or not app or not instance or not isinstance(failure,dict)
+                    or failure.get('kind')!='komizo.failure' or type(failure.get('version')) is not int
+                    or failure['version']!=1 or failure.get('operation_id')!=identity):raise ValueError('invalid_failure_identity')
+            phase=token(failure.get('phase'),'[a-z][a-z_]{0,63}');code=token(failure.get('code'),'[a-z][a-z_]{0,63}')
+            if phase is None or code is None:raise ValueError('unknown_failure_phase_or_code')
+            failures.append({'operation_id':identity,'application':app,'instance':instance,
+                'kind':failure['kind'],'phase':phase,'code':code,'context':text(failure.get('context'),2048)})
+        selected=[]
+        for item in containers:
+            if not isinstance(item,dict):raise ValueError('invalid_container')
+            identity=token(item.get('id'),'[a-f0-9]{64}');app=token(item.get('application'),'[a-z][a-z0-9-]{0,62}')
+            instance=token(item.get('instance'),r'production|pr-[1-9][0-9]*')
+            service=token(item.get('service'),'[a-z][a-z0-9-]{0,62}')
+            state=item.get('state')
+            if not identity or not app or not instance or not service or state not in {'created','configured','running','exited','stopped','dead','paused'}:
+                raise ValueError('invalid_container_identity_or_state')
+            row={'id':identity,'application':app,'instance':instance,'service':service,'state':state}
+            failure=item.get('failure_observation')
+            if isinstance(failure,dict):
+                row.update(exit_code=failure.get('exit_code') if type(failure.get('exit_code')) is int and 0<=failure['exit_code']<=255 else None,
+                    oom_killed=failure.get('oom_killed') if type(failure.get('oom_killed')) is bool else None,
+                    error=text(failure.get('error'),2048))
+                logs=failure.get('logs')
+                if isinstance(logs,dict) and logs.get('state')=='observed':
+                    row['logs']={'state':'observed',**{name:text(logs.get(name),2048) for name in ['stdout','stderr']},
+                        **{name:logs.get(name) if type(logs.get(name)) is bool else None
+                            for name in ['timed_out','stdout_truncated','stderr_truncated']},
+                        'command_exit_code':logs.get('command_exit_code') if type(logs.get('command_exit_code')) is int
+                            and -255<=logs['command_exit_code']<=255 else None}
+                else:row['logs']=unobserved('logs_not_observed')
+            else:row['failure_observation']=unobserved('not_collected')
+            selected.append(row)
+        result.update(state='observed',operations=failures[:4],containers=selected[:4],
+            inventories_truncated=len(failures)>4 or len(selected)>4)
+    except (ValueError,TypeError,UnicodeError,RecursionError):
+        result.update(state='unobserved',reason='missing_oversized_or_malformed_evidence')
+    if isinstance(journal,bytes) and len(journal)<=65536:
+        lines=[line for line in journal.decode(errors='replace').splitlines()
+            if re.search(r'oom-kill:|Out of memory:|Memory cgroup out of memory:|apparmor="DENIED"',line)]
+        result['kernel']={'state':'observed','events':[text(line,512) for line in lines[-8:]],'truncated':len(lines)>8}
+    else:result['kernel']=unobserved('missing_or_oversized_journal')
+    encoded=json.dumps(result,sort_keys=True)
+    if len(encoded.encode())+1>32768:
+        result={key:result[key] for key in ['kind','version','profile','source']}
+        result.update(state='unobserved',reason='closed_export_limit')
+        encoded=json.dumps(result,sort_keys=True)
+    return encoded
+
+
+def emit_native_failure(failed,evidence,journal,profile,source,binary_sha):
+    if not failed:return
+    try:
+        print(native_failure_observation(evidence,journal,profile,source,binary_sha),file=sys.stderr,flush=True)
+    except Exception:
+        # Diagnostics cannot replace the original exception or skip owned cleanup.
+        try:print('{"kind":"komizo.native-fixture-failure","version":1,"state":"unobserved","reason":"diagnostic_emission_failed"}',file=sys.stderr,flush=True)
+        except Exception:pass
+
+
 def download(record, target):
     algorithm = 'sha512' if 'sha512' in record else 'sha256'
     digest = hashlib.new(algorithm)
@@ -746,6 +847,8 @@ def main():
                 if not accepted.get('ok'):
                     raise ValueError('native guest acceptance failed')
             finally:
+                failed=sys.exc_info()[0] is not None
+                failure_evidence=None;failure_journal=None
                 if process.poll() is None:
                     try:
                         (args.output / 'boot.json').write_bytes(guest.boot_diagnostics())
@@ -754,11 +857,13 @@ def main():
                     try:
                         guest.command("dmesg | tail -c 65536 > /root/native-host/journal.log", timeout=20)
                         evidence = guest.command('cat /root/native-host/journal.log', timeout=20, capture_output=True).stdout
+                        failure_journal=evidence
                         (args.output / 'journal.log').write_bytes(evidence)
                         status=guest.command('/usr/local/bin/komizo-box status',timeout=30,capture_output=True,check=False)
                         if status.returncode==0:(args.output/'status.json').write_bytes(status.stdout)
                         else:(args.output/'status-error.json').write_text(json.dumps({'code':status.returncode,'stderr':status.stderr.decode(errors='replace')[:2048]},sort_keys=True)+'\n')
                         runtime_evidence=guest.command('python3 /root/native-host/acceptance.py evidence',timeout=15,capture_output=True).stdout
+                        failure_evidence=runtime_evidence
                         (args.output/'runtime-evidence.json').write_bytes(runtime_evidence)
                         if not (args.output/'report.json').exists():
                             report=guest.command('cat /root/native-host/report.json',timeout=10,capture_output=True).stdout
@@ -772,6 +877,8 @@ def main():
                     except subprocess.TimeoutExpired:
                         os.killpg(process.pid, signal.SIGKILL)
                         process.wait(timeout=5)
+                emit_native_failure(failed,failure_evidence,failure_journal,args.profile,
+                    os.environ.get('NATIVE_HOST_SOURCE'),locals().get('binary_sha'))
 
 
 if __name__ == '__main__':
