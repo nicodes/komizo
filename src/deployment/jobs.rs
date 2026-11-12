@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::BTreeMap;
 
+const NATIVE_TIMER_RESERVE_SECONDS: u64 = 2;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Receipt {
@@ -124,6 +126,8 @@ fn validate(receipt: &Receipt) -> Result<()> {
             && match receipt.phase.as_str() {
                 "starting" | "uncertain" => receipt.exit_code.is_none(),
                 "running" => hex(&receipt.container_id, 64) && receipt.exit_code.is_none(),
+                "abandoned_before_start" =>
+                    hex(&receipt.container_id, 64) && receipt.exit_code.is_none(),
                 "completed" => hex(&receipt.container_id, 64) && receipt.exit_code == Some(0),
                 "failed" =>
                     hex(&receipt.container_id, 64)
@@ -180,6 +184,11 @@ trait Runtime {
         group: &super::cgroups::Group,
         cleanup_deadline: std::time::Instant,
     ) -> Result<()>;
+    fn retire_empty_group(
+        &self,
+        group: &super::cgroups::Group,
+        cleanup_deadline: std::time::Instant,
+    ) -> Result<()>;
     fn run(&self, arguments: &[&str]) -> Result<Vec<u8>>;
     fn start(
         &self,
@@ -225,6 +234,17 @@ impl Runtime for super::engine::Engine {
     }
     fn run(&self, arguments: &[&str]) -> Result<Vec<u8>> {
         self.run(arguments)
+    }
+    fn retire_empty_group(
+        &self,
+        group: &super::cgroups::Group,
+        cleanup_deadline: std::time::Instant,
+    ) -> Result<()> {
+        ensure!(
+            super::cgroups::empty(group)?,
+            "never-started job group is populated"
+        );
+        super::cgroups::remove(group, cleanup_deadline)
     }
     fn start(
         &self,
@@ -534,18 +554,29 @@ fn run_with(
             runtime.retire_group(&job_group(&receipt)?, cleanup_deadline())?;
             return Ok(receipt);
         }
-        if ["starting", "running"].contains(&receipt.phase.as_str()) {
-            receipt.phase = "uncertain".into();
-            save(store, &receipt)?;
+        if receipt.phase == "abandoned_before_start" {
+            fresh_after_abandonment(store, &receipt, operation_id)?;
+            ensure!(
+                !runtime.exists("container", &receipt.container_name)?
+                    && !runtime.exists("container", &receipt.container_id)?,
+                "abandoned job native identity is still present"
+            );
+            runtime.retire_empty_group(&job_group(&receipt)?, cleanup_deadline())?;
+        } else {
+            if ["starting", "running"].contains(&receipt.phase.as_str()) {
+                receipt.phase = "uncertain".into();
+                save(store, &receipt)?;
+            }
+            return Err(anyhow!(
+                "one-shot outcome requires owner reconciliation; automatic replay refused"
+            ));
         }
-        return Err(anyhow!(
-            "one-shot outcome requires owner reconciliation; automatic replay refused"
-        ));
     }
     let (environment_files, secrets) = environment(store, job, value, installed)?;
-    // conmon enforces this lifetime even when the controller dies. Reserve
-    // time for native creation/start and its second-rounded timer, then refuse
-    // a delayed start rather than allowing effects beyond the admitted budget.
+    // timeout_seconds bounds preparation and execution together. Podman's
+    // conmon timeout is immutable after creation, so share the remaining total
+    // between preparation/start and native execution. The execution allowance
+    // is smaller than the declaration; neither phase extends the total deadline.
     let timeout = native_timeout(
         deadline,
         std::time::Instant::now(),
@@ -629,7 +660,8 @@ fn run_with(
             "new job already executed before its proven native start"
         );
         before_start = Some(created);
-        let start_deadline = deadline - std::time::Duration::from_secs(u64::from(timeout) + 2);
+        let start_deadline = deadline
+            - std::time::Duration::from_secs(u64::from(timeout) + NATIVE_TIMER_RESERVE_SECONDS);
         ensure!(
             std::time::Instant::now() < start_deadline,
             "job preparation exhausted its native lifetime reservation; start refused"
@@ -708,7 +740,8 @@ fn native_timeout(
     declared: u32,
 ) -> Result<u32> {
     let remaining = deadline.saturating_duration_since(now).as_secs();
-    let timeout = remaining.saturating_sub(4).min(u64::from(declared));
+    let timeout =
+        (remaining.saturating_sub(NATIVE_TIMER_RESERVE_SECONDS) / 2).min(u64::from(declared));
     ensure!(
         timeout > 0,
         "job deadline cannot contain native startup and lifetime bounds"
@@ -716,8 +749,131 @@ fn native_timeout(
     Ok(timeout as u32)
 }
 
-/// Explicit owner recovery may prove an interrupted exit, but never starts,
-/// recreates or removes a job. A missing or still-running result remains blocked.
+fn never_started(actual: &serde_json::Value) -> bool {
+    let state = &actual["State"];
+    state["Running"] == false
+        && state["Paused"] == false
+        && state["Pid"] == 0
+        && state["ExitCode"] == 0
+        && state["OOMKilled"] == false
+        && ["configured", "created"].contains(&state["Status"].as_str().unwrap_or(""))
+        && state["StartedAt"] == "0001-01-01T00:00:00Z"
+        && state["FinishedAt"] == "0001-01-01T00:00:00Z"
+}
+
+fn abandonment_path(store: &Store, receipt: &Receipt) -> std::path::PathBuf {
+    store
+        .root
+        .join("journal")
+        .join(&receipt.operation_id)
+        .join(format!("job-never-started-{}.json", &receipt.identity[7..]))
+}
+
+fn preserve_job_evidence(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    if path.try_exists()? {
+        ensure!(
+            store::read_protected(path, 64 << 10)? == bytes,
+            "immutable job recovery evidence changed"
+        );
+        Ok(())
+    } else {
+        store::atomic(path, bytes, 0o600)
+    }
+}
+
+fn abandoned_evidence(store: &Store, receipt: &Receipt) -> Result<()> {
+    let path = abandonment_path(store, receipt);
+    let bytes = store::read_protected(&path, 64 << 10)?;
+    let proof = crate::strict::value(&bytes, 64 << 10)?;
+    let mut original: Receipt = serde_json::from_value(proof["receipt"].clone())?;
+    validate(&original)?;
+    ensure!(
+        ["starting", "uncertain"].contains(&original.phase.as_str()),
+        "abandoned job lacks its original unstarted receipt"
+    );
+    original.phase = "abandoned_before_start".into();
+    ensure!(
+        proof["kind"] == "komizo.job-never-started"
+            && proof["version"] == 1
+            && canonical(&serde_json::to_value(original)?)?
+                == canonical(&serde_json::to_value(receipt)?)?
+            && proof["native"]["Id"] == receipt.container_id
+            && proof["native"]["Timeout"] == receipt.native_timeout_seconds
+            && proof["native"]["config_sha256"]
+                .as_str()
+                .is_some_and(digest)
+            && never_started(&proof["native"]),
+        "abandoned job evidence changed"
+    );
+    let complete = crate::strict::value(
+        &store::read_protected(&path.with_extension("removed.json"), 4096)?,
+        4096,
+    )?;
+    ensure!(
+        complete["kind"] == "komizo.job-never-started-removed"
+            && complete["version"] == 1
+            && complete["proof_sha256"] == document_digest(&bytes)
+            && complete["receipt_sha256"]
+                == document_digest(&canonical(&serde_json::to_value(receipt)?)?),
+        "abandoned job removal proof changed"
+    );
+    Ok(())
+}
+
+fn fresh_after_abandonment(store: &Store, receipt: &Receipt, operation_id: &str) -> Result<()> {
+    ensure!(
+        receipt.operation_id != operation_id,
+        "abandoned job requires a fresh admitted operation"
+    );
+    abandoned_evidence(store, receipt)?;
+    let record = crate::strict::value(
+        &store::read_protected(
+            &store
+                .root
+                .join("reconciliations")
+                .join(format!("{}.json", receipt.operation_id)),
+            4096,
+        )?,
+        4096,
+    )?;
+    let resolved_by = record["resolved_by"]
+        .as_str()
+        .filter(|id| hex(id, 32))
+        .ok_or_else(|| anyhow!("abandoned job has no completed owner recovery"))?;
+    let recovered = store.operation(resolved_by)?;
+    let admission = crate::strict::value(
+        &store::read_protected(
+            &store
+                .root
+                .join("journal")
+                .join(resolved_by)
+                .join("admission.json"),
+            16384,
+        )?,
+        16384,
+    )?;
+    ensure!(
+        recovered.application == receipt.application
+            && recovered.instance == receipt.instance
+            && recovered.release_digest == receipt.release_digest
+            && recovered.ok
+            && recovered.phase == "ready"
+            && !recovered.reconciliation_required
+            && admission["kind"] == "komizo.admission"
+            && admission["version"] == 1
+            && admission["operation_id"] == resolved_by
+            && admission["action"] == "recover"
+            && admission["target_operation"] == receipt.operation_id
+            && admission["evidence"]["authority"] == "owner"
+            && admission["evidence"]["peer_uid"] == 0,
+        "abandoned job requires successful explicit same-scope owner recovery"
+    );
+    Ok(())
+}
+
+/// Explicit owner recovery proves an interrupted exit or retires an exactly
+/// owned, empty, never-started container. It never starts or replays a job.
+/// Missing or still-running execution evidence remains blocked.
 pub fn reconcile(
     store: &Store,
     document: &ReleaseDocument,
@@ -931,6 +1087,16 @@ fn reconcile_with(
             return Err(anyhow!("job recovery artifact is not an image"));
         };
         retained(runtime, value, installed)?;
+        if receipt.phase == "abandoned_before_start" {
+            abandoned_evidence(store, &receipt)?;
+            ensure!(
+                !runtime.exists("container", &receipt.container_name)?
+                    && !runtime.exists("container", &receipt.container_id)?,
+                "abandoned job native identity is still present"
+            );
+            runtime.retire_empty_group(&job_group(&receipt)?, cleanup_deadline())?;
+            continue;
+        }
         if receipt.phase == "completed" {
             if runtime.exists("container", &receipt.container_name)? {
                 let actual = owned(runtime, &receipt, value, installed, config_digest)?;
@@ -956,7 +1122,69 @@ fn reconcile_with(
             (receipt.phase != "failed" || allow_failed),
             "failed job requires a corrected job identity before deployment"
         );
+        if ["starting", "uncertain"].contains(&receipt.phase.as_str())
+            && abandonment_path(store, &receipt)
+                .with_extension("removed.json")
+                .try_exists()?
+        {
+            // A durable removal proof can precede the cache update if the
+            // controller dies. Finish metadata only; absence without that
+            // exact proof never establishes that an uncertain job was unused.
+            let proof = crate::strict::value(
+                &store::read_protected(&abandonment_path(store, &receipt), 64 << 10)?,
+                64 << 10,
+            )?;
+            ensure!(
+                canonical(&proof["receipt"])? == canonical(&serde_json::to_value(&receipt)?)?,
+                "never-started original receipt changed before finalization"
+            );
+            let mut abandoned = receipt.clone();
+            abandoned.phase = "abandoned_before_start".into();
+            validate(&abandoned)?;
+            abandoned_evidence(store, &abandoned)?;
+            ensure!(
+                !runtime.exists("container", &receipt.container_name)?
+                    && !runtime.exists("container", &receipt.container_id)?,
+                "never-started removal proof still has a native identity"
+            );
+            runtime.retire_empty_group(&job_group(&receipt)?, cleanup_deadline())?;
+            save(store, &abandoned)?;
+            continue;
+        }
         let actual = owned(runtime, &receipt, value, installed, config_digest)?;
+        if ["starting", "uncertain"].contains(&receipt.phase.as_str()) && never_started(&actual) {
+            let state = &actual["State"];
+            let proof = canonical(
+                &json!({"kind":"komizo.job-never-started","version":1,"receipt":receipt,
+                "native":{"Id":actual["Id"],"Timeout":actual["Config"]["Timeout"],
+                    "config_sha256":document_digest(&canonical(&actual["Config"])?),
+                    "State":{"Running":state["Running"],"Paused":state["Paused"],"Pid":state["Pid"],
+                        "Status":state["Status"],"ExitCode":state["ExitCode"],
+                        "StartedAt":state["StartedAt"],"FinishedAt":state["FinishedAt"],
+                        "OOMKilled":state["OOMKilled"]}}}),
+            )?;
+            let path = abandonment_path(store, &receipt);
+            preserve_job_evidence(&path, &proof)?;
+            runtime.retire_empty_group(&job_group(&receipt)?, cleanup_deadline())?;
+            // Without --force a concurrent transition to running refuses.
+            // Never kill or infer exit evidence for an unstarted job.
+            runtime.run(&["rm", "--", &receipt.container_id])?;
+            ensure!(
+                !runtime.exists("container", &receipt.container_name)?
+                    && !runtime.exists("container", &receipt.container_id)?,
+                "never-started native removal remains unproven"
+            );
+            receipt.phase = "abandoned_before_start".into();
+            preserve_job_evidence(
+                &path.with_extension("removed.json"),
+                &canonical(&json!({
+                "kind":"komizo.job-never-started-removed","version":1,
+                "proof_sha256":document_digest(&proof),
+                "receipt_sha256":document_digest(&canonical(&serde_json::to_value(&receipt)?)?)}))?,
+            )?;
+            save(store, &receipt)?;
+            continue;
+        }
         let exit = actual["State"]["ExitCode"]
             .as_i64()
             .filter(|n| (0..=255).contains(n));
@@ -992,7 +1220,7 @@ mod tests {
     use super::*;
     use serde_json::{Value, json};
     use std::{
-        cell::RefCell,
+        cell::{Cell, RefCell},
         time::{Duration, Instant},
     };
 
@@ -1085,6 +1313,9 @@ mod tests {
             .unwrap()
         }
         fn run(&self, runtime: &Fake<'_>) -> Result<Receipt> {
+            self.run_until(runtime, Instant::now() + Duration::from_secs(30))
+        }
+        fn run_until(&self, runtime: &Fake<'_>, deadline: Instant) -> Result<Receipt> {
             run_with(
                 &self.store,
                 &self.policy,
@@ -1093,7 +1324,7 @@ mod tests {
                 "migrate",
                 JobExecution {
                     operation_id: &self.installed.operation_id,
-                    deadline: Instant::now() + Duration::from_secs(30),
+                    deadline,
                 },
                 runtime,
             )
@@ -1116,6 +1347,10 @@ mod tests {
         cleanup_operation: Option<String>,
         groups: RefCell<Vec<(String, String)>>,
         cleanup_deadlines: RefCell<Vec<Instant>>,
+        create_delay: Duration,
+        start_deadlines: RefCell<Vec<Instant>>,
+        fail_inspect_once: Cell<bool>,
+        next_container_id: RefCell<String>,
     }
     impl<'a> Fake<'a> {
         fn new(fixture: &'a Fixture) -> Self {
@@ -1136,6 +1371,10 @@ mod tests {
                 cleanup_operation: None,
                 groups: RefCell::new(Vec::new()),
                 cleanup_deadlines: RefCell::new(Vec::new()),
+                create_delay: Duration::ZERO,
+                start_deadlines: RefCell::new(Vec::new()),
+                fail_inspect_once: Cell::new(false),
+                next_container_id: RefCell::new("d".repeat(64)),
             }
         }
     }
@@ -1261,6 +1500,7 @@ mod tests {
             monitor: &super::super::cgroups::Group,
             deadline: Instant,
         ) -> Result<()> {
+            self.start_deadlines.borrow_mut().push(deadline);
             ensure!(
                 Instant::now() < deadline,
                 "synthetic start deadline expired"
@@ -1293,6 +1533,7 @@ mod tests {
             );
             match args[0] {
                 "create" => {
+                    std::thread::sleep(self.create_delay);
                     assert_eq!(receipt.phase, "starting");
                     assert!(receipt.container_id.is_empty());
                     assert!(args.contains(&"--pull=never"));
@@ -1311,11 +1552,11 @@ mod tests {
                     if self.corrupt_owner {
                         labels.insert("io.komizo.ownership".into(), json!("f".repeat(32)));
                     }
-                    let mut value = json!({"Id":"d".repeat(64),"Name":receipt.container_name,
-                        "Image":format!("sha256:{}","c".repeat(64)),"Config":{"Labels":labels,"Timeout":receipt.native_timeout_seconds},
+                    let mut value = json!({"Id":self.next_container_id.borrow().clone(),"Name":receipt.container_name,
+                        "Image":format!("sha256:{}","c".repeat(64)),"Config":{"Labels":labels,"Timeout":receipt.native_timeout_seconds,"Env":["PRIVATE_TOKEN=do-not-log-this"]},
                         "AppArmorProfile":super::super::bootstrap::WORKLOAD_PROFILE,
                         "HostConfig":{"CgroupParent":args.windows(2).find(|pair| pair[0] == "--cgroup-parent").unwrap()[1]},
-                        "State":{"Running":false,"Paused":false,"Pid":0,"Status":"configured","ExitCode":0,"FinishedAt":"0001-01-01T00:00:00Z"},
+                        "State":{"Running":false,"Paused":false,"Pid":0,"Status":"configured","ExitCode":0,"OOMKilled":false,"StartedAt":"0001-01-01T00:00:00Z","FinishedAt":"0001-01-01T00:00:00Z"},
                         "Mounts":[{"Type":"volume","Name":"kmz-owned-data","Destination":"/var/lib/app","RW":true}]});
                     if self.corrupt_mount {
                         value["Mounts"][0]["Name"] = json!("foreign-data");
@@ -1327,15 +1568,16 @@ mod tests {
                         value["Config"]["Timeout"] = json!(1500);
                     }
                     *self.container.borrow_mut() = Some(value);
-                    Ok(format!("{}\n", "d".repeat(64)).into_bytes())
+                    Ok(format!("{}\n", self.next_container_id.borrow().as_str()).into_bytes())
                 }
                 "start" => {
-                    assert_eq!(receipt.container_id, "d".repeat(64));
+                    assert_eq!(receipt.container_id, *self.next_container_id.borrow());
                     assert_eq!(receipt.phase, "starting");
                     let mut container = self.container.borrow_mut();
                     let state = &mut container.as_mut().unwrap()["State"];
                     state["Running"] = json!(true);
                     state["Status"] = json!("running");
+                    state["StartedAt"] = json!("2026-01-01T00:00:00Z");
                     Ok(vec![])
                 }
                 "wait" => {
@@ -1349,6 +1591,23 @@ mod tests {
                     Ok(format!("{}\n", self.exit).into_bytes())
                 }
                 "rm" => {
+                    if args == ["rm", "--", receipt.container_id.as_str()] {
+                        let actual = self.container.borrow();
+                        assert!(never_started(actual.as_ref().unwrap()));
+                        let proof = store::read_protected(
+                            &abandonment_path(&self.fixture.store, &receipt),
+                            64 << 10,
+                        )
+                        .unwrap();
+                        assert_eq!(
+                            serde_json::from_slice::<Value>(&proof).unwrap()["receipt"]["container_id"],
+                            receipt.container_id
+                        );
+                        drop(actual);
+                        *self.container.borrow_mut() = None;
+                        *self.next_container_id.borrow_mut() = "e".repeat(64);
+                        return Ok(vec![]);
+                    }
                     let operation = self
                         .cleanup_operation
                         .as_ref()
@@ -1375,12 +1634,30 @@ mod tests {
             Ok(self.container.borrow().is_some())
         }
         fn inspect(&self, _kind: &str, _name: &str) -> Result<Value> {
+            ensure!(
+                !self.fail_inspect_once.replace(false),
+                "synthetic interrupted owned inspection"
+            );
             self.container
                 .borrow()
                 .clone()
                 .ok_or_else(|| anyhow!("container missing"))
         }
         fn retained(&self, _kind: &str, _record: &store::ObjectRecord) -> Result<()> {
+            Ok(())
+        }
+        fn retire_empty_group(
+            &self,
+            group: &super::super::cgroups::Group,
+            _deadline: Instant,
+        ) -> Result<()> {
+            ensure!(
+                self.fail_group != Some("empty"),
+                "synthetic never-started group is populated"
+            );
+            self.groups
+                .borrow_mut()
+                .push(("retire-empty".into(), group.relative().into()));
             Ok(())
         }
     }
@@ -1759,13 +2036,13 @@ mod tests {
         let now = Instant::now();
         assert_eq!(
             native_timeout(now + Duration::from_secs(8), now, 90).unwrap(),
-            4
+            3
         );
         assert_eq!(
             native_timeout(now + Duration::from_secs(100), now, 30).unwrap(),
             30
         );
-        for seconds in 0..=4 {
+        for seconds in 0..=3 {
             assert!(native_timeout(now + Duration::from_secs(seconds), now, 90).is_err());
         }
         let fixture = Fixture::new();
@@ -1776,6 +2053,462 @@ mod tests {
         assert_eq!(runtime.calls.borrow().len(), 1);
         assert_eq!(runtime.calls.borrow()[0][0], "create");
         assert!(fixture.receipt().unwrap().native_timeout_seconds < 30);
+    }
+    #[test]
+    fn slow_native_creation_shares_the_total_budget_and_starts_once() {
+        let fixture = Fixture::new();
+        let mut runtime = Fake::new(&fixture);
+        runtime.create_delay = Duration::from_secs(4);
+        let deadline = Instant::now() + Duration::from_secs(12);
+        let receipt = fixture.run_until(&runtime, deadline).unwrap();
+        assert_eq!(receipt.phase, "completed");
+        assert_eq!(receipt.exit_code, Some(0));
+        let starts = runtime.start_deadlines.borrow();
+        assert_eq!(starts.len(), 1);
+        assert!(
+            starts[0]
+                + Duration::from_secs(
+                    u64::from(receipt.native_timeout_seconds) + NATIVE_TIMER_RESERVE_SECONDS
+                )
+                <= deadline
+        );
+        assert!(Instant::now() < deadline);
+        assert_eq!(
+            runtime
+                .calls
+                .borrow()
+                .iter()
+                .filter(|call| call[0] == "start")
+                .count(),
+            1
+        );
+    }
+    #[test]
+    fn preparation_overrun_never_starts_or_replays_the_created_job() {
+        let fixture = Fixture::new();
+        let mut runtime = Fake::new(&fixture);
+        runtime.create_delay = Duration::from_secs(4);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let error = fixture.run_until(&runtime, deadline).unwrap_err();
+        assert!(error.to_string().contains("preparation exhausted"));
+        assert!(runtime.start_deadlines.borrow().is_empty());
+        assert_eq!(fixture.receipt().unwrap().phase, "uncertain");
+        assert!(fixture.run(&runtime).is_err());
+        assert_eq!(runtime.calls.borrow().len(), 1);
+        assert_eq!(
+            runtime.container.borrow().as_ref().unwrap()["State"]["Status"],
+            "configured"
+        );
+    }
+    fn owner_recovered(fixture: &Fixture) {
+        let id = "8".repeat(32);
+        fixture
+            .store
+            .save_operation(&store::Operation {
+                kind: "komizo.operation".into(),
+                version: 1,
+                operation_id: id.clone(),
+                application: fixture.installed.application.clone(),
+                instance: fixture.installed.instance.clone(),
+                release_digest: fixture.document.digest.clone(),
+                phase: "ready".into(),
+                ok: true,
+                previous_release_digest: None,
+                reconciliation_required: false,
+                backup: None,
+            })
+            .unwrap();
+        store::atomic(
+            &fixture
+                .store
+                .root
+                .join("journal")
+                .join(&id)
+                .join("admission.json"),
+            &canonical(
+                &json!({"kind":"komizo.admission","version":1,"operation_id":id,
+                "action":"recover","target_operation":fixture.installed.operation_id,
+                "evidence":{"authority":"owner","peer_uid":0}}),
+            )
+            .unwrap(),
+            0o600,
+        )
+        .unwrap();
+        store::atomic(
+            &fixture
+                .store
+                .root
+                .join("reconciliations")
+                .join(format!("{}.json", fixture.installed.operation_id)),
+            &canonical(&json!({"resolved_by":id})).unwrap(),
+            0o600,
+        )
+        .unwrap();
+    }
+    fn fresh_run(fixture: &Fixture, runtime: &Fake<'_>) -> Result<Receipt> {
+        let mut installed = fixture.installed.clone();
+        installed.operation_id = "9".repeat(32);
+        run_with(
+            &fixture.store,
+            &fixture.policy,
+            &fixture.document,
+            &installed,
+            "migrate",
+            JobExecution {
+                operation_id: &installed.operation_id,
+                deadline: Instant::now() + Duration::from_secs(30),
+            },
+            runtime,
+        )
+    }
+    #[test]
+    fn owner_recovery_of_never_started_job_preserves_evidence_before_fresh_execution() {
+        let fixture = Fixture::new();
+        let runtime = Fake::new(&fixture);
+        runtime.fail_inspect_once.set(true);
+        assert!(fixture.run(&runtime).is_err());
+        let original = fixture.receipt().unwrap();
+        assert_eq!(original.phase, "uncertain");
+        assert!(fixture.run(&runtime).is_err());
+        reconcile_with(
+            &fixture.store,
+            &fixture.document,
+            &fixture.installed,
+            &fixture.installed.operation_id,
+            &runtime,
+            false,
+        )
+        .unwrap();
+        let abandoned = fixture.receipt().unwrap();
+        assert_eq!(abandoned.phase, "abandoned_before_start");
+        assert_eq!(abandoned.container_id, original.container_id);
+        assert!(runtime.container.borrow().is_none());
+        let path = abandonment_path(&fixture.store, &original);
+        let evidence = store::read_protected(&path, 64 << 10).unwrap();
+        let value: Value = serde_json::from_slice(&evidence).unwrap();
+        assert_eq!(value["receipt"], serde_json::to_value(&original).unwrap());
+        assert!(!String::from_utf8_lossy(&evidence).contains("do-not-log-this"));
+        assert!(fixture.run(&runtime).is_err());
+        assert!(fresh_run(&fixture, &runtime).is_err());
+        owner_recovered(&fixture);
+        let completed = fresh_run(&fixture, &runtime).unwrap();
+        assert_eq!(completed.phase, "completed");
+        assert_eq!(completed.operation_id, "9".repeat(32));
+        assert_ne!(completed.container_id, original.container_id);
+        assert_ne!(completed.ownership, original.ownership);
+        assert_eq!(store::read_protected(&path, 64 << 10).unwrap(), evidence);
+        let calls = runtime.calls.borrow();
+        assert_eq!(calls.iter().filter(|call| call[0] == "create").count(), 2);
+        assert_eq!(calls.iter().filter(|call| call[0] == "start").count(), 1);
+        assert!(calls.iter().any(|call| call.iter().map(String::as_str).eq([
+            "rm",
+            "--",
+            original.container_id.as_str()
+        ])));
+        assert!(
+            !runtime
+                .groups
+                .borrow()
+                .iter()
+                .any(|event| event.0 == "kill")
+        );
+    }
+    #[test]
+    fn never_started_recovery_refuses_changed_state_or_populated_group() {
+        for (field, value) in [
+            ("Running", json!(true)),
+            ("Paused", json!(true)),
+            ("Pid", json!(123)),
+            ("ExitCode", json!(1)),
+            ("OOMKilled", json!(true)),
+            ("Status", json!("unknown")),
+            ("StartedAt", json!("2026-01-01T00:00:00Z")),
+            ("FinishedAt", json!("2026-01-01T00:00:00Z")),
+            ("StartedAt", Value::Null),
+        ] {
+            let fixture = Fixture::new();
+            let runtime = Fake::new(&fixture);
+            runtime.fail_inspect_once.set(true);
+            assert!(fixture.run(&runtime).is_err());
+            runtime.container.borrow_mut().as_mut().unwrap()["State"][field] = value;
+            assert!(
+                reconcile_with(
+                    &fixture.store,
+                    &fixture.document,
+                    &fixture.installed,
+                    &fixture.installed.operation_id,
+                    &runtime,
+                    false
+                )
+                .is_err()
+            );
+            assert!(!runtime.calls.borrow().iter().any(|call| call[0] == "rm"));
+            assert_eq!(fixture.receipt().unwrap().phase, "uncertain");
+        }
+        let fixture = Fixture::new();
+        let mut runtime = Fake::new(&fixture);
+        runtime.fail_inspect_once.set(true);
+        assert!(fixture.run(&runtime).is_err());
+        runtime.fail_group = Some("empty");
+        assert!(
+            reconcile_with(
+                &fixture.store,
+                &fixture.document,
+                &fixture.installed,
+                &fixture.installed.operation_id,
+                &runtime,
+                false
+            )
+            .is_err()
+        );
+        assert!(!runtime.calls.borrow().iter().any(|call| call[0] == "rm"));
+    }
+    #[test]
+    fn prior_running_or_failed_receipt_cannot_be_abandoned_or_automatically_replayed() {
+        for phase in ["running", "failed"] {
+            let fixture = Fixture::new();
+            let runtime = Fake::new(&fixture);
+            runtime.fail_inspect_once.set(true);
+            assert!(fixture.run(&runtime).is_err());
+            let mut receipt = fixture.receipt().unwrap();
+            receipt.phase = phase.into();
+            receipt.exit_code = if phase == "failed" { Some(1) } else { None };
+            save(&fixture.store, &receipt).unwrap();
+            assert!(
+                reconcile_with(
+                    &fixture.store,
+                    &fixture.document,
+                    &fixture.installed,
+                    &fixture.installed.operation_id,
+                    &runtime,
+                    true
+                )
+                .is_err()
+            );
+            assert!(fresh_run(&fixture, &runtime).is_err());
+            assert!(!runtime.calls.borrow().iter().any(|call| call[0] == "rm"));
+        }
+    }
+    #[test]
+    fn never_started_recovery_requires_current_scope_and_exact_native_ownership() {
+        for changed in ["Id", "ownership", "mount", "timeout", "operation"] {
+            let fixture = Fixture::new();
+            let runtime = Fake::new(&fixture);
+            runtime.fail_inspect_once.set(true);
+            assert!(fixture.run(&runtime).is_err());
+            let mut installed = fixture.installed.clone();
+            match changed {
+                "Id" => {
+                    runtime.container.borrow_mut().as_mut().unwrap()["Id"] = json!("f".repeat(64))
+                }
+                "ownership" => {
+                    runtime.container.borrow_mut().as_mut().unwrap()["Config"]["Labels"]["io.komizo.ownership"] =
+                        json!("f".repeat(32))
+                }
+                "mount" => {
+                    runtime.container.borrow_mut().as_mut().unwrap()["Mounts"][0]["Name"] =
+                        json!("foreign")
+                }
+                "timeout" => {
+                    runtime.container.borrow_mut().as_mut().unwrap()["Config"]["Timeout"] =
+                        json!(1500)
+                }
+                "operation" => installed.operation_id = "f".repeat(32),
+                _ => unreachable!(),
+            }
+            assert!(
+                reconcile_with(
+                    &fixture.store,
+                    &fixture.document,
+                    &installed,
+                    &fixture.installed.operation_id,
+                    &runtime,
+                    false
+                )
+                .is_err()
+            );
+            assert!(!runtime.calls.borrow().iter().any(|call| call[0] == "rm"));
+            assert_eq!(fixture.receipt().unwrap().phase, "uncertain");
+        }
+    }
+    #[test]
+    fn abandoned_job_requires_immutable_removal_and_explicit_successful_owner_recovery() {
+        for changed in ["action", "authority", "target", "phase", "removed-proof"] {
+            let fixture = Fixture::new();
+            let runtime = Fake::new(&fixture);
+            runtime.fail_inspect_once.set(true);
+            assert!(fixture.run(&runtime).is_err());
+            reconcile_with(
+                &fixture.store,
+                &fixture.document,
+                &fixture.installed,
+                &fixture.installed.operation_id,
+                &runtime,
+                false,
+            )
+            .unwrap();
+            owner_recovered(&fixture);
+            let path = fixture
+                .store
+                .root
+                .join("journal")
+                .join("8".repeat(32))
+                .join("admission.json");
+            let mut admission: Value =
+                serde_json::from_slice(&store::read_protected(&path, 16384).unwrap()).unwrap();
+            match changed {
+                "action" => admission["action"] = json!("stop"),
+                "authority" => admission["evidence"]["authority"] = json!("github"),
+                "target" => admission["target_operation"] = json!("f".repeat(32)),
+                "phase" => {
+                    let mut operation = fixture.store.operation(&"8".repeat(32)).unwrap();
+                    operation.ok = false;
+                    operation.phase = "admitted".into();
+                    fixture.store.save_operation(&operation).unwrap();
+                }
+                "removed-proof" => {
+                    std::fs::remove_file(
+                        abandonment_path(&fixture.store, &fixture.receipt().unwrap())
+                            .with_extension("removed.json"),
+                    )
+                    .unwrap();
+                }
+                _ => unreachable!(),
+            }
+            store::atomic(&path, &canonical(&admission).unwrap(), 0o600).unwrap();
+            assert!(fresh_run(&fixture, &runtime).is_err());
+            assert_eq!(
+                runtime
+                    .calls
+                    .borrow()
+                    .iter()
+                    .filter(|call| call[0] == "create")
+                    .count(),
+                1
+            );
+        }
+    }
+    #[test]
+    fn explicit_recovery_finishes_only_metadata_after_durable_never_started_removal() {
+        let fixture = Fixture::new();
+        let runtime = Fake::new(&fixture);
+        runtime.fail_inspect_once.set(true);
+        assert!(fixture.run(&runtime).is_err());
+        let original = fixture.receipt().unwrap();
+        reconcile_with(
+            &fixture.store,
+            &fixture.document,
+            &fixture.installed,
+            &fixture.installed.operation_id,
+            &runtime,
+            false,
+        )
+        .unwrap();
+        let path = abandonment_path(&fixture.store, &original);
+        let proof = store::read_protected(&path, 64 << 10).unwrap();
+        let removed = store::read_protected(&path.with_extension("removed.json"), 4096).unwrap();
+        // Model controller death at the final cache save: both immutable proofs
+        // are durable and the exact native identity is gone, but the cache
+        // still contains the exact original uncertain receipt.
+        save(&fixture.store, &original).unwrap();
+        let calls = runtime.calls.borrow().clone();
+        let groups = runtime.groups.borrow().len();
+        reconcile_with(
+            &fixture.store,
+            &fixture.document,
+            &fixture.installed,
+            &fixture.installed.operation_id,
+            &runtime,
+            false,
+        )
+        .unwrap();
+        let finalized = fixture.receipt().unwrap();
+        assert_eq!(finalized.phase, "abandoned_before_start");
+        assert_eq!(finalized.container_id, original.container_id);
+        assert_eq!(finalized.ownership, original.ownership);
+        assert_eq!(*runtime.calls.borrow(), calls);
+        assert_eq!(runtime.groups.borrow().len(), groups + 1);
+        assert_eq!(runtime.groups.borrow().last().unwrap().0, "retire-empty");
+        assert_eq!(store::read_protected(&path, 64 << 10).unwrap(), proof);
+        assert_eq!(
+            store::read_protected(&path.with_extension("removed.json"), 4096).unwrap(),
+            removed
+        );
+        assert!(fresh_run(&fixture, &runtime).is_err());
+        owner_recovered(&fixture);
+        assert_eq!(fresh_run(&fixture, &runtime).unwrap().phase, "completed");
+    }
+    #[test]
+    fn interrupted_abandonment_never_infers_removal_from_absence_or_changed_proof() {
+        for changed in [
+            "missing-marker",
+            "tampered-marker",
+            "tampered-original-proof",
+            "current-receipt",
+            "native-present",
+            "populated-group",
+            "running-receipt",
+        ] {
+            let fixture = Fixture::new();
+            let mut runtime = Fake::new(&fixture);
+            runtime.fail_inspect_once.set(true);
+            assert!(fixture.run(&runtime).is_err());
+            let mut original = fixture.receipt().unwrap();
+            let native = runtime.container.borrow().clone();
+            reconcile_with(
+                &fixture.store,
+                &fixture.document,
+                &fixture.installed,
+                &fixture.installed.operation_id,
+                &runtime,
+                false,
+            )
+            .unwrap();
+            let path = abandonment_path(&fixture.store, &original);
+            let marker = path.with_extension("removed.json");
+            match changed {
+                "missing-marker" => std::fs::remove_file(&marker).unwrap(),
+                "tampered-marker" => {
+                    let mut value: Value =
+                        serde_json::from_slice(&store::read_protected(&marker, 4096).unwrap())
+                            .unwrap();
+                    value["proof_sha256"] = json!(format!("sha256:{}", "f".repeat(64)));
+                    store::atomic(&marker, &canonical(&value).unwrap(), 0o600).unwrap();
+                }
+                "tampered-original-proof" => {
+                    let mut value: Value =
+                        serde_json::from_slice(&store::read_protected(&path, 64 << 10).unwrap())
+                            .unwrap();
+                    value["native"]["State"]["StartedAt"] = json!("2026-01-01T00:00:00Z");
+                    store::atomic(&path, &canonical(&value).unwrap(), 0o600).unwrap();
+                }
+                "current-receipt" => original.ownership = "f".repeat(32),
+                "native-present" => *runtime.container.borrow_mut() = native,
+                "populated-group" => runtime.fail_group = Some("empty"),
+                "running-receipt" => original.phase = "running".into(),
+                _ => unreachable!(),
+            }
+            save(&fixture.store, &original).unwrap();
+            let calls = runtime.calls.borrow().clone();
+            assert!(
+                reconcile_with(
+                    &fixture.store,
+                    &fixture.document,
+                    &fixture.installed,
+                    &fixture.installed.operation_id,
+                    &runtime,
+                    false
+                )
+                .is_err(),
+                "{changed}"
+            );
+            assert_eq!(
+                serde_json::to_value(fixture.receipt().unwrap()).unwrap(),
+                serde_json::to_value(&original).unwrap(),
+                "{changed}"
+            );
+            assert_eq!(*runtime.calls.borrow(), calls, "{changed}");
+        }
     }
     #[test]
     fn cache_identity_binds_job_code_scope_secret_bytes_generation_and_retained_objects() {

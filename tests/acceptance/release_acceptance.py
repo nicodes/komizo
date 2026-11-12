@@ -38,6 +38,9 @@ REQUIRED_STEPS={
 }
 
 
+JOB_PREPARATION_STEPS={'job_preparation_slow_1cpu','job_preparation_overrun_refused',
+    'job_never_started_owner_recovery','job_never_started_fresh_activation'}
+
 def bounded_bytes(path):return payload_read(path,1<<20)
 def read(path):return json.loads(bounded_bytes(path))
 def read_budget(path):return tomllib.loads(bounded_bytes(path).decode())
@@ -66,7 +69,7 @@ def validate(native,cleanup,performance,onboarding,release,source,budget):
     profiles=native.get('profiles',{})
     if set(profiles)!={'functional','bounded'}:raise ValueError('functional and bounded native profiles are both required')
     for name,report in profiles.items():
-        if set(report)!={'ok','profile','source','checks'} or not isinstance(report['checks'],dict) or any(key not in REQUIRED_STEPS|{'bounded_full_postgresql_offline_reboot','fixed_budget_performance'} or value!='passed' for key,value in report['checks'].items()):
+        if set(report)!={'ok','profile','source','checks'} or not isinstance(report['checks'],dict) or any(key not in REQUIRED_STEPS|JOB_PREPARATION_STEPS|{'bounded_full_postgresql_offline_reboot','fixed_budget_performance'} or value!='passed' for key,value in report['checks'].items()):
             raise ValueError('native profile exposes unapproved observation fields')
         if (report.get('ok') is not True or report.get('profile')!=name
                 or report.get('source')!={'revision':source,'binary_sha256':native['host_sha256']}
@@ -74,7 +77,7 @@ def validate(native,cleanup,performance,onboarding,release,source,budget):
             raise ValueError('native profile source, exact running host or boot proof differs')
     if any(profiles['functional']['checks'].get(name)!='passed' for name in REQUIRED_STEPS):raise ValueError('functional source controls are incomplete')
     if any(profiles['bounded']['checks'].get(name)!='passed' for name in
-            ['bounded_full_postgresql_offline_reboot','fixed_budget_performance','source_bound_authenticated_snapshot']):
+            {'bounded_full_postgresql_offline_reboot','fixed_budget_performance','source_bound_authenticated_snapshot'}|JOB_PREPARATION_STEPS):
         raise ValueError('bounded PostgreSQL boot or measured performance evidence is missing')
     return validate_measurements(performance,onboarding,native,budget)
 

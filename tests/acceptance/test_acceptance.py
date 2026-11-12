@@ -18,7 +18,7 @@ import native_release
 import test_native_release as fixtures
 from candidate_evidence import CANDIDATE_STEPS, BOUNDED_STEPS, export
 from performance_acceptance import ROLES, SCOPE, evaluate
-from release_acceptance import REQUIRED_STEPS, validate, validate_bundle
+from release_acceptance import REQUIRED_STEPS, JOB_PREPARATION_STEPS, validate, validate_bundle
 
 ENGINE = Path(__file__).parent
 _driver_spec = importlib.util.spec_from_file_location('native_host_vm', ENGINE.parent / 'support/native_host_vm.py')
@@ -54,7 +54,7 @@ class AcceptanceGuards(unittest.TestCase):
             'authenticated_files': files, 'steps': [{'step': name, 'accepted': True} for name in sorted(REQUIRED_STEPS)],
             'profiles': {name: {'ok': True, 'profile': name, 'source': {'revision': self.source, 'binary_sha256': host},
                 'checks': {check: 'passed' for check in (REQUIRED_STEPS if name == 'functional' else
-                    {'real_reboot', 'bounded_full_postgresql_offline_reboot', 'fixed_budget_performance', 'source_bound_authenticated_snapshot'})}}
+                    {'real_reboot', 'bounded_full_postgresql_offline_reboot', 'fixed_budget_performance', 'source_bound_authenticated_snapshot'}|JOB_PREPARATION_STEPS)}}
                 for name in ['functional', 'bounded']}}
         self.performance = {'version': 1, 'scope': SCOPE, 'accepted': True, 'budget': self.budget, 'metrics': self.metrics,
                             'budget_sha256': sha(ENGINE / 'acceptance-budgets.toml')}
@@ -110,6 +110,13 @@ class AcceptanceGuards(unittest.TestCase):
                 validate(*args)
         args = self.args(); args[2]['metrics']['control_processes'][0]['executable_sha256'] = 'f' * 64
         with self.assertRaises(ValueError): validate(*args)
+
+    def test_each_one_cpu_preparation_and_explicit_recovery_control_is_required(self):
+        for step in JOB_PREPARATION_STEPS:
+            args = self.args()
+            args[0]['profiles']['bounded']['checks'].pop(step)
+            with self.subTest(step=step), self.assertRaises(ValueError):
+                validate(*args)
 
     def evidence(self, bundle):
         (bundle / 'komizo-performance.json').write_text(json.dumps(self.performance))
@@ -201,7 +208,9 @@ class AcceptanceGuards(unittest.TestCase):
                     lambda r: r['profiles']['functional']['checks'].pop('owner_postgresql_encrypted_restore'),
                     lambda r: r['profiles'].pop('bounded'),
                     lambda r: r['profiles']['bounded']['checks'].pop('fixed_budget_performance'),
-                    lambda r: r['profiles']['bounded']['source'].update(revision='f'*40)]:
+                    lambda r: r['profiles']['bounded']['source'].update(revision='f'*40),
+                    *[lambda r,step=step: r['profiles']['bounded']['checks'].pop(step)
+                      for step in JOB_PREPARATION_STEPS]]:
                 bad = copy.deepcopy(result); mutate(bad); (observations / 'candidate-deployment.json').write_text(json.dumps(bad))
                 with self.subTest(mutate=mutate), self.assertRaises(ValueError):
                     export(observations, root / 'refused', self.source)
@@ -245,13 +254,16 @@ class NativeBootGuards(unittest.TestCase):
                 with self.subTest(accounting=accepted):
                     (root/'report.json').write_text(json.dumps({'checks':{}}))
                     write.reset_mock();fixture.shared_dns.return_value=accepted
-                    with patch.dict(sys.modules,{'fixture_postgres':SimpleNamespace(prepare=Mock())}):
+                    preparation=Mock()
+                    with patch.dict(sys.modules,{'fixture_postgres':SimpleNamespace(prepare=Mock()),
+                            'fixture_job_preparation':SimpleNamespace(prepare=preparation)}):
                         if accepted:fixture.bounded_prepare()
                         else:
                             with self.assertRaisesRegex(ValueError,'shared DNS escaped'):fixture.bounded_prepare()
                     result=json.loads((root/'report.json').read_text())
                     self.assertEqual(result['checks'].get('shared_dns_control_budget'),'passed' if accepted else None)
                     self.assertEqual(write.call_count,int(accepted))
+                    self.assertEqual(preparation.call_count,int(accepted))
 
     def test_bounded_reboot_verifies_its_own_graph_without_a_functional_only_application(self):
         spec = importlib.util.spec_from_file_location('native_fixture_acceptance', ENGINE.parent / 'support/native_host_acceptance.py')
