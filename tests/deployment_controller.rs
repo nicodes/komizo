@@ -85,9 +85,14 @@ fn setup(
 fn wait(store: &Store, id: &str) -> Operation {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        let operation = store.operation(id).unwrap();
-        if operation.terminal() {
-            return operation;
+        // Every fixture uses this instance. Its Job lease brackets all phase
+        // writes, so read the protected record only after the writer settles.
+        if let Some(_guard) = store.try_lock("mailroom", "production").unwrap() {
+            let operation = store.operation(id).unwrap();
+            if operation.terminal() {
+                assert!(Instant::now() < deadline, "worker did not complete");
+                return operation;
+            }
         }
         assert!(Instant::now() < deadline, "worker did not complete");
         std::thread::sleep(Duration::from_millis(10));
@@ -226,7 +231,47 @@ fn prepared_start_is_bound_to_the_selected_source_and_stale_installed_target_ref
 
 #[test]
 fn terminal_acknowledgment_releases_the_instance_before_unrelated_maintenance() {
-    use std::{io::Read, os::unix::net::UnixStream};
+    fn remaining(deadline: Instant) -> Duration {
+        deadline
+            .checked_duration_since(Instant::now())
+            .expect("terminal acknowledgment and maintenance exceeded the original test deadline")
+    }
+
+    fn acknowledge(
+        completion: komizo::deployment::transport::Completion,
+        deadline: Instant,
+    ) -> Operation {
+        use std::{io::Read, os::unix::net::UnixStream};
+
+        let (mut writer, mut reader) = UnixStream::pair().unwrap();
+        writer.set_write_timeout(Some(remaining(deadline))).unwrap();
+        let (finished_tx, finished_rx) = mpsc::sync_channel(1);
+        let acknowledgment = std::thread::spawn(move || {
+            let result = completion(&mut writer);
+            drop(writer);
+            let _ = finished_tx.send(result);
+        });
+        finished_rx
+            .recv_timeout(remaining(deadline))
+            .unwrap()
+            .unwrap();
+        acknowledgment.join().unwrap();
+        let mut bytes = Vec::new();
+        loop {
+            let _ = remaining(deadline);
+            let mut buffer = [0; 4096];
+            let count = reader.read(&mut buffer).unwrap();
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buffer[..count]);
+            assert!(
+                bytes.len() <= 16 << 10,
+                "terminal acknowledgment exceeded its test bound"
+            );
+        }
+        serde_json::from_slice(&bytes).unwrap()
+    }
 
     struct BlockingMaintenance {
         entered: mpsc::SyncSender<()>,
@@ -280,11 +325,6 @@ fn terminal_acknowledgment_releases_the_instance_before_unrelated_maintenance() 
     let first =
         store::operation_identity(&serde_json::from_value(request.clone()).unwrap()).unwrap();
     let deadline = Instant::now() + Duration::from_secs(3);
-    let remaining = || {
-        deadline
-            .checked_duration_since(Instant::now())
-            .expect("terminal acknowledgment and maintenance exceeded the original test deadline")
-    };
     let completion = c
         .admit(
             serde_json::to_vec(&request).unwrap(),
@@ -293,39 +333,16 @@ fn terminal_acknowledgment_releases_the_instance_before_unrelated_maintenance() 
             &mut |_| panic!(),
         )
         .unwrap();
-    let (mut writer, mut reader) = UnixStream::pair().unwrap();
-    writer.set_write_timeout(Some(remaining())).unwrap();
-    let (finished_tx, finished_rx) = mpsc::sync_channel(1);
-    let acknowledgment = std::thread::spawn(move || {
-        let result = completion(&mut writer);
-        drop(writer);
-        let _ = finished_tx.send(result);
-    });
-    finished_rx.recv_timeout(remaining()).unwrap().unwrap();
-    acknowledgment.join().unwrap();
-    let mut bytes = Vec::new();
-    loop {
-        let _ = remaining();
-        let mut buffer = [0; 4096];
-        let count = reader.read(&mut buffer).unwrap();
-        if count == 0 {
-            break;
-        }
-        bytes.extend_from_slice(&buffer[..count]);
-        assert!(
-            bytes.len() <= 16 << 10,
-            "terminal acknowledgment exceeded its test bound"
-        );
-    }
-    let acknowledged: Operation = serde_json::from_slice(&bytes).unwrap();
+    let acknowledged = acknowledge(completion, deadline);
     assert_eq!(acknowledged.operation_id, first);
     assert_eq!(acknowledged.phase, "ready");
     assert!(acknowledged.ok);
-    entered_rx.recv_timeout(remaining()).unwrap();
+    entered_rx.recv_timeout(remaining(deadline)).unwrap();
     assert!(c.store.operation(&first).unwrap().ok);
     request["nonce"] = json!("e".repeat(32));
     let second =
         store::operation_identity(&serde_json::from_value(request.clone()).unwrap()).unwrap();
+    assert_ne!(first, second);
     let admitted = c.admit(
         serde_json::to_vec(&request).unwrap(),
         0,
@@ -333,8 +350,14 @@ fn terminal_acknowledgment_releases_the_instance_before_unrelated_maintenance() 
         &mut |_| panic!(),
     );
     release_tx.send(()).unwrap();
-    drop(admitted.expect("a completed operation must not retain the app lease during maintenance"));
-    assert!(wait(&c.store, &second).ok);
+    let completed = acknowledge(
+        admitted.expect("a completed operation must not retain the app lease during maintenance"),
+        Instant::now() + Duration::from_secs(3),
+    );
+    assert_eq!(completed.operation_id, second);
+    assert_eq!(completed.phase, "ready");
+    assert!(completed.ok);
+    assert!(c.store.operation(&second).unwrap().ok);
     assert_eq!(backend.calls.load(Ordering::Acquire), 2);
 }
 
