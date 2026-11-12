@@ -23,7 +23,7 @@ task.run_auto_install = false
 cookbook_contract = 1
 cookbook_ref = "a2404e45348f8797ae18353b394542a1fd96664b"
 cookbook_recipe = "rust-cli"
-cookbook_sha256 = "16464d273cc20400d962ec3a1dd2b8b50d297bcfd6d2515c2290080f748be37a"
+cookbook_sha256 = "3e1dd2f8ba82d624f30053283f7bce6830a7fa4d42dd495aabb57321c1ed532e"
 
 [tasks._sdk]
 hide = true
