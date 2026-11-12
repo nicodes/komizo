@@ -13,7 +13,7 @@ import time
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 
 from native_release import SOURCE,TAG,cli_binary,verify
-from release_acceptance import REQUIRED_STEPS
+from release_acceptance import REQUIRED_STEPS, JOB_PREPARATION_STEPS
 
 ROOT=Path(__file__).resolve().parents[2]
 
@@ -54,7 +54,7 @@ def native_run(binary,proxy,receipt,cli,profile,output,source,deadline):
     report=json.loads((output/'report.json').read_bytes())
     if report.get('ok') is not True:raise ValueError('real native guest did not complete acceptance')
     closed={key:report[key] for key in ('ok','profile','source')}
-    closed['checks']={key:value for key,value in report['checks'].items() if key in REQUIRED_STEPS|{'bounded_full_postgresql_offline_reboot','fixed_budget_performance'}}
+    closed['checks']={key:value for key,value in report['checks'].items() if key in REQUIRED_STEPS|JOB_PREPARATION_STEPS|{'bounded_full_postgresql_offline_reboot','fixed_budget_performance'}}
     return closed
 
 

@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import unittest
 from unittest.mock import Mock, patch
@@ -117,6 +118,51 @@ class AcceptanceGuards(unittest.TestCase):
             args[0]['profiles']['bounded']['checks'].pop(step)
             with self.subTest(step=step), self.assertRaises(ValueError):
                 validate(*args)
+
+    def test_actual_lifecycle_projection_retains_preparation_proofs_for_both_evidence_consumers(self):
+        spec=importlib.util.spec_from_file_location('cold_lifecycle_projection',ENGINE/'cold-lifecycle-acceptance.py')
+        lifecycle=importlib.util.module_from_spec(spec);spec.loader.exec_module(lifecycle)
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);observations=root/'observations';observations.mkdir()
+            reports={profile:{'ok':True,'profile':profile,
+                'source':{'revision':self.source,'binary_sha256':self.native['host_sha256']},
+                'checks':{name:'passed' for name in required},'private_transcript':'never-export'}
+                for profile,required in [('functional',CANDIDATE_STEPS),('bounded',BOUNDED_STEPS)]}
+            for report in reports.values():report['checks']['private_diagnostic']='never-export'
+            def project(profile,report,label):
+                output=root/label;output.mkdir();(output/'report.json').write_text(json.dumps(report))
+                with patch.object(lifecycle,'virtualization'),patch.object(lifecycle.subprocess,'run') as launch:
+                    closed=lifecycle.native_run(root/'host',root/'proxy',root/'receipt',root/'cli',
+                        profile,output,self.source,time.monotonic()+5)
+                self.assertTrue(launch.call_args.kwargs['check'])
+                self.assertEqual(launch.call_args.kwargs['env']['NATIVE_HOST_SOURCE'],self.source)
+                self.assertNotIn('never-export',json.dumps(closed))
+                return closed
+            profiles={name:project(name,report,name) for name,report in reports.items()}
+            for step in JOB_PREPARATION_STEPS:self.assertEqual(profiles['bounded']['checks'].get(step),'passed')
+            args=self.args();args[0]['profiles']=profiles;self.assertTrue(validate(*args))
+            result={'source':self.source,'accepted':True,'signed_release_acceptance':False,
+                'github_credentials_present':False,'candidate_cli':{'authenticated':False,'sha256':self.native['cli_sha256']},
+                'host_sha256':self.native['host_sha256'],'proxy_sha256':self.native['proxy_sha256'],'profiles':profiles}
+            for name,value in [('performance',self.performance),('onboarding',self.onboarding),('cleanup',CLEANUP)]:
+                (observations/(name+'.json')).write_text(json.dumps(value))
+            (observations/'candidate-deployment.json').write_text(json.dumps(result))
+            export(observations,root/'accepted',self.source)
+            exported=json.loads((root/'accepted/candidate-deployment.json').read_bytes())
+            for step in JOB_PREPARATION_STEPS:self.assertEqual(exported['profiles']['bounded']['checks'][step],'passed')
+            for step in sorted(JOB_PREPARATION_STEPS):
+                for outcome in ['missing','failed']:
+                    report=copy.deepcopy(reports['bounded'])
+                    if outcome=='missing':report['checks'].pop(step)
+                    else:report['checks'][step]='failed'
+                    closed=project('bounded',report,step+'-'+outcome)
+                    self.assertEqual(closed['checks'].get(step),None if outcome=='missing' else 'failed')
+                    args=self.args();args[0]['profiles']=dict(profiles,bounded=closed)
+                    with self.subTest(step=step,outcome=outcome),self.assertRaises(ValueError):validate(*args)
+                    result['profiles']=dict(profiles,bounded=closed)
+                    (observations/'candidate-deployment.json').write_text(json.dumps(result))
+                    with self.subTest(step=step,outcome=outcome),self.assertRaises(ValueError):
+                        export(observations,root/'refused',self.source)
 
     def evidence(self, bundle):
         (bundle / 'komizo-performance.json').write_text(json.dumps(self.performance))
