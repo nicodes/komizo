@@ -190,6 +190,21 @@ def fixture_cloud_options():
         'ssh': {'emit_keys_to_console': False}}
 
 
+def fixture_package_bootstrap(baseline):
+    """One shared immutable package path for Core and private donor fixtures."""
+    helper = ROOT / 'tests/support/native_host_packages.py'
+    config = {'image': baseline['cloud_image'], 'requested_packages': baseline['native_packages'],
+              'closure': baseline['native_package_closure']}
+    return {'write_files': [
+        {'path': '/root/native-host/package-bootstrap.py', 'permissions': '0600',
+         'owner': 'root:root', 'content': helper.read_text()},
+        {'path': '/root/native-host/package-input.json', 'permissions': '0600',
+         'owner': 'root:root', 'content': json.dumps(config, sort_keys=True)}],
+        'runcmd': [['sh', '-ec', 'exec > /dev/ttyS0 2>&1; install -d -m 700 /root/native-host; '
+                   'python3 -I -B /root/native-host/package-bootstrap.py '
+                   '--config /root/native-host/package-input.json']]}
+
+
 def startup_diagnostics(directory=None, boot_id=None):
     """Read only the four fixed, private, non-authoritative startup records."""
     import json
@@ -716,20 +731,7 @@ def main():
         user_data = {**fixture_cloud_options(),
             'users': [fixture_root_user(owner.with_suffix('.pub').read_text().strip())],
             'ssh_keys': {'ed25519_private': host.read_text(), 'ed25519_public': host.with_suffix('.pub').read_text().strip()},
-            'runcmd': [['sh', '-ec',
-                'exec > /dev/ttyS0 2>&1; '
-                'install -d -m 700 /root/native-host /root/native-host/apk-cache; '
-                'printf "%s\\n" https://dl-cdn.alpinelinux.org/alpine/v3.24/main https://dl-cdn.alpinelinux.org/alpine/v3.24/community > /etc/apk/repositories; '
-                'apk update; apk fetch --recursive --output /root/native-host/apk-cache ' +
-                ' '.join(shlex.quote(p) for p in baseline['native_packages']) + '; '
-                'cp -a /etc/apk/keys /root/native-host/apk-cache/keys; '
-                'cp /etc/apk/repositories /root/native-host/apk-cache/repositories; '
-                'cp /var/cache/apk/APKINDEX.* /root/native-host/apk-cache/; '
-                'apk add --no-network /root/native-host/apk-cache/*.apk; '
-                'apk info -vv > /root/native-host/apk-cache/installed.txt; '
-                'cd /root/native-host/apk-cache; sha256sum *.apk > SHA256SUMS; '
-                'tar -cf /root/native-host/alpine-packages.tar .; '
-                'touch /root/native-host/cloud-ready']]}
+            **fixture_package_bootstrap(baseline)}
 
         config = directory / 'user-data'
         config.write_text('#cloud-config\n' + json.dumps(user_data))
