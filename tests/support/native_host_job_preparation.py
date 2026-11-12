@@ -158,6 +158,80 @@ def receipts(application):
     return json.loads(bounded(paths[0],64<<10))
 
 
+def upstream_snapshot(runtime, application, operation, state=Path('/var/lib/komizo')):
+    """Observe only the declared disposable upstream and its protected closure."""
+    namespace='kmz-'+hashlib.sha256((application+'\0production').encode()).hexdigest()[:20]
+    installed=runtime.installed(application);record=installed['resources']['containers']['upstream']
+    if record['name']!=namespace+'-upstream':raise ValueError('upstream record escaped its exact native name')
+    creation_bytes=bounded(state/'journal'/operation/'service-creation-upstream.json',2<<20)
+    creation=json.loads(creation_bytes);original=json.loads(creation['unit_body'])
+    same=['name','ownership','image','config_digest','release_digest','volumes']
+    if (creation['kind']!='komizo.service-creation' or creation['version']!=1
+            or creation['application']!=application or creation['instance']!='production'
+            or creation['operation_id']!=operation or creation['service']!='upstream'
+            or creation['record']['id'] or any(creation['record'][key]!=record[key] for key in same)
+            or original['wanted'] is not True
+            or runtime.registry.digest(creation['unit_body'].encode())!=creation['record']['unit_sha256']):
+        raise ValueError('upstream creation no longer binds its original accepted identity')
+    path=state/'service-configs'/(record['name']+'.json')
+    body=bounded(path,1<<20);config=json.loads(body)
+    ledger=json.loads(bounded(state/'units.json',4<<20))[str(path)]
+    identity=runtime.registry.digest(body)
+    if (identity!=ledger['sha256'] or identity!=record['unit_sha256']
+            or ledger['application']!=application or ledger['instance']!='production'
+            or config!={**original,'wanted':installed['desired_running']}
+            or body!=runtime.registry.canonical(config)):
+        raise ValueError('upstream accepted configuration differs beyond its normal wanted transition')
+    actual=runtime.container(record);labels=actual['Config']['Labels']
+    expected={'io.komizo.application':application,'io.komizo.instance':'production',
+        'io.komizo.service':'upstream','io.komizo.release':record['release_digest'],'io.komizo.ownership':record['ownership']}
+    if actual['Id']!=record['id'] or any(labels.get(key)!=value for key,value in expected.items()):
+        raise ValueError('upstream native container ownership changed')
+    return {'record':record,'config_sha256':identity,'wanted':config['wanted'],
+        'creation_sha256':hashlib.sha256(creation_bytes).hexdigest(),
+        'creation_unit_sha256':creation['record']['unit_sha256'],
+        'original_operation_sha256':hashlib.sha256(bounded(state/'operations'/(operation+'.json'),16384)).hexdigest(),
+        'installed_operation_id':installed['operation_id'],'desired_running':installed['desired_running'],
+        'native':{'id':actual['Id'],**{key:actual['State'][key] for key in [
+            'Running','Paused','Pid','StartedAt','FinishedAt','ExitCode','OOMKilled']}}}
+
+
+def stopped_upstream(before, after):
+    if (before['wanted'] is not True or after['wanted'] is not False or after['desired_running'] is not False
+            or before['config_sha256']!=before['creation_unit_sha256']
+            or after['config_sha256']==before['config_sha256']
+            or before['native']['Running'] is not True or after['native']['Running'] is not False
+            or before['native']['Paused'] is not False or before['native']['Pid']<=0
+            or before['native']['StartedAt']=='0001-01-01T00:00:00Z'
+            or after['native']['FinishedAt']=='0001-01-01T00:00:00Z'
+            or after['native']['Paused'] is not False or after['native']['Pid']!=0
+            or before['native']['OOMKilled'] or after['native']['OOMKilled']
+            or before['native']['id']!=after['native']['id']
+            or before['native']['StartedAt']!=after['native']['StartedAt']
+            or any(before[key]!=after[key] for key in ['creation_sha256','creation_unit_sha256',
+                'original_operation_sha256','installed_operation_id'])):
+        raise ValueError('normal Stop did not preserve the original upstream while accepting wanted=false')
+
+
+def recovered_upstream(stopped, recovered):
+    if stopped!=recovered:raise ValueError('owner recovery changed or started the stopped upstream service')
+
+
+def preparation_workload(workload, limits, declared, upstream=False):
+    workload['jobs']={'initialize':{'artifact':'job','user':'10001:10001',
+        'limits':limits(16,50 if upstream else 100,16),'networks':[],'timeout_seconds':declared,
+        'command':['sh','-c','echo preparation-job-entered']}}
+    if upstream:
+        # Sum admission still permits exactly the original 100m total: the
+        # sleeping prerequisite and the job share that unchanged CPU envelope.
+        workload['services']['upstream']={'artifact':'job','user':'10001:10001',
+            'limits':limits(16,50,16),'networks':[],'stop_timeout_seconds':2,
+            'command':['sleep','120'],
+            'health':{'command':['/bin/busybox','sh','-c',':'],
+                'interval_seconds':2,'timeout_seconds':2,'retries':3}}
+        workload['jobs']['initialize']['needs']={'upstream':'healthy'}
+
+
 def prepare(report):
     import fixture_runtime as runtime
     import fixture_tasks as tasks
@@ -173,9 +247,7 @@ def prepare(report):
             write('/etc/komizo/apps/'+app+'.json',policy)
             document=runtime.release(app,'a'*40)
             document['artifacts']['job']=runtime.registry.image(ROOT/'registry',app,'a'*40)
-            document['workload']['jobs']={'initialize':{'artifact':'job','user':'10001:10001',
-                'limits':runtime.limits(16,100,16),'networks':[],'timeout_seconds':declared,
-                'command':['sh','-c','echo preparation-job-entered']}}
+            preparation_workload(document['workload'],runtime.limits,declared,app=='prepoverrun')
             body,result,observation=delayed_deploy(runtime,document,pause)
             receipt=receipts(app)
             actual=json.loads(run(['podman','--remote=false','container','inspect',receipt['container_id']]).stdout)[0]
@@ -201,17 +273,25 @@ def prepare(report):
                     raise ValueError('preparation overrun did not refuse before any job start')
                 refused=runtime.submit(runtime.request(app,'deploy',body['release_digest'],release=document))
                 if refused.get('kind')!='komizo.error' or receipts(app)!=receipt:raise ValueError('uncertain never-started job replayed without owner recovery')
+                upstream_before=upstream_snapshot(runtime,app,receipt['operation_id'])
             stopped=runtime.submit(runtime.request(app,'stop',body['release_digest']))
             if not stopped.get('ok') or runtime.installed(app)['desired_running']:raise ValueError('preparation fixture normal Stop failed')
             if app=='prepoverrun':
+                upstream_stopped=upstream_snapshot(runtime,app,receipt['operation_id'])
+                stopped_upstream(upstream_before,upstream_stopped)
+                if receipts(app)!=receipt:raise ValueError('normal Stop changed the uncertain job receipt')
                 recovered=runtime.submit(runtime.request(app,'recover',body['release_digest'],operation=receipt['operation_id']))
                 abandoned=receipts(app)
                 proof_path=Path('/var/lib/komizo/journal')/receipt['operation_id']/('job-never-started-'+receipt['identity'][7:]+'.json')
-                proof=bounded(proof_path,64<<10)
+                proof=bounded(proof_path,64<<10);proof_value=json.loads(proof)
                 if (not recovered.get('ok') or recovered.get('phase')!='ready'
-                        or abandoned['phase']!='abandoned_before_start' or json.loads(proof)['receipt']!=receipt
+                        or abandoned['phase']!='abandoned_before_start' or proof_value['receipt']!=receipt
+                        or any(proof_value['native']['State'][key]!=state[key] for key in [
+                            'Running','Paused','Pid','Status','ExitCode','StartedAt','FinishedAt','OOMKilled'])
                         or run(['podman','--remote=false','container','exists',receipt['container_id']],ok=False).returncode!=1):
                     raise ValueError('explicit owner recovery did not preserve/remove only never-started identity')
+                upstream_recovered=upstream_snapshot(runtime,app,receipt['operation_id'])
+                recovered_upstream(upstream_stopped,upstream_recovered)
                 staged=runtime.submit(runtime.request(app,'deploy',body['release_digest'],release=document))
                 if not staged.get('ok') or staged.get('phase')!='prepared_stopped':raise ValueError('fresh stopped deployment did not preserve stop intent')
                 fresh=runtime.submit(runtime.request(app,'start',body['release_digest']))
@@ -221,10 +301,14 @@ def prepare(report):
                         or completed['operation_id']==receipt['operation_id'] or bounded(proof_path,64<<10)!=proof):
                     raise ValueError('fresh normal activation reused old job authority or changed its original evidence')
                 runtime.fetch(app,body['release_digest'])
+                fresh_upstream=runtime.container(runtime.installed(app)['resources']['containers']['upstream'])
+                if not fresh_upstream['State']['Running']:raise ValueError('fresh normal activation did not start its healthy upstream dependency')
                 final=runtime.submit(runtime.request(app,'stop',body['release_digest']))
                 if not final.get('ok'):raise ValueError('recovered preparation fixture did not stop normally')
                 observation.update({'owner_recovery':recovered,'abandoned_receipt':abandoned,'fresh_activation':fresh,
-                    'completed_receipt':completed,'original_receipt_proof_sha256':hashlib.sha256(proof).hexdigest()})
+                    'completed_receipt':completed,'original_receipt_proof_sha256':hashlib.sha256(proof).hexdigest(),
+                    'upstream_before_stop':upstream_before,'upstream_stopped':upstream_stopped,
+                    'upstream_after_recovery':upstream_recovered})
             observations[app]=observation
     finally:tasks.stop('native-fixture-preparation-load')
     if tasks.populated('/komizo/production/native-fixture-preparation-load'):raise ValueError('owned preparation load remained active')

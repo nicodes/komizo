@@ -1,5 +1,7 @@
 import copy
+import hashlib
 import importlib.util
+import json
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -104,6 +106,118 @@ class NativeJobPreparation(unittest.TestCase):
                      mock.patch.object(fixture,'process',return_value=parent):
                     self.assertEqual(list(fixture.creation_candidates(Path('/unused'),200,self.timeout)),[])
                 children.assert_called_once_with(Path('/unused'),200)
+
+
+class StoppedUpstreamRecovery(unittest.TestCase):
+    def setUp(self):
+        self.directory=tempfile.TemporaryDirectory();self.addCleanup(self.directory.cleanup)
+        self.root=Path(self.directory.name);self.app='prepoverrun';self.operation='a'*32
+        self.canonical=lambda value:json.dumps(value,sort_keys=True,separators=(',',':')).encode()
+        self.digest=lambda value:'sha256:'+hashlib.sha256(value).hexdigest()
+        namespace='kmz-'+hashlib.sha256((self.app+'\0production').encode()).hexdigest()[:20]
+        self.config={'kind':'komizo.service-config','version':1,'application':self.app,'instance':'production',
+            'service':'upstream','release_digest':'sha256:'+'b'*64,'ownership':'c'*32,
+            'container_name':namespace+'-upstream','image_id':'sha256:'+'d'*64,'options':['--cap-drop=all'],
+            'command':['sleep','120'],'health':{'command':['/bin/busybox','sh','-c',':']},'wanted':True}
+        self.record={'name':self.config['container_name'],'id':'e'*64,'image':'registry.fixture/upstream',
+            'config_digest':self.config['image_id'],'release_digest':self.config['release_digest'],
+            'ownership':self.config['ownership'],'unit_sha256':self.digest(self.canonical(self.config)),'volumes':{}}
+        self.installed={'operation_id':self.operation,'desired_running':True,'resources':{'containers':{'upstream':self.record}}}
+        self.actual={'Id':self.record['id'],'Config':{'Labels':{
+            'io.komizo.application':self.app,'io.komizo.instance':'production','io.komizo.service':'upstream',
+            'io.komizo.release':self.record['release_digest'],'io.komizo.ownership':self.record['ownership']}},
+            'State':{'Running':True,'Paused':False,'Pid':123,'StartedAt':'2026-11-12T12:00:00Z',
+                'FinishedAt':'0001-01-01T00:00:00Z','ExitCode':0,'OOMKilled':False}}
+        self.creation={'kind':'komizo.service-creation','version':1,'application':self.app,'instance':'production',
+            'operation_id':self.operation,'service':'upstream','record':{**self.record,'id':''},
+            'unit_body':self.canonical(self.config).decode()}
+        self.path=self.root/'service-configs'/(self.record['name']+'.json');self.path.parent.mkdir()
+        self.journal=self.root/'journal'/self.operation;self.journal.mkdir(parents=True)
+        (self.root/'operations').mkdir()
+        (self.root/'operations'/(self.operation+'.json')).write_bytes(self.canonical({'phase':'needs_reconciliation','ok':False}))
+        self.write_creation();self.write_current()
+        self.runtime=SimpleNamespace(registry=SimpleNamespace(canonical=self.canonical,digest=self.digest),
+            installed=lambda app:copy.deepcopy(self.installed),container=lambda record:copy.deepcopy(self.actual))
+
+    def write_creation(self):
+        (self.journal/'service-creation-upstream.json').write_bytes(self.canonical(self.creation))
+
+    def write_current(self):
+        body=self.canonical(self.config);self.path.write_bytes(body)
+        self.record['unit_sha256']=self.digest(body)
+        (self.root/'units.json').write_bytes(self.canonical({str(self.path):{
+            'application':self.app,'instance':'production','sha256':self.record['unit_sha256']}}))
+
+    def snapshot(self):return fixture.upstream_snapshot(self.runtime,self.app,self.operation,self.root)
+
+    def stop(self):
+        self.config['wanted']=False;self.installed['desired_running']=False;self.write_current()
+        self.actual['State'].update(Running=False,Pid=0,FinishedAt='2026-11-12T12:00:10Z',ExitCode=143)
+
+    def test_normal_stop_changes_only_wanted_and_recovery_preserves_stopped_identity(self):
+        before=self.snapshot();self.stop();stopped=self.snapshot()
+        fixture.stopped_upstream(before,stopped)
+        self.assertNotEqual(before['config_sha256'],stopped['config_sha256'])
+        self.assertEqual(before['creation_sha256'],stopped['creation_sha256'])
+        fixture.recovered_upstream(stopped,self.snapshot())
+
+    def test_even_self_consistent_foreign_config_hash_is_not_accepted(self):
+        for field,value in [('command',['sleep','999']),('options',['--privileged']),
+            ('image_id','sha256:'+'f'*64),('wanted',False)]:
+            with self.subTest(field=field):
+                original=copy.deepcopy(self.config);self.config[field]=value;self.write_current()
+                with self.assertRaisesRegex(ValueError,'differs beyond'):self.snapshot()
+                self.config=original;self.write_current()
+
+    def test_creation_identity_or_native_ownership_tamper_is_refused(self):
+        for object_,key,value in [(self.creation['record'],'ownership','f'*32),
+            (self.creation,'operation_id','f'*32),(self.actual,'Id','f'*64),
+            (self.actual['Config']['Labels'],'io.komizo.ownership','f'*32)]:
+            with self.subTest(key=key):
+                original=object_[key];object_[key]=value;self.write_creation()
+                with self.assertRaises(ValueError):self.snapshot()
+                object_[key]=original;self.write_creation()
+
+    def test_stop_requires_live_original_and_proves_unchanged_creation_and_operation(self):
+        before=self.snapshot();self.stop();after=self.snapshot()
+        for group,key,value in [('native','Running',True),('native','StartedAt','2026-11-12T12:00:05Z'),
+            ('native','id','f'*64),(None,'creation_sha256','f'*64),(None,'original_operation_sha256','f'*64),
+            (None,'config_sha256',before['config_sha256'])]:
+            with self.subTest(key=key):
+                changed=copy.deepcopy(after);(changed[group] if group else changed)[key]=value
+                with self.assertRaises(ValueError):fixture.stopped_upstream(before,changed)
+
+    def test_recovery_cannot_start_service_change_configuration_or_rewrite_original_evidence(self):
+        self.stop();stopped=self.snapshot()
+        for group,key,value in [('native','Running',True),('native','Pid',456),
+            ('native','StartedAt','2026-11-12T12:00:20Z'),('native','FinishedAt','2026-11-12T12:00:21Z'),
+            (None,'config_sha256','f'*64),(None,'original_operation_sha256','f'*64),
+            (None,'creation_sha256','f'*64)]:
+            with self.subTest(key=key):
+                changed=copy.deepcopy(stopped);(changed[group] if group else changed)[key]=value
+                with self.assertRaises(ValueError):fixture.recovered_upstream(stopped,changed)
+
+    def test_actual_preparation_declarations_fit_unchanged_sum_allocation(self):
+        def limits(memory,cpu,pids):
+            return {'memory_bytes':memory*(1<<20),'memory_swap_bytes':memory*(1<<20),
+                'milli_cpus':cpu,'pids':pids}
+        for upstream,total in [(False,30),(True,20)]:
+            workload={'services':{},'jobs':{},'assets':{'web':{'artifact':'web'}},
+                'networks':{},'volumes':{},'routes':[]}
+            unchanged={key:copy.deepcopy(workload[key]) for key in ['assets','networks','volumes','routes']}
+            fixture.preparation_workload(workload,limits,total,upstream)
+            values=[*workload['services'].values(),*workload['jobs'].values()]
+            self.assertEqual(sum(value['limits']['milli_cpus'] for value in values),100)
+            for key,budget in limits(96,100,32).items():
+                self.assertLessEqual(sum(value['limits'][key] for value in values),budget)
+                self.assertTrue(all(value['limits'][key]>0 for value in values))
+            self.assertEqual(workload['jobs']['initialize']['timeout_seconds'],total)
+            self.assertEqual({key:workload[key] for key in unchanged},unchanged)
+            if upstream:
+                self.assertEqual(workload['jobs']['initialize']['needs'],{'upstream':'healthy'})
+                self.assertEqual(workload['services']['upstream']['artifact'],workload['jobs']['initialize']['artifact'])
+                self.assertEqual(workload['services']['upstream']['networks'],[])
+            else:self.assertEqual(workload['services'],{})
 
 
 if __name__=='__main__':unittest.main()
