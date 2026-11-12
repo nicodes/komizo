@@ -3693,6 +3693,9 @@ impl Backend for Native {
                         // its exact installed descriptor remains authoritative
                         // throughout capture, before any new migration runs.
                         advance(store, operation, "jobs")?;
+                        // Restored data may never have started a workload, so
+                        // its instance parent must precede the backup services.
+                        system::instance_allocation(store, &system, policy, instance)?;
                         installed.desired_running = true;
                         store.save_installed(&installed)?;
                         wanted(store, &mut installed, true, &system, &job.operation_id)?;

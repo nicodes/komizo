@@ -19,7 +19,7 @@ REQUIRED_STEPS={
     'supported_host','root_peer','forged_owner_peer','proxy_uid','proxy_asset_write_refusal',
     'proxy_process_metadata_isolation','secret_isolation','kernel_limits','unsafe_filesystem','idempotent_install',
     'managed_bootstrap_upgrade','foreign_bootstrap_bytes_refused','typed_dns_helper_refusal','native_proxy_source_receipt','unprivileged_proxy_digest_guard',
-    'static_archive','service_job_dag','owner_empty_data_enrollment','nonempty_data_initialization_refused','unenrolled_production_refused',
+    'static_archive','service_job_dag','owner_empty_data_enrollment','nonempty_data_initialization_refused','unenrolled_production_refused','restored_first_start_backup_before_migration',
     'mutation_replay','source_bound_https','forwarded_ip_refused','controller_death','dns_after_controller_death',
     'dns_after_other_application_stop','shared_dns_control_budget','stopped_candidate_no_jobs','application_kernel_limits',
     'cross_application_tcp_refused','same_network_tcp_allowed','installed_asset_proxy_uid_read','installed_asset_proxy_uid_write_refused',
