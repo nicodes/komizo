@@ -22,6 +22,24 @@
   "alpine_version": "3.24.3",
   "podman_package": "5.8.10-r0",
   "openrc_version": "0.63.2-r0",
+  "native_package_closure": {
+    "archive": {
+      "url": "https://github.com/nicodes/komizo/releases/download/native-alpine-3.24.3-x86_64-e27335817e2c/alpine-packages.tar",
+      "sha256": "e27335817e2c4cbe2dad661aa8e29297aa060029b382d2d83568f3edfe14f641",
+      "size_bytes": 61087232
+    },
+    "manifest": {
+      "url": "https://github.com/nicodes/komizo/releases/download/native-alpine-3.24.3-x86_64-e27335817e2c/alpine-packages.json",
+      "sha256": "4f806ff1ae6da09e04d58528864a9e20858cdd9d906c983baac9c5d98a87c3a7",
+      "size_bytes": 1508
+    },
+    "apk_count": 142,
+    "trusted_keys": {
+      "alpine-devel@lists.alpinelinux.org-4a6a0840.rsa.pub": "9c102bcc376af1498d549b77bdbfa815ae86faa1d2d82f040e616b18ef2df2d4",
+      "alpine-devel@lists.alpinelinux.org-5261cecb.rsa.pub": "12f899e55a7691225603d6fb3324940fc51cd7f133e7ead788663c2b7eecb00c",
+      "alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub": "207e4696d3c05f7cb05966aee557307151f1f00217af4143c1bcaf33b8df733f"
+    }
+  },
   "native_packages": [
     "podman=5.8.10-r0",
     "crun=1.30.1-r0",
