@@ -1097,6 +1097,46 @@ fn validate_service_intent(
     }
     Ok(())
 }
+
+fn accepted_service_creation_record(
+    store: &Store,
+    intent: &ServiceIntent,
+    installed: &Installed,
+    document: &ReleaseDocument,
+) -> Result<store::ContainerRecord> {
+    let record = installed
+        .resources
+        .containers
+        .get(&intent.service)
+        .unwrap_or(&intent.record);
+    ensure!(
+        record.ownership == intent.record.ownership
+            && record.name == intent.record.name
+            && record.image == intent.record.image
+            && record.config_digest == intent.record.config_digest
+            && record.release_digest == intent.record.release_digest
+            && record.volumes == intent.record.volumes,
+        "service creation encountered a foreign protected record"
+    );
+    // A later accepted Stop changes wanted and its protected unit hash without
+    // changing the original creation intent. Bind the current accepted record
+    // to the complete canonical configuration and current desired state.
+    let expected = service_configuration(
+        store,
+        installed,
+        document,
+        &intent.service,
+        &record.ownership,
+        installed.desired_running,
+    )?
+    .bytes()?;
+    ensure!(
+        document_digest(&expected) == record.unit_sha256,
+        "accepted service creation differs from its full current configuration"
+    );
+    Ok(record.clone())
+}
+
 fn reconcile_services(
     store: &Store,
     interrupted: &Operation,
@@ -1221,22 +1261,20 @@ fn reconcile_services(
                         && installed.release_digest == intent.release_digest,
                     "service creation no longer selects the interrupted installed source"
                 );
-                if let Some(record) = installed.resources.containers.get(&intent.service) {
-                    ensure!(
-                        record.ownership == intent.record.ownership
-                            && record.name == intent.record.name
-                            && record.config_digest == intent.record.config_digest
-                            && record.volumes == intent.record.volumes,
-                        "service creation encountered a foreign protected record"
-                    );
-                } else {
+                let accepted =
+                    accepted_service_creation_record(store, &intent, installed, &document)?;
+                if !installed.resources.containers.contains_key(&intent.service) {
                     installed
                         .resources
                         .containers
-                        .insert(intent.service.clone(), intent.record.clone());
+                        .insert(intent.service.clone(), accepted.clone());
                     store.save_installed(installed)?;
                 }
                 if !path.try_exists()? {
+                    ensure!(
+                        accepted.unit_sha256 == intent.record.unit_sha256,
+                        "missing accepted stopped configuration cannot restore the original running intent"
+                    );
                     system::install_for_operation(
                         store,
                         &path,
@@ -1251,7 +1289,7 @@ fn reconcile_services(
                         &path,
                         &installed.application,
                         &installed.instance,
-                        &intent.record.unit_sha256,
+                        &accepted.unit_sha256,
                     )?;
                 }
                 verified_service_configuration(store, installed, &document, &intent.service)?;
@@ -4134,8 +4172,14 @@ mod recovery_tests {
         }
     }
 
-    #[test]
-    fn service_creation_and_removal_intents_bind_exact_source_token_unit_and_volume_authority() {
+    fn service_creation_fixture() -> (
+        tempfile::TempDir,
+        Store,
+        ReleaseDocument,
+        Installed,
+        Operation,
+        ServiceIntent,
+    ) {
         let document = read_release(include_bytes!(
             "../../tests/fixtures/deployment/release.json"
         ))
@@ -4202,7 +4246,7 @@ mod recovery_tests {
                 .unwrap(),
         )
         .unwrap();
-        let mut intent = ServiceIntent {
+        let intent = ServiceIntent {
             kind: "komizo.service-creation".into(),
             version: 1,
             application: installed.application.clone(),
@@ -4225,6 +4269,149 @@ mod recovery_tests {
             },
             unit_body: Some(body),
         };
+        (directory, store, document, installed, operation, intent)
+    }
+
+    #[test]
+    fn service_creation_recovery_accepts_current_stopped_identity_and_preserves_original_intent() {
+        let (_directory, store, document, mut installed, operation, intent) =
+            service_creation_fixture();
+        let original = serde_json::to_vec(&intent).unwrap();
+        installed.desired_running = true;
+        installed
+            .resources
+            .containers
+            .insert("api".into(), intent.record.clone());
+        validate_service_intent(&store, &intent, &operation, &installed, &document).unwrap();
+        assert_eq!(
+            accepted_service_creation_record(&store, &intent, &installed, &document)
+                .unwrap()
+                .unit_sha256,
+            intent.record.unit_sha256
+        );
+        // Normal Stop retains this creation's source/token and operation ID,
+        // changing only desired state and the accepted service configuration.
+        installed.desired_running = false;
+        let mut stopped =
+            units::ServiceConfig::parse(intent.unit_body.as_ref().unwrap().as_bytes()).unwrap();
+        stopped.wanted = false;
+        let hash = document_digest(&stopped.bytes().unwrap());
+        let record = installed.resources.containers.get_mut("api").unwrap();
+        record.unit_sha256 = hash.clone();
+        record.id = "c".repeat(64);
+        let before = serde_json::to_vec(&installed).unwrap();
+        let accepted =
+            accepted_service_creation_record(&store, &intent, &installed, &document).unwrap();
+        assert_eq!(accepted.unit_sha256, hash);
+        assert_eq!(accepted.id, "c".repeat(64));
+        assert_ne!(accepted.unit_sha256, intent.record.unit_sha256);
+        assert_eq!(installed.operation_id, operation.operation_id);
+        assert_eq!(serde_json::to_vec(&installed).unwrap(), before);
+        assert_eq!(serde_json::to_vec(&intent).unwrap(), original);
+        validate_service_intent(&store, &intent, &operation, &installed, &document).unwrap();
+    }
+
+    #[test]
+    fn service_creation_recovery_refuses_foreign_record_even_with_its_own_canonical_hash() {
+        let (_directory, store, document, mut installed, _operation, intent) =
+            service_creation_fixture();
+        installed.desired_running = true;
+        installed
+            .resources
+            .containers
+            .insert("api".into(), intent.record.clone());
+        for field in ["ownership", "name", "image", "config", "release", "volumes"] {
+            let mut candidate = installed.clone();
+            let record = candidate.resources.containers.get_mut("api").unwrap();
+            match field {
+                "ownership" => record.ownership = "f".repeat(32),
+                "name" => record.name = format!("{}-foreign", units::namespace("mailroom", "production").unwrap()),
+                "image" => record.image = "registry.example.test/foreign@sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
+                "config" => record.config_digest = format!("sha256:{}", "f".repeat(64)),
+                "release" => record.release_digest = format!("sha256:{}", "f".repeat(64)),
+                "volumes" => { record.volumes.insert("foreign".into(), "foreign-volume".into()); },
+                _ => unreachable!(),
+            }
+            let ownership = record.ownership.clone();
+            let hash = document_digest(
+                &service_configuration(&store, &candidate, &document, "api", &ownership, true)
+                    .unwrap()
+                    .bytes()
+                    .unwrap(),
+            );
+            candidate
+                .resources
+                .containers
+                .get_mut("api")
+                .unwrap()
+                .unit_sha256 = hash;
+            assert!(
+                accepted_service_creation_record(&store, &intent, &candidate, &document).is_err(),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn service_creation_recovery_requires_exact_hash_and_complete_current_wanted_configuration() {
+        let (_directory, store, document, mut installed, operation, mut intent) =
+            service_creation_fixture();
+        installed
+            .resources
+            .containers
+            .insert("api".into(), intent.record.clone());
+        // The old wanted=true bytes cannot stand in for current stopped state.
+        assert!(accepted_service_creation_record(&store, &intent, &installed, &document).is_err());
+        let mut config =
+            units::ServiceConfig::parse(intent.unit_body.as_ref().unwrap().as_bytes()).unwrap();
+        config.wanted = false;
+        installed
+            .resources
+            .containers
+            .get_mut("api")
+            .unwrap()
+            .unit_sha256 = document_digest(&config.bytes().unwrap());
+        accepted_service_creation_record(&store, &intent, &installed, &document).unwrap();
+        for field in ["hash", "wanted", "command", "options"] {
+            let mut candidate = installed.clone();
+            let mut changed = config.clone();
+            match field {
+                "hash" => {}
+                "wanted" => changed.wanted = true,
+                "command" => changed.command.push("unadmitted".into()),
+                "options" => changed.options.push("--privileged".into()),
+                _ => unreachable!(),
+            }
+            candidate
+                .resources
+                .containers
+                .get_mut("api")
+                .unwrap()
+                .unit_sha256 = if field == "hash" {
+                format!("sha256:{}", "f".repeat(64))
+            } else {
+                document_digest(&changed.bytes().unwrap())
+            };
+            assert!(
+                accepted_service_creation_record(&store, &intent, &candidate, &document).is_err(),
+                "{field}"
+            );
+        }
+        // Recovery still authenticates the immutable original running body.
+        intent.unit_body = Some(String::from_utf8(config.bytes().unwrap()).unwrap());
+        intent.record.unit_sha256 = document_digest(intent.unit_body.as_ref().unwrap().as_bytes());
+        assert!(
+            validate_service_intent(&store, &intent, &operation, &installed, &document).is_err()
+        );
+        installed.resources.containers.clear();
+        installed.desired_running = true;
+        assert!(accepted_service_creation_record(&store, &intent, &installed, &document).is_err());
+    }
+
+    #[test]
+    fn service_creation_and_removal_intents_bind_exact_source_token_unit_and_volume_authority() {
+        let (_directory, store, document, installed, operation, mut intent) =
+            service_creation_fixture();
         validate_service_intent(&store, &intent, &operation, &installed, &document).unwrap();
         assert_eq!(service_epoch(&store, &installed).unwrap(), None);
         advance_service_epoch(&store, &installed).unwrap();
