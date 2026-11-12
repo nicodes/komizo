@@ -19,6 +19,48 @@ impl std::error::Error for ProcessEnded {}
 pub(crate) fn process_ended(error: &anyhow::Error) -> bool {
     error.downcast_ref::<ProcessEnded>().is_some()
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NativeStatus {
+    Unknown,
+    Created,
+    Initialized,
+    Running,
+    Stopped,
+    Paused,
+    Exited,
+    Removing,
+    Stopping,
+    Unrecognized,
+}
+pub(crate) fn native_status(value: &Value) -> NativeStatus {
+    match value["State"]["Status"].as_str() {
+        Some("unknown") => NativeStatus::Unknown,
+        Some("created" | "configured") => NativeStatus::Created,
+        Some("initialized") => NativeStatus::Initialized,
+        Some("running") => NativeStatus::Running,
+        Some("stopped") => NativeStatus::Stopped,
+        Some("paused") => NativeStatus::Paused,
+        Some("exited") => NativeStatus::Exited,
+        Some("removing") => NativeStatus::Removing,
+        Some("stopping") => NativeStatus::Stopping,
+        _ => NativeStatus::Unrecognized,
+    }
+}
+fn execution_time(value: &Value) -> bool {
+    value.as_str().is_some_and(|time| {
+        time.len() <= 64
+            && chrono::DateTime::parse_from_rfc3339(time).is_ok_and(|at| at.timestamp() > 0)
+    })
+}
+fn unpublished_time(value: &Value) -> bool {
+    value.is_null()
+        || value.as_str().is_some_and(|time| {
+            time.is_empty()
+                || (time.len() <= 64
+                    && time.starts_with("0001-")
+                    && chrono::DateTime::parse_from_rfc3339(time).is_ok())
+        })
+}
 #[derive(Debug, PartialEq, Eq)]
 enum TerminalMismatch {
     Id,
@@ -33,10 +75,12 @@ enum TerminalMismatch {
     Paused,
     Pid,
     ExitCode,
+    StartedAt,
+    FinishedAt,
+    RestartCount,
 }
 fn terminal_mismatches(value: &Value, original: &Value) -> Vec<TerminalMismatch> {
-    // Fixed names only: these inspections may contain private environment and
-    // mount values. Diagnostics must never format either inspection or a value.
+    // Fixed names only: never format an inspection, Env, mount or unknown value.
     [
         (TerminalMismatch::Id, value["Id"] == original["Id"]),
         (
@@ -59,7 +103,10 @@ fn terminal_mismatches(value: &Value, original: &Value) -> Vec<TerminalMismatch>
         ),
         (
             TerminalMismatch::Status,
-            value["State"]["Status"] == "exited",
+            matches!(
+                native_status(value),
+                NativeStatus::Stopped | NativeStatus::Exited
+            ),
         ),
         (
             TerminalMismatch::Running,
@@ -73,12 +120,38 @@ fn terminal_mismatches(value: &Value, original: &Value) -> Vec<TerminalMismatch>
                 .as_u64()
                 .is_some_and(|code| code <= 255),
         ),
+        (
+            TerminalMismatch::StartedAt,
+            execution_time(&original["State"]["StartedAt"])
+                && value["State"]["StartedAt"] == original["State"]["StartedAt"],
+        ),
+        (
+            TerminalMismatch::FinishedAt,
+            execution_time(&value["State"]["FinishedAt"]),
+        ),
+        (
+            TerminalMismatch::RestartCount,
+            original["RestartCount"].as_u64().is_some()
+                && value["RestartCount"] == original["RestartCount"],
+        ),
     ]
     .into_iter()
     .filter_map(|(field, matches)| (!matches).then_some(field))
     .collect()
 }
-pub(crate) fn verify_terminal(value: &Value, original: &Value, group: &Group) -> Result<()> {
+pub(crate) fn same_execution(value: &Value, original: &Value) -> Result<()> {
+    ensure!(
+        execution_time(&original["State"]["StartedAt"])
+            && value["State"]["StartedAt"] == original["State"]["StartedAt"]
+            && original["RestartCount"].as_u64().is_some()
+            && value["RestartCount"] == original["RestartCount"],
+        "workload terminal execution changed; mismatch_fields={:?}; status={:?}",
+        terminal_mismatches(value, original),
+        native_status(value)
+    );
+    Ok(())
+}
+fn terminal_identity(value: &Value, original: &Value, group: &Group) -> Result<()> {
     ensure!(
         value["Id"] == original["Id"]
             && [
@@ -90,22 +163,100 @@ pub(crate) fn verify_terminal(value: &Value, original: &Value, group: &Group) ->
                 "AppArmorProfile"
             ]
             .iter()
-            .all(|key| value[key] == original[key])
-            && value["State"]["Status"] == "exited"
-            && value["State"]["Running"] == false
+            .all(|key| value[key] == original[key]),
+        "workload terminal reinspection changed immutable ownership; mismatch_fields={:?}; status={:?}",
+        terminal_mismatches(value, original),
+        native_status(value)
+    );
+    configuration(value, group)?;
+    same_execution(value, original)?;
+    Ok(())
+}
+/// Native payload-exit evidence only. Kernel quiescence is separately mandatory
+/// at the caller's existing exact-group retirement barrier, before job success.
+pub(crate) fn native_exit(value: &Value) -> Result<Option<i32>> {
+    if !matches!(
+        native_status(value),
+        NativeStatus::Stopped | NativeStatus::Exited
+    ) {
+        return Ok(None);
+    }
+    ensure!(
+        value["State"]["Running"] == false
             && value["State"]["Paused"] == false
             && value["State"]["Pid"] == 0
-            && value["State"]["ExitCode"]
-                .as_u64()
-                .is_some_and(|code| code <= 255),
-        "workload terminal reinspection changed immutable ownership or exit evidence; mismatch_fields={:?}",
-        terminal_mismatches(value, original)
+            && execution_time(&value["State"]["StartedAt"]),
+        "native terminal execution evidence refused; status={:?}",
+        native_status(value)
+    );
+    let exit = &value["State"]["ExitCode"];
+    ensure!(
+        exit.is_null() || exit.as_u64().is_some_and(|code| code <= 255),
+        "native terminal exit code refused; status={:?}",
+        native_status(value)
+    );
+    let finished = &value["State"]["FinishedAt"];
+    ensure!(
+        execution_time(finished) || unpublished_time(finished),
+        "native terminal finish evidence refused; status={:?}",
+        native_status(value)
+    );
+    if exit.is_null() || !execution_time(finished) {
+        return Ok(None);
+    }
+    Ok(Some(exit.as_u64().expect("validated terminal exit") as i32))
+}
+pub(crate) fn verify_terminal(value: &Value, original: &Value, group: &Group) -> Result<()> {
+    terminal_identity(value, original, group)?;
+    let exit = native_exit(value).map_err(|error| {
+        error.context(format!(
+            "workload terminal exit evidence refused; mismatch_fields={:?}; status={:?}",
+            terminal_mismatches(value, original),
+            native_status(value)
+        ))
+    })?;
+    ensure!(
+        exit.is_some(),
+        "workload terminal exit evidence is incomplete; mismatch_fields={:?}; status={:?}",
+        terminal_mismatches(value, original),
+        native_status(value)
     );
     ensure!(
         processes(value, group)?.is_none(),
         "terminal workload retained a live process"
     );
     Ok(())
+}
+/// Eligible only after typed ProcessEnded. A still-publishing same execution can
+/// be read again; an identity change, restart, pause or unknown state cannot.
+pub(crate) fn terminal_observation(value: &Value, original: &Value, group: &Group) -> Result<bool> {
+    terminal_identity(value, original, group)?;
+    match native_status(value) {
+        NativeStatus::Stopped | NativeStatus::Exited => {
+            if native_exit(value)?.is_none() {
+                return Ok(false);
+            }
+            verify_terminal(value, original, group)?;
+            Ok(true)
+        }
+        NativeStatus::Running | NativeStatus::Stopping => {
+            let status = native_status(value);
+            ensure!(
+                value["State"]["Paused"] == false
+                    && value["State"]["Pid"].as_u64().is_some()
+                    && (value["State"]["Pid"] == original["State"]["Pid"]
+                        || (status == NativeStatus::Stopping && value["State"]["Pid"] == 0))
+                    && ((status == NativeStatus::Running && value["State"]["Running"] == true)
+                        || (status == NativeStatus::Stopping
+                            && value["State"]["Running"] == false)),
+                "ending workload changed its observed execution; status={status:?}"
+            );
+            Ok(false)
+        }
+        status => Err(anyhow!(
+            "ending workload has an ineligible native state; status={status:?}"
+        )),
+    }
 }
 
 pub(crate) fn configuration(value: &Value, group: &Group) -> Result<String> {
@@ -659,9 +810,9 @@ mod tests {
             &"a".repeat(32),
         )
         .unwrap();
-        let live = json!({"Id":"b".repeat(64),"Image":"sha256:fixed","OCIRuntime":"crun","Config":{"Labels":{"ownership":"same"}},"Mounts":[],"HostConfig":{"CgroupParent":group.relative(),"CgroupManager":"cgroupfs","LogConfig":{"Type":"k8s-file"}},"State":{"Pid":101,"ConmonPid":102,"Status":"running","Running":true,"Paused":false,"ExitCode":0}});
+        let live = json!({"Id":"b".repeat(64),"Image":"sha256:fixed","OCIRuntime":"crun","RestartCount":0,"Config":{"Labels":{"ownership":"same"}},"Mounts":[],"HostConfig":{"CgroupParent":group.relative(),"CgroupManager":"cgroupfs","LogConfig":{"Type":"k8s-file"}},"State":{"Pid":101,"ConmonPid":102,"Status":"running","Running":true,"Paused":false,"ExitCode":0,"StartedAt":"2026-11-12T00:00:00Z","FinishedAt":"0001-01-01T00:00:00Z"}});
         let mut stopped = live.clone();
-        stopped["State"] = json!({"Pid":0,"ConmonPid":0,"Status":"exited","Running":false,"Paused":false,"ExitCode":17});
+        stopped["State"] = json!({"Pid":0,"ConmonPid":0,"Status":"exited","Running":false,"Paused":false,"ExitCode":17,"StartedAt":"2026-11-12T00:00:00Z","FinishedAt":"2026-11-12T00:00:01Z"});
         verify_terminal(&stopped, &live, &group).unwrap();
         assert_eq!(stopped["State"]["ExitCode"], 17);
         for (section, key, value) in [
@@ -700,11 +851,11 @@ mod tests {
             &"a".repeat(32),
         )
         .unwrap();
-        let original = json!({"Id":"b".repeat(64),"Image":"sha256:fixed","OCIRuntime":"crun",
+        let original = json!({"Id":"b".repeat(64),"Image":"sha256:fixed","OCIRuntime":"crun","RestartCount":0,
             "Config":{"Env":["SYNTHETIC_PRIVATE_ENV=unobserved"]},"Mounts":[],
             "Name":"synthetic-job","AppArmorProfile":"komizo-workload",
             "HostConfig":{"CgroupParent":group.relative(),"CgroupManager":"cgroupfs","LogConfig":{"Type":"k8s-file"}},
-            "State":{"Pid":0,"ConmonPid":0,"Status":"exited","Running":false,"Paused":false,"ExitCode":17}});
+            "State":{"Pid":0,"ConmonPid":0,"Status":"exited","Running":false,"Paused":false,"ExitCode":17,"StartedAt":"2026-11-12T00:00:00Z","FinishedAt":"2026-11-12T00:00:01Z"}});
         assert!(terminal_mismatches(&original, &original).is_empty());
         verify_terminal(&original, &original, &group).unwrap();
         let sentinel = "SYNTHETIC_PRIVATE_VALUE\npassword=must-never-appear";
@@ -721,6 +872,9 @@ mod tests {
             (Some("State"), "Paused", TerminalMismatch::Paused),
             (Some("State"), "Pid", TerminalMismatch::Pid),
             (Some("State"), "ExitCode", TerminalMismatch::ExitCode),
+            (Some("State"), "StartedAt", TerminalMismatch::StartedAt),
+            (Some("State"), "FinishedAt", TerminalMismatch::FinishedAt),
+            (None, "RestartCount", TerminalMismatch::RestartCount),
         ];
         let mut all_changed = original.clone();
         let mut expected_all = Vec::new();
@@ -737,11 +891,9 @@ mod tests {
             let error = verify_terminal(&changed, &original, &group)
                 .unwrap_err()
                 .to_string();
-            assert_eq!(
-                error,
-                format!(
-                    "workload terminal reinspection changed immutable ownership or exit evidence; mismatch_fields={expected_fields}"
-                )
+            assert!(
+                error.contains(&format!("mismatch_fields={expected_fields}")),
+                "{error}"
             );
             assert!(!error.contains(sentinel));
             assert!(!error.contains("SYNTHETIC_PRIVATE_ENV"));
@@ -751,9 +903,106 @@ mod tests {
         let error = verify_terminal(&all_changed, &original, &group)
             .unwrap_err()
             .to_string();
-        assert!(error.len() < 256);
+        assert!(error.len() < 384);
         assert!(!error.contains(sentinel));
         assert!(!error.contains("SYNTHETIC_PRIVATE_ENV"));
+    }
+    fn ending_fixture() -> (cgroups::Group, Value, Value) {
+        let group = cgroups::workload_group(
+            "fixture",
+            "production",
+            WorkloadKind::Job,
+            "migrate",
+            &"a".repeat(32),
+        )
+        .unwrap();
+        let live = json!({"Id":"b".repeat(64),"Image":"sha256:fixed","Name":"synthetic-job","AppArmorProfile":"komizo-workload","OCIRuntime":"crun","RestartCount":0,
+            "Config":{"Labels":{"ownership":"same"}},"Mounts":[],
+            "HostConfig":{"CgroupParent":group.relative(),"CgroupManager":"cgroupfs","LogConfig":{"Type":"k8s-file"}},
+            "State":{"Pid":101,"ConmonPid":102,"Status":"running","Running":true,"Paused":false,"ExitCode":0,
+                "StartedAt":"2026-11-12T00:00:00Z","FinishedAt":"0001-01-01T00:00:00Z"}});
+        let mut stopped = live.clone();
+        stopped["State"]["Status"] = json!("stopped");
+        stopped["State"]["Running"] = json!(false);
+        stopped["State"]["Pid"] = json!(0);
+        stopped["State"]["ConmonPid"] = json!(0);
+        stopped["State"]["FinishedAt"] = json!("2026-11-12T00:00:01Z");
+        (group, live, stopped)
+    }
+    #[test]
+    fn stopped_and_exited_prove_the_same_owned_execution_without_reclassifying_exit() {
+        let (group, live, stopped) = ending_fixture();
+        for status in ["stopped", "exited"] {
+            for exit in [0, 17, 137, 255] {
+                let mut value = stopped.clone();
+                value["State"]["Status"] = json!(status);
+                value["State"]["ExitCode"] = json!(exit);
+                assert!(terminal_observation(&value, &live, &group).unwrap());
+                verify_terminal(&value, &live, &group).unwrap();
+                assert_eq!(native_exit(&value).unwrap(), Some(exit));
+            }
+        }
+    }
+    #[test]
+    fn only_same_execution_exit_publication_can_remain_pending() {
+        let (group, live, stopped) = ending_fixture();
+        assert!(!terminal_observation(&live, &live, &group).unwrap());
+        for finished in [json!(null), json!(""), json!("0001-01-01T00:00:00Z")] {
+            let mut incomplete = stopped.clone();
+            incomplete["State"]["FinishedAt"] = finished;
+            assert!(!terminal_observation(&incomplete, &live, &group).unwrap());
+            assert!(verify_terminal(&incomplete, &live, &group).is_err());
+        }
+        let mut incomplete = stopped.clone();
+        incomplete["State"]["ExitCode"] = Value::Null;
+        assert!(!terminal_observation(&incomplete, &live, &group).unwrap());
+        for status in [
+            "created",
+            "initialized",
+            "paused",
+            "removing",
+            "unknown",
+            "SYNTHETIC_PRIVATE_STATE",
+        ] {
+            let mut value = stopped.clone();
+            value["State"]["Status"] = json!(status);
+            let error = terminal_observation(&value, &live, &group)
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("SYNTHETIC_PRIVATE_STATE"));
+        }
+        for (section, key, value) in [
+            ("State", "StartedAt", json!("2026-11-12T00:00:02Z")),
+            ("State", "Paused", json!(true)),
+            ("State", "Pid", json!(103)),
+            ("State", "ExitCode", json!(-1)),
+            ("State", "ExitCode", json!(256)),
+            ("State", "ExitCode", json!("0")),
+            ("State", "FinishedAt", json!(7)),
+        ] {
+            let mut changed = stopped.clone();
+            changed[section][key] = value;
+            assert!(terminal_observation(&changed, &live, &group).is_err());
+        }
+        let mut restarted = stopped.clone();
+        restarted["RestartCount"] = json!(1);
+        assert!(terminal_observation(&restarted, &live, &group).is_err());
+        for key in [
+            "Config",
+            "HostConfig",
+            "Mounts",
+            "Image",
+            "Name",
+            "AppArmorProfile",
+            "Id",
+        ] {
+            let mut changed = live.clone();
+            changed[key] = json!("SYNTHETIC_PRIVATE_IDENTITY");
+            let error = terminal_observation(&changed, &live, &group)
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("SYNTHETIC_PRIVATE_IDENTITY"));
+        }
     }
     #[test]
     fn declared_runtime_limits_and_actual_kernel_limits_are_both_required() {

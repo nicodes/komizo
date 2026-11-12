@@ -133,6 +133,58 @@ fn cleanup_identity(actual: &Value, expected: &Value) -> Result<String> {
     Ok(id.to_owned())
 }
 
+fn cleanup_signal_needed(value: &Value) -> Result<bool> {
+    use super::workload_guard::{NativeStatus, native_status};
+    super::workload_guard::same_execution(value, value)?;
+    if super::workload_guard::native_exit(value)?.is_some() {
+        return Ok(false);
+    }
+    ensure!(
+        value["State"]["Pid"].as_u64().is_some_and(|pid| pid > 1)
+            && ((native_status(value) == NativeStatus::Running
+                && value["State"]["Running"] == true
+                && value["State"]["Paused"] == false)
+                || (native_status(value) == NativeStatus::Paused
+                    && value["State"]["Running"] == false
+                    && value["State"]["Paused"] == true)),
+        "owned cleanup refuses an unknown native execution state; status={:?}",
+        native_status(value)
+    );
+    Ok(true)
+}
+
+fn terminal_after_ended(
+    original: &Value,
+    group: &super::cgroups::Group,
+    limits: Option<&super::model::Limits>,
+    deadline: Instant,
+    mut inspect: impl FnMut() -> Result<Value>,
+) -> Result<Value> {
+    loop {
+        ensure!(
+            Instant::now() < deadline,
+            "finite terminal observation deadline expired"
+        );
+        let current = inspect()?;
+        // All identity/execution/runtime/limit errors fail on this observation;
+        // only incomplete publication of the same ending execution can wait.
+        let complete = super::workload_guard::terminal_observation(&current, original, group)?;
+        if let Some(limits) = limits {
+            super::workload_guard::configuration_limits(&current, limits)?;
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "finite terminal observation deadline expired"
+        );
+        if complete {
+            return Ok(current);
+        }
+        std::thread::sleep(
+            Duration::from_millis(10).min(deadline.saturating_duration_since(Instant::now())),
+        );
+    }
+}
+
 impl Engine {
     /// Cleanup-only: never creates, starts or extends a workload's lifetime.
     /// A separately bounded caller may use this after its execution budget.
@@ -147,29 +199,52 @@ impl Engine {
             cleanup_identity(&entries[0], expected)?;
             Ok(entries[0].clone())
         };
-        let terminal = |value: &Value| -> bool {
-            value["State"]["Running"] == false
-                && value["State"]["Paused"] == false
-                && value["State"]["Pid"] == 0
-                && value["State"]["Status"] == "exited"
+        // Native stopped means the payload exited, even before OCI cleanup.
+        // Do not wait for cgroup emptiness here: both callers unconditionally
+        // kill/remove that exact subtree AFTER this native phase returns.
+        let terminal = |value: &Value| -> Result<bool> {
+            Ok(super::workload_guard::native_exit(value)?.is_some())
         };
         let actual = inspect()?;
-        if terminal(&actual) {
+        ensure!(
+            Instant::now() < self.deadline,
+            "owned native cleanup deadline expired"
+        );
+        if !cleanup_signal_needed(&actual)? {
             return Ok(());
         }
-        ensure!(
-            actual["State"]["Running"] == true || actual["State"]["Paused"] == true,
-            "owned cleanup refuses an unknown native execution state"
-        );
         let killed = self
             .capture(&["kill", "--signal", "KILL", &id])?
             .status
             .success();
         loop {
             let current = inspect()?;
-            if terminal(&current) {
+            // expected may be a pre-start/pre-restart snapshot. Freeze the
+            // first ACTUAL execution instead; never compare it to pre-start time.
+            super::workload_guard::same_execution(&current, &actual)?;
+            ensure!(
+                current["State"]["Pid"] == actual["State"]["Pid"] || current["State"]["Pid"] == 0,
+                "owned cleanup payload execution changed"
+            );
+            ensure!(
+                Instant::now() < self.deadline,
+                "owned native cleanup deadline expired"
+            );
+            if terminal(&current)? {
                 return Ok(());
             }
+            ensure!(
+                matches!(
+                    super::workload_guard::native_status(&current),
+                    super::workload_guard::NativeStatus::Running
+                        | super::workload_guard::NativeStatus::Paused
+                        | super::workload_guard::NativeStatus::Stopping
+                        | super::workload_guard::NativeStatus::Stopped
+                        | super::workload_guard::NativeStatus::Exited
+                ),
+                "owned cleanup observed an ineligible native state; status={:?}",
+                super::workload_guard::native_status(&current)
+            );
             ensure!(
                 killed && Instant::now() < self.deadline,
                 "owned container termination remains unproven"
@@ -178,7 +253,8 @@ impl Engine {
         }
     }
     /// Finite jobs may exit between inspection and a captured proc read. Only
-    /// that typed terminal race permits one same-CID immutable reinspection.
+    /// that typed terminal race permits same-CID read-only observations within
+    /// this Engine's original absolute deadline. Caller retirement stays mandatory.
     /// Services use the strict free function during activation.
     pub fn workload_group(
         &self,
@@ -213,12 +289,10 @@ impl Engine {
                     .as_str()
                     .filter(|id| hex(id, 64))
                     .ok_or_else(|| anyhow!("finite workload lacks an exact inspection ID"))?;
-                let terminal = self.inspect("container", id)?;
-                super::workload_guard::verify_terminal(&terminal, value, group)?;
-                if let Some(limits) = limits {
-                    super::workload_guard::configuration_limits(&terminal, limits)?;
-                }
-                Ok(Some(terminal))
+                terminal_after_ended(value, group, limits, self.deadline, || {
+                    self.inspect("container", id)
+                })
+                .map(Some)
             }
             Err(error) => Err(error),
         }
@@ -754,6 +828,212 @@ pub fn service_mounts(
 #[cfg(test)]
 mod host_tests {
     use super::*;
+    fn ending_workload() -> (super::super::cgroups::Group, Value, Value) {
+        use serde_json::json;
+        let group = super::super::cgroups::workload_group(
+            "fixture",
+            "production",
+            super::super::cgroups::WorkloadKind::Job,
+            "migrate",
+            &"a".repeat(32),
+        )
+        .unwrap();
+        let live = json!({"Id":"b".repeat(64),"Image":"sha256:fixed","Name":"synthetic-job",
+            "AppArmorProfile":super::super::bootstrap::WORKLOAD_PROFILE,"OCIRuntime":"crun","RestartCount":0,
+            "Config":{"Labels":{"ownership":"same"}},"Mounts":[],
+            "HostConfig":{"CgroupParent":group.relative(),"CgroupManager":"cgroupfs","LogConfig":{"Type":"k8s-file"},
+                "Memory":67108864,"MemorySwap":100663296,"PidsLimit":32,"CpuPeriod":1000000,"CpuQuota":250000},
+            "State":{"Pid":101,"ConmonPid":102,"Status":"running","Running":true,"Paused":false,
+                "ExitCode":0,"StartedAt":"2026-11-12T00:00:00Z","FinishedAt":"0001-01-01T00:00:00Z"}});
+        let mut stopped = live.clone();
+        stopped["State"]["Status"] = json!("stopped");
+        stopped["State"]["Running"] = json!(false);
+        stopped["State"]["Pid"] = json!(0);
+        stopped["State"]["ConmonPid"] = json!(0);
+        stopped["State"]["FinishedAt"] = json!("2026-11-12T00:00:01Z");
+        (group, live, stopped)
+    }
+    #[test]
+    fn finite_terminal_observations_settle_without_waiting_for_runtime_cleanup() {
+        let (group, live, stopped) = ending_workload();
+        let mut incomplete = stopped.clone();
+        incomplete["State"]["FinishedAt"] = serde_json::json!("0001-01-01T00:00:00Z");
+        let mut observations =
+            std::collections::VecDeque::from([live.clone(), incomplete, stopped.clone()]);
+        let mut reads = 0;
+        let result = terminal_after_ended(
+            &live,
+            &group,
+            None,
+            Instant::now() + Duration::from_secs(1),
+            || {
+                reads += 1;
+                Ok(observations
+                    .pop_front()
+                    .expect("only planned read-only observations"))
+            },
+        )
+        .unwrap();
+        assert_eq!(reads, 3);
+        assert_eq!(result, stopped);
+        assert_eq!(result["State"]["Status"], "stopped");
+        for exit in [0, 17, 137, 255] {
+            let mut value = stopped.clone();
+            value["State"]["ExitCode"] = serde_json::json!(exit);
+            let observed = terminal_after_ended(
+                &live,
+                &group,
+                None,
+                Instant::now() + Duration::from_secs(1),
+                || Ok(value.clone()),
+            )
+            .unwrap();
+            assert_eq!(observed["State"]["ExitCode"], exit);
+        }
+    }
+    #[test]
+    fn finite_terminal_identity_execution_runtime_and_limit_drift_refuse_immediately() {
+        let (group, live, stopped) = ending_workload();
+        let limits = super::super::model::Limits {
+            memory_bytes: 64 << 20,
+            memory_swap_bytes: 96 << 20,
+            milli_cpus: 250,
+            pids: 32,
+        };
+        for key in [
+            "Id",
+            "Config",
+            "HostConfig",
+            "Mounts",
+            "Image",
+            "Name",
+            "AppArmorProfile",
+            "OCIRuntime",
+            "RestartCount",
+        ] {
+            let mut bad = live.clone();
+            bad[key] = serde_json::json!("SYNTHETIC_PRIVATE_DRIFT");
+            let mut reads = 0;
+            let error = terminal_after_ended(
+                &live,
+                &group,
+                Some(&limits),
+                Instant::now() + Duration::from_secs(1),
+                || {
+                    reads += 1;
+                    assert_eq!(reads, 1, "identity drift must not be retried");
+                    Ok(bad.clone())
+                },
+            )
+            .unwrap_err()
+            .to_string();
+            assert_eq!(reads, 1);
+            assert!(!error.contains("SYNTHETIC_PRIVATE_DRIFT"));
+        }
+        let mut wrong_limits = limits.clone();
+        wrong_limits.milli_cpus = 500;
+        let mut reads = 0;
+        assert!(
+            terminal_after_ended(
+                &live,
+                &group,
+                Some(&wrong_limits),
+                Instant::now() + Duration::from_secs(1),
+                || {
+                    reads += 1;
+                    Ok(stopped.clone())
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(reads, 1);
+    }
+    #[test]
+    fn finite_terminal_errors_and_elapsed_deadline_never_refresh_execution_budget() {
+        let (group, live, stopped) = ending_workload();
+        let mut reads = 0;
+        assert!(
+            terminal_after_ended(&live, &group, None, Instant::now(), || {
+                reads += 1;
+                Ok(stopped.clone())
+            })
+            .is_err()
+        );
+        assert_eq!(reads, 0);
+        let mut reads = 0;
+        assert!(
+            terminal_after_ended(
+                &live,
+                &group,
+                None,
+                Instant::now() + Duration::from_secs(1),
+                || {
+                    reads += 1;
+                    Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied).into())
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(reads, 1);
+        let mut reads = 0;
+        assert!(
+            terminal_after_ended(
+                &live,
+                &group,
+                None,
+                Instant::now() + Duration::from_millis(100),
+                || {
+                    reads += 1;
+                    std::thread::sleep(Duration::from_millis(150));
+                    Ok(stopped.clone())
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(reads, 1);
+        assert!(
+            terminal_after_ended(
+                &live,
+                &group,
+                None,
+                Instant::now() + Duration::from_millis(1),
+                || Ok(live.clone())
+            )
+            .is_err()
+        );
+    }
+    #[test]
+    fn native_cleanup_signals_only_live_execution_and_freezes_actual_not_prestart_time() {
+        use serde_json::json;
+        let (_, live, stopped) = ending_workload();
+        assert!(cleanup_signal_needed(&live).unwrap());
+        for status in ["stopped", "exited"] {
+            let mut value = stopped.clone();
+            value["State"]["Status"] = json!(status);
+            assert!(!cleanup_signal_needed(&value).unwrap());
+            super::super::workload_guard::same_execution(&value, &live).unwrap();
+        }
+        let mut paused = live.clone();
+        paused["State"]["Status"] = json!("paused");
+        paused["State"]["Running"] = json!(false);
+        paused["State"]["Paused"] = json!(true);
+        assert!(cleanup_signal_needed(&paused).unwrap());
+        let mut prestart = live.clone();
+        prestart["State"] = json!({"Running":false,"Paused":false,"Pid":0,"Status":"created","StartedAt":"0001-01-01T00:00:00Z"});
+        assert!(cleanup_signal_needed(&prestart).is_err());
+        assert!(super::super::workload_guard::same_execution(&stopped, &prestart).is_err());
+        // Native cleanup must not use that pre-start State as an execution fence.
+        assert!(!cleanup_signal_needed(&stopped).unwrap());
+        let mut restarted = stopped.clone();
+        restarted["State"]["StartedAt"] = json!("2026-11-12T00:00:02Z");
+        assert!(super::super::workload_guard::same_execution(&restarted, &live).is_err());
+        for status in ["unknown", "removing", "SYNTHETIC_PRIVATE_STATUS"] {
+            let mut value = stopped.clone();
+            value["State"]["Status"] = json!(status);
+            let error = cleanup_signal_needed(&value).unwrap_err().to_string();
+            assert!(!error.contains("SYNTHETIC_PRIVATE_STATUS"));
+        }
+    }
     #[test]
     fn only_a_completed_internal_probe_error_is_an_unavailable_observation() {
         assert_eq!(
