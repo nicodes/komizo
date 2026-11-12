@@ -19,6 +19,65 @@ impl std::error::Error for ProcessEnded {}
 pub(crate) fn process_ended(error: &anyhow::Error) -> bool {
     error.downcast_ref::<ProcessEnded>().is_some()
 }
+#[derive(Debug, PartialEq, Eq)]
+enum TerminalMismatch {
+    Id,
+    Config,
+    HostConfig,
+    Mounts,
+    Image,
+    Name,
+    AppArmorProfile,
+    Status,
+    Running,
+    Paused,
+    Pid,
+    ExitCode,
+}
+fn terminal_mismatches(value: &Value, original: &Value) -> Vec<TerminalMismatch> {
+    // Fixed names only: these inspections may contain private environment and
+    // mount values. Diagnostics must never format either inspection or a value.
+    [
+        (TerminalMismatch::Id, value["Id"] == original["Id"]),
+        (
+            TerminalMismatch::Config,
+            value["Config"] == original["Config"],
+        ),
+        (
+            TerminalMismatch::HostConfig,
+            value["HostConfig"] == original["HostConfig"],
+        ),
+        (
+            TerminalMismatch::Mounts,
+            value["Mounts"] == original["Mounts"],
+        ),
+        (TerminalMismatch::Image, value["Image"] == original["Image"]),
+        (TerminalMismatch::Name, value["Name"] == original["Name"]),
+        (
+            TerminalMismatch::AppArmorProfile,
+            value["AppArmorProfile"] == original["AppArmorProfile"],
+        ),
+        (
+            TerminalMismatch::Status,
+            value["State"]["Status"] == "exited",
+        ),
+        (
+            TerminalMismatch::Running,
+            value["State"]["Running"] == false,
+        ),
+        (TerminalMismatch::Paused, value["State"]["Paused"] == false),
+        (TerminalMismatch::Pid, value["State"]["Pid"] == 0),
+        (
+            TerminalMismatch::ExitCode,
+            value["State"]["ExitCode"]
+                .as_u64()
+                .is_some_and(|code| code <= 255),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(field, matches)| (!matches).then_some(field))
+    .collect()
+}
 pub(crate) fn verify_terminal(value: &Value, original: &Value, group: &Group) -> Result<()> {
     ensure!(
         value["Id"] == original["Id"]
@@ -39,7 +98,8 @@ pub(crate) fn verify_terminal(value: &Value, original: &Value, group: &Group) ->
             && value["State"]["ExitCode"]
                 .as_u64()
                 .is_some_and(|code| code <= 255),
-        "workload terminal reinspection changed immutable ownership or exit evidence"
+        "workload terminal reinspection changed immutable ownership or exit evidence; mismatch_fields={:?}",
+        terminal_mismatches(value, original)
     );
     ensure!(
         processes(value, group)?.is_none(),
@@ -629,6 +689,71 @@ mod tests {
         assert!(!process_ended(
             &std::io::Error::from(std::io::ErrorKind::PermissionDenied).into()
         ));
+    }
+    #[test]
+    fn terminal_mismatch_diagnostics_never_emit_inspection_values() {
+        let group = cgroups::workload_group(
+            "fixture",
+            "production",
+            WorkloadKind::Job,
+            "migrate",
+            &"a".repeat(32),
+        )
+        .unwrap();
+        let original = json!({"Id":"b".repeat(64),"Image":"sha256:fixed","OCIRuntime":"crun",
+            "Config":{"Env":["SYNTHETIC_PRIVATE_ENV=unobserved"]},"Mounts":[],
+            "Name":"synthetic-job","AppArmorProfile":"komizo-workload",
+            "HostConfig":{"CgroupParent":group.relative(),"CgroupManager":"cgroupfs","LogConfig":{"Type":"k8s-file"}},
+            "State":{"Pid":0,"ConmonPid":0,"Status":"exited","Running":false,"Paused":false,"ExitCode":17}});
+        assert!(terminal_mismatches(&original, &original).is_empty());
+        verify_terminal(&original, &original, &group).unwrap();
+        let sentinel = "SYNTHETIC_PRIVATE_VALUE\npassword=must-never-appear";
+        let cases = [
+            (None, "Id", TerminalMismatch::Id),
+            (None, "Config", TerminalMismatch::Config),
+            (None, "HostConfig", TerminalMismatch::HostConfig),
+            (None, "Mounts", TerminalMismatch::Mounts),
+            (None, "Image", TerminalMismatch::Image),
+            (None, "Name", TerminalMismatch::Name),
+            (None, "AppArmorProfile", TerminalMismatch::AppArmorProfile),
+            (Some("State"), "Status", TerminalMismatch::Status),
+            (Some("State"), "Running", TerminalMismatch::Running),
+            (Some("State"), "Paused", TerminalMismatch::Paused),
+            (Some("State"), "Pid", TerminalMismatch::Pid),
+            (Some("State"), "ExitCode", TerminalMismatch::ExitCode),
+        ];
+        let mut all_changed = original.clone();
+        let mut expected_all = Vec::new();
+        for (section, key, expected) in cases {
+            let mut changed = original.clone();
+            if let Some(section) = section {
+                changed[section][key] = json!(sentinel);
+                all_changed[section][key] = json!(sentinel);
+            } else {
+                changed[key] = json!(sentinel);
+                all_changed[key] = json!(sentinel);
+            }
+            let expected_fields = format!("[{expected:?}]");
+            let error = verify_terminal(&changed, &original, &group)
+                .unwrap_err()
+                .to_string();
+            assert_eq!(
+                error,
+                format!(
+                    "workload terminal reinspection changed immutable ownership or exit evidence; mismatch_fields={expected_fields}"
+                )
+            );
+            assert!(!error.contains(sentinel));
+            assert!(!error.contains("SYNTHETIC_PRIVATE_ENV"));
+            expected_all.push(expected);
+        }
+        assert_eq!(terminal_mismatches(&all_changed, &original), expected_all);
+        let error = verify_terminal(&all_changed, &original, &group)
+            .unwrap_err()
+            .to_string();
+        assert!(error.len() < 256);
+        assert!(!error.contains(sentinel));
+        assert!(!error.contains("SYNTHETIC_PRIVATE_ENV"));
     }
     #[test]
     fn declared_runtime_limits_and_actual_kernel_limits_are_both_required() {
