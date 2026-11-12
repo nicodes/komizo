@@ -27,6 +27,36 @@ def process(proc, pid):
         'exe':(root/'exe').stat()}
 
 
+def child_pids(proc, pid):
+    tasks=[]
+    for task in (proc/str(pid)/'task').iterdir():
+        if len(tasks)>=128:raise ValueError('preparation task inventory exceeds bound')
+        if not task.name.isascii() or not task.name.isdecimal():raise ValueError('invalid preparation task identity')
+        tasks.append(task)
+    children=set()
+    for task in tasks:
+        try:values=bounded(task/'children',4096).split()
+        except FileNotFoundError:continue  # A controller worker thread may exit.
+        if any(not value.isdigit() or len(value)>10 or int(value)<=1 for value in values):raise ValueError('invalid preparation child identity')
+        children.update(map(int,values))
+        if len(children)>64:raise ValueError('preparation child inventory exceeds bound')
+    return sorted(children)
+
+
+def creation_candidates(proc, controller_pid, timeout):
+    # Effects are spawned by a controller worker thread. Enumerate every TID's
+    # direct children; reading all unrelated /proc processes can miss create.
+    for parent_pid in child_pids(proc,controller_pid):
+        try:
+            parent=process(proc,parent_pid)
+            if (parent['parent']!=controller_pid or parent['argv'][:2]!=['/usr/bin/timeout','--signal=KILL']
+                    or (parent['exe'].st_dev,parent['exe'].st_ino)!=(timeout.st_dev,timeout.st_ino)):continue
+            for pid in child_pids(proc,parent_pid):
+                try:yield process(proc,pid),parent
+                except (FileNotFoundError,ProcessLookupError):continue
+        except (FileNotFoundError,ProcessLookupError):continue
+
+
 def creator_identity(child, parent, controller, receipt, podman, timeout):
     """Finite exact ownership predicate, exercised with synthetic proc metadata."""
     argv=child['argv']
@@ -68,13 +98,10 @@ def pause_creation(runtime, body, seconds, result, errors, stop):
                 if (receipt['application']!=body['application'] or receipt['instance']!='production'
                         or receipt['release_digest']!=body['release_digest'] or receipt['phase']!='starting'
                         or receipt['container_id']):continue
-                pids=[int(path.name) for path in proc.iterdir() if path.name.isdecimal()]
-                if len(pids)>4096:raise ValueError('preparation fixture process inventory exceeds bound')
-                for pid in pids:
+                for child,parent in creation_candidates(proc,controller_pid,timeout):
+                    pid=child['pid']
                     try:
-                        child=process(proc,pid)
                         if child['argv'][:4]!=['/usr/bin/podman','--remote=false','--cgroup-manager=cgroupfs','create']:continue
-                        parent=process(proc,child['parent'])
                         if not creator_identity(child,parent,controller,receipt,podman,timeout):continue
                         descriptor=os.pidfd_open(pid)
                         current=process(proc,pid)
@@ -142,7 +169,7 @@ def prepare(report):
     try:
         for app,declared,pause in [('preptime',30,5),('prepoverrun',20,12)]:
             with Path('/etc/hosts').open('a') as output:output.write('127.0.0.1 '+app+'.localhost\n')
-            policy=runtime.host_policy(app);policy['limits']=runtime.limits(32,100,32)
+            policy=runtime.host_policy(app);policy['limits']=runtime.limits(96,100,32)
             write('/etc/komizo/apps/'+app+'.json',policy)
             document=runtime.release(app,'a'*40)
             document['artifacts']['job']=runtime.registry.image(ROOT/'registry',app,'a'*40)

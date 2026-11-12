@@ -1,8 +1,10 @@
 import copy
 import importlib.util
 from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
 ROOT=Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('native_job_preparation',ROOT/'tests/support/native_host_job_preparation.py')
@@ -61,6 +63,47 @@ class NativeJobPreparation(unittest.TestCase):
         for argv in [['/usr/bin/timeout','--signal=TERM','29.999s',*self.child['argv']],
                      ['/usr/bin/timeout','--signal=KILL','29.999s','/usr/bin/podman','start','foreign']]:
             self.parent['argv']=argv;self.assertFalse(self.accepted())
+    def test_all_worker_thread_children_are_unioned_without_unrelated_process_scan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc=Path(directory)
+            def children(pid,tid,body):
+                path=proc/str(pid)/'task'/str(tid);path.mkdir(parents=True);(path/'children').write_text(body)
+            children(200,200,'')
+            children(200,207,'201 201 299')
+            children(201,201,'202')
+            foreign={**self.parent,'pid':299,'exe':SimpleNamespace(st_dev=7,st_ino=999)}
+            # No task/children file exists for the foreign wrapper or unrelated
+            # process. A global scan or descent through either fails this case.
+            (proc/'900').mkdir()
+            values={201:self.parent,202:self.child,299:foreign}
+            with mock.patch.object(fixture,'process',side_effect=lambda root,pid:values[pid]) as observed:
+                candidates=list(fixture.creation_candidates(proc,200,self.timeout))
+            self.assertEqual(candidates,[(self.child,self.parent)])
+            self.assertEqual({call.args[1] for call in observed.call_args_list},{201,202,299})
+            self.assertTrue(fixture.creator_identity(*candidates[0],self.controller,self.receipt,self.podman,self.timeout))
+    def test_child_inventory_rejects_malformed_or_overlong_identifiers(self):
+        for body in ['2 invalid','2 0','2 1','2 -3','2 12345678901','2 '+('3'*4096)]:
+            with self.subTest(body=body[:32]),tempfile.TemporaryDirectory() as directory:
+                proc=Path(directory);task=proc/'200/task/200';task.mkdir(parents=True);(task/'children').write_text(body)
+                with self.assertRaises(ValueError):fixture.child_pids(proc,200)
+    def test_child_and_task_inventories_remain_finitely_bounded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            proc=Path(directory);task=proc/'200/task/200';task.mkdir(parents=True)
+            (task/'children').write_text(' '.join(map(str,range(2,67))))
+            with self.assertRaisesRegex(ValueError,'child inventory'):fixture.child_pids(proc,200)
+            (task/'children').write_text('')
+            for tid in range(201,329):
+                child=task.parent/str(tid);child.mkdir();(child/'children').write_text('')
+            with self.assertRaisesRegex(ValueError,'task inventory'):fixture.child_pids(proc,200)
+    def test_foreign_parent_or_different_timeout_wrapper_is_not_descended(self):
+        for changed in [{'parent':999},{'argv':['/usr/bin/timeout','--signal=TERM']},
+                        {'exe':SimpleNamespace(st_dev=99,st_ino=11)}]:
+            with self.subTest(changed=changed):
+                parent={**self.parent,**changed}
+                with mock.patch.object(fixture,'child_pids',return_value=[201]) as children, \
+                     mock.patch.object(fixture,'process',return_value=parent):
+                    self.assertEqual(list(fixture.creation_candidates(Path('/unused'),200,self.timeout)),[])
+                children.assert_called_once_with(Path('/unused'),200)
 
 
 if __name__=='__main__':unittest.main()
