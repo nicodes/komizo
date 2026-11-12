@@ -61,7 +61,7 @@ jobs:
           set -euo pipefail
           mise install rust@1.94.0
           mise exec rust@1.94.0 -- rustup target add x86_64-unknown-linux-musl
-          mise exec rust@1.94.0 -- cargo build --locked --bin komizo-box --target x86_64-unknown-linux-musl --target-dir .artifacts/native-host-build
+          mise exec rust@1.94.0 -- cargo build --locked --bin komizo-box --bin komizo --target x86_64-unknown-linux-musl --target-dir .artifacts/native-host-build
       - name: Check out the accepted proxy source closure
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -82,6 +82,12 @@ jobs:
           sudo setfacl -m "u:$native_runner_uid:rw" /dev/kvm
       - name: Assert native bootstrap, isolation and real reboot
         run: python3 -I -B tests/support/native_host_vm.py --binary .artifacts/native-host-build/x86_64-unknown-linux-musl/debug/komizo-box --proxy-binary .artifacts/native-proxy/caddy_Linux_x86_64 --proxy-receipt .artifacts/native-proxy/caddy_Linux_x86_64.json --cookbook-source .artifacts/native-backup-cookbook --tools-source .artifacts/native-proxy-tools
+      - name: Assert bounded one-CPU job preparation and explicit owner recovery
+        run: |
+          set -euo pipefail
+          native_runner_uid="$(id -u)"
+          sudo setfacl -m "u:$native_runner_uid:rw" /dev/kvm
+          python3 -I -B tests/support/native_host_vm.py --profile bounded --cli .artifacts/native-host-build/x86_64-unknown-linux-musl/debug/komizo --binary .artifacts/native-host-build/x86_64-unknown-linux-musl/debug/komizo-box --proxy-binary .artifacts/native-proxy/caddy_Linux_x86_64 --proxy-receipt .artifacts/native-proxy/caddy_Linux_x86_64.json --cookbook-source .artifacts/native-backup-cookbook --tools-source .artifacts/native-proxy-tools --output .artifacts/native-host-bounded
       - name: Preserve bounded native host evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -89,6 +95,7 @@ jobs:
           name: native-host-${{ env.NATIVE_HOST_SOURCE }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             .artifacts/native-host/
+            .artifacts/native-host-bounded/
             .artifacts/native-proxy/security/
           retention-days: 14
           if-no-files-found: error

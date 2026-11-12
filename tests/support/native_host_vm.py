@@ -701,6 +701,7 @@ def main():
                 guest.copy(ROOT / 'tests/support/native_host_acceptance.py', '/root/native-host/acceptance.py')
                 guest.copy(ROOT / 'tests/support/native_host_fixture.py', '/root/native-host/fixture_tasks.py')
                 guest.copy(ROOT / 'tests/support/native_host_runtime.py', '/root/native-host/fixture_runtime.py')
+                guest.copy(ROOT / 'tests/support/native_host_job_preparation.py', '/root/native-host/fixture_job_preparation.py')
                 guest.copy(ROOT / 'tests/support/native_host_registry.py', '/root/native-host/fixture_registry.py')
                 guest.copy(ROOT / 'tests/support/native_host_secrets.py', '/root/native-host/fixture_secrets.py')
                 guest.copy(ROOT / 'tests/support/native_host_backup.py', '/root/native-host/fixture_backup.py')
