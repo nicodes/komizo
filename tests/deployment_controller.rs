@@ -226,6 +226,8 @@ fn prepared_start_is_bound_to_the_selected_source_and_stale_installed_target_ref
 
 #[test]
 fn terminal_acknowledgment_releases_the_instance_before_unrelated_maintenance() {
+    use std::{io::Read, os::unix::net::UnixStream};
+
     struct BlockingMaintenance {
         entered: mpsc::SyncSender<()>,
         release: Mutex<mpsc::Receiver<()>>,
@@ -277,16 +279,49 @@ fn terminal_acknowledgment_releases_the_instance_before_unrelated_maintenance() 
     let c = Coordinator::new(state, policies, backend.clone()).unwrap();
     let first =
         store::operation_identity(&serde_json::from_value(request.clone()).unwrap()).unwrap();
-    drop(
-        c.admit(
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let remaining = || {
+        deadline
+            .checked_duration_since(Instant::now())
+            .expect("terminal acknowledgment and maintenance exceeded the original test deadline")
+    };
+    let completion = c
+        .admit(
             serde_json::to_vec(&request).unwrap(),
             0,
             1000,
             &mut |_| panic!(),
         )
-        .unwrap(),
-    );
-    entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        .unwrap();
+    let (mut writer, mut reader) = UnixStream::pair().unwrap();
+    writer.set_write_timeout(Some(remaining())).unwrap();
+    let (finished_tx, finished_rx) = mpsc::sync_channel(1);
+    let acknowledgment = std::thread::spawn(move || {
+        let result = completion(&mut writer);
+        drop(writer);
+        let _ = finished_tx.send(result);
+    });
+    let mut bytes = Vec::new();
+    loop {
+        reader.set_read_timeout(Some(remaining())).unwrap();
+        let mut buffer = [0; 4096];
+        let count = reader.read(&mut buffer).unwrap();
+        if count == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..count]);
+        assert!(
+            bytes.len() <= 16 << 10,
+            "terminal acknowledgment exceeded its test bound"
+        );
+    }
+    finished_rx.recv_timeout(remaining()).unwrap().unwrap();
+    acknowledgment.join().unwrap();
+    let acknowledged: Operation = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(acknowledged.operation_id, first);
+    assert_eq!(acknowledged.phase, "ready");
+    assert!(acknowledged.ok);
+    entered_rx.recv_timeout(remaining()).unwrap();
     assert!(c.store.operation(&first).unwrap().ok);
     request["nonce"] = json!("e".repeat(32));
     let second =
