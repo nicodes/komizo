@@ -334,10 +334,13 @@ def installed(app):
     return json.loads(Path('/var/lib/komizo/instances/'+app+'--production.json').read_text())
 
 
-def fetch(app, release, path='/', *, headers=None):
-    body=urllib.request.Request('https://'+app+'.localhost'+path,headers=headers or {})
+def fetch(app, release, path='/', *, headers=None, method='GET', hsts='max-age=31536000'):
+    body=urllib.request.Request('https://'+app+'.localhost'+path,headers=headers or {},method=method)
     with urllib.request.urlopen(body,timeout=5) as response:
         if response.headers.get('X-Komizo-Release')!=release:raise ValueError('public response has another installed source')
+        if response.headers.get('Strict-Transport-Security')!=hsts:raise ValueError('HTTPS default or application HSTS differs')
+        if response.headers.get('Content-Security-Policy')=="default-src 'none'; base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'none'":
+            raise ValueError('application HTTPS inherited the catchall content policy')
         return response.read()
 
 
@@ -822,9 +825,13 @@ def prepare():
     setup_registry()
     for app in ['staticbox','mailroom','livebox','badjob','hungjob','deadline','unsafe']:host_policy(app)
     static=release('staticbox','a'*40)
+    static['workload']['assets']['web']['serving']['header_rules']=[{'paths':['/'],'methods':['HEAD'],
+        'headers':{'Strict-Transport-Security':'max-age=600; includeSubDomains'}}]
     body,result=deploy(static)
     if result.get('phase')!='ready' or not result.get('ok'):raise ValueError('actual static archive release failed: '+json.dumps(result))
     if b'a'*40 not in fetch('staticbox',result['release_digest']):raise ValueError('static source bytes differ')
+    if fetch('staticbox',result['release_digest'],method='HEAD',hsts='max-age=600; includeSubDomains')!=b'':
+        raise ValueError('HEAD serving changed its body or application HSTS override')
     public=Path('/var/lib/komizo-assets')/result['release_digest'][7:]/'web'/'index.html'
     if b'a'*40 not in run(['runuser','-u','komizo-proxy','--','cat',str(public)]).stdout:
         raise ValueError('unprivileged proxy UID cannot read exact installed asset bytes')

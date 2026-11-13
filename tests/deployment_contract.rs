@@ -48,6 +48,38 @@ fn release_identity_binds_workload_bytes_but_not_json_key_order() {
 }
 
 #[test]
+fn https_sites_default_hsts_without_catchall_content_policy_or_http_override() {
+    let document = read(&example()).unwrap();
+    let upstreams = std::collections::BTreeMap::from([("api".into(), "127.0.0.1:8080".into())]);
+    let https =
+        komizo::deployment::render::sites(&document, "/var/lib/komizo-assets", &upstreams, false)
+            .unwrap();
+    assert_eq!(
+        https
+            .matches("header ?Strict-Transport-Security \"max-age=31536000\"")
+            .count(),
+        2
+    );
+    assert!(!https.contains("default-src 'none'"));
+    let http =
+        komizo::deployment::render::sites(&document, "/var/lib/komizo-assets", &upstreams, true)
+            .unwrap();
+    assert!(!http.contains("Strict-Transport-Security"));
+    let mut value = example();
+    value["workload"]["assets"]["web"]["serving"]["headers"]["Strict-Transport-Security"] =
+        json!("max-age=600; includeSubDomains");
+    let explicit = komizo::deployment::render::sites(
+        &read(&value).unwrap(),
+        "/var/lib/komizo-assets",
+        &upstreams,
+        false,
+    )
+    .unwrap();
+    assert!(explicit.contains("\"Strict-Transport-Security\" \"max-age=600; includeSubDomains\""));
+    assert!(explicit.contains("header ?Strict-Transport-Security \"max-age=31536000\""));
+}
+
+#[test]
 fn duplicate_unknown_and_retired_fields_refuse() {
     let mut value = example();
     value["workload"]["services"]["api"]["privileged"] = json!(true);
