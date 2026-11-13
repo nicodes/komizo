@@ -81,6 +81,101 @@ class NativeSdk(unittest.TestCase):
                 sdk.download(Path(temporary)/'archive','read-token',time.monotonic()+5,Opener())
 
 
+class NativePinnedImageTransport(unittest.TestCase):
+    def setUp(self):
+        spec=importlib.util.spec_from_file_location('native_image_transport',Path(__file__).parents[1]/'support/native_host_vm.py')
+        self.vm=importlib.util.module_from_spec(spec);spec.loader.exec_module(self.vm)
+        self.baseline=json.loads((self.vm.FIXTURES/'baseline.json').read_text())
+
+    def response(self,body,*,length=None,status=200,url=None):
+        value=io.BytesIO(body)
+        value.status=status
+        value.headers={'Content-Length':str(len(body)) if length is None else length}
+        value.geturl=lambda:url or self.baseline['cloud_image_transport']['url']
+        return value
+
+    def record(self,body,**changes):
+        return {'url':self.baseline['cloud_image_transport']['url'],'max_bytes':len(body),
+                'sha512':hashlib.sha512(body).hexdigest(),**changes}
+
+    def test_mirror_preserves_the_entire_captured_image_and_capsule_identity(self):
+        before=json.loads(json.dumps(self.baseline))
+        self.assertEqual(hashlib.sha256(json.dumps(before['cloud_image'],sort_keys=True,separators=(',',':')).encode()).hexdigest(),
+                         'a40ca8315a3e6789519c0293b49595393678c9ce76b8524d5f93300a992f80a7')
+        record=self.vm.fixture_image_download_record(self.baseline)
+        self.assertEqual(self.baseline,before)
+        self.assertEqual({k:v for k,v in record.items() if k not in {'url','signature_url'}},
+                         {k:v for k,v in before['cloud_image'].items() if k not in {'url','signature_url'}})
+        self.assertEqual({k:record[k] for k in ['url','signature_url']},before['cloud_image_transport'])
+        options=self.vm.fixture_package_bootstrap(self.baseline)
+        capsule=json.loads(options['write_files'][1]['content'])
+        self.assertEqual(capsule,{'image':before['cloud_image'],'requested_packages':before['native_packages'],
+                                 'closure':before['native_package_closure']})
+
+    def test_transport_requires_exactly_the_two_reviewed_https_mirror_urls(self):
+        good=self.baseline['cloud_image_transport']
+        bad=[None,[],{}, {'url':good['url']},{**good,'sha512':'0'*128},
+             *[{**good,'url':url} for url in ['http://dl-3.alpinelinux.org/alpine/file',
+                good['url'].replace('dl-3.','elsewhere.'),good['url']+'?token=private',
+                good['url']+'/different',good['url'].replace('https://','https://user:password@')]]]
+        for value in bad:
+            with self.subTest(transport=value),self.assertRaisesRegex(ValueError,'reviewed official mirror'):
+                self.vm.fixture_image_download_record({**self.baseline,'cloud_image_transport':value})
+
+    def test_success_keeps_one_download_original_read_size_timeout_and_hashes(self):
+        body=b'complete pinned public image'
+        for algorithm in ['sha512','sha256']:
+            record={'url':self.record(body)['url'],'max_bytes':len(body),algorithm:hashlib.new(algorithm,body).hexdigest()}
+            incoming=self.response(body);reads=[];read=incoming.read
+            incoming.read=lambda size:(reads.append(size),read(size))[1]
+            with self.subTest(algorithm=algorithm),tempfile.TemporaryDirectory() as directory:
+                with patch.object(self.vm.urllib.request,'urlopen',return_value=incoming) as opened,patch.object(sys,'stderr',io.StringIO()) as stderr:
+                    self.assertIsNone(self.vm.download(record,Path(directory)/'image'))
+                opened.assert_called_once_with(record['url'],timeout=30)
+                self.assertEqual(reads,[1<<20,1<<20]);self.assertEqual(stderr.getvalue(),'')
+                self.assertEqual((Path(directory)/'image').read_bytes(),body)
+
+    def test_byte_deadline_and_combined_failures_have_distinct_closed_evidence(self):
+        body=b'12345'
+        for maximum,observed,flags in [(4,100.25,(True,False)),(5,400,(False,True)),(4,400,(True,True))]:
+            with self.subTest(flags=flags),tempfile.TemporaryDirectory() as directory:
+                target=Path(directory)/'image'
+                with patch.object(self.vm.urllib.request,'urlopen',return_value=self.response(body)),patch.object(self.vm.time,'monotonic',side_effect=[100,observed]):
+                    with self.assertRaisesRegex(ValueError,'pinned fixture download exceeds its bound') as raised:
+                        self.vm.download(self.record(body,max_bytes=maximum),target)
+                evidence=json.loads(str(raised.exception).split(': ',1)[1])
+                self.assertEqual((evidence['bytes_exceeded'],evidence['deadline_expired']),flags)
+                self.assertEqual(evidence['received_bytes'],len(body));self.assertEqual(evidence['max_bytes'],maximum)
+                self.assertEqual(evidence['elapsed_ms'],round((observed-100)*1000));self.assertEqual(evidence['deadline_seconds'],300)
+                self.assertEqual((evidence['request_transport'],evidence['response_transport']),('dl-3.alpinelinux.org',)*2)
+                self.assertTrue(evidence['response_url_matches_requested']);self.assertEqual(evidence['response_status'],200)
+                self.assertEqual(evidence['response_content_length_bytes'],len(body));self.assertEqual(target.read_bytes(),b'')
+
+    def test_diagnostic_omits_raw_urls_headers_and_body_and_has_a_fixed_shape(self):
+        secret='SYNTHETIC-PRIVATE-MARKER';body=secret.encode()
+        incoming=self.response(body,length=secret,status=secret,url='https://example.invalid/?token='+secret)
+        record=self.record(body,max_bytes=1,url='https://example.invalid/?token='+secret)
+        with tempfile.TemporaryDirectory() as directory,patch.object(self.vm.urllib.request,'urlopen',return_value=incoming),patch.object(self.vm.time,'monotonic',side_effect=[0,1]):
+            with self.assertRaises(ValueError) as raised:self.vm.download(record,Path(directory)/'image')
+        message=str(raised.exception);self.assertNotIn(secret,message);self.assertLess(len(message),1024)
+        evidence=json.loads(message.split(': ',1)[1])
+        self.assertEqual(set(evidence),{'kind','version','received_bytes','max_bytes','elapsed_ms','deadline_seconds',
+            'bytes_exceeded','deadline_expired','request_transport','response_transport',
+            'response_url_matches_requested','response_status','response_content_length_bytes'})
+        self.assertIsNone(evidence['response_status']);self.assertIsNone(evidence['response_content_length_bytes'])
+
+    def test_empty_changed_bytes_and_network_errors_still_refuse_without_retry(self):
+        for body in [b'',b'changed']:
+            with self.subTest(body=body),tempfile.TemporaryDirectory() as directory,patch.object(self.vm.urllib.request,'urlopen',return_value=self.response(body)) as opened:
+                with self.assertRaisesRegex(ValueError,'differs from reviewed bytes'):
+                    self.vm.download(self.record(b'original'),Path(directory)/'image')
+                self.assertEqual(opened.call_count,1)
+        original=TimeoutError('synthetic network timeout')
+        with tempfile.TemporaryDirectory() as directory,patch.object(self.vm.urllib.request,'urlopen',side_effect=original) as opened:
+            with self.assertRaises(TimeoutError) as raised:self.vm.download(self.record(b'original'),Path(directory)/'image')
+            self.assertIs(raised.exception,original);self.assertEqual(opened.call_count,1)
+
+
 class NativeGuestReadinessEvidence(unittest.TestCase):
     def guest(self, statement):
         spec=importlib.util.spec_from_file_location('native_guest_readiness',Path(__file__).parents[1]/'support/native_host_vm.py')
