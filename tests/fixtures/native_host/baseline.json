@@ -12,6 +12,10 @@
     "signing_key_sha256": "1c326476c40944a5e55e1bf824f6e7cf7b3dbcb83f6b147d5104e53523aa7947",
     "signing_fingerprint": "F26ADFADBAE702EF7AF637459DA7EF23BFFCDF22"
   },
+  "cloud_image_transport": {
+    "url": "https://dl-3.alpinelinux.org/alpine/v3.24/releases/cloud/alpine-3.24.3-x86_64-cloudinit-r0.qcow2",
+    "signature_url": "https://dl-3.alpinelinux.org/alpine/v3.24/releases/cloud/alpine-3.24.3-x86_64-cloudinit-r0.qcow2.asc"
+  },
   "proxy_tools_revision": "7873bb0fdae1726295dbf7f9317c58daa374b2a6",
   "proxy_go_version": "1.27.4",
   "proxy_source_sha256": {

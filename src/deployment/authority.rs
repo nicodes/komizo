@@ -174,6 +174,30 @@ fn string<'a>(claims: &'a Value, key: &str) -> &'a str {
     claims.get(key).and_then(Value::as_str).unwrap_or("")
 }
 
+fn environment_subject(
+    claims: &Value,
+    repository: &str,
+    repository_id: &str,
+    environment: &str,
+) -> bool {
+    let environment = environment.replace(':', "%3A");
+    let subject = string(claims, "sub");
+    if subject == format!("repo:{repository}:environment:{environment}") {
+        return true;
+    }
+    let Some((owner, name)) = repository.split_once('/') else {
+        return false;
+    };
+    let owner_id = string(claims, "repository_owner_id");
+    string(claims, "repository_owner") == owner
+        && !owner_id.is_empty()
+        && owner_id.len() <= 20
+        && !owner_id.starts_with('0')
+        && owner_id.bytes().all(|b| b.is_ascii_digit())
+        && subject
+            == format!("repo:{owner}@{owner_id}/{name}@{repository_id}:environment:{environment}")
+}
+
 fn check_workflow(
     claims: &Value,
     repository: &str,
@@ -203,11 +227,7 @@ fn check_workflow(
     );
     if let Some(environment) = environment {
         ensure!(
-            string(claims, "sub")
-                == format!(
-                    "repo:{repository}:environment:{}",
-                    environment.replace(':', "%3A")
-                ),
+            environment_subject(claims, repository, repository_id, environment),
             "request does not carry the protected environment identity"
         );
     }

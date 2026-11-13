@@ -210,6 +210,9 @@ pub fn sites(
     }
     for (host, mut routes) in hosts {
         writeln!(out, "{}{host} {{", if http { "http://" } else { "" }).unwrap();
+        if !http {
+            out.push_str("header ?Strict-Transport-Security \"max-age=31536000\"\n");
+        }
         routes.sort_by(|a, b| {
             b.1.path
                 .len()

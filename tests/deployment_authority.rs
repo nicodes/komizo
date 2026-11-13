@@ -97,6 +97,230 @@ fn admit(request: &Value, policy: &Policy, uid: u32) -> anyhow::Result<authority
     )
 }
 
+fn publisher_claims(request: &Value) -> Value {
+    authority::verify_token(
+        request["release_proof"]["proof"].as_str().unwrap(),
+        &format!(
+            "komizo-release:{}",
+            document_digest(&authority::body_without_proof(&request["release_proof"]).unwrap())
+        ),
+        1050,
+        &mut public,
+    )
+    .unwrap()
+}
+
+fn environment_identity(value: &mut Value, environment: &str, immutable: bool) {
+    value["repository_owner"] = json!("example");
+    value["repository_owner_id"] = json!("456");
+    let repository = if immutable {
+        "example@456/mailroom@123"
+    } else {
+        "example/mailroom"
+    };
+    value["sub"] = json!(format!(
+        "repo:{repository}:environment:{}",
+        environment.replace(':', "%3A")
+    ));
+}
+
+fn environment_case(
+    environment: &str,
+    preview: bool,
+    immutable_request: bool,
+    immutable_publisher: bool,
+) -> (Policy, Value) {
+    let mut p = serde_json::to_value(if preview { preview_policy() } else { policy() }).unwrap();
+    if preview {
+        p["previews"]["environment"] = json!(environment);
+    } else {
+        p["authority"]["environment"] = json!(environment);
+    }
+    let p = serde_json::from_value(p).unwrap();
+    let mut r = if preview {
+        preview_request()
+    } else {
+        request()
+    };
+    let mut publisher = publisher_claims(&r);
+    environment_identity(&mut publisher, environment, immutable_publisher);
+    r["release_proof"]["proof"] = json!(sign(&publisher));
+    let mut caller = if preview {
+        preview_claims(&r)
+    } else {
+        claims(&r)
+    };
+    environment_identity(&mut caller, environment, immutable_request);
+    r["proof"] = json!(sign(&caller));
+    (p, r)
+}
+
+#[test]
+fn signed_environment_subject_formats_bind_request_and_independent_publisher() {
+    for (environment, preview) in [
+        ("production", false),
+        ("Production", false),
+        ("Preview", true),
+        ("Production:V1", false),
+    ] {
+        for request in [false, true] {
+            for publisher in [false, true] {
+                let (p, r) = environment_case(environment, preview, request, publisher);
+                assert!(
+                    admit(&r, &p, 1000).is_ok(),
+                    "refused {environment} immutable request={request} publisher={publisher}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn immutable_subjects_refuse_foreign_ids_names_types_and_environment_context() {
+    let environment = "Production:V1";
+    let (p, original) = environment_case(environment, false, true, true);
+    let subject =
+        |owner: &str| format!("repo:example@{owner}/mailroom@123:environment:Production%3AV1");
+    let mut mutations = vec![
+        ("repository_owner", json!("foreign")),
+        ("repository_owner", json!("Example")),
+        ("repository_owner", json!(456)),
+        ("repository_owner", Value::Null),
+        ("repository_owner_id", json!("457")),
+        ("repository_owner_id", json!(456)),
+        ("repository_owner_id", json!(true)),
+        ("repository_owner_id", json!(["456"])),
+        ("repository_owner_id", Value::Null),
+        ("repository_id", json!("124")),
+        ("repository_id", json!(123)),
+        (
+            "sub",
+            json!("repo:example@456/mailroom@124:environment:Production%3AV1"),
+        ),
+        (
+            "sub",
+            json!("repo:Example@456/mailroom@123:environment:Production%3AV1"),
+        ),
+        (
+            "sub",
+            json!("repo:example@456/mailroom@123:environment:production%3AV1"),
+        ),
+        (
+            "sub",
+            json!("repo:example@456/mailroom@123:environment:Production:V1"),
+        ),
+        (
+            "sub",
+            json!("repo:example@456/mailroom@123:environment:Production%3aV1"),
+        ),
+        (
+            "sub",
+            json!("repo:example@456/mailroom@123:environment:Production%253AV1"),
+        ),
+        (
+            "sub",
+            json!(format!("{}:ref:refs/heads/main", subject("456"))),
+        ),
+        (
+            "sub",
+            json!("repo:example@456/mailroom@123:ref:refs/heads/main"),
+        ),
+        ("sub", json!([subject("456")])),
+        ("workflow_sha", json!("b".repeat(40))),
+        ("sha", json!("b".repeat(40))),
+        ("ref", json!("refs/heads/feature")),
+        ("aud", json!("other")),
+        ("exp", json!(1049)),
+    ];
+    for owner in [
+        "",
+        "0",
+        "0456",
+        "+456",
+        "-456",
+        " 456",
+        "456 ",
+        "456.0",
+        "٤٥٦",
+        "456@7",
+        "456/other",
+        "111111111111111111111",
+    ] {
+        for publisher in [false, true] {
+            let mut r = original.clone();
+            let mut c = if publisher {
+                publisher_claims(&r)
+            } else {
+                claims(&r)
+            };
+            environment_identity(&mut c, environment, true);
+            c["repository_owner_id"] = json!(owner);
+            c["sub"] = json!(subject(owner));
+            if publisher {
+                r["release_proof"]["proof"] = json!(sign(&c));
+                let mut caller = claims(&r);
+                environment_identity(&mut caller, environment, true);
+                r["proof"] = json!(sign(&caller));
+            } else {
+                r["proof"] = json!(sign(&c));
+            }
+            assert!(
+                admit(&r, &p, 1000).is_err(),
+                "accepted noncanonical owner {owner:?} publisher={publisher}"
+            );
+        }
+    }
+    mutations.push(("repository", json!("example/foreign")));
+    for (field, value) in mutations {
+        for publisher in [false, true] {
+            let mut r = original.clone();
+            let mut c = if publisher {
+                publisher_claims(&r)
+            } else {
+                claims(&r)
+            };
+            environment_identity(&mut c, environment, true);
+            c[field] = value.clone();
+            if publisher {
+                r["release_proof"]["proof"] = json!(sign(&c));
+                let mut caller = claims(&r);
+                environment_identity(&mut caller, environment, true);
+                r["proof"] = json!(sign(&caller));
+            } else {
+                r["proof"] = json!(sign(&c));
+            }
+            assert!(
+                admit(&r, &p, 1000).is_err(),
+                "accepted {field} mutation publisher={publisher}"
+            );
+        }
+    }
+}
+
+#[test]
+fn immutable_owner_is_the_caller_owner_not_the_reusable_publisher_owner() {
+    let (mut p, mut r) = environment_case("production", false, true, true);
+    let workflow = format!(
+        "automation/publisher/.github/workflows/deliver.yml@{}",
+        "d".repeat(40)
+    );
+    let Authority::Github {
+        publisher_workflows,
+        ..
+    } = &mut p.authority
+    else {
+        unreachable!()
+    };
+    publisher_workflows.insert("deploy".into(), workflow.clone());
+    let mut publisher = publisher_claims(&r);
+    publisher["job_workflow_ref"] = json!(workflow);
+    r["release_proof"]["proof"] = json!(sign(&publisher));
+    let mut caller = claims(&r);
+    environment_identity(&mut caller, "production", true);
+    r["proof"] = json!(sign(&caller));
+    assert!(admit(&r, &p, 1000).is_ok());
+}
+
 #[test]
 fn signed_request_binds_app_action_workload_and_actual_workflow_authority() {
     let mut r = request();

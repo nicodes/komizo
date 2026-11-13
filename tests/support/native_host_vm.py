@@ -137,16 +137,51 @@ def download(record, target):
     algorithm = 'sha512' if 'sha512' in record else 'sha256'
     digest = hashlib.new(algorithm)
     count = 0
-    deadline = time.monotonic() + 300
+    started = time.monotonic()
+    deadline = started + 300
     with urllib.request.urlopen(record['url'], timeout=30) as source, target.open('xb') as output:
         while chunk := source.read(1 << 20):
             count += len(chunk)
-            if count > record['max_bytes'] or time.monotonic() >= deadline:
-                raise ValueError('pinned fixture download exceeds its bound')
+            observed = time.monotonic()
+            bytes_exceeded = count > record['max_bytes']
+            deadline_expired = observed >= deadline
+            if bytes_exceeded or deadline_expired:
+                status = getattr(source, 'status', None)
+                length = source.headers.get('Content-Length', '')
+                response_url = source.geturl()
+                def transport(url):
+                    for host in ['dl-3.alpinelinux.org', 'dl-cdn.alpinelinux.org']:
+                        if url.startswith('https://' + host + '/'):
+                            return host
+                    return 'other'
+                observation = {'kind': 'komizo.pinned-fixture-download-bound', 'version': 1,
+                    'received_bytes': count, 'max_bytes': record['max_bytes'],
+                    'elapsed_ms': round((observed - started) * 1000), 'deadline_seconds': 300,
+                    'bytes_exceeded': bytes_exceeded, 'deadline_expired': deadline_expired,
+                    'request_transport': transport(record['url']), 'response_transport': transport(response_url),
+                    'response_url_matches_requested': response_url == record['url'],
+                    'response_status': status if type(status) is int and 100 <= status <= 599 else None,
+                    'response_content_length_bytes': int(length) if isinstance(length, str)
+                        and 0 < len(length) <= 20 and length.isascii() and length.isdecimal() else None}
+                raise ValueError('pinned fixture download exceeds its bound: ' + json.dumps(observation, sort_keys=True))
             digest.update(chunk)
             output.write(chunk)
     if not count or digest.hexdigest() != record[algorithm]:
         raise ValueError('pinned fixture download differs from reviewed bytes')
+
+
+def fixture_image_download_record(baseline):
+    """Select reviewed transport without changing the capsule's captured image identity."""
+    image = baseline['cloud_image']
+    transport = baseline.get('cloud_image_transport')
+    keys = {'url', 'signature_url'}
+    if (type(transport) is not dict or set(transport) != keys
+            or any(type(value) is not str or not value.startswith('https://dl-3.alpinelinux.org/')
+                   for value in transport.values())
+            or transport != {name: image[name].replace('https://dl-cdn.alpinelinux.org/',
+                'https://dl-3.alpinelinux.org/', 1) for name in keys}):
+        raise ValueError('signed fixture transport differs from the reviewed official mirror')
+    return {**image, **transport}
 
 
 def authenticate_image(record, image, directory):
@@ -695,6 +730,7 @@ def main():
     if not Path('/dev/kvm').exists() or not os.access('/dev/kvm', os.R_OK | os.W_OK):
         raise ValueError('real native host acceptance requires accessible KVM; no simulated success fallback')
     baseline = json.loads((FIXTURES / 'baseline.json').read_text())
+    image_record = fixture_image_download_record(baseline)
     if args.cookbook_source is None or args.tools_source is None:
         raise ValueError('native capture requires the selected immutable Cookbook and Tools source directories')
     spec=importlib.util.spec_from_file_location('native_recovery_sources',ROOT/'tests/support/native_host_recovery.py')
@@ -720,8 +756,8 @@ def main():
         host = key(directory, 'host')
         base = directory / 'base.qcow2'
         print('Downloading and authenticating the signed pinned Alpine cloud image',flush=True)
-        download(baseline['cloud_image'], base)
-        authenticate_image(baseline['cloud_image'], base, directory)
+        download(image_record, base)
+        authenticate_image(image_record, base, directory)
         recovery_key=directory/'recipient.key';recipient=directory/'recipient.crt'
         run(['openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(recovery_key),
             '-out',str(recipient),'-days','2','-subj','/CN=disposable-native-owner'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
