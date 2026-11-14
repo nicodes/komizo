@@ -114,14 +114,6 @@ pub fn serve(
     socket: &Path,
     gid: u32,
     handler: impl Fn(Vec<u8>, u32) -> Result<Completion> + Send + Sync + 'static,
-) -> Result<()> {
-    serve_with_ready(socket, gid, handler, || Ok(()))
-}
-
-pub fn serve_with_ready(
-    socket: &Path,
-    gid: u32,
-    handler: impl Fn(Vec<u8>, u32) -> Result<Completion> + Send + Sync + 'static,
     ready: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
     ensure!(

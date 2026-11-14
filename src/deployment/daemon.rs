@@ -102,7 +102,7 @@ pub fn daemon() -> Result<()> {
         Path::new(observation::POLICIES).into(),
         Arc::new(worker),
     )?;
-    transport::serve_with_ready(
+    transport::serve(
         Path::new(transport::SOCKET),
         gid,
         move |body, uid| {
