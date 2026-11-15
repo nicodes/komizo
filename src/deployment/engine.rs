@@ -593,59 +593,17 @@ impl Engine {
         instance: &str,
         service: &str,
     ) -> Result<Option<Value>> {
-        if !self.exists("container", &record.name)? {
-            return Ok(None);
-        }
-        let value = self.inspection("container", &record.name)?;
-        workload_profile(&value)?;
-        let id = value["Id"].as_str().unwrap_or("");
-        let labels = &value["Config"]["Labels"];
-        ensure!(
-            hex(id, 64)
-                && id == record.id
-                && value["Name"]
-                    .as_str()
-                    .is_some_and(|actual| actual.strip_prefix('/').unwrap_or(actual) == record.name)
-                && hex(&record.ownership, 32)
-                && labels["io.komizo.application"] == application
-                && labels["io.komizo.instance"] == instance
-                && labels["io.komizo.service"] == service
-                && labels["io.komizo.release"] == record.release_digest
-                && labels["io.komizo.ownership"] == record.ownership
-                && normalize_id(value["Image"].as_str().unwrap_or("")) == record.config_digest,
-            "container is outside its recorded immutable ownership"
-        );
-        // The creation intent persists this CID before start. Supervisor
-        // restarts reuse it; explicit recovery must persist its own candidate.
-        let mounts = value["Mounts"]
-            .as_array()
-            .ok_or_else(|| anyhow!("container mount evidence missing"))?;
-        let observed = mounts
-            .iter()
-            .filter(|m| m["Type"] == "volume")
-            .map(|m| m["Name"].as_str().unwrap_or(""))
-            .collect::<std::collections::BTreeSet<_>>();
-        let expected = record
-            .volumes
-            .values()
-            .map(String::as_str)
-            .collect::<std::collections::BTreeSet<_>>();
-        ensure!(
-            observed == expected,
-            "container retained-volume bindings changed"
-        );
-        super::workload_guard::configuration(
-            &value,
-            &super::cgroups::workload_group(
-                application,
-                instance,
-                super::cgroups::WorkloadKind::Service,
-                service,
-                &record.ownership,
-            )?,
-        )?;
-        Ok(Some(value))
+        container_metadata_from(
+            record,
+            application,
+            instance,
+            service,
+            self.deadline,
+            || self.inspection("container", &record.name),
+            || self.exists("container", &record.name),
+        )
     }
+
     pub fn owned_container(
         &self,
         record: &ContainerRecord,
@@ -825,9 +783,228 @@ pub fn service_mounts(
     Ok(())
 }
 
+fn container_metadata_from(
+    record: &ContainerRecord,
+    application: &str,
+    instance: &str,
+    service: &str,
+    deadline: Instant,
+    inspect: impl FnOnce() -> Result<Value>,
+    exists: impl FnOnce() -> Result<bool>,
+) -> Result<Option<Value>> {
+    ensure!(Instant::now() < deadline, "native engine deadline expired");
+    let inspected = inspect();
+    ensure!(Instant::now() < deadline, "native engine deadline expired");
+    let value = match inspected {
+        Ok(value) => value,
+        Err(original) => {
+            // Missing objects and failed inspection are distinct facts. Most
+            // observations need one CLI; only an error needs classification.
+            let present = exists()?;
+            ensure!(Instant::now() < deadline, "native engine deadline expired");
+            if !present {
+                return Ok(None);
+            }
+            return Err(original);
+        }
+    };
+    workload_profile(&value)?;
+    let id = value["Id"].as_str().unwrap_or("");
+    let labels = &value["Config"]["Labels"];
+    ensure!(
+        hex(id, 64)
+            && id == record.id
+            && value["Name"]
+                .as_str()
+                .is_some_and(|actual| actual.strip_prefix('/').unwrap_or(actual) == record.name)
+            && hex(&record.ownership, 32)
+            && labels["io.komizo.application"] == application
+            && labels["io.komizo.instance"] == instance
+            && labels["io.komizo.service"] == service
+            && labels["io.komizo.release"] == record.release_digest
+            && labels["io.komizo.ownership"] == record.ownership
+            && normalize_id(value["Image"].as_str().unwrap_or("")) == record.config_digest,
+        "container is outside its recorded immutable ownership"
+    );
+    // The creation intent persists this CID before start. Supervisor
+    // restarts reuse it; explicit recovery must persist its own candidate.
+    let mounts = value["Mounts"]
+        .as_array()
+        .ok_or_else(|| anyhow!("container mount evidence missing"))?;
+    let observed = mounts
+        .iter()
+        .filter(|m| m["Type"] == "volume")
+        .map(|m| m["Name"].as_str().unwrap_or(""))
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected = record
+        .volumes
+        .values()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    ensure!(
+        observed == expected,
+        "container retained-volume bindings changed"
+    );
+    super::workload_guard::configuration(
+        &value,
+        &super::cgroups::workload_group(
+            application,
+            instance,
+            super::cgroups::WorkloadKind::Service,
+            service,
+            &record.ownership,
+        )?,
+    )?;
+    Ok(Some(value))
+}
+
 #[cfg(test)]
 mod host_tests {
     use super::*;
+    fn metadata_fixture() -> (ContainerRecord, Value) {
+        use serde_json::json;
+        let record = ContainerRecord {
+            name: "synthetic-api".into(),
+            id: "a".repeat(64),
+            image: "unused".into(),
+            config_digest: format!("sha256:{}", "b".repeat(64)),
+            release_digest: format!("sha256:{}", "c".repeat(64)),
+            ownership: "d".repeat(32),
+            unit_sha256: format!("sha256:{}", "e".repeat(64)),
+            volumes: Default::default(),
+        };
+        let group = super::super::cgroups::workload_group(
+            "fixture",
+            "production",
+            super::super::cgroups::WorkloadKind::Service,
+            "api",
+            &record.ownership,
+        )
+        .unwrap();
+        let value = json!({"Id":record.id,"Name":record.name,"Image":record.config_digest,
+            "AppArmorProfile":super::super::bootstrap::WORKLOAD_PROFILE,"OCIRuntime":"crun","Mounts":[],
+            "Config":{"Labels":{"io.komizo.application":"fixture","io.komizo.instance":"production",
+                "io.komizo.service":"api","io.komizo.release":record.release_digest,"io.komizo.ownership":record.ownership}},
+            "HostConfig":{"CgroupParent":group.relative(),"CgroupManager":"cgroupfs","LogConfig":{"Type":"k8s-file"}}});
+        (record, value)
+    }
+    #[test]
+    fn healthy_metadata_needs_one_command_and_drift_never_becomes_absence() {
+        use std::cell::Cell;
+        let (record, value) = metadata_fixture();
+        let calls = Cell::new(0);
+        let result = container_metadata_from(
+            &record,
+            "fixture",
+            "production",
+            "api",
+            Instant::now() + Duration::from_secs(1),
+            || {
+                calls.set(calls.get() + 1);
+                Ok(value.clone())
+            },
+            || panic!("healthy inspection must not run exists"),
+        )
+        .unwrap();
+        assert_eq!(result.unwrap(), value);
+        assert_eq!(calls.get(), 1);
+        for field in [
+            "Id",
+            "Name",
+            "Image",
+            "AppArmorProfile",
+            "Config",
+            "Mounts",
+            "HostConfig",
+            "OCIRuntime",
+        ] {
+            let mut foreign = value.clone();
+            foreign[field] = serde_json::json!("foreign");
+            assert!(
+                container_metadata_from(
+                    &record,
+                    "fixture",
+                    "production",
+                    "api",
+                    Instant::now() + Duration::from_secs(1),
+                    || Ok(foreign),
+                    || panic!("ownership drift must fail without an absence fallback")
+                )
+                .is_err(),
+                "{field}"
+            );
+        }
+    }
+    #[test]
+    fn failed_inspection_classifies_absence_without_hiding_uncertainty() {
+        use std::cell::RefCell;
+        let (record, _) = metadata_fixture();
+        for present in [false, true] {
+            let calls = RefCell::new(Vec::new());
+            let result = container_metadata_from(
+                &record,
+                "fixture",
+                "production",
+                "api",
+                Instant::now() + Duration::from_secs(1),
+                || {
+                    calls.borrow_mut().push("inspect");
+                    Err(anyhow!("original inspection failure"))
+                },
+                || {
+                    calls.borrow_mut().push("exists");
+                    Ok(present)
+                },
+            );
+            assert_eq!(*calls.borrow(), ["inspect", "exists"]);
+            if present {
+                assert_eq!(
+                    result.unwrap_err().to_string(),
+                    "original inspection failure"
+                );
+            } else {
+                assert!(result.unwrap().is_none());
+            }
+        }
+        let error = container_metadata_from(
+            &record,
+            "fixture",
+            "production",
+            "api",
+            Instant::now() + Duration::from_secs(1),
+            || Err(anyhow!("original inspection failure")),
+            || Err(anyhow!("presence classification failed")),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "presence classification failed");
+        assert!(
+            container_metadata_from(
+                &record,
+                "fixture",
+                "production",
+                "api",
+                Instant::now(),
+                || panic!("expired observation cannot execute"),
+                || panic!("expired observation cannot classify")
+            )
+            .is_err()
+        );
+        assert!(
+            container_metadata_from(
+                &record,
+                "fixture",
+                "production",
+                "api",
+                Instant::now() + Duration::from_millis(10),
+                || {
+                    std::thread::sleep(Duration::from_millis(20));
+                    Err(anyhow!("late inspection"))
+                },
+                || panic!("inspection cannot reset the deadline for classification")
+            )
+            .is_err()
+        );
+    }
     fn ending_workload() -> (super::super::cgroups::Group, Value, Value) {
         use serde_json::json;
         let group = super::super::cgroups::workload_group(
