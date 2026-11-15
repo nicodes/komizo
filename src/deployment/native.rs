@@ -330,6 +330,26 @@ pub fn verify_forward_evidence(
     );
     Ok(())
 }
+fn verify_startup_assets(
+    store: &Store,
+    mut verify_physical: impl FnMut(&ReleaseDocument) -> Result<()>,
+) -> Result<()> {
+    for installed in proxy::instances(store)? {
+        let document = store.release(&installed.release_digest)?;
+        ensure!(
+            document.release.application == installed.application,
+            "installed release belongs to another application"
+        );
+        proxy::verify_asset_inventory(store, &document)?;
+        // A removed instance is a validated tombstone, not an installed graph.
+        // Its immutable metadata outlives its unreachable materialized cache.
+        if !installed.removed {
+            verify_physical(&document)?;
+        }
+    }
+    Ok(())
+}
+
 impl Native {
     pub fn new() -> Result<Self> {
         Ok(Self)
@@ -346,10 +366,7 @@ impl Native {
         system::host_pools(store, &System { deadline }, &capacity)?;
         store.reconcile_interrupted()?;
         proxy::globals()?;
-        for installed in proxy::instances(store)? {
-            proxy::verify_assets(store, &store.release(&installed.release_digest)?)?;
-        }
-        Ok(())
+        verify_startup_assets(store, |document| proxy::verify_assets(store, document))
     }
 }
 
@@ -4060,6 +4077,216 @@ pub fn expire() -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod startup_asset_tests {
+    use super::*;
+
+    struct Fixture {
+        _directory: tempfile::TempDir,
+        store: Store,
+        document: ReleaseDocument,
+        installed: Installed,
+        physical: PathBuf,
+    }
+
+    impl Fixture {
+        fn new(removed: bool, assets: bool) -> Self {
+            let directory =
+                tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+            let store = Store::new(directory.path().join("state")).unwrap();
+            let mut source: serde_json::Value = serde_json::from_slice(include_bytes!(
+                "../../tests/fixtures/deployment/release.json"
+            ))
+            .unwrap();
+            if !assets {
+                source["artifacts"].as_object_mut().unwrap().remove("web");
+                source["workload"]["assets"] = json!({});
+                source["workload"]["routes"]
+                    .as_array_mut()
+                    .unwrap()
+                    .remove(0);
+            }
+            let document = read_release(&serde_json::to_vec(&source).unwrap()).unwrap();
+            store.save_release(&document).unwrap();
+            let installed = Installed {
+                kind: "komizo.installed".into(),
+                version: 1,
+                application: "mailroom".into(),
+                instance: "pr-1".into(),
+                release_digest: document.digest.clone(),
+                operation_id: "a".repeat(32),
+                desired_running: !removed,
+                removed,
+                expires_at: None,
+                resources: Resources::default(),
+                secret_snapshots: BTreeMap::new(),
+            };
+            store.save_installed(&installed).unwrap();
+            let physical = directory.path().join("index.html");
+            fs::write(&physical, b"accepted source").unwrap();
+            let fixture = Self {
+                _directory: directory,
+                store,
+                document,
+                installed,
+                physical,
+            };
+            if assets {
+                store::atomic(
+                    &fixture.seal_path(),
+                    &canonical(&json!({"web": document_digest(b"accepted source")})).unwrap(),
+                    0o600,
+                )
+                .unwrap();
+            }
+            fixture
+        }
+
+        fn seal_path(&self) -> PathBuf {
+            self.store
+                .root
+                .join("assets")
+                .join(format!("{}.json", &self.document.digest[7..]))
+        }
+
+        fn release_path(&self) -> PathBuf {
+            self.store
+                .root
+                .join("releases")
+                .join(format!("{}.json", &self.document.digest[7..]))
+        }
+
+        fn instance_path(&self) -> PathBuf {
+            self.store
+                .root
+                .join("instances")
+                .join("mailroom--pr-1.json")
+        }
+
+        fn verify_physical(&self, _: &ReleaseDocument) -> Result<()> {
+            ensure!(
+                document_digest(&fs::read(&self.physical)?) == document_digest(b"accepted source"),
+                "physical asset changed"
+            );
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn current_and_stopped_assets_remain_required_but_removed_cache_is_disposable() {
+        for running in [true, false] {
+            let mut fixture = Fixture::new(false, true);
+            fixture.installed.desired_running = running;
+            fixture.store.save_installed(&fixture.installed).unwrap();
+            assert!(
+                verify_startup_assets(&fixture.store, |doc| fixture.verify_physical(doc)).is_ok()
+            );
+            fs::write(&fixture.physical, b"changed source").unwrap();
+            assert!(
+                verify_startup_assets(&fixture.store, |doc| fixture.verify_physical(doc)).is_err()
+            );
+            fs::remove_file(&fixture.physical).unwrap();
+            assert!(
+                verify_startup_assets(&fixture.store, |doc| fixture.verify_physical(doc)).is_err()
+            );
+            // A normal removed record closes every resource and running intent.
+            fixture.installed.removed = true;
+            fixture.installed.desired_running = false;
+            fixture.store.save_installed(&fixture.installed).unwrap();
+            let paths = [
+                fixture.instance_path(),
+                fixture.release_path(),
+                fixture.seal_path(),
+            ];
+            let before: Vec<_> = paths.iter().map(|path| fs::read(path).unwrap()).collect();
+            verify_startup_assets(&fixture.store, |_| panic!("removed cache was accessed"))
+                .unwrap();
+            assert_eq!(
+                before,
+                paths
+                    .iter()
+                    .map(|path| fs::read(path).unwrap())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn removed_ownership_still_requires_valid_release_tombstone_and_seal_metadata() {
+        for invalid in [
+            "running",
+            "expiry",
+            "resources",
+            "missing-release",
+            "changed-release",
+            "other-application",
+            "missing-seal",
+            "wrong-asset",
+            "bad-digest",
+            "noncanonical-seal",
+        ] {
+            let fixture = Fixture::new(true, true);
+            match invalid {
+                "running" | "expiry" | "resources" => {
+                    let mut value = serde_json::to_value(&fixture.installed).unwrap();
+                    match invalid {
+                        "running" => value["desired_running"] = json!(true),
+                        "expiry" => value["expires_at"] = json!(100),
+                        _ => value["resources"]["networks"] = json!({"app":{"name":"owned","id":"b".repeat(64)}}),
+                    }
+                    store::atomic(&fixture.instance_path(), &serde_json::to_vec(&value).unwrap(), 0o600).unwrap();
+                }
+                "missing-release" => fs::remove_file(fixture.release_path()).unwrap(),
+                "changed-release" => {
+                    let mut source: serde_json::Value = serde_json::from_slice(&fixture.document.canonical).unwrap();
+                    source["source"]["revision"] = json!("b".repeat(40));
+                    store::atomic(&fixture.release_path(), &canonical(&source).unwrap(), 0o600).unwrap();
+                }
+                "other-application" => {
+                    let mut source: serde_json::Value = serde_json::from_slice(&fixture.document.canonical).unwrap();
+                    source["application"] = json!("another");
+                    let document = read_release(&canonical(&source).unwrap()).unwrap();
+                    fixture.store.save_release(&document).unwrap();
+                    let mut installed = fixture.installed.clone();
+                    installed.release_digest = document.digest;
+                    fixture.store.save_installed(&installed).unwrap();
+                }
+                "missing-seal" => fs::remove_file(fixture.seal_path()).unwrap(),
+                "wrong-asset" => store::atomic(&fixture.seal_path(), &canonical(&json!({"other": document_digest(b"accepted source")})).unwrap(), 0o600).unwrap(),
+                "bad-digest" => store::atomic(&fixture.seal_path(), &canonical(&json!({"web": "not-a-digest"})).unwrap(), 0o600).unwrap(),
+                "noncanonical-seal" => store::atomic(&fixture.seal_path(), b"{\n  \"web\": \"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n}", 0o600).unwrap(),
+                _ => unreachable!(),
+            }
+            let mut calls = 0;
+            let result = verify_startup_assets(&fixture.store, |_| {
+                calls += 1;
+                Ok(())
+            });
+            assert!(
+                result.is_err(),
+                "invalid removed metadata accepted: {invalid}"
+            );
+            assert_eq!(
+                calls, 0,
+                "invalid metadata reached physical verifier: {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn releases_without_assets_do_not_acquire_a_seal_or_cache_requirement() {
+        for removed in [false, true] {
+            let fixture = Fixture::new(removed, false);
+            fs::remove_file(&fixture.physical).unwrap();
+            verify_startup_assets(&fixture.store, |document| {
+                proxy::verify_assets(&fixture.store, document)
+            })
+            .unwrap();
+            assert!(!fixture.seal_path().exists());
+        }
+    }
 }
 
 #[cfg(test)]

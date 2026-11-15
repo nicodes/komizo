@@ -300,6 +300,26 @@ pub fn verify_assets(store: &Store, document: &ReleaseDocument) -> Result<()> {
     seal_assets(store, document)
 }
 
+pub fn verify_asset_inventory(store: &Store, document: &ReleaseDocument) -> Result<()> {
+    if document.release.workload.assets.is_empty() {
+        return Ok(());
+    }
+    let path = store
+        .root
+        .join("assets")
+        .join(format!("{}.json", &document.digest[7..]));
+    let raw = store::read_protected(&path, 1 << 20)?;
+    let recorded: BTreeMap<String, String> =
+        serde_json::from_value(crate::strict::value(&raw, 1 << 20)?)?;
+    ensure!(
+        recorded.keys().eq(document.release.workload.assets.keys())
+            && recorded.values().all(|hash| digest(hash))
+            && canonical(&serde_json::to_value(&recorded)?)? == raw,
+        "public asset inventory differs from installed ownership"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod observation_tests {
     use super::*;
