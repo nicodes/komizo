@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shutil
 import subprocess
 import threading
 import time
@@ -820,6 +821,48 @@ def bounded_prepare():
     fixture_tasks.stop('native-fixture-registry')
 
 
+def removed_asset_cache_restart(production):
+    """Retire only this disposable fixture's normally removed static preview."""
+    instance='pr-99';hostname=instance+'.preview.localhost'
+    policy_path=Path('/etc/komizo/apps/staticbox.json');policy=json.loads(policy_path.read_bytes())
+    policy['previews']={'environment':'preview','hostname_suffix':'preview.localhost','max_instances':1,
+        'max_ttl_seconds':120,'limits':limits(96,500,96),
+        'readiness':[{'url':'https://{instance}.preview.localhost/','status':200}]}
+    write(policy_path,policy)
+    with Path('/etc/hosts').open('a') as output:output.write('127.0.0.1 '+hostname+'\n')
+    document=release('staticbox','d'*40)
+    document['workload']['routes'][0]['host']=hostname
+    document['workload']['readiness'][0]['url']='https://'+hostname+'/'
+    identity=registry.digest(registry.canonical(document))
+    ready=submit(request('staticbox','deploy',identity,instance=instance,release=document,ttl_seconds=120))
+    if not ready.get('ok') or ready.get('phase')!='ready' or identity==production:
+        raise ValueError('static cache retirement requires a distinct ready preview: '+json.dumps(ready))
+    removed=submit(request('staticbox','remove',identity,instance=instance))
+    if not removed.get('ok'):
+        raise ValueError('normal static preview removal failed: '+json.dumps(removed))
+    state=Path('/var/lib/komizo')
+    paths=[state/'instances/staticbox--pr-99.json',state/'releases'/ (identity[7:]+'.json'),
+        state/'assets'/(identity[7:]+'.json')]
+    before={str(path):path.read_bytes() for path in paths};tombstone=json.loads(before[str(paths[0])])
+    if (not tombstone['removed'] or tombstone['desired_running'] or tombstone['expires_at'] is not None
+            or any(tombstone['resources'].values())):
+        raise ValueError('removed preview has not closed its native ownership')
+    for directory in ['instances','prepared']:
+        for path in (state/directory).glob('*.json'):
+            value=json.loads(path.read_bytes())
+            if not value.get('removed',False) and value['release_digest']==identity:
+                raise ValueError('synthetic retired cache still has an installed or prepared consumer')
+    root=Path('/var/lib/komizo-assets')/identity[7:]
+    if root.is_symlink() or not root.is_dir() or not (root/'web/index.html').is_file():
+        raise ValueError('synthetic preview has no exact private asset tree to retire')
+    shutil.rmtree(root)
+    restart_controller()
+    if root.exists() or before!={str(path):path.read_bytes() for path in paths}:
+        raise ValueError('cold controller changed removed identity metadata or recreated retired code')
+    if b'a'*40 not in fetch('staticbox',production):
+        raise ValueError('cold controller lost the current production asset tree')
+
+
 def prepare():
     if json.loads((ROOT/'profile.json').read_text())['profile']=='bounded':return bounded_prepare()
     setup_registry()
@@ -837,6 +880,7 @@ def prepare():
         raise ValueError('unprivileged proxy UID cannot read exact installed asset bytes')
     if run(['runuser','-u','komizo-proxy','--','test','-w',str(public)],ok=False).returncode==0:
         raise ValueError('unprivileged proxy UID can change accepted public assets')
+    removed_asset_cache_restart(result['release_digest'])
     app=release('mailroom','a'*40,dynamic=True)
     mutation,ready=deploy(app)
     if ready.get('phase')!='ready' or not ready.get('ok'):raise ValueError('actual API/job release failed: '+json.dumps(ready))
@@ -879,7 +923,7 @@ def prepare():
         'stopped_candidate_no_jobs':'passed','application_kernel_limits':'passed',
         'application_uid_capabilities':'passed','application_read_only_root':'passed','no_published_application_ports':'passed',
         'cross_application_tcp_refused':'passed','same_network_tcp_allowed':'passed','installed_asset_proxy_uid_read':'passed',
-        'installed_asset_proxy_uid_write_refused':'passed'})
+        'installed_asset_proxy_uid_write_refused':'passed','removed_asset_cache_cold_start':'passed'})
     apparmor_boundary('livebox',report)
     write(ROOT/'report.json',report)
     import fixture_postgres
