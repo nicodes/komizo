@@ -2617,6 +2617,17 @@ fn health_observation(status: &str, unavailable: bool) -> Result<Option<bool>> {
     })
 }
 
+// Only a fully verified healthy read can end without entering the effect
+// boundary again. A probe attempt (including unavailable125), record write,
+// unhealthy result or verification error still needs fresh effect authority.
+fn maintenance_commit_required(
+    observed: &Result<Option<bool>>,
+    probe_attempted: bool,
+    checked_at: Option<i64>,
+) -> bool {
+    probe_attempted || checked_at.is_some() || !matches!(observed, Ok(Some(true)))
+}
+
 // Each queued scope owns its dedupe slot until every observation/commit ends.
 // Probe and authority CLIs run outside the application mutation lease.
 fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
@@ -2673,6 +2684,7 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
         &frozen.document.release.workload.services[&scope.service],
     )?;
     let mut checked_at = None;
+    let mut probe_attempted = false;
     let observed = (|| -> Result<Option<bool>> {
         super::engine::workload_limits(
             &before,
@@ -2709,6 +2721,7 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
                 now,
                 interval,
             )? {
+                probe_attempted = true;
                 let probe = super::cgroups::service_probe_group(
                     &scope.application,
                     &scope.instance,
@@ -2725,6 +2738,14 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
                     super::engine::HealthProbe::Completed => checked_at = Some(now),
                     super::engine::HealthProbe::Unavailable125 => unavailable = true,
                 }
+            }
+            if !probe_attempted {
+                // workload_limits above already verified the live payload,
+                // monitor, AppArmor, exact cgroups and kernel hard limits.
+                return health_observation(
+                    before["State"]["Health"]["Status"].as_str().unwrap_or(""),
+                    false,
+                );
             }
             let after = Engine {
                 deadline: deadline.min(Instant::now() + Duration::from_secs(20)),
@@ -2770,6 +2791,9 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
             Ok(Some(true))
         }
     })();
+    if !maintenance_commit_required(&observed, probe_attempted, checked_at) {
+        return Ok(());
+    }
     let restart = matches!(observed, Ok(Some(false)));
     let stopped = {
         let Some(_lease) =
@@ -4041,6 +4065,26 @@ pub fn expire() -> Result<()> {
 #[cfg(test)]
 mod recovery_tests {
     use super::*;
+    #[test]
+    fn only_fully_verified_healthy_reads_skip_the_effect_lease_boundary() {
+        assert!(!maintenance_commit_required(&Ok(Some(true)), false, None));
+        for (probed, checked) in [(true, None), (true, Some(100)), (false, Some(100))] {
+            assert!(maintenance_commit_required(
+                &Ok(Some(true)),
+                probed,
+                checked
+            ));
+        }
+        for observed in [
+            Ok(Some(false)),
+            Ok(None),
+            Err(anyhow!("live kernel ownership refused")),
+        ] {
+            assert!(maintenance_commit_required(&observed, false, None));
+            assert!(maintenance_commit_required(&observed, true, None));
+        }
+    }
+
     #[test]
     fn service_observation_discards_replaced_or_restarted_process_generations() {
         let observed = json!({"Id":"a".repeat(64),"State":{"Running":true,"Pid":123,"StartedAt":"2026-11-11T00:00:00Z"}});

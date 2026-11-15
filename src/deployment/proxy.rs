@@ -90,19 +90,31 @@ pub fn upstreams(
     installed: &Installed,
     document: &ReleaseDocument,
 ) -> Result<BTreeMap<String, String>> {
+    upstreams_from(installed, document, |record, name| {
+        engine.owned_container(record, &installed.application, &installed.instance, name)
+    })
+}
+
+fn upstreams_from(
+    installed: &Installed,
+    document: &ReleaseDocument,
+    mut observe: impl FnMut(&store::ContainerRecord, &str) -> Result<Option<serde_json::Value>>,
+) -> Result<BTreeMap<String, String>> {
     let mut upstreams = BTreeMap::new();
     for route in &document.release.workload.routes {
         let Some(RouteTarget::Service { name, port }) = &route.target else {
             continue;
         };
+        let target = format!("{name}:{port}");
+        if upstreams.contains_key(&target) {
+            continue;
+        }
         let record = installed
             .resources
             .containers
             .get(name)
             .ok_or_else(|| anyhow!("route service has no creation record"))?;
-        let value = engine
-            .owned_container(record, &installed.application, &installed.instance, name)?
-            .ok_or_else(|| anyhow!("route service is absent"))?;
+        let value = observe(record, name)?.ok_or_else(|| anyhow!("route service is absent"))?;
         ensure!(
             value["State"]["Running"] == true,
             "route service is stopped"
@@ -125,10 +137,7 @@ pub fn upstreams(
             !address.is_unspecified() && !address.is_loopback() && !address.is_multicast(),
             "route bridge address is invalid"
         );
-        upstreams.insert(
-            format!("{name}:{port}"),
-            SocketAddr::new(address, *port).to_string(),
-        );
+        upstreams.insert(target, SocketAddr::new(address, *port).to_string());
     }
     Ok(upstreams)
 }
@@ -289,4 +298,110 @@ pub fn verify_assets(store: &Store, document: &ReleaseDocument) -> Result<()> {
         "public asset tree has no protected identity"
     );
     seal_assets(store, document)
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use serde_json::json;
+    fn fixture() -> (Installed, ReleaseDocument, serde_json::Value) {
+        let mut source: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/deployment/release.json"))
+                .unwrap();
+        let first = source["workload"]["routes"][1].clone();
+        let mut duplicate = first.clone();
+        duplicate["host"] = json!("mail.example");
+        duplicate["path"] = json!("/api/*");
+        let mut other_port = first.clone();
+        other_port["path"] = json!("/other/*");
+        other_port["target"]["port"] = json!(8081);
+        source["workload"]["routes"]
+            .as_array_mut()
+            .unwrap()
+            .extend([duplicate, other_port]);
+        let document = read_release(&serde_json::to_vec(&source).unwrap()).unwrap();
+        let record = store::ContainerRecord {
+            name: "owned-api".into(),
+            id: "a".repeat(64),
+            image: "unused".into(),
+            config_digest: format!("sha256:{}", "b".repeat(64)),
+            release_digest: document.digest.clone(),
+            ownership: "c".repeat(32),
+            unit_sha256: format!("sha256:{}", "d".repeat(64)),
+            volumes: Default::default(),
+        };
+        let installed = Installed {
+            kind: "komizo.installed".into(),
+            version: 1,
+            application: "mailroom".into(),
+            instance: "production".into(),
+            release_digest: document.digest.clone(),
+            operation_id: "e".repeat(32),
+            desired_running: true,
+            removed: false,
+            expires_at: None,
+            resources: store::Resources {
+                containers: BTreeMap::from([("api".into(), record)]),
+                networks: BTreeMap::from([(
+                    "backend".into(),
+                    store::ObjectRecord {
+                        name: "owned-network".into(),
+                        id: "f".repeat(64),
+                    },
+                )]),
+                ..Default::default()
+            },
+            secret_snapshots: Default::default(),
+        };
+        let metadata = json!({"State":{"Running":true},"NetworkSettings":{"Networks":{"owned-network":{"IPAddress":"10.42.0.5"}}}});
+        (installed, document, metadata)
+    }
+    #[test]
+    fn repeated_route_targets_share_one_fresh_observation_per_call() {
+        let (installed, document, value) = fixture();
+        let mut calls = 0;
+        for round in 1..=2 {
+            let upstreams = upstreams_from(&installed, &document, |record, name| {
+                assert_eq!(record.id, installed.resources.containers["api"].id);
+                assert_eq!(name, "api");
+                calls += 1;
+                Ok(Some(value.clone()))
+            })
+            .unwrap();
+            assert_eq!(
+                calls,
+                round * 2,
+                "two ports are distinct; repeated origins are not"
+            );
+            assert_eq!(
+                upstreams,
+                BTreeMap::from([
+                    ("api:8080".into(), "10.42.0.5:8080".into()),
+                    ("api:8081".into(), "10.42.0.5:8081".into())
+                ])
+            );
+        }
+    }
+    #[test]
+    fn upstream_reuse_never_turns_missing_stopped_or_invalid_native_proofs_into_routes() {
+        let (installed, document, value) = fixture();
+        assert!(upstreams_from(&installed, &document, |_, _| Ok(None)).is_err());
+        assert!(
+            upstreams_from(&installed, &document, |_, _| Err(anyhow!(
+                "ownership refused"
+            )))
+            .is_err()
+        );
+        let mut stopped = value.clone();
+        stopped["State"]["Running"] = json!(false);
+        assert!(upstreams_from(&installed, &document, |_, _| Ok(Some(stopped.clone()))).is_err());
+        for ip in ["127.0.0.1", "0.0.0.0", "224.0.0.1", "not-an-address"] {
+            let mut bad = value.clone();
+            bad["NetworkSettings"]["Networks"]["owned-network"]["IPAddress"] = json!(ip);
+            assert!(
+                upstreams_from(&installed, &document, |_, _| Ok(Some(bad.clone()))).is_err(),
+                "{ip}"
+            );
+        }
+    }
 }
