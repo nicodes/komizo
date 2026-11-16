@@ -10,7 +10,7 @@ import shutil
 import subprocess
 import tempfile
 
-TOOLS='7873bb0fdae1726295dbf7f9317c58daa374b2a6'
+TOOLS='834b7eab9cdeb1452988f383184a8016feb08e04'
 SOURCES=('caddy.go.mod','caddy.go.sum','caddy-build.sh')
 
 
