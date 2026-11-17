@@ -1,4 +1,4 @@
-name: Native host bootstrap and reboot
+name: Bootstrap and reboot native host
 'on':
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -19,7 +19,8 @@ jobs:
       MISE_GITHUB_TOKEN: ${{ github.token }}
       NATIVE_HOST_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}

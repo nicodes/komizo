@@ -45,9 +45,9 @@ fn policy() -> Policy {
     "authority":{
         "kind":"github","repository":"example/mailroom","repository_id":"123",
         "workflows":{
-            "deploy":["example/mailroom/.github/workflows/cd.yml@refs/heads/main"],
+            "deploy":["example/mailroom/.github/workflows/deploy.yml@refs/heads/main"],
             "preview-deploy":["example/mailroom/.github/workflows/preview.yml@refs/heads/main"],
-            "backup":["example/mailroom/.github/workflows/backup.yml@refs/heads/main","example/mailroom/.github/workflows/cd.yml@refs/heads/main"]
+            "backup":["example/mailroom/.github/workflows/backup.yml@refs/heads/main","example/mailroom/.github/workflows/deploy.yml@refs/heads/main"]
         },
         "reference":"refs/heads/main","environment":"production",
         "publisher_workflows":{
@@ -68,7 +68,7 @@ fn request() -> Value {
         .unwrap()
         .digest;
     let mut request = json!({"kind":"komizo.request","version":1,"authority":"github","application":"mailroom","instance":"production","action":"deploy","release_digest":digest,"nonce":"1".repeat(32),"issued_at":1000,"expires_at":1120,"release":release});
-    let mut proof = json!({"kind":"komizo.release-proof","version":1,"release_digest":request["release_digest"],"source_revision":"a".repeat(40),"run_id":"12345","run_attempt":"1","workflow_ref":"example/mailroom/.github/workflows/cd.yml@refs/heads/main","workflow_sha":"a".repeat(40)});
+    let mut proof = json!({"kind":"komizo.release-proof","version":1,"release_digest":request["release_digest"],"source_revision":"a".repeat(40),"run_id":"12345","run_attempt":"1","workflow_ref":"example/mailroom/.github/workflows/deploy.yml@refs/heads/main","workflow_sha":"a".repeat(40)});
     let mut publisher = claims(&request);
     publisher["aud"] = json!(format!(
         "komizo-release:{}",
@@ -85,7 +85,7 @@ fn request() -> Value {
     request
 }
 fn claims(request: &Value) -> Value {
-    json!({"iss":authority::ISSUER,"aud":format!("komizo-request:{}",document_digest(&authority::body_without_proof(request).unwrap())),"iat":1000,"nbf":995,"exp":1300,"jti":"unique-token","repository":"example/mailroom","repository_id":"123","workflow_ref":"example/mailroom/.github/workflows/cd.yml@refs/heads/main","workflow_sha":"a".repeat(40),"sha":"a".repeat(40),"ref":"refs/heads/main","sub":"repo:example/mailroom:environment:production","runner_environment":"github-hosted","event_name":"push"})
+    json!({"iss":authority::ISSUER,"aud":format!("komizo-request:{}",document_digest(&authority::body_without_proof(request).unwrap())),"iat":1000,"nbf":995,"exp":1300,"jti":"unique-token","repository":"example/mailroom","repository_id":"123","workflow_ref":"example/mailroom/.github/workflows/deploy.yml@refs/heads/main","workflow_sha":"a".repeat(40),"sha":"a".repeat(40),"ref":"refs/heads/main","sub":"repo:example/mailroom:environment:production","runner_environment":"github-hosted","event_name":"push"})
 }
 fn admit(request: &Value, policy: &Policy, uid: u32) -> anyhow::Result<authority::AdmittedRequest> {
     authority::admit(
@@ -431,7 +431,7 @@ fn preview_comments_require_the_protected_main_workflow_and_selected_source_publ
         ("sub", json!("repo:example/mailroom:environment:production")),
         (
             "workflow_ref",
-            json!("example/mailroom/.github/workflows/cd.yml@refs/heads/main"),
+            json!("example/mailroom/.github/workflows/deploy.yml@refs/heads/main"),
         ),
         ("ref", json!("refs/heads/feature")),
     ] {
@@ -505,7 +505,7 @@ fn manual_and_predeployment_backups_share_only_their_explicit_action_authority()
             r["operation"] = json!("c".repeat(32));
             r["export_name"] = json!("snapshot.cms");
         }
-        for (workflow, event) in [("cd.yml", "push"), ("backup.yml", "workflow_dispatch")] {
+        for (workflow, event) in [("deploy.yml", "push"), ("backup.yml", "workflow_dispatch")] {
             let mut c = claims(&r);
             c["workflow_ref"] = json!(format!(
                 "example/mailroom/.github/workflows/{workflow}@refs/heads/main"
