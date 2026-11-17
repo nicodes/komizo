@@ -67,7 +67,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: nicodes/tools
-          ref: 834b7eab9cdeb1452988f383184a8016feb08e04
+          ref: 71540eb673ebd47162de3b78bb6ffbf77605d2ab
           path: .artifacts/native-proxy-tools
           persist-credentials: false
       - name: Build and audit the exact native proxy
