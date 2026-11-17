@@ -455,14 +455,17 @@ def setup_registry():
     public=Path('/etc/komizo-proxy/warmup.Caddyfile');public.write_bytes(warm.read_bytes());public.chmod(0o644)
     fixture_tasks.start('native-fixture-pki',['/usr/local/bin/caddy','run','--config',str(public),'--adapter','caddyfile'],user='komizo-proxy',seconds=60)
     ca=Path('/var/lib/komizo-proxy/data/pki/authorities/local/root.crt')
-    until(lambda:ca.is_file())
+    ca_key=ca.with_suffix('.key')
+    # Caddy persists the certificate and key separately; keep it running until
+    # the complete authority needed by the registry signer has been written.
+    until(lambda:all(path.is_file() and path.stat().st_size>0 for path in (ca,ca_key)))
     fixture_tasks.stop('native-fixture-pki')
     trust=Path('/usr/local/share/ca-certificates/komizo-native-fixture.crt');trust.write_bytes(ca.read_bytes())
     run(['update-ca-certificates'])
     key=ROOT/'registry.key';csr=ROOT/'registry.csr';certificate=ROOT/'registry.crt';extension=ROOT/'registry.extensions'
     extension.write_text('basicConstraints=CA:FALSE\nkeyUsage=digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\nsubjectAltName=DNS:registry.fixture.test\n')
     run(['openssl','req','-new','-newkey','rsa:2048','-nodes','-keyout',str(key),'-out',str(csr),'-subj','/CN=registry.fixture.test'])
-    run(['openssl','x509','-req','-in',str(csr),'-CA',str(ca),'-CAkey','/var/lib/komizo-proxy/data/pki/authorities/local/root.key',
+    run(['openssl','x509','-req','-in',str(csr),'-CA',str(ca),'-CAkey',str(ca_key),
         '-CAcreateserial','-out',str(certificate),'-days','2','-extfile',str(extension)])
     key.chmod(0o600)
     (ROOT/'registry').mkdir(exist_ok=True)
