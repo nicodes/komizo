@@ -1,6 +1,13 @@
-name: Dependency maintenance
+name: Maintenance
 'on':
-  workflow_dispatch: null
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Maintenance task
+        type: choice
+        options:
+        - dependencies
+        default: dependencies
 permissions:
   contents: read
   issues: write
@@ -10,7 +17,7 @@ concurrency:
 jobs:
   verify:
     name: Check dependencies
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && inputs.task == 'dependencies'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
