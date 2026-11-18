@@ -447,7 +447,12 @@ wait "$child"
                 #[cfg(target_os = "linux")]
                 let state = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
                     Ok(value) => value.split_whitespace().nth(2).unwrap().to_owned(),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::NotFound
+                            || error.raw_os_error() == Some(libc::ESRCH) =>
+                    {
+                        String::new()
+                    }
                     Err(error) => panic!("cannot observe owned child {pid}: {error}"),
                 };
                 #[cfg(not(target_os = "linux"))]
