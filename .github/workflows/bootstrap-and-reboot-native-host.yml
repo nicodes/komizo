@@ -52,6 +52,26 @@ jobs:
           ref: ${{ steps.backup-provider.outputs.revision }}
           path: .artifacts/native-backup-cookbook
           persist-credentials: false
+      - name: Resolve the native Tools source
+        id: native-tools
+        run: |
+          python3 -I -B - <<'PY'
+          import json, os, pathlib, re, tomllib
+          cookbook = pathlib.Path('.artifacts/native-backup-cookbook/mise.toml')
+          fixture = pathlib.Path('tests/fixtures/native_host/baseline.json')
+          revision = tomllib.loads(cookbook.read_text())['vars']['tools_ref']
+          if not re.fullmatch('[a-f0-9]{40}', revision) or revision != json.loads(fixture.read_text())['proxy_tools_revision']:
+              raise ValueError('Cookbook Tools and the reviewed native proxy fixture must use the same immutable source')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('revision=' + revision + '\n')
+          PY
+      - name: Check out the accepted Tools source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: nicodes/tools
+          ref: ${{ steps.native-tools.outputs.revision }}
+          path: .artifacts/native-proxy-tools
+          persist-credentials: false
       - name: Prepare verified Ubuntu native runner dependencies
         timeout-minutes: 6
         run: sudo -n /usr/bin/python3 -I -B .artifacts/native-backup-cookbook/cookbook/ubuntu_ci.py native-host
@@ -63,13 +83,6 @@ jobs:
           mise install rust@1.94.0
           mise exec rust@1.94.0 -- rustup target add x86_64-unknown-linux-musl
           mise exec rust@1.94.0 -- cargo build --locked --bin komizo-box --bin komizo --target x86_64-unknown-linux-musl --target-dir .artifacts/native-host-build
-      - name: Check out the accepted proxy source closure
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          repository: nicodes/tools
-          ref: 48fb94fd811c3594489aa3af34f94903cfdb48f7
-          path: .artifacts/native-proxy-tools
-          persist-credentials: false
       - name: Build and audit the exact native proxy
         timeout-minutes: 20
         run: |

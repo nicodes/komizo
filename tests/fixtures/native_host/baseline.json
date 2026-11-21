@@ -16,7 +16,7 @@
     "url": "https://dl-3.alpinelinux.org/alpine/v3.24/releases/cloud/alpine-3.24.3-x86_64-cloudinit-r0.qcow2",
     "signature_url": "https://dl-3.alpinelinux.org/alpine/v3.24/releases/cloud/alpine-3.24.3-x86_64-cloudinit-r0.qcow2.asc"
   },
-  "proxy_tools_revision": "48fb94fd811c3594489aa3af34f94903cfdb48f7",
+  "proxy_tools_revision": "eca0e09a61c216821ffa3237124b65cf5f8b0059",
   "proxy_go_version": "1.27.4",
   "proxy_source_sha256": {
     "caddy.go.mod": "sha256:a9056233663f7ccd6ded5f1334393061cfa06bd088f67b0050758c3a2555ba3a",
