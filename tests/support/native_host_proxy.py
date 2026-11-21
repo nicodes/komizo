@@ -6,11 +6,11 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
 
-TOOLS='48fb94fd811c3594489aa3af34f94903cfdb48f7'
 SOURCES=('caddy.go.mod','caddy.go.sum','caddy-build.sh')
 
 
@@ -66,8 +66,12 @@ def audit_report(report,destination,provenance,judge):
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--tools',type=Path,required=True);parser.add_argument('--output',type=Path,required=True)
     args=parser.parse_args();tools=args.tools.resolve(strict=True);destination=args.output.absolute()
+    baseline = Path(__file__).resolve().parents[1] / 'fixtures/native_host/baseline.json'
+    tools_revision = json.loads(baseline.read_text())['proxy_tools_revision']
+    if not re.fullmatch('[a-f0-9]{40}', tools_revision):
+        raise ValueError('proxy fixture requires an immutable Tools revision')
     command=['git','--no-replace-objects','-c','core.hooksPath='+os.devnull,'-c','core.fsmonitor=false','-C',str(tools)]
-    if run([*command,'rev-parse','HEAD'],text=True).strip()!=TOOLS or run([*command,'status','--porcelain','--untracked-files=all']):
+    if run([*command,'rev-parse','HEAD'],text=True).strip()!=tools_revision or run([*command,'status','--porcelain','--untracked-files=all']):
         raise ValueError('proxy requires its exact clean accepted Tools source')
     if run([*command,'remote','get-url','origin'],text=True).strip().removesuffix('.git') not in {'https://github.com/nicodes/tools','git@github.com:nicodes/tools'}:
         raise ValueError('proxy source origin differs')
@@ -76,7 +80,7 @@ def main():
         path=tools/'helpers'/name
         if path.is_symlink() or not path.is_file() or path.stat().st_size>1<<20:raise ValueError('proxy source is not an ordinary bounded file')
         body=path.read_bytes()
-        if body!=run([*command,'show',TOOLS+':helpers/'+name]):raise ValueError('proxy source differs from accepted Git bytes')
+        if body!=run([*command,'show',tools_revision+':helpers/'+name]):raise ValueError('proxy source differs from accepted Git bytes')
         files[name]=body
     compiler=Path(run(['go','env','GOROOT'],text=True).strip())/'bin'/'go'
     if run([str(compiler),'env','GOVERSION'],text=True).strip()!='go1.27.4':raise ValueError('proxy requires exact Go1.27.4')
@@ -104,13 +108,13 @@ def main():
         if len(report)>16<<20:raise ValueError('proxy binary audit exceeds metadata bound')
         spec=importlib.util.spec_from_file_location('accepted_proxy_scanner',tools/'helpers'/'scan-image.py')
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-        audit_report(report,destination,{'tools_revision':TOOLS,'platform':'linux/amd64','go_version':'1.27.4','caddy_version':'2.11.6',
+        audit_report(report,destination,{'tools_revision':tools_revision,'platform':'linux/amd64','go_version':'1.27.4','caddy_version':'2.11.6',
             'source_sha256':{name:'sha256:'+hashlib.sha256(body).hexdigest() for name,body in files.items()},
             'binary_sha256':'sha256:'+hashlib.sha256(raw).hexdigest()},module.judge_report)
         for name,target in [('caddy.go.mod','go.mod'),('caddy.go.sum','go.sum'),('caddy-build.sh','build.sh')]:
             if (root/target).read_bytes()!=files[name]:raise ValueError('proxy build changed accepted input bytes')
         destination.write_bytes(raw);destination.chmod(0o755)
-        receipt={'kind':'komizo.proxy-build','version':1,'tools_revision':TOOLS,'platform':'linux/amd64','go_version':'1.27.4','caddy_version':'2.11.6',
+        receipt={'kind':'komizo.proxy-build','version':1,'tools_revision':tools_revision,'platform':'linux/amd64','go_version':'1.27.4','caddy_version':'2.11.6',
             'source_sha256':{name:'sha256:'+hashlib.sha256(body).hexdigest() for name,body in files.items()},'binary_sha256':'sha256:'+hashlib.sha256(raw).hexdigest()}
         path=destination.with_name(destination.name+'.json');path.write_bytes(json.dumps(receipt,sort_keys=True,separators=(',',':')).encode());path.chmod(0o644)
     print('Exact locked proxy source, compiler, native ELF and linked-symbol audit passed.')
