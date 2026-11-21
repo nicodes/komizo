@@ -718,6 +718,7 @@ def main():
     parser.add_argument('--proxy-binary', required=True, type=Path)
     parser.add_argument('--proxy-receipt', required=True, type=Path)
     parser.add_argument('--profile',choices=['functional','bounded'],default='functional')
+    parser.add_argument('--source-candidate', action='store_true')
     parser.add_argument('--cli',type=Path,help='exact shipping cold owner executable; required for the bounded profile')
     parser.add_argument('--cookbook-source',type=Path,default=os.environ.get('COOKBOOK_ROOT') or os.environ.get('RECIPE_SOURCE_SDK'))
     parser.add_argument('--tools-source',type=Path,default=os.environ.get('TOOLS_ROOT'))
@@ -763,7 +764,8 @@ def main():
             '-out',str(recipient),'-days','2','-subj','/CN=disposable-native-owner'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         recovery_key.chmod(0o600)
         capture_bundle=sources.bundle(directory,recipient)
-        profile=directory/'profile.json';profile.write_text(json.dumps(sources.profile(args.profile)))
+        profile=directory/'profile.json'
+        profile.write_text(json.dumps({**sources.profile(args.profile), 'source_candidate': args.source_candidate}))
         user_data = {**fixture_cloud_options(),
             'users': [fixture_root_user(owner.with_suffix('.pub').read_text().strip())],
             'ssh_keys': {'ed25519_private': host.read_text(), 'ed25519_public': host.with_suffix('.pub').read_text().strip()},

@@ -154,7 +154,13 @@ arch = "arm64"
 extension = "tar.gz"
 
 [artifacts]
-evidence_paths = [".artifacts/security/rust-source.json", ".artifacts/independent-deployment/candidate-deployment.json", ".artifacts/independent-deployment/cleanup.json"]
+evidence_paths = [".artifacts/security/rust-source.json"]
+native_e2e_evidence_paths = [
+    ".artifacts/independent-deployment/candidate-deployment.json",
+    ".artifacts/independent-deployment/candidate-performance.json",
+    ".artifacts/independent-deployment/candidate-onboarding.json",
+    ".artifacts/independent-deployment/cleanup.json",
+]
 
 [lint]
 shell_paths = ["install.sh", "tests/acceptance/cold-client.sh"]
@@ -193,6 +199,11 @@ path = "tests/acceptance"
 pattern = "test_native_packages.py"
 
 [[tests.unit]]
+runner = "python-unittest"
+path = "tests/acceptance"
+pattern = "test_native_job_preparation.py"
+
+[[tests.integration]]
 runner = "python"
 path = "tests/acceptance/native-root-tests.py"
 timeout = 900
