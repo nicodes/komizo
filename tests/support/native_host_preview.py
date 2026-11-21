@@ -26,7 +26,7 @@ def projected(document,instance):
     return value
 
 
-def prepare(report):
+def prepare(report, *, source_candidate=False):
     # Owner-controlled orphan refusal/repair below must not race the independent
     # periodic expiry service for the same nonblocking instance lock. Exercise
     # that shipped scheduler separately on the final fresh preview.
@@ -102,25 +102,34 @@ def prepare(report):
     refused=runtime.submit(runtime.request('pgbox','deploy',registry.digest(registry.canonical(unsafe)),instance='pr-8',
         release=unsafe,ttl_seconds=60))
     if refused.get('kind')!='komizo.error':raise ValueError('preview selected an unapproved route hostname')
-    # A similarly named but unrecorded object is never included in owned expiry.
-    namespace='kmz-'+hashlib.sha256(b'pgbox\0pr-7').hexdigest()[:20]
-    foreign='borrowed-'+namespace+'-foreign';orphan=namespace+'-unrecorded'
-    for name in [foreign,orphan]:
-        if run(['podman','--remote=false','volume','exists',name],ok=False).returncode!=1:
-            raise ValueError('preview fixture cannot borrow an existing foreign volume')
-        run(['podman','--remote=false','volume','create',name])
-    orphan_record=json.loads(run(['podman','--remote=false','volume','inspect',orphan]).stdout)[0]
     report['preview']={'instance':instance,'release_digest':identity,'expires_at':value['expires_at'],
         'volume':preview_volume['name'],'volume_record':preview_volume,'network_names':[record['name'] for record in value['resources']['networks'].values()],
-        'production_volume':production_volume['name'],'foreign_volume':foreign,
-        'namespace_orphan':orphan,'orphan_created_at':orphan_record['CreatedAt']}
+        'production_volume':production_volume['name']}
+    if not source_candidate:
+        # The full release trial exercises manual refusal of unrecorded storage.
+        namespace='kmz-'+hashlib.sha256(b'pgbox\0pr-7').hexdigest()[:20]
+        foreign='borrowed-'+namespace+'-foreign';orphan=namespace+'-unrecorded'
+        for name in [foreign,orphan]:
+            if run(['podman','--remote=false','volume','exists',name],ok=False).returncode!=1:
+                raise ValueError('preview fixture cannot borrow an existing foreign volume')
+            run(['podman','--remote=false','volume','create',name])
+        orphan_record=json.loads(run(['podman','--remote=false','volume','inspect',orphan]).stdout)[0]
+        report['preview'].update(foreign_volume=foreign, namespace_orphan=orphan, orphan_created_at=orphan_record['CreatedAt'])
     report['checks'].update({'preview_full_postgresql_namespace':'passed','preview_data_independence':'passed','preview_credential_independence':'passed',
         'preview_protected_readiness':'passed','preview_instance_limit_refused':'passed','preview_hostname_authority':'passed',
         'capacity_refusal_before_preview_credentials':'passed',
         'preview_production_tcp_refused':'passed'})
 
 
-def expire(report):
+def expire(report, *, source_candidate=False):
+    if source_candidate:
+        preview=report['preview']
+        scheduled_expiry(preview)
+        for kind,name in [('volume',preview['volume']), *[('network',name) for name in preview['network_names']]]:
+            if run(['podman','--remote=false',kind,'exists',name],ok=False).returncode!=1:
+                raise ValueError('scheduled expiry did not remove the recorded preview '+kind)
+        report['checks'].update(preview_real_ttl_expiry='passed', preview_owned_cleanup='passed', preview_scheduled_ttl_expiry='passed')
+        return
     preview=report['preview'];deadline=time.monotonic()+125
     while int(time.time())<=preview['expires_at']:
         if time.monotonic()>deadline:raise ValueError('preview did not reach its bounded real TTL')
@@ -188,6 +197,13 @@ def expire(report):
     identity,repaired=deploy(document)
     if not repaired.get('ok') or repaired.get('phase')!='ready' or postgres.query('SELECT count(*) FROM evidence',preview['instance'])!=b'1':
         raise ValueError('scoped failed-preview removal did not release its data and reconciliation fences: '+json.dumps(repaired))
+    scheduled_expiry(preview)
+    report['checks'].update({'preview_removed_start_refused':'passed','preview_fresh_graph_after_expiry':'passed',
+        'preview_reopen_initialization_once':'passed','failed_preview_scoped_remove':'passed','failed_preview_fresh_redeploy':'passed',
+        'preview_scheduled_ttl_expiry':'passed'})
+
+
+def scheduled_expiry(preview):
     expires=installed(preview['instance'])['expires_at']
     run(['rc-service','komizo-expiry','start'])
     if not service_active('komizo-expiry'):
@@ -204,6 +220,3 @@ def expire(report):
     if service_pid('komizo-expiry')!=expiry_pid:
         raise ValueError('expiry removed the graph only after its independent loop was replaced')
     run(['podman','--remote=false','volume','inspect',preview['production_volume']])
-    report['checks'].update({'preview_removed_start_refused':'passed','preview_fresh_graph_after_expiry':'passed',
-        'preview_reopen_initialization_once':'passed','failed_preview_scoped_remove':'passed','failed_preview_fresh_redeploy':'passed',
-        'preview_scheduled_ttl_expiry':'passed'})

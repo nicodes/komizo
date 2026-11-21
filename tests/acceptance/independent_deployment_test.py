@@ -38,7 +38,7 @@ def main():
             for name in ['functional','bounded']:
                 guest=observations/name;outputs.append(guest)
                 profiles[name]=lifecycle.native_run(args.host.absolute(),args.proxy_binary.absolute(),args.proxy_receipt.absolute(),args.binary.absolute(),
-                    name,guest,args.source,deadline)
+                    name,guest,args.source,deadline,source_candidate=True)
             result={'source':args.source,'accepted':True,'signed_release_acceptance':False,'github_credentials_present':False,
                 'candidate_cli':{'authenticated':False,'sha256':hashlib.sha256(read(args.binary)).hexdigest()},
                 'host_sha256':hashlib.sha256(read(args.host)).hexdigest(),'proxy_sha256':hashlib.sha256(read(args.proxy_binary)).hexdigest(),'profiles':profiles}

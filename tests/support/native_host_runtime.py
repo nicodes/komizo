@@ -603,13 +603,15 @@ def apparmor_boundary(app,report):
         'apparmor_foreign_profile_signal_refused':'passed','apparmor_host_signal_refused':'passed','apparmor_root_helper_default':'passed'})
 
 
-def failures(report):
-    bad=release('badjob','a'*40,dynamic=True,job_command='echo accepted >> /data/count; exit 7')
-    _,result=deploy(bad)
-    if result.get('phase')!='needs_reconciliation' or result.get('ok') is not False or count('badjob')!=1:
-        raise ValueError('failed data job was not durably fenced')
-    _,refused=deploy(bad)
-    if refused.get('kind')!='komizo.error' or count('badjob')!=1:raise ValueError('failed data job was replayed')
+def failures(report, *, source_candidate=False):
+    if not source_candidate:
+        bad=release('badjob','a'*40,dynamic=True,job_command='echo accepted >> /data/count; exit 7')
+        _,result=deploy(bad)
+        if result.get('phase')!='needs_reconciliation' or result.get('ok') is not False or count('badjob')!=1:
+            raise ValueError('failed data job was not durably fenced')
+        _,refused=deploy(bad)
+        if refused.get('kind')!='komizo.error' or count('badjob')!=1:raise ValueError('failed data job was replayed')
+        report['checks']['failed_job_no_replay']='passed'
     hanging=release('hungjob','a'*40,dynamic=True,
         job_command='echo accepted >> /data/count; /bin/busybox sleep 30; echo late > /data/interrupted-late')
     enroll_empty(hanging)
@@ -671,10 +673,12 @@ def failures(report):
             'outcome':'bounded_running_job' if (mount/'deadline-started').exists() else 'refused_before_job_effects',
             'late_write_present':(mount/'deadline-late').exists()})
     if (mount/'deadline-late').exists():raise ValueError('native job wrote retained data after its operation deadline')
-    _,unsafe=deploy(release('unsafe','a'*40,unsafe=True))
-    if unsafe.get('phase')!='failed' or unsafe.get('ok') is not False:raise ValueError('unsafe archive reached activation')
-    report['checks'].update({'failed_job_no_replay':'passed','interrupted_job_no_replay':'passed','interrupted_job_native_deadline':'passed','worker_deadline':'passed',
-        'worker_deadline_stops_job':'passed','unsafe_archive':'passed'})
+    if not source_candidate:
+        _,unsafe=deploy(release('unsafe','a'*40,unsafe=True))
+        if unsafe.get('phase')!='failed' or unsafe.get('ok') is not False:raise ValueError('unsafe archive reached activation')
+        report['checks']['unsafe_archive']='passed'
+    report['checks'].update({'interrupted_job_no_replay':'passed','interrupted_job_native_deadline':'passed','worker_deadline':'passed',
+        'worker_deadline_stops_job':'passed'})
 
 
 @contextmanager
@@ -867,9 +871,13 @@ def removed_asset_cache_restart(production):
 
 
 def prepare():
-    if json.loads((ROOT/'profile.json').read_text())['profile']=='bounded':return bounded_prepare()
+    profile=json.loads((ROOT/'profile.json').read_text())
+    if profile['profile']=='bounded':return bounded_prepare()
+    source_candidate=profile.get('source_candidate') is True
     setup_registry()
-    for app in ['staticbox','mailroom','livebox','badjob','hungjob','deadline','unsafe']:host_policy(app)
+    apps=['staticbox','mailroom','livebox','hungjob','deadline']
+    if not source_candidate:apps.extend(['badjob','unsafe'])
+    for app in apps:host_policy(app)
     static=release('staticbox','a'*40)
     static['workload']['assets']['web']['serving']['header_rules']=[{'paths':['/'],'methods':['HEAD'],
         'headers':{'Strict-Transport-Security':'max-age=600; includeSubDomains'}}]
@@ -933,10 +941,10 @@ def prepare():
     fixture_postgres.prepare(report)
     write(ROOT/'report.json',report)
     import fixture_preview
-    fixture_preview.prepare(report)
+    fixture_preview.prepare(report,source_candidate=source_candidate)
     write(ROOT/'report.json',report)
     fixture_postgres.stop()
-    failures(report)
+    failures(report,source_candidate=source_candidate)
     write(ROOT/'report.json',report)
     import fixture_secrets
     fixture_secrets.prepare(report)
@@ -946,7 +954,7 @@ def prepare():
     write(ROOT/'report.json',report)
     resource_stress(report)
     write(ROOT/'report.json',report)
-    fixture_preview.expire(report)
+    fixture_preview.expire(report,source_candidate=source_candidate)
     fixture_tasks.stop('native-fixture-registry')
     report['runtime_acceptance']=False
     report['remaining']=['small-host capacity acceptance']
@@ -975,8 +983,10 @@ def verify_reboot():
     for container in record['resources']['containers'].values():
         info=run(['podman','--remote=false','container','inspect',container['name']],ok=False)
         if info.returncode==0 and json.loads(info.stdout)[0]['State']['Running']:raise ValueError('stopped application ran after real reboot')
-    if 'failed_job_no_replay' in report['checks']:
-        for application in ['badjob','hungjob']:
+    if 'interrupted_job_no_replay' in report['checks']:
+        applications=['hungjob']
+        if 'failed_job_no_replay' in report['checks']:applications.append('badjob')
+        for application in applications:
             if count(application)!=1:raise ValueError('data job replayed during a real reboot')
             record=installed(application)['resources']['containers']['api']
             info=run(['podman','--remote=false','container','inspect',record['name']],ok=False)

@@ -129,18 +129,25 @@ class AcceptanceGuards(unittest.TestCase):
                 'checks':{name:'passed' for name in required},'private_transcript':'never-export'}
                 for profile,required in [('functional',CANDIDATE_STEPS),('bounded',BOUNDED_STEPS)]}
             for report in reports.values():report['checks']['private_diagnostic']='never-export'
-            def project(profile,report,label):
+            def project(profile,report,label,*,source_candidate=True):
                 output=root/label;output.mkdir();(output/'report.json').write_text(json.dumps(report))
                 with patch.object(lifecycle,'virtualization'),patch.object(lifecycle.subprocess,'run') as launch:
                     closed=lifecycle.native_run(root/'host',root/'proxy',root/'receipt',root/'cli',
-                        profile,output,self.source,time.monotonic()+5)
+                        profile,output,self.source,time.monotonic()+5,source_candidate=source_candidate)
                 self.assertTrue(launch.call_args.kwargs['check'])
+                self.assertEqual('--source-candidate' in launch.call_args.args[0], source_candidate)
                 self.assertEqual(launch.call_args.kwargs['env']['NATIVE_HOST_SOURCE'],self.source)
                 self.assertNotIn('never-export',json.dumps(closed))
                 return closed
             profiles={name:project(name,report,name) for name,report in reports.items()}
             for step in JOB_PREPARATION_STEPS:self.assertEqual(profiles['bounded']['checks'].get(step),'passed')
-            args=self.args();args[0]['profiles']=profiles;self.assertTrue(validate(*args))
+            args=self.args();args[0]['profiles']=profiles
+            with self.assertRaisesRegex(ValueError,'functional source controls are incomplete'):
+                validate(*args)
+            release_functional=copy.deepcopy(reports['functional'])
+            release_functional['checks'].update({step:'passed' for step in REQUIRED_STEPS-CANDIDATE_STEPS})
+            release_profiles=dict(profiles,functional=project('functional',release_functional,'release',source_candidate=False))
+            args=self.args();args[0]['profiles']=release_profiles;self.assertTrue(validate(*args))
             result={'source':self.source,'accepted':True,'signed_release_acceptance':False,
                 'github_credentials_present':False,'candidate_cli':{'authenticated':False,'sha256':self.native['cli_sha256']},
                 'host_sha256':self.native['host_sha256'],'proxy_sha256':self.native['proxy_sha256'],'profiles':profiles}
@@ -157,7 +164,7 @@ class AcceptanceGuards(unittest.TestCase):
                     else:report['checks'][step]='failed'
                     closed=project('bounded',report,step+'-'+outcome)
                     self.assertEqual(closed['checks'].get(step),None if outcome=='missing' else 'failed')
-                    args=self.args();args[0]['profiles']=dict(profiles,bounded=closed)
+                    args=self.args();args[0]['profiles']=dict(release_profiles,bounded=closed)
                     with self.subTest(step=step,outcome=outcome),self.assertRaises(ValueError):validate(*args)
                     result['profiles']=dict(profiles,bounded=closed)
                     (observations/'candidate-deployment.json').write_text(json.dumps(result))

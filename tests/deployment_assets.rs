@@ -14,6 +14,9 @@ fn archive(entries: &[(&str, &[u8], tar::EntryType)], trailer: bool) -> Vec<u8> 
         h.set_mode(0o777);
         h.set_uid(1234);
         h.set_gid(1234);
+        if kind.is_symlink() {
+            h.set_link_name("/outside").unwrap();
+        }
         h.set_cksum();
         tar.append_data(&mut h, *name, *bytes).unwrap();
     }

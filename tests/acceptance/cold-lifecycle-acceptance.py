@@ -41,7 +41,7 @@ def virtualization(deadline):
     if not os.access('/dev/kvm',os.R_OK|os.W_OK):subprocess.run(['sudo','setfacl','-m','u:'+str(os.getuid())+':rw','/dev/kvm'],check=True,timeout=acl_budget)
 
 
-def native_run(binary,proxy,receipt,cli,profile,output,source,deadline):
+def native_run(binary,proxy,receipt,cli,profile,output,source,deadline,*,source_candidate=False):
     # Device ACLs can be refreshed between independent guest lifetimes.
     # Re-establish this trial's actual KVM precondition within the same deadline.
     virtualization(deadline)
@@ -49,7 +49,8 @@ def native_run(binary,proxy,receipt,cli,profile,output,source,deadline):
     environment={key:value for key,value in os.environ.items() if key not in {'GH_TOKEN','GITHUB_TOKEN','MISE_GITHUB_TOKEN','SSH_AUTH_SOCK'}}
     environment['NATIVE_HOST_SOURCE']=source
     subprocess.run([sys.executable,'-I','-B',str(ROOT/'tests/support/native_host_vm.py'),'--binary',str(binary),
-        '--proxy-binary',str(proxy),'--proxy-receipt',str(receipt),'--cli',str(cli),'--profile',profile,'--output',str(output)],
+        '--proxy-binary',str(proxy),'--proxy-receipt',str(receipt),'--cli',str(cli),'--profile',profile,'--output',str(output),
+        *(['--source-candidate'] if source_candidate else [])],
         env=environment,check=True,timeout=guest_budget)
     report=json.loads((output/'report.json').read_bytes())
     if report.get('ok') is not True:raise ValueError('real native guest did not complete acceptance')
