@@ -1463,7 +1463,7 @@ fn stage(store: &Store, policy: &Policy, document: &ReleaseDocument, job: &Job) 
             }
         }
         let staging_bytes = match artifact {
-            Artifact::Image { .. } => policy.max_image_bytes.checked_mul(3),
+            Artifact::Image { .. } => capacity::image_disk_allowance(policy.max_image_bytes),
             Artifact::Archive { size_bytes, .. } => size_bytes.checked_add(policy.max_asset_bytes),
         }
         .ok_or_else(|| anyhow!("staging bound overflow"))?;
@@ -1477,7 +1477,15 @@ fn stage(store: &Store, policy: &Policy, document: &ReleaseDocument, job: &Job) 
         match artifact {
             Artifact::Image { config_digest, .. } => {
                 registry.image_archive(&manifest, artifact, &file, policy)?;
-                engine.import(&file, config_digest)?;
+                // Registry scratch is gone. The archive is still on disk, so
+                // measure available space again before Podman extracts layers.
+                let imported =
+                    capacity::disk(&store.root, capacity.disk_reserve_bytes, staging_bytes)
+                        .and_then(|()| engine.import(&file, config_digest));
+                let cleaned = fs::remove_file(&file);
+                imported?;
+                cleaned?;
+                continue;
             }
             Artifact::Archive {
                 digest, size_bytes, ..

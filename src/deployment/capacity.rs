@@ -281,6 +281,24 @@ pub fn release(store: &Store, application: &str, instance: &str) -> Result<()> {
     atomic(&path, &serde_json::to_vec(&records)?, 0o600)
 }
 
+pub fn image_disk_allowance(image_limit: u64) -> Option<u64> {
+    // Staging keeps the compressed blobs and the OCI archive concurrently.
+    // Import keeps an unpacked copy of the OCI archive and expands its layers.
+    // Allow additional space for the archive headers and filesystem metadata.
+    image_limit
+        .checked_mul(2)?
+        .checked_add((1 << 20).min(image_limit))
+}
+
+#[cfg(test)]
+#[test]
+fn image_disk_allowance_counts_two_live_copies_and_metadata() {
+    let gib = 1 << 30;
+    assert_eq!(image_disk_allowance(gib), Some(2 * gib + (1 << 20)));
+    assert_eq!(image_disk_allowance(512), Some(1536));
+    assert!(image_disk_allowance(u64::MAX / 2).is_none());
+}
+
 pub fn disk(path: &Path, reserve: u64, staging: u64) -> Result<()> {
     let encoded = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())?;
     let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
