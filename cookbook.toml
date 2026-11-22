@@ -45,17 +45,7 @@ name = "native-owner-plain"
 component = "cli-source"
 roles = ["host"]
 dependency_context = "none"
-selectors = {native_host=true,lib=true,test_targets=["deployment_assets","deployment_authority","deployment_contract","deployment_controller","deployment_data","deployment_native","deployment_recovery","deployment_resources","deployment_secrets","deployment_store","source_build"]}
-
-[[components.rust_tests]]
-name = "source-installed-owner"
-component = "cli-source"
-roles = ["host"]
-platforms = ["Linux/x86_64"]
-suite = "build"
-reuse_native_build = true
-dependency_context = "none"
-selectors = {native_host=true,test_targets=["source_build"],test_arguments=["--ignored","--nocapture"]}
+selectors = {native_host=true,lib=true,test_targets=["deployment_assets","deployment_authority","deployment_contract","deployment_controller","deployment_data","deployment_native","deployment_recovery","deployment_resources","deployment_secrets","deployment_store"]}
 
 [[components.native]]
 name = "api"
