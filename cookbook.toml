@@ -238,6 +238,7 @@ acceptance_timeout = 55
 attestation_platforms = ["Linux/x86_64", "Linux/arm64", "Darwin/x86_64", "Darwin/arm64"]
 
 [publication.acceptance]
+owns_e2e = true
 files = ["komizo-acceptance.json", "komizo-performance.json"]
 diagnostics = ["cleanup-status.json", "status.json"]
 
