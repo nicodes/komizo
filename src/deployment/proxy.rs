@@ -3,7 +3,7 @@ use super::{
     engine::Engine,
     model::*,
     render,
-    store::{self, Installed, Store},
+    store::{self, Installed, Operation, Store},
     system,
     validation::*,
 };
@@ -154,6 +154,37 @@ pub fn refresh_background(store: &Store, deadline: Instant) -> Result<()> {
     refresh_locked(store, deadline)
 }
 
+fn backup_preserved_installation(
+    store: &Store,
+    operation: &Operation,
+    installed: &Installed,
+) -> Result<bool> {
+    if operation.application != installed.application
+        || operation.instance != installed.instance
+        || operation.release_digest != installed.release_digest
+        || operation.previous_release_digest.as_ref() != Some(&installed.release_digest)
+    {
+        return Ok(false);
+    }
+    let journal = store.root.join("journal").join(&operation.operation_id);
+    let admission = crate::strict::value(
+        &store::read_protected(&journal.join("admission.json"), MAX_DOCUMENT_BYTES)?,
+        MAX_DOCUMENT_BYTES,
+    )?;
+    if admission["kind"] != "komizo.admission"
+        || admission["version"] != 1
+        || admission["operation_id"] != operation.operation_id.as_str()
+        || admission["action"] != "backup"
+    {
+        return Ok(false);
+    }
+    let previous = crate::strict::value(
+        &store::read_protected(&journal.join("previous.json"), MAX_DOCUMENT_BYTES)?,
+        MAX_DOCUMENT_BYTES,
+    )?;
+    Ok(previous == serde_json::to_value(installed)?)
+}
+
 fn refresh_locked(store: &Store, deadline: Instant) -> Result<()> {
     system::reconcile_framework_units(store, "platform", "proxy")?;
     let engine = Engine { deadline };
@@ -163,7 +194,12 @@ fn refresh_locked(store: &Store, deadline: Instant) -> Result<()> {
         if store
             .unresolved(&installed.application, &installed.instance)?
             .iter()
-            .any(|op| op.reconciliation_required)
+            .any(|op| {
+                // Backup uncertainty still blocks mutations. Existing routes
+                // may serve after the unchanged installation is reobserved.
+                op.reconciliation_required
+                    && !backup_preserved_installation(store, op, &installed).unwrap_or(false)
+            })
         {
             continue;
         }
@@ -376,6 +412,51 @@ mod observation_tests {
         let metadata = json!({"State":{"Running":true},"NetworkSettings":{"Networks":{"owned-network":{"IPAddress":"10.42.0.5"}}}});
         (installed, document, metadata)
     }
+    #[test]
+    fn only_a_bound_backup_with_an_unchanged_installation_preserves_routes() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::new(directory.path().join("state")).unwrap();
+        let (mut installed, _, _) = fixture();
+        let operation = Operation {
+            kind: "komizo.operation".into(),
+            version: 1,
+            operation_id: "4".repeat(32),
+            application: installed.application.clone(),
+            instance: installed.instance.clone(),
+            release_digest: installed.release_digest.clone(),
+            phase: "needs_reconciliation".into(),
+            ok: false,
+            previous_release_digest: Some(installed.release_digest.clone()),
+            reconciliation_required: true,
+            backup: None,
+        };
+        let journal = store.root.join("journal").join(&operation.operation_id);
+        store::protected_directory(&journal).unwrap();
+
+        let mut admission = json!({"kind":"komizo.admission", "version":1,
+            "operation_id":operation.operation_id, "action":"backup"});
+        let write = |name: &str, value: &serde_json::Value| {
+            store::atomic(
+                &journal.join(name),
+                &serde_json::to_vec(value).unwrap(),
+                0o600,
+            )
+            .unwrap();
+        };
+        write("admission.json", &admission);
+        assert!(backup_preserved_installation(&store, &operation, &installed).is_err());
+        write("previous.json", &serde_json::to_value(&installed).unwrap());
+        assert!(backup_preserved_installation(&store, &operation, &installed).unwrap());
+
+        admission["action"] = json!("deploy");
+        write("admission.json", &admission);
+        assert!(!backup_preserved_installation(&store, &operation, &installed).unwrap());
+        admission["action"] = json!("backup");
+        write("admission.json", &admission);
+        installed.resources.containers.get_mut("api").unwrap().id = "5".repeat(64);
+        assert!(!backup_preserved_installation(&store, &operation, &installed).unwrap());
+    }
+
     #[test]
     fn repeated_route_targets_share_one_fresh_observation_per_call() {
         let (installed, document, value) = fixture();
