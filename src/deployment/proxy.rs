@@ -415,7 +415,7 @@ mod observation_tests {
     #[test]
     fn only_a_bound_backup_with_an_unchanged_installation_preserves_routes() {
         let directory = tempfile::tempdir().unwrap();
-        let store = Store::new(directory.path().join("state")).unwrap();
+        let store = Store::new(directory.path().canonicalize().unwrap().join("state")).unwrap();
         let (mut installed, _, _) = fixture();
         let operation = Operation {
             kind: "komizo.operation".into(),
