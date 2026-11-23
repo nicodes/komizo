@@ -6,6 +6,7 @@ name: Dependency policy
   workflow_run:
     workflows: [Build and test]
     types: [completed]
+    branches: ['dependabot/**', 'dependabot-*', 'dependabot_*']
   workflow_dispatch: {}
   schedule:
     - cron: '4 6 * * *'
@@ -13,13 +14,14 @@ permissions: {}
 jobs:
   request:
     name: Review dependencies
-    uses: nicodes/cookbook/.github/workflows/dependency-policy.yml@59a15ce2940b1ec2b790f333ca9d0c0b1c1be56a
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request'
+    uses: nicodes/cookbook/.github/workflows/dependency-policy.yml@4c2fb54b5a1fea02173ff0ab6cdcca4f53664daf
     permissions:
-      contents: read
+      contents: write
       pull-requests: read
       actions: write
       checks: read
       statuses: read
     with:
-      cookbook-ref: 59a15ce2940b1ec2b790f333ca9d0c0b1c1be56a
+      cookbook-ref: 4c2fb54b5a1fea02173ff0ab6cdcca4f53664daf
       runner: ubuntu-24.04
