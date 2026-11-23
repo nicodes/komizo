@@ -815,7 +815,7 @@ impl Policy {
             workflows,
             reference,
             environment,
-            publisher_workflows,
+            ..
         } = &self.authority
         {
             ensure!(
@@ -828,18 +828,6 @@ impl Policy {
                     && safe_text(environment, 128)
                     && !workflows.is_empty()
                     && workflows.len() <= 32
-                    && workflows
-                        .keys()
-                        .filter(|a| a.ends_with("deploy"))
-                        .all(|a| publisher_workflows.contains_key(a))
-                    && publisher_workflows
-                        .iter()
-                        .all(|(action, w)| workflows.contains_key(action)
-                            && action.ends_with("deploy")
-                            && w.rsplit_once('@').is_some_and(|(path, revision)| path
-                                .contains("/.github/workflows/")
-                                && safe_text(path, 512)
-                                && hex(revision, 40)))
                     && workflows.iter().all(|(a, callers)| name(a)
                         && !callers.is_empty()
                         && callers.len() <= 8

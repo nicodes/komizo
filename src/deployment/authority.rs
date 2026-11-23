@@ -202,7 +202,6 @@ fn check_workflow(
     claims: &Value,
     repository: &str,
     repository_id: &str,
-    workflow: &str,
     reference: &str,
     environment: Option<&str>,
     preview: bool,
@@ -210,7 +209,6 @@ fn check_workflow(
     ensure!(
         string(claims, "repository") == repository
             && string(claims, "repository_id") == repository_id
-            && string(claims, "workflow_ref") == workflow
             && string(claims, "ref") == reference
             && hex(string(claims, "workflow_sha"), 40)
             && hex(string(claims, "sha"), 40)
@@ -223,7 +221,7 @@ fn check_workflow(
                 string(claims, "event_name"),
                 "push" | "workflow_dispatch" | "pull_request_target" | "schedule"
             ) || (preview && string(claims, "event_name") == "issue_comment")),
-        "request is outside approved repository and workflow authority"
+        "request is outside approved repository, reference and environment authority"
     );
     if let Some(environment) = environment {
         ensure!(
@@ -462,7 +460,7 @@ pub fn admit(
                 workflows,
                 reference,
                 environment,
-                publisher_workflows,
+                ..
             } = &policy.authority
             else {
                 return Err(anyhow!("host policy does not admit GitHub authority"));
@@ -483,19 +481,10 @@ pub fn admit(
                 now,
                 key,
             )?;
-            let workflow = if request.action == "inspect" {
-                workflows
-                    .values()
-                    .flatten()
-                    .find(|workflow| string(&claims, "workflow_ref") == *workflow)
-            } else {
-                workflows.get(&scope).and_then(|callers| {
-                    callers
-                        .iter()
-                        .find(|workflow| string(&claims, "workflow_ref") == *workflow)
-                })
-            }
-            .ok_or_else(|| anyhow!("action has no approved workflow identity"))?;
+            ensure!(
+                request.action == "inspect" || workflows.contains_key(&scope),
+                "action is not admitted by host policy"
+            );
             let environment = if request.instance == "production" {
                 environment
             } else {
@@ -509,7 +498,6 @@ pub fn admit(
                 &claims,
                 repository,
                 repository_id,
-                workflow,
                 reference,
                 Some(environment),
                 request.instance != "production",
@@ -541,9 +529,6 @@ pub fn admit(
                     );
                 }
                 {
-                    let publisher_workflow = publisher_workflows
-                        .get(&scope)
-                        .ok_or_else(|| anyhow!("release has no immutable publisher authority"))?;
                     let proof = request.release_proof.as_ref().ok_or_else(|| {
                         anyhow!("deployment requires independent selected-source release proof")
                     })?;
@@ -557,7 +542,7 @@ pub fn admit(
                             && proof.run_id.bytes().all(|b| b.is_ascii_digit())
                             && !proof.run_attempt.is_empty()
                             && proof.run_attempt.bytes().all(|b| b.is_ascii_digit())
-                            && proof.workflow_ref == *workflow
+                            && proof.workflow_ref == string(&claims, "workflow_ref")
                             && hex(&proof.workflow_sha, 40),
                         "invalid selected-source release proof"
                     );
@@ -569,7 +554,6 @@ pub fn admit(
                         &publisher,
                         repository,
                         repository_id,
-                        workflow,
                         reference,
                         Some(environment),
                         request.instance != "production",
@@ -581,10 +565,9 @@ pub fn admit(
                             && string(&publisher, "workflow_ref") == proof.workflow_ref
                             && string(&publisher, "workflow_sha") == proof.workflow_sha
                             && string(&publisher, "sha") == proof.workflow_sha
-                            && string(&publisher, "job_workflow_ref") == publisher_workflow
                             && string(&publisher, "run_id") == proof.run_id
                             && string(&publisher, "run_attempt") == proof.run_attempt,
-                        "release proof is outside approved publisher authority"
+                        "release proof is outside approved repository authority"
                     );
                 }
             }
