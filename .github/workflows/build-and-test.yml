@@ -25,13 +25,13 @@ concurrency:
 jobs:
   validate:
     name: Test
-    uses: nicodes/cookbook/.github/workflows/build-and-test-native.yml@4c2fb54b5a1fea02173ff0ab6cdcca4f53664daf
+    uses: nicodes/cookbook/.github/workflows/build-and-test-native.yml@7ecf567954c93802c0114e688b31f653d7d92452
     permissions:
       contents: read
       actions: read
       pull-requests: read
     with:
-      cookbook-ref: ${{ inputs.cookbook || '4c2fb54b5a1fea02173ff0ab6cdcca4f53664daf' }}
+      cookbook-ref: ${{ inputs.cookbook || '7ecf567954c93802c0114e688b31f653d7d92452' }}
       source: ${{ inputs.source || github.sha }}
       runner: ubuntu-24.04
       timeout-minutes: 110
@@ -45,7 +45,7 @@ jobs:
     steps:
       - name: Require the complete current source validation
         timeout-minutes: 1
-        uses: nicodes/cookbook/ci-result@4c2fb54b5a1fea02173ff0ab6cdcca4f53664daf
+        uses: nicodes/cookbook/ci-result@7ecf567954c93802c0114e688b31f653d7d92452
         with:
           event-name: ${{ github.event_name }}
           needs: ${{ toJSON(needs) }}
