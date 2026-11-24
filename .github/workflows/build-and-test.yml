@@ -72,26 +72,26 @@ jobs:
     steps:
       - name: Prepare
         timeout-minutes: 20
-        uses: nicodes/cookbook/prepare@b6e2098425d1403ad3640276c76acd83f2b8959f
+        uses: nicodes/cookbook/prepare@cfa5fe4222b25f58534314aff03da36eb0d3be59
         with:
-          cookbook-ref: ${{ inputs.cookbook || 'b6e2098425d1403ad3640276c76acd83f2b8959f' }}
+          cookbook-ref: ${{ inputs.cookbook || 'cfa5fe4222b25f58534314aff03da36eb0d3be59' }}
           source: ${{ inputs.source || github.sha }}
           target: ${{ matrix.target }}
       - name: Build
         timeout-minutes: ${{ matrix.timeout_minutes }}
-        uses: nicodes/cookbook/build@b6e2098425d1403ad3640276c76acd83f2b8959f
+        uses: nicodes/cookbook/build@cfa5fe4222b25f58534314aff03da36eb0d3be59
       - name: Test
         timeout-minutes: ${{ matrix.timeout_minutes }}
-        uses: nicodes/cookbook/test@b6e2098425d1403ad3640276c76acd83f2b8959f
+        uses: nicodes/cookbook/test@cfa5fe4222b25f58534314aff03da36eb0d3be59
       - name: Export native packet
         timeout-minutes: 15
-        uses: nicodes/cookbook/export-native@b6e2098425d1403ad3640276c76acd83f2b8959f
+        uses: nicodes/cookbook/export-native@cfa5fe4222b25f58534314aff03da36eb0d3be59
         with:
           entry: ${{ matrix.id }}
       - name: Finish
         if: always()
         timeout-minutes: 5
-        uses: nicodes/cookbook/finish@b6e2098425d1403ad3640276c76acd83f2b8959f
+        uses: nicodes/cookbook/finish@cfa5fe4222b25f58534314aff03da36eb0d3be59
         with:
           status: ${{ job.status }}
           entry: ${{ matrix.id }}
@@ -111,23 +111,23 @@ jobs:
     steps:
       - name: Prepare
         timeout-minutes: 20
-        uses: nicodes/cookbook/prepare@b6e2098425d1403ad3640276c76acd83f2b8959f
+        uses: nicodes/cookbook/prepare@cfa5fe4222b25f58534314aff03da36eb0d3be59
         with:
-          cookbook-ref: ${{ inputs.cookbook || 'b6e2098425d1403ad3640276c76acd83f2b8959f' }}
+          cookbook-ref: ${{ inputs.cookbook || 'cfa5fe4222b25f58534314aff03da36eb0d3be59' }}
           source: ${{ inputs.source || github.sha }}
           target: x86_64-unknown-linux-musl
       - name: Import native packets
         timeout-minutes: 15
-        uses: nicodes/cookbook/import-native@b6e2098425d1403ad3640276c76acd83f2b8959f
+        uses: nicodes/cookbook/import-native@cfa5fe4222b25f58534314aff03da36eb0d3be59
       - name: Build
         timeout-minutes: 170
-        uses: nicodes/cookbook/build@b6e2098425d1403ad3640276c76acd83f2b8959f
+        uses: nicodes/cookbook/build@cfa5fe4222b25f58534314aff03da36eb0d3be59
       - name: Test
         timeout-minutes: 170
-        uses: nicodes/cookbook/test@b6e2098425d1403ad3640276c76acd83f2b8959f
+        uses: nicodes/cookbook/test@cfa5fe4222b25f58534314aff03da36eb0d3be59
       - name: Finish
         if: always()
         timeout-minutes: 5
-        uses: nicodes/cookbook/finish@b6e2098425d1403ad3640276c76acd83f2b8959f
+        uses: nicodes/cookbook/finish@cfa5fe4222b25f58534314aff03da36eb0d3be59
         with:
           status: ${{ job.status }}
