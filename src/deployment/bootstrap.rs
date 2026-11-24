@@ -253,8 +253,34 @@ struct ProxyBuild {
     binary_sha256: String,
 }
 
-fn proxy_build(body: &[u8], platform: &str) -> Result<String> {
-    let value: ProxyBuild = serde_json::from_value(crate::strict::value(body, 16384)?)?;
+/// Receipt for the Caddy project's published release binary, admitted by pinned checksums.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProxyDownload {
+    kind: String,
+    version: u32,
+    platform: String,
+    caddy_version: String,
+    source_url: String,
+    archive_sha256: String,
+    binary_sha256: String,
+}
+
+const PROXY_RELEASE: &str = "https://github.com/caddyserver/caddy/releases/download/v2.11.6/";
+
+/// Returns the receipt's binary digest after checking the receipt kind it declares.
+/// Hosts installed before the move to published releases keep the source-build receipt.
+fn proxy_receipt_digest(body: &[u8], platform: &str) -> Result<String> {
+    let value = crate::strict::value(body, 16384)?;
+    match value.get("kind").and_then(serde_json::Value::as_str) {
+        Some("komizo.proxy-build") => proxy_build(value, platform),
+        Some("komizo.proxy-download") => proxy_download(value, platform),
+        _ => Err(anyhow!("proxy provenance has an unreviewed receipt kind")),
+    }
+}
+
+fn proxy_build(value: serde_json::Value, platform: &str) -> Result<String> {
+    let value: ProxyBuild = serde_json::from_value(value)?;
     ensure!(
         value.kind == "komizo.proxy-build"
             && value.version == 1
@@ -274,7 +300,28 @@ fn proxy_build(body: &[u8], platform: &str) -> Result<String> {
                 .values()
                 .all(|v| super::validation::digest(v))
             && super::validation::digest(&value.binary_sha256),
-        "proxy provenance differs from the reviewed compiler, source closure or native platform"
+        "proxy provenance differs from the reviewed native proxy build or published release"
+    );
+    Ok(value.binary_sha256)
+}
+
+fn proxy_download(value: serde_json::Value, platform: &str) -> Result<String> {
+    let value: ProxyDownload = serde_json::from_value(value)?;
+    let architecture = match platform {
+        "linux/amd64" => "amd64",
+        "linux/arm64" => "arm64",
+        _ => return Err(anyhow!("native proxy requires a reviewed Linux platform")),
+    };
+    ensure!(
+        value.kind == "komizo.proxy-download"
+            && value.version == 1
+            && value.platform == platform
+            && value.caddy_version == "2.11.6"
+            && value.source_url
+                == format!("{PROXY_RELEASE}caddy_2.11.6_linux_{architecture}.tar.gz")
+            && super::validation::digest(&value.archive_sha256)
+            && super::validation::digest(&value.binary_sha256),
+        "proxy provenance differs from the reviewed native proxy build or published release"
     );
     Ok(value.binary_sha256)
 }
@@ -328,7 +375,7 @@ pub fn proxy_guard() -> Result<()> {
     public_root_file(Path::new(PROXY_RECEIPT), 16384, 0o644)?
         .take(16385)
         .read_to_end(&mut body)?;
-    let expected = proxy_build(&body, platform)?;
+    let expected = proxy_receipt_digest(&body, platform)?;
     let mut binary = public_root_file(Path::new(PROXY_BINARY), 128 << 20, 0o755)?;
     let before = binary.metadata()?;
     ensure!(
@@ -1774,18 +1821,36 @@ mod tests {
         );
     }
 
-    #[test]
-    fn proxy_receipt_binds_the_closed_native_source_and_compiler_identity() {
-        let receipt = serde_json::json!({
+    fn build_receipt() -> serde_json::Value {
+        serde_json::json!({
             "kind":"komizo.proxy-build","version":1,"tools_revision":"a".repeat(40),
             "platform":"linux/amd64","go_version":"1.27.4","caddy_version":"2.11.6",
             "source_sha256":{"caddy.go.mod":format!("sha256:{}","b".repeat(64)),
                 "caddy.go.sum":format!("sha256:{}","c".repeat(64)),
                 "caddy-build.sh":format!("sha256:{}","d".repeat(64))},
             "binary_sha256":format!("sha256:{}","e".repeat(64))
-        });
+        })
+    }
+
+    fn download_receipt(arch: &str) -> serde_json::Value {
+        serde_json::json!({
+            "kind":"komizo.proxy-download","version":1,"platform":format!("linux/{arch}"),
+            "caddy_version":"2.11.6",
+            "source_url":format!("https://github.com/caddyserver/caddy/releases/download/v2.11.6/caddy_2.11.6_linux_{arch}.tar.gz"),
+            "archive_sha256":format!("sha256:{}","a".repeat(64)),
+            "binary_sha256":format!("sha256:{}","b".repeat(64))
+        })
+    }
+
+    fn receipt_digest(receipt: &serde_json::Value, platform: &str) -> Result<String> {
+        proxy_receipt_digest(&serde_json::to_vec(receipt).unwrap(), platform)
+    }
+
+    #[test]
+    fn proxy_receipt_binds_the_closed_native_source_and_compiler_identity() {
+        let receipt = build_receipt();
         assert_eq!(
-            proxy_build(&serde_json::to_vec(&receipt).unwrap(), "linux/amd64").unwrap(),
+            receipt_digest(&receipt, "linux/amd64").unwrap(),
             receipt["binary_sha256"].as_str().unwrap()
         );
         for (field, replacement) in [
@@ -1801,7 +1866,90 @@ mod tests {
         ] {
             let mut changed = receipt.clone();
             changed[field] = replacement;
-            assert!(proxy_build(&serde_json::to_vec(&changed).unwrap(), "linux/amd64").is_err());
+            assert!(receipt_digest(&changed, "linux/amd64").is_err(), "{field}");
         }
+    }
+
+    #[test]
+    fn proxy_receipt_binds_the_published_release_for_each_native_platform() {
+        for arch in ["amd64", "arm64"] {
+            let receipt = download_receipt(arch);
+            assert_eq!(
+                receipt_digest(&receipt, &format!("linux/{arch}")).unwrap(),
+                receipt["binary_sha256"].as_str().unwrap()
+            );
+        }
+        let receipt = download_receipt("amd64");
+        assert!(receipt_digest(&receipt, "linux/arm64").is_err());
+        assert!(receipt_digest(&receipt, "linux/riscv64").is_err());
+        let release = "https://github.com/caddyserver/caddy/releases/download/";
+        for (field, replacement) in [
+            ("version", serde_json::json!(2)),
+            ("platform", serde_json::json!("linux/arm64")),
+            ("caddy_version", serde_json::json!("2.11.5")),
+            (
+                "source_url",
+                serde_json::json!("https://example.com/caddy_2.11.6_linux_amd64.tar.gz"),
+            ),
+            (
+                "source_url",
+                serde_json::json!(format!("{release}v2.11.6/caddy_2.11.6_linux_arm64.tar.gz")),
+            ),
+            (
+                "source_url",
+                serde_json::json!(format!("{release}v2.11.5/caddy_2.11.5_linux_amd64.tar.gz")),
+            ),
+            (
+                "source_url",
+                serde_json::json!(format!(
+                    "{release}v2.11.6/caddy_2.11.6_linux_amd64.tar.gz?x"
+                )),
+            ),
+            ("archive_sha256", serde_json::json!("a".repeat(64))),
+            ("archive_sha256", serde_json::json!("sha256:short")),
+            ("binary_sha256", serde_json::json!("b".repeat(64))),
+            (
+                "binary_sha256",
+                serde_json::json!(format!("sha256:{}", "B".repeat(64))),
+            ),
+        ] {
+            let mut changed = receipt.clone();
+            changed[field] = replacement;
+            assert!(receipt_digest(&changed, "linux/amd64").is_err(), "{field}");
+        }
+        let mut missing = receipt.clone();
+        missing.as_object_mut().unwrap().remove("archive_sha256");
+        assert!(receipt_digest(&missing, "linux/amd64").is_err());
+    }
+
+    #[test]
+    fn proxy_receipt_kinds_never_mix_fields_or_accept_unknown_fields() {
+        let download = download_receipt("amd64");
+        let mut extra = download.clone();
+        extra["unexpected"] = serde_json::json!(true);
+        assert!(receipt_digest(&extra, "linux/amd64").is_err());
+        for (field, value) in [
+            ("go_version", serde_json::json!("1.27.4")),
+            ("tools_revision", serde_json::json!("a".repeat(40))),
+            ("source_sha256", serde_json::json!({})),
+        ] {
+            let mut mixed = download.clone();
+            mixed[field] = value;
+            assert!(receipt_digest(&mixed, "linux/amd64").is_err(), "{field}");
+        }
+        let mut build = build_receipt();
+        assert!(receipt_digest(&build, "linux/amd64").is_ok());
+        for field in ["source_url", "archive_sha256"] {
+            build[field] = download[field].clone();
+            assert!(receipt_digest(&build, "linux/amd64").is_err(), "{field}");
+        }
+        let mut crossed = download.clone();
+        crossed["kind"] = serde_json::json!("komizo.proxy-build");
+        assert!(receipt_digest(&crossed, "linux/amd64").is_err());
+        let mut unknown = download;
+        unknown["kind"] = serde_json::json!("komizo.proxy-other");
+        assert!(receipt_digest(&unknown, "linux/amd64").is_err());
+        assert!(proxy_receipt_digest(b"[]", "linux/amd64").is_err());
+        assert!(proxy_receipt_digest(b"{}", "linux/amd64").is_err());
     }
 }

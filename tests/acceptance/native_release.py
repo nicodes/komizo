@@ -21,6 +21,10 @@ SOURCE=re.compile(r'[a-f0-9]{40}\Z')
 TAG=re.compile(r'v[0-9]+\.[0-9]+\.[0-9]+\Z')
 
 
+def reviewed_baseline():
+    return json.loads(read(Path(__file__).resolve().parents[1]/'fixtures/native_host/baseline.json',65536),object_pairs_hook=unique)
+
+
 def unique(pairs):
     result={}
     for key,value in pairs:
@@ -106,12 +110,12 @@ def inventory(directory,source,release):
         if name in PROXIES:
             platform,machine=PROXIES[name];host_elf(raw,machine)
             receipt=json.loads(read(directory/(name+'.json'),65536),object_pairs_hook=unique)
-            baseline=json.loads(read(Path(__file__).resolve().parents[1]/'fixtures/native_host/baseline.json',65536),object_pairs_hook=unique)
-            if (not isinstance(receipt,dict) or type(receipt.get('version')) is not int
-                    or receipt!={'kind':'komizo.proxy-build','version':1,'tools_revision':baseline['proxy_tools_revision'],
-                    'platform':platform,'go_version':baseline['proxy_go_version'],'caddy_version':baseline['caddy_version'],
-                    'source_sha256':baseline['proxy_source_sha256'],'binary_sha256':'sha256:'+expected}):
-                raise ValueError('native proxy receipt differs from the independently reviewed source closure or compiler')
+            baseline=reviewed_baseline()
+            pin=baseline['proxy_release'][platform]
+            if (not isinstance(receipt,dict) or type(receipt.get('version')) is not int or pin['binary_sha256']!='sha256:'+expected
+                    or receipt!={'kind':'komizo.proxy-download','version':1,'platform':platform,'caddy_version':baseline['caddy_version'],
+                    'source_url':pin['source_url'],'archive_sha256':pin['archive_sha256'],'binary_sha256':pin['binary_sha256']}):
+                raise ValueError('native proxy receipt differs from the independently reviewed published release')
     return result
 
 
