@@ -338,6 +338,16 @@ impl Store {
         Ok(())
     }
 
+    /// Whether any deploy, start, restart or backup on the host is still in a
+    /// non-terminal phase; the host is then expected to be under load.
+    pub fn host_busy(&self) -> Result<bool> {
+        for id in self.operation_ids()? {
+            if !self.operation(&id)?.terminal() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
     pub fn history(&self, application: &str, instance: &str) -> Result<Vec<String>> {
         let path = self.root.join("history").join(format!(
             "{}.json",

@@ -6,7 +6,12 @@ export type Operation = {
   backup?: {status: string; files?: {name: string; size_bytes: number; sha256: string}[]};
 };
 export type Resources = Record<string, unknown>;
-export type Service = {container_id?: string | null; state?: string | null; health?: string | null; resources?: Resources};
+export type Maintenance = {
+  outcome: string; stage?: string | null; error?: string | null; first_seen: number; last_seen: number;
+  count: number; not_running_since?: number | null; stuck: boolean;
+  stuck_reason?: string | null; restarts?: number[]; epoch?: string | null;
+};
+export type Service = {container_id?: string | null; state?: string | null; health?: string | null; resources?: Resources; maintenance?: Maintenance | null};
 export type Instance = {
   application: string; instance: string; release_digest: string; desired_running: boolean; removed?: boolean;
   operation_id: string; expires_at?: number | null;
