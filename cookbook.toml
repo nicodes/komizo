@@ -225,6 +225,7 @@ timeout = 1800
 
 [ci]
 timeout_minutes = 110
+single_job = true
 
 [clean]
 paths = ["dist", "target", ".artifacts/build", ".artifacts/rust-target", ".artifacts/native-package", ".artifacts/native-api", ".artifacts/native-host", ".artifacts/native-cli", ".artifacts/native-archives", ".artifacts/native-proxy", ".artifacts/advisory-db", ".artifacts/security", ".artifacts/ui", ".artifacts/independent-deployment", "app/node_modules"]

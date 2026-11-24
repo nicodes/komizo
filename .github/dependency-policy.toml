@@ -1,7 +1,7 @@
 version = 2
 mode = "auto"
 ci_workflow = "build-and-test.yml"
-required_checks = ["Build and test"]
+required_checks = ["Build and test (Linux-x86_64)", "Build and test (Linux-arm64)", "Build and test (Darwin-x86_64)", "Build and test (Darwin-arm64)", "Build and test (integration)"]
 max_group_size = 10
 managed_dependencies = ["nicodes/tools/*", "nicodes/komizo-actions/*", "aviorstudio/gdam-actions/*"]
 sensitive_dependencies = ["*argon2*", "*bcrypt*", "*clerk*", "*crypto*", "*drizzle*", "*jose*", "*jsonwebtoken*", "*migrate*", "*oauth*", "*openid*", "*passport*", "*pocketbase*", "*prisma*", "@noble/*", "github.com/go-sql-driver/mysql", "github.com/jackc/pgx/*", "github.com/nicodes/ghenv", "go.mongodb.org/mongo-driver/*", "modernc.org/sqlite"]
