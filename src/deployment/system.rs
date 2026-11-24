@@ -767,9 +767,46 @@ pub fn caddy_reload(deadline: Instant) -> Result<()> {
         ))?;
     ensure!(
         output.status.success(),
-        "proxy refused the staged serving configuration"
+        "{}",
+        reload_refusal(&output.status, &output.stderr)
     );
     Ok(())
+}
+
+/// Name the reload client's exit status and the tail of its stderr. The client
+/// prints the admin endpoint's own refusal last, after its routine adaptation
+/// lines, so the tail is the part that explains why the proxy said no.
+fn reload_refusal(status: &std::process::ExitStatus, stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let total = text.chars().count();
+    let tail = text
+        .chars()
+        .skip(total.saturating_sub(1536))
+        .filter(|c| !c.is_control() || *c == '\n')
+        .collect::<String>();
+    format!(
+        "proxy refused the staged serving configuration (reload {status}, admin socket present: {}): {}",
+        Path::new("/run/komizo-proxy/admin.sock").exists(),
+        tail.trim()
+    )
+}
+
+#[cfg(test)]
+mod reload_refusal_tests {
+    use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn refusal_keeps_the_status_and_the_stderr_tail_without_control_bytes() {
+        let status = std::process::ExitStatus::from_raw(1 << 8);
+        let mut stderr = "{\"level\":\"info\"}\n".repeat(400).into_bytes();
+        stderr.extend(b"{\"level\":\"error\",\"msg\":\"load failed\"}\x1b[0m\n");
+        let message = super::reload_refusal(&status, &stderr);
+        assert!(message.starts_with("proxy refused the staged serving configuration (reload "));
+        assert!(message.contains("exit status: 1"));
+        assert!(message.ends_with("\"msg\":\"load failed\"}[0m"));
+        assert!(message.len() < 1800);
+        assert!(!message.contains('\u{1b}'));
+    }
 }
 
 #[cfg(test)]
