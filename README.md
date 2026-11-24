@@ -16,7 +16,7 @@ curl -fsSL https://komizo.dev/install | sh
 
 The installer requires an authenticated GitHub CLI session for release attestation verification. It verifies the selected archive checksum and signing workflow, then atomically installs `komizo` to `~/.local/bin`. It starts no services.
 
-The four owner archives contain the workstation-native client and its embedded local Rust API/UI. Linux host executors and audited Caddy executables with build receipts are separate release assets. Host installation uses verified executable artifacts; it requires no source compiler on the server.
+The four owner archives contain the workstation-native client and its embedded local Rust API/UI. Linux host executors and the Caddy project's published release executables, with checksum-pinned download receipts, are separate release assets. Host installation uses verified executable artifacts; it requires no source compiler on the server.
 
 ## Operate a host
 
@@ -48,7 +48,7 @@ Request files can contain credentials. Keep them private. Requests travel over S
 
 The supported host baseline is Alpine Linux 3.24, Podman 5.8.10, OpenRC, a unified cgroup v2 hierarchy and enabled AppArmor. Komizo uses Podman's cgroupfs manager and crun, and installs its reviewed enforcing profiles. The executor requires enforced memory, CPU and PID controllers. Capacity policy accounts for measured RAM, CPU, storage, operating-system reserve, application pools, shared helpers and ingress.
 
-Install the verified `komizo-box` and native Caddy artifacts at their protected paths, including the matching Caddy build receipt. Prepare root-owned capacity, proxy and application policies under `/etc/komizo`. Then the owner installs the restricted submission boundary:
+Install the verified `komizo-box` and native Caddy artifacts at their protected paths, including the matching Caddy receipt. Hosts installed with the earlier source-build receipt keep verifying until their proxy is replaced. Prepare root-owned capacity, proxy and application policies under `/etc/komizo`. Then the owner installs the restricted submission boundary:
 
 ```sh
 komizo-box install --authorized-keys /absolute/path/submission-public-keys

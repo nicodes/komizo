@@ -2,7 +2,6 @@
 import copy
 import io
 import importlib.util
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -14,7 +13,6 @@ import tempfile
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
 from unittest import mock
 
 import native_release as release
@@ -59,11 +57,15 @@ class NativeRelease(unittest.TestCase):
             (self.root/(name+'.json')).write_text(json.dumps({'schema':1,'source':self.source,'version':self.tag[1:],
                 'kind':'host','platform':platform,'dependencies':{},'sha256':release.digest(raw)}))
         baseline=json.loads((Path(__file__).resolve().parents[1]/'fixtures/native_host/baseline.json').read_text())
+        pins=copy.deepcopy(baseline)
         for name,(platform,machine) in release.PROXIES.items():
             raw=elf(machine,name);(self.root/name).write_bytes(raw)
-            (self.root/(name+'.json')).write_text(json.dumps({'kind':'komizo.proxy-build','version':1,
-                'tools_revision':baseline['proxy_tools_revision'],'platform':platform,'go_version':baseline['proxy_go_version'],
-                'caddy_version':baseline['caddy_version'],'source_sha256':baseline['proxy_source_sha256'],'binary_sha256':'sha256:'+release.digest(raw)}))
+            pins['proxy_release'][platform]['binary_sha256']='sha256:'+release.digest(raw)
+            pin=pins['proxy_release'][platform]
+            (self.root/(name+'.json')).write_text(json.dumps({'kind':'komizo.proxy-download','version':1,'platform':platform,
+                'caddy_version':baseline['caddy_version'],'source_url':pin['source_url'],'archive_sha256':pin['archive_sha256'],
+                'binary_sha256':pin['binary_sha256']}))
+        patch=mock.patch.object(release,'reviewed_baseline',return_value=pins);patch.start();self.addCleanup(patch.stop)
         self.checksums()
 
     def checksums(self):
@@ -100,11 +102,11 @@ class NativeRelease(unittest.TestCase):
         archive(self.root/'komizo_Linux_x86_64.tar.gz',elf(62,'fixture'),link=True);self.checksums()
         with self.assertRaisesRegex(ValueError,'archive'):release.inventory(self.root,self.source,self.tag)
 
-    def test_checksum_closure_and_proxy_source_or_compiler_changes_refuse(self):
+    def test_checksum_closure_and_proxy_release_changes_refuse(self):
         path=self.root/'checksums.txt';saved=path.read_bytes();path.write_bytes(saved+b'0'*64+b'  ../unowned\n')
         with self.assertRaisesRegex(ValueError,'inventory'):release.inventory(self.root,self.source,self.tag)
         path.write_bytes(saved)
-        proxy=self.root/'caddy_Linux_x86_64.json';receipt=json.loads(proxy.read_text());receipt['go_version']='1.27.3'
+        proxy=self.root/'caddy_Linux_x86_64.json';receipt=json.loads(proxy.read_text());receipt['source_url']=receipt['source_url'].replace('v2.11.9','v2.11.6')
         proxy.write_text(json.dumps(receipt));self.checksums()
         with self.assertRaisesRegex(ValueError,'proxy receipt'):release.inventory(self.root,self.source,self.tag)
 
@@ -234,56 +236,6 @@ class NativeRelease(unittest.TestCase):
             actual=native.run([*owner.prefix,'/usr/bin/id','-u'],capture_output=True)
             self.assertEqual(int(actual.stdout),owner.uid)
             self.assertNotEqual(owner.uid,os.getuid())
-
-
-class ProxyAuditEvidence(unittest.TestCase):
-    def fixture(self):
-        spec=importlib.util.spec_from_file_location('proxy_audit_evidence',Path(__file__).parents[1]/'support/native_host_proxy.py')
-        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-        temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
-        root=Path(temporary.name);destination=root/'caddy_Linux_x86_64'
-        provenance={'tools_revision':'a'*40,'platform':'linux/amd64','go_version':'1.27.4','caddy_version':'2.11.6',
-            'source_sha256':{'caddy.go.mod':'sha256:'+'b'*64},'binary_sha256':'sha256:'+'c'*64}
-        return module,root,destination,provenance
-
-    def test_exact_fixed_compiler_identity_refuses_the_vulnerable_predecessor(self):
-        module,_,_,_=self.fixture()
-        info=('fixture: go1.27.4\n'
-            '\tpath\tgithub.com/caddyserver/caddy/v2/cmd/caddy\n'
-            '\tdep\tgithub.com/caddyserver/caddy/v2\tv2.11.6\th1:public-module-hash\n'
-            '\tbuild\tGOOS=linux\n\tbuild\tGOARCH=amd64\n'
-            '\tbuild\tCGO_ENABLED=0\n\tbuild\t-trimpath=true\n')
-        self.assertFalse(module.identity(info))
-        with self.assertRaisesRegex(ValueError,'compiler build identity'):
-            module.identity(info.replace('go1.27.4','go1.27.3'))
-
-    def test_blocked_linked_symbols_retain_original_public_report_without_binary_admission(self):
-        module,root,destination,provenance=self.fixture();report=b'{"finding":{"osv":"GO-2026-1234"}}'
-        with self.assertRaisesRegex(ValueError,'vulnerable linked symbols'):
-            module.audit_report(report,destination,provenance,lambda _: {'reached':['GO-2026-1234']})
-        saved=root/'security'/('caddy_Linux_x86_64.govulncheck.json')
-        self.assertEqual(saved.read_bytes(),report)
-        observation=json.loads(saved.with_name('caddy_Linux_x86_64.provenance.json').read_bytes())
-        self.assertIs(observation['accepted'],False);self.assertEqual(observation['binary_sha256'],provenance['binary_sha256'])
-        self.assertEqual(observation['report_sha256'],'sha256:'+hashlib.sha256(report).hexdigest())
-        self.assertFalse(destination.exists());self.assertFalse(destination.with_suffix('.json').exists())
-
-    def test_invalid_protocol_keeps_evidence_and_retention_itself_never_accepts_a_binary(self):
-        module,root,destination,provenance=self.fixture()
-        def refuse(_):raise ValueError('invalid vulnerability protocol')
-        with self.assertRaisesRegex(ValueError,'invalid vulnerability protocol'):
-            module.audit_report(b'not-json',destination,provenance,refuse)
-        self.assertEqual((root/'security/caddy_Linux_x86_64.govulncheck.json').read_bytes(),b'not-json')
-        self.assertFalse(destination.exists())
-
-    def test_size_foreign_fields_and_existing_evidence_refuse_without_judgment(self):
-        module,root,destination,provenance=self.fixture();judge=Mock()
-        for report,fields in [(b'x'*(16*1024*1024+1),provenance),(b'{}',{**provenance,'private_environment':'sentinel'})]:
-            with self.assertRaises(ValueError):module.audit_report(report,destination,fields,judge)
-        judge.assert_not_called();self.assertFalse((root/'security').exists())
-        module.audit_report(b'{}',destination,provenance,lambda _: {'reached':[]})
-        with self.assertRaises(ValueError):module.audit_report(b'changed',destination,provenance,judge)
-        judge.assert_not_called();self.assertEqual((root/'security/caddy_Linux_x86_64.govulncheck.json').read_bytes(),b'{}')
 
 
 if __name__=='__main__':unittest.main()

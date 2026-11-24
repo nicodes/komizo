@@ -737,18 +737,15 @@ def main():
     spec=importlib.util.spec_from_file_location('native_recovery_sources',ROOT/'tests/support/native_host_recovery.py')
     recovery=importlib.util.module_from_spec(spec);spec.loader.exec_module(recovery)
     sources=recovery.Sources(ROOT,args.cookbook_source,args.tools_source,source=os.environ.get('NATIVE_HOST_SOURCE',''),
-        repository_id=os.environ.get('GITHUB_REPOSITORY_ID',''),tools_revision=baseline['proxy_tools_revision'])
+        repository_id=os.environ.get('GITHUB_REPOSITORY_ID',''),tools_revision=baseline['tools_revision'])
     caddy=args.proxy_binary.absolute();proxy_receipt=args.proxy_receipt.absolute()
     for path,maximum in [(caddy,128<<20),(proxy_receipt,16384)]:
         if path.is_symlink() or not path.is_file() or not 0<path.stat().st_size<=maximum:raise ValueError('native host requires exact ordinary proxy outputs')
-    proxy_build=json.loads(proxy_receipt.read_bytes())
-    expected_keys={'kind','version','tools_revision','platform','go_version','caddy_version','source_sha256','binary_sha256'}
-    if (set(proxy_build)!=expected_keys or proxy_build['kind']!='komizo.proxy-build' or type(proxy_build['version']) is not int or proxy_build['version']!=1
-            or proxy_build['tools_revision']!=baseline['proxy_tools_revision'] or proxy_build['platform']!='linux/amd64'
-            or proxy_build['go_version']!=baseline['proxy_go_version'] or proxy_build['caddy_version']!=baseline['caddy_version']
-            or proxy_build['source_sha256']!=baseline['proxy_source_sha256']
-            or proxy_build['binary_sha256']!='sha256:'+hashlib.sha256(caddy.read_bytes()).hexdigest()):
-        raise ValueError('native proxy bytes differ from their reviewed source receipt')
+    proxy_build=json.loads(proxy_receipt.read_bytes());pin=baseline['proxy_release']['linux/amd64']
+    if (proxy_build!={'kind':'komizo.proxy-download','version':1,'platform':'linux/amd64','caddy_version':baseline['caddy_version'],
+            'source_url':pin['source_url'],'archive_sha256':pin['archive_sha256'],'binary_sha256':pin['binary_sha256']}
+            or type(proxy_build['version']) is not int or pin['binary_sha256']!='sha256:'+hashlib.sha256(caddy.read_bytes()).hexdigest()):
+        raise ValueError('native proxy bytes differ from their reviewed published release receipt')
     args.output.mkdir(parents=True, mode=0o700, exist_ok=False)
     with OwnedDirectory(args.output) as disposable:
         directory = disposable.path
