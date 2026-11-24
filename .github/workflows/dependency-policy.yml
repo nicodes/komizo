@@ -15,7 +15,7 @@ jobs:
   request:
     name: Review dependencies
     if: github.event_name != 'workflow_run' || github.event.workflow_run.event == 'pull_request'
-    uses: nicodes/cookbook/.github/workflows/dependency-policy.yml@dbda400c2f61cd957c4f81f2f7a318b93b79562e
+    uses: nicodes/cookbook/.github/workflows/dependency-policy.yml@b6e2098425d1403ad3640276c76acd83f2b8959f
     permissions:
       contents: write
       pull-requests: read
@@ -23,5 +23,5 @@ jobs:
       checks: read
       statuses: read
     with:
-      cookbook-ref: dbda400c2f61cd957c4f81f2f7a318b93b79562e
+      cookbook-ref: b6e2098425d1403ad3640276c76acd83f2b8959f
       runner: ubuntu-24.04
