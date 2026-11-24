@@ -22,9 +22,9 @@ jobs:
       contents: read
       actions: read
       pull-requests: read
-    uses: nicodes/cookbook/.github/workflows/prepare-cli-release.yml@07caf54ba1348836ce7a86009a02ed02a4af93e2
+    uses: nicodes/cookbook/.github/workflows/prepare-cli-release.yml@dbda400c2f61cd957c4f81f2f7a318b93b79562e
     with:
-      cookbook-ref: 07caf54ba1348836ce7a86009a02ed02a4af93e2
+      cookbook-ref: dbda400c2f61cd957c4f81f2f7a318b93b79562e
       bump: ${{ inputs.bump }}
       runner: ubuntu-24.04
       timeout-minutes: 110
@@ -42,7 +42,7 @@ jobs:
       artifact: ${{ steps.accepted.outputs.artifact-id }}
     env:
       SOURCE_SHA: ${{ github.sha }}
-      COOKBOOK_SHA: 07caf54ba1348836ce7a86009a02ed02a4af93e2
+      COOKBOOK_SHA: dbda400c2f61cd957c4f81f2f7a318b93b79562e
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -67,13 +67,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: nicodes/cookbook
-          ref: 07caf54ba1348836ce7a86009a02ed02a4af93e2
+          ref: dbda400c2f61cd957c4f81f2f7a318b93b79562e
           path: .artifacts/recipe-sdks/_cookbook
           persist-credentials: false
       - name: Prepare separate immutable Cookbook and Tools sources
         uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
         with:
-          cookbook-ref: 07caf54ba1348836ce7a86009a02ed02a4af93e2
+          cookbook-ref: dbda400c2f61cd957c4f81f2f7a318b93b79562e
       - name: Download this execution's complete source acceptance
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
@@ -111,7 +111,7 @@ jobs:
       artifact: ${{ steps.evidence.outputs.artifact-id }}
     env:
       SOURCE_SHA: ${{ github.sha }}
-      COOKBOOK_SHA: 07caf54ba1348836ce7a86009a02ed02a4af93e2
+      COOKBOOK_SHA: dbda400c2f61cd957c4f81f2f7a318b93b79562e
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -136,13 +136,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: nicodes/cookbook
-          ref: 07caf54ba1348836ce7a86009a02ed02a4af93e2
+          ref: dbda400c2f61cd957c4f81f2f7a318b93b79562e
           path: .artifacts/recipe-sdks/_cookbook
           persist-credentials: false
       - name: Prepare separate immutable Cookbook and Tools sources
         uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
         with:
-          cookbook-ref: 07caf54ba1348836ce7a86009a02ed02a4af93e2
+          cookbook-ref: dbda400c2f61cd957c4f81f2f7a318b93b79562e
       - name: Download original authenticated native archives and source proof
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
@@ -190,7 +190,7 @@ jobs:
       artifact: ${{ steps.accepted.outputs.artifact-id }}
     env:
       SOURCE_SHA: ${{ github.sha }}
-      COOKBOOK_SHA: 07caf54ba1348836ce7a86009a02ed02a4af93e2
+      COOKBOOK_SHA: dbda400c2f61cd957c4f81f2f7a318b93b79562e
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -215,13 +215,13 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: nicodes/cookbook
-          ref: 07caf54ba1348836ce7a86009a02ed02a4af93e2
+          ref: dbda400c2f61cd957c4f81f2f7a318b93b79562e
           path: .artifacts/recipe-sdks/_cookbook
           persist-credentials: false
       - name: Prepare separate immutable Cookbook and Tools sources
         uses: ./.artifacts/recipe-sdks/_cookbook/sdk-dependencies
         with:
-          cookbook-ref: 07caf54ba1348836ce7a86009a02ed02a4af93e2
+          cookbook-ref: dbda400c2f61cd957c4f81f2f7a318b93b79562e
       - name: Download original accepted archives independently of product execution
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
@@ -263,8 +263,8 @@ jobs:
       contents: write
       actions: read
       attestations: read
-    uses: nicodes/cookbook/.github/workflows/publish-cli.yml@07caf54ba1348836ce7a86009a02ed02a4af93e2
+    uses: nicodes/cookbook/.github/workflows/publish-cli.yml@dbda400c2f61cd957c4f81f2f7a318b93b79562e
     with:
-      cookbook-ref: 07caf54ba1348836ce7a86009a02ed02a4af93e2
+      cookbook-ref: dbda400c2f61cd957c4f81f2f7a318b93b79562e
       tag: ${{ needs.prepare.outputs.tag }}
       artifact-id: ${{ needs.attest-evidence.outputs.artifact }}

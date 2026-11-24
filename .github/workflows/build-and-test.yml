@@ -41,25 +41,25 @@ jobs:
             platform: Linux
             arch: x86_64
             target: x86_64-unknown-linux-musl
-            timeout_minutes: 155
+            timeout_minutes: 60
           - id: 1-Linux-arm64
             runner: ubuntu-24.04-arm
             platform: Linux
             arch: arm64
             target: aarch64-unknown-linux-musl
-            timeout_minutes: 45
+            timeout_minutes: 60
           - id: 1-Darwin-x86_64
             runner: macos-15-intel
             platform: Darwin
             arch: x86_64
             target: x86_64-apple-darwin
-            timeout_minutes: 45
+            timeout_minutes: 60
           - id: 1-Darwin-arm64
             runner: macos-26
             platform: Darwin
             arch: arm64
             target: aarch64-apple-darwin
-            timeout_minutes: 45
+            timeout_minutes: 60
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
     permissions:
@@ -72,21 +72,62 @@ jobs:
     steps:
       - name: Prepare
         timeout-minutes: 20
-        uses: nicodes/cookbook/prepare@07caf54ba1348836ce7a86009a02ed02a4af93e2
+        uses: nicodes/cookbook/prepare@dbda400c2f61cd957c4f81f2f7a318b93b79562e
         with:
-          cookbook-ref: ${{ inputs.cookbook || '07caf54ba1348836ce7a86009a02ed02a4af93e2' }}
+          cookbook-ref: ${{ inputs.cookbook || 'dbda400c2f61cd957c4f81f2f7a318b93b79562e' }}
           source: ${{ inputs.source || github.sha }}
           target: ${{ matrix.target }}
       - name: Build
         timeout-minutes: ${{ matrix.timeout_minutes }}
-        uses: nicodes/cookbook/build@07caf54ba1348836ce7a86009a02ed02a4af93e2
+        uses: nicodes/cookbook/build@dbda400c2f61cd957c4f81f2f7a318b93b79562e
       - name: Test
         timeout-minutes: ${{ matrix.timeout_minutes }}
-        uses: nicodes/cookbook/test@07caf54ba1348836ce7a86009a02ed02a4af93e2
+        uses: nicodes/cookbook/test@dbda400c2f61cd957c4f81f2f7a318b93b79562e
+      - name: Export native packet
+        timeout-minutes: 15
+        uses: nicodes/cookbook/export-native@dbda400c2f61cd957c4f81f2f7a318b93b79562e
+        with:
+          entry: ${{ matrix.id }}
       - name: Finish
         if: always()
         timeout-minutes: 5
-        uses: nicodes/cookbook/finish@07caf54ba1348836ce7a86009a02ed02a4af93e2
+        uses: nicodes/cookbook/finish@dbda400c2f61cd957c4f81f2f7a318b93b79562e
         with:
           status: ${{ job.status }}
           entry: ${{ matrix.id }}
+  build-test-host:
+    name: Build and test (integration)
+    needs: build-test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 170
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    env:
+      COOKBOOK_VALIDATION_TIMEOUT: '110'
+      COOKBOOK_CANDIDATE_COMMIT: ${{ github.event.pull_request.head.sha || inputs.source || github.sha }}
+      COOKBOOK_NATIVE_WAVE: host
+    steps:
+      - name: Prepare
+        timeout-minutes: 20
+        uses: nicodes/cookbook/prepare@dbda400c2f61cd957c4f81f2f7a318b93b79562e
+        with:
+          cookbook-ref: ${{ inputs.cookbook || 'dbda400c2f61cd957c4f81f2f7a318b93b79562e' }}
+          source: ${{ inputs.source || github.sha }}
+          target: x86_64-unknown-linux-musl
+      - name: Import native packets
+        timeout-minutes: 15
+        uses: nicodes/cookbook/import-native@dbda400c2f61cd957c4f81f2f7a318b93b79562e
+      - name: Build
+        timeout-minutes: 170
+        uses: nicodes/cookbook/build@dbda400c2f61cd957c4f81f2f7a318b93b79562e
+      - name: Test
+        timeout-minutes: 170
+        uses: nicodes/cookbook/test@dbda400c2f61cd957c4f81f2f7a318b93b79562e
+      - name: Finish
+        if: always()
+        timeout-minutes: 5
+        uses: nicodes/cookbook/finish@dbda400c2f61cd957c4f81f2f7a318b93b79562e
+        with:
+          status: ${{ job.status }}
