@@ -462,8 +462,10 @@ pub enum Authority {
         workflows: BTreeMap<String, Vec<String>>,
         reference: String,
         environment: String,
-        #[serde(default)]
-        publisher_workflows: BTreeMap<String, String>,
+        /// Accepted and ignored so policies written before the publisher
+        /// allow-list was removed still load; never written back out.
+        #[serde(default, rename = "publisher_workflows", skip_serializing)]
+        _retired_publisher_workflows: serde::de::IgnoredAny,
     },
 }
 

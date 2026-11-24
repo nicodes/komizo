@@ -72,7 +72,7 @@ komizo-box policy validate policy.json release.json --instance production
 
 Policy validation reads only the explicitly supplied local documents. It checks the workload against host grants and limits without reading secret files or changing the host.
 
-Applications build and test with their own tools. [Cookbook](https://github.com/nicodes/cookbook) can generate contributor workflows and immutable release packets. [komizo-actions](https://github.com/nicodes/komizo-actions) submits bounded requests and fresh audience-bound GitHub proofs. The host independently checks the approved repository, workflow, source, action and artifact family before accepting effects. Owner-authorized applications use the separately authenticated local owner authority.
+Applications build and test with their own tools. [Cookbook](https://github.com/nicodes/cookbook) can generate contributor workflows and immutable release packets. [komizo-actions](https://github.com/nicodes/komizo-actions) submits bounded requests and fresh audience-bound GitHub proofs. The host independently checks the approved repository, branch, protected environment, source, action and artifact family before accepting effects. Owner-authorized applications use the separately authenticated local owner authority.
 
 The release packet contains its exact descriptor and inventory, explicitly inventoried metadata, image archives where required and static archives where required. There is no configuration image. Podman imports the accepted image configuration IDs without retagging unrelated images or pulling a mutable execution target.
 

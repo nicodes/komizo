@@ -49,11 +49,7 @@ fn policy() -> Policy {
             "preview-deploy":["example/mailroom/.github/workflows/preview.yml@refs/heads/main"],
             "backup":["example/mailroom/.github/workflows/backup.yml@refs/heads/main","example/mailroom/.github/workflows/deploy.yml@refs/heads/main"]
         },
-        "reference":"refs/heads/main","environment":"production",
-        "publisher_workflows":{
-            "deploy":format!("example/publisher/.github/workflows/deliver.yml@{}","d".repeat(40)),
-            "preview-deploy":format!("example/publisher/.github/workflows/preview.yml@{}","d".repeat(40))
-        }
+        "reference":"refs/heads/main","environment":"production"
     },
     "artifact_prefixes":["ghcr.io/example/mailroom"],"hostnames":["mail.example","api.mail.example"],
     "limits":{"memory_bytes":268435456,"memory_swap_bytes":268435456,"milli_cpus":500,"pids":256},
@@ -299,19 +295,11 @@ fn immutable_subjects_refuse_foreign_ids_names_types_and_environment_context() {
 
 #[test]
 fn immutable_owner_is_the_caller_owner_not_the_reusable_publisher_owner() {
-    let (mut p, mut r) = environment_case("production", false, true, true);
+    let (p, mut r) = environment_case("production", false, true, true);
     let workflow = format!(
         "automation/publisher/.github/workflows/deliver.yml@{}",
         "d".repeat(40)
     );
-    let Authority::Github {
-        publisher_workflows,
-        ..
-    } = &mut p.authority
-    else {
-        unreachable!()
-    };
-    publisher_workflows.insert("deploy".into(), workflow.clone());
     let mut publisher = publisher_claims(&r);
     publisher["job_workflow_ref"] = json!(workflow);
     r["release_proof"]["proof"] = json!(sign(&publisher));
@@ -322,7 +310,46 @@ fn immutable_owner_is_the_caller_owner_not_the_reusable_publisher_owner() {
 }
 
 #[test]
-fn signed_request_binds_app_action_workload_and_actual_workflow_authority() {
+fn deploying_workflow_file_is_not_authority_when_repository_ref_and_environment_match() {
+    let p = policy();
+    let r = request();
+    let publisher = publisher_claims(&r);
+    for (caller_workflow, publisher_job_workflow) in [
+        (
+            "example/mailroom/.github/workflows/test.yml@refs/heads/main",
+            "example/anything/.github/workflows/other.yml@refs/heads/main",
+        ),
+        (
+            "example/mailroom/.github/workflows/deploy.yml@refs/heads/main",
+            "example/publisher/.github/workflows/deliver.yml@refs/heads/feature",
+        ),
+    ] {
+        let mut changed = r.clone();
+        let mut proof = changed["release_proof"].clone();
+        proof.as_object_mut().unwrap().remove("proof");
+        proof["workflow_ref"] = json!(caller_workflow);
+        let mut forged = publisher.clone();
+        forged["workflow_ref"] = json!(caller_workflow);
+        forged["job_workflow_ref"] = json!(publisher_job_workflow);
+        forged["aud"] = json!(format!(
+            "komizo-release:{}",
+            document_digest(&authority::body_without_proof(&proof).unwrap())
+        ));
+        proof["proof"] = json!(sign(&forged));
+        changed["release_proof"] = proof;
+        let mut caller = claims(&changed);
+        caller["workflow_ref"] = json!(caller_workflow);
+        caller["job_workflow_ref"] = json!(publisher_job_workflow);
+        changed["proof"] = json!(sign(&caller));
+        assert!(
+            admit(&changed, &p, 1000).is_ok(),
+            "refused {caller_workflow} via {publisher_job_workflow}"
+        );
+    }
+}
+
+#[test]
+fn signed_request_binds_app_action_workload_and_repository_authority() {
     let mut r = request();
     let c = claims(&r);
     r["proof"] = json!(sign(&c));
@@ -331,14 +358,12 @@ fn signed_request_binds_app_action_workload_and_actual_workflow_authority() {
     for (field, value) in [
         ("repository", json!("example/elsewhere")),
         ("repository_id", json!("456")),
-        (
-            "workflow_ref",
-            json!("example/mailroom/.github/workflows/test.yml@refs/heads/main"),
-        ),
         ("ref", json!("refs/heads/feature")),
         ("sha", json!("b".repeat(40))),
         ("workflow_sha", json!("b".repeat(40))),
         ("sub", json!("repo:example/mailroom:pull_request")),
+        ("sub", json!("repo:example/mailroom:environment:staging")),
+        ("sub", Value::Null),
         ("aud", json!("other")),
         ("exp", json!(1049)),
         ("iat", json!(1100)),
@@ -421,7 +446,7 @@ fn preview_request() -> Value {
 }
 
 #[test]
-fn preview_comments_require_the_protected_main_workflow_and_selected_source_publisher() {
+fn preview_comments_require_the_preview_environment_and_selected_source_proof() {
     let policy = preview_policy();
     let request = preview_request();
     assert!(admit(&request, &policy, 1000).is_ok());
@@ -429,10 +454,11 @@ fn preview_comments_require_the_protected_main_workflow_and_selected_source_publ
         ("event_name", json!("pull_request")),
         ("event_name", json!("discussion_comment")),
         ("sub", json!("repo:example/mailroom:environment:production")),
-        (
-            "workflow_ref",
-            json!("example/mailroom/.github/workflows/deploy.yml@refs/heads/main"),
-        ),
+        ("sub", Value::Null),
+        ("repository", json!("example/elsewhere")),
+        ("repository_id", json!("456")),
+        ("aud", json!("other")),
+        ("exp", json!(1049)),
         ("ref", json!("refs/heads/feature")),
     ] {
         let mut changed = request.clone();
@@ -454,13 +480,11 @@ fn preview_comments_require_the_protected_main_workflow_and_selected_source_publ
     for (field, value) in [
         ("event_name", json!("pull_request")),
         ("sub", json!("repo:example/mailroom:environment:production")),
-        (
-            "job_workflow_ref",
-            json!(format!(
-                "example/publisher/.github/workflows/preview.yml@{}",
-                "e".repeat(40)
-            )),
-        ),
+        ("repository", json!("example/elsewhere")),
+        ("repository_id", json!("456")),
+        ("ref", json!("refs/heads/feature")),
+        ("aud", json!("other")),
+        ("exp", json!(1049)),
         ("workflow_sha", json!("b".repeat(40))),
         ("run_attempt", json!("2")),
     ] {
@@ -485,15 +509,13 @@ fn preview_comment_can_plan_its_origin_with_read_only_inspection() {
     assert!(admit(&request, &preview_policy(), 1000).is_ok());
     request["instance"] = json!("production");
     let mut caller = claims(&request);
-    caller["workflow_ref"] =
-        json!("example/mailroom/.github/workflows/preview.yml@refs/heads/main");
     caller["event_name"] = json!("issue_comment");
     request["proof"] = json!(sign(&caller));
     assert!(admit(&request, &preview_policy(), 1000).is_err());
 }
 
 #[test]
-fn manual_and_predeployment_backups_share_only_their_explicit_action_authority() {
+fn backups_are_admitted_for_any_workflow_but_only_for_actions_the_policy_lists() {
     let p = policy();
     let mut r = request();
     for field in ["release", "release_proof"] {
@@ -517,13 +539,51 @@ fn manual_and_predeployment_backups_share_only_their_explicit_action_authority()
         let mut c = claims(&r);
         c["workflow_ref"] = json!("example/mailroom/.github/workflows/test.yml@refs/heads/main");
         r["proof"] = json!(sign(&c));
-        assert!(admit(&r, &p, 1000).is_err());
+        assert!(admit(&r, &p, 1000).is_ok());
+        let mut unlisted = serde_json::to_value(&p).unwrap();
+        unlisted["authority"]["workflows"]
+            .as_object_mut()
+            .unwrap()
+            .remove("backup");
+        let unlisted: Policy = serde_json::from_value(unlisted).unwrap();
+        assert!(admit(&r, &unlisted, 1000).is_err());
+        for (field, value) in [
+            ("repository", json!("example/elsewhere")),
+            ("ref", json!("refs/heads/feature")),
+            ("sub", Value::Null),
+            ("event_name", json!("pull_request")),
+        ] {
+            let mut forged = claims(&r);
+            forged[field] = value;
+            let mut changed = r.clone();
+            changed["proof"] = json!(sign(&forged));
+            assert!(admit(&changed, &p, 1000).is_err(), "accepted {field}");
+        }
     }
-    let mut deployment = request();
-    let mut c = claims(&deployment);
-    c["workflow_ref"] = json!("example/mailroom/.github/workflows/backup.yml@refs/heads/main");
-    deployment["proof"] = json!(sign(&c));
-    assert!(admit(&deployment, &p, 1000).is_err());
+}
+
+#[test]
+fn policies_with_or_without_the_retired_publisher_field_load_and_validate() {
+    let current = serde_json::to_value(policy()).unwrap();
+    assert!(current["authority"].get("publisher_workflows").is_none());
+    let parsed: Policy = serde_json::from_value(current.clone()).unwrap();
+    parsed.validate().unwrap();
+
+    let mut legacy = current;
+    legacy["authority"]["publisher_workflows"] = json!({
+        "deploy":format!("example/publisher/.github/workflows/deliver.yml@{}","d".repeat(40)),
+        "preview-deploy":"not-validated-any-more"
+    });
+    let parsed: Policy = serde_json::from_value(legacy).unwrap();
+    parsed.validate().unwrap();
+    assert!(
+        serde_json::to_value(&parsed).unwrap()["authority"]
+            .get("publisher_workflows")
+            .is_none()
+    );
+    let mut r = request();
+    r["proof"] = json!(sign(&claims(&r)));
+    assert!(admit(&r, &parsed, 1000).is_ok());
 }
 
 #[test]
@@ -560,14 +620,9 @@ fn caller_lists_are_finite_unique_and_require_explicit_main_workflows() {
 }
 
 #[test]
-fn independent_release_proof_binds_the_selected_caller_within_an_approved_set() {
+fn independent_release_proof_binds_the_same_caller_workflow_as_the_request() {
     let alternate = "example/mailroom/.github/workflows/alternate-cd.yml@refs/heads/main";
-    let mut p = serde_json::to_value(policy()).unwrap();
-    p["authority"]["workflows"]["deploy"]
-        .as_array_mut()
-        .unwrap()
-        .push(json!(alternate));
-    let p: Policy = serde_json::from_value(p).unwrap();
+    let p = policy();
     let mut r = request();
     let mut caller = claims(&r);
     caller["workflow_ref"] = json!(alternate);
