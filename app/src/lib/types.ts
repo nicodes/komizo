@@ -9,6 +9,7 @@ export type Resources = Record<string, unknown>;
 export type Maintenance = {
   outcome: string; stage?: string | null; error?: string | null; first_seen: number; last_seen: number;
   count: number; not_running_since?: number | null; stuck: boolean;
+  stuck_reason?: string | null; restarts?: number[]; epoch?: string | null;
 };
 export type Service = {container_id?: string | null; state?: string | null; health?: string | null; resources?: Resources; maintenance?: Maintenance | null};
 export type Instance = {

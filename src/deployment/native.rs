@@ -2692,6 +2692,7 @@ struct Trace {
     ineligible: bool,
     steady: bool,
     restarted: bool,
+    healthy: bool,
     force_stuck: Option<&'static str>,
     fingerprint: Option<String>,
 }
@@ -2741,13 +2742,28 @@ impl Trace {
         self.ineligible = matches!(reason, "no-instance" | "not-eligible");
         self.skip(&format!("{reason}-{site}"))
     }
-    fn conclude(&self, scope: &service_maintenance::Scope, result: &Result<()>) {
+    /// The record of this pass; a started container counts even when a later
+    /// step failed.
+    fn pass(&self, result: &Result<()>) -> maintenance_state::Pass {
         let (outcome, stage, error) = classify(
             result,
             self.stage,
             self.skipped.as_deref(),
             self.no_reading.as_deref(),
         );
+        maintenance_state::Pass {
+            outcome,
+            stage,
+            error,
+            running: self.running,
+            eligible: !self.ineligible,
+            epoch: self.fingerprint.clone(),
+            restarted: self.restarted,
+            healthy: self.healthy,
+            force_stuck: self.force_stuck,
+        }
+    }
+    fn conclude(&self, scope: &service_maintenance::Scope, result: &Result<()>) {
         if self.steady && result.is_ok() && self.skipped.is_none() {
             if let Some(fingerprint) = &self.fingerprint {
                 service_maintenance::steady_mark(scope, fingerprint.clone());
@@ -2755,22 +2771,12 @@ impl Trace {
         } else {
             service_maintenance::steady_clear(scope);
         }
-        let pass = maintenance_state::Pass {
-            outcome,
-            stage,
-            error,
-            running: self.running,
-            eligible: !self.ineligible,
-            epoch: self.fingerprint.clone(),
-            restarted: self.restarted && result.is_ok(),
-            force_stuck: self.force_stuck,
-        };
         maintenance_state::record(
             &scope.root,
             &scope.application,
             &scope.instance,
             &scope.service,
-            &pass,
+            &self.pass(result),
             |raw| redacted_diagnostic(scope, raw),
         );
     }
@@ -2802,6 +2808,80 @@ fn service_fingerprint(installed: &Installed, service: &str) -> String {
             .get(service)
             .map_or("", |record| record.id.as_str())
     )
+}
+
+/// Whether a probe runs this pass: an unhealthy sighting old enough to
+/// confirm needs fresh evidence now, not after a whole health interval.
+fn probe_wanted(unhealthy_due: bool, interval_due: impl FnOnce() -> Result<bool>) -> Result<bool> {
+    if unhealthy_due {
+        return Ok(true);
+    }
+    interval_due()
+}
+
+/// What one health observation concluded for the pass.
+struct Decision {
+    observed: Result<Option<bool>>,
+    skipped: Option<&'static str>,
+    no_reading: Option<String>,
+    healthy: bool,
+    steady: bool,
+    force_stuck: Option<&'static str>,
+}
+
+/// Turn the observation closure's result into the pass's action. A native
+/// command that failed or hit its own deadline is no reading: neither an
+/// unhealthy verdict nor a kill. Only the judge decides when readings have
+/// failed for long enough to act, and then only gracefully.
+fn decide(
+    result: Result<Option<bool>>,
+    unhealthy_running: bool,
+    probe_attempted: bool,
+    steady: bool,
+    judge: impl FnOnce(service_maintenance::Observed) -> service_maintenance::Verdict,
+) -> Decision {
+    use service_maintenance::{Observed, Verdict};
+    let mut no_reading = None;
+    let (kind, failure) = match result {
+        Ok(Some(true)) => (Observed::Healthy, None),
+        Ok(Some(false)) if unhealthy_running => (
+            Observed::Unhealthy {
+                probed: probe_attempted,
+            },
+            None,
+        ),
+        Ok(Some(false)) => (Observed::NotRunning, None),
+        Ok(None) => (Observed::Unreadable, None),
+        Err(error) if super::engine::no_reading(&error) => {
+            no_reading = Some(format!("{error:#}"));
+            (Observed::NoReading, Some(error))
+        }
+        Err(error) => (Observed::Failed, Some(error)),
+    };
+    let verdict = judge(kind);
+    let healthy = kind == Observed::Healthy;
+    let mut decision = Decision {
+        observed: Ok(None),
+        skipped: None,
+        no_reading,
+        healthy,
+        steady: steady && healthy && verdict == Verdict::Keep,
+        force_stuck: None,
+    };
+    decision.observed = match verdict {
+        Verdict::Keep => Ok(healthy.then_some(true)),
+        Verdict::Wait(reason) => {
+            decision.skipped = Some(reason);
+            Ok(None)
+        }
+        Verdict::Restart => Ok(Some(false)),
+        Verdict::GiveUp => {
+            decision.force_stuck = Some("probe-unavailable");
+            Ok(Some(false))
+        }
+        Verdict::Kill => Err(failure.unwrap_or_else(|| anyhow!("service observation failed"))),
+    };
+    decision
 }
 
 // Each queued scope owns its dedupe slot until every observation/commit ends.
@@ -2920,15 +3000,18 @@ fn maintain_service_traced(scope: &service_maintenance::Scope, trace: &mut Trace
                 .ok_or_else(|| anyhow!("service probe generation missing"))?;
             // An unhealthy sighting old enough to confirm needs fresh evidence
             // now, not after a whole health interval.
-            if service_maintenance::unhealthy_due(scope, &generation)
-                || probe_due(
-                    previous.as_ref(),
-                    &frozen.record.id,
-                    started_at,
-                    now,
-                    interval,
-                )?
-            {
+            if probe_wanted(
+                service_maintenance::unhealthy_due(scope, &generation),
+                || {
+                    probe_due(
+                        previous.as_ref(),
+                        &frozen.record.id,
+                        started_at,
+                        now,
+                        interval,
+                    )
+                },
+            )? {
                 probe_attempted = true;
                 let probe = super::cgroups::service_probe_group(
                     &scope.application,
@@ -3003,49 +3086,24 @@ fn maintain_service_traced(scope: &service_maintenance::Scope, trace: &mut Trace
             Ok(Some(true))
         }
     })();
-    // A native command that failed or hit its own deadline says nothing about
-    // the workload: it is no reading, not an unhealthy verdict, and it keeps
-    // a running service only until the readings have failed past their bound.
-    let (kind, failure) = match observed {
-        Ok(Some(true)) => (service_maintenance::Observed::Healthy, None),
-        Ok(Some(false)) if unhealthy_running => (
-            service_maintenance::Observed::Unhealthy {
-                probed: probe_attempted,
-            },
-            None,
-        ),
-        Ok(Some(false)) => (service_maintenance::Observed::NotRunning, None),
-        Ok(None) => (service_maintenance::Observed::Unreadable, None),
-        Err(error) if super::engine::no_reading(&error) => {
-            trace.no_reading = Some(format!("{error:#}"));
-            (service_maintenance::Observed::NoReading, Some(error))
-        }
-        Err(error) => (service_maintenance::Observed::Failed, Some(error)),
-    };
-    let verdict = service_maintenance::judge(scope, kind, &generation);
-    trace.steady = steady
-        && verdict == service_maintenance::Verdict::Keep
-        && kind == service_maintenance::Observed::Healthy;
-    let observed: Result<Option<bool>> = match verdict {
-        service_maintenance::Verdict::Keep => {
-            Ok(if kind == service_maintenance::Observed::Healthy {
-                Some(true)
-            } else {
-                None
+    let decision = decide(
+        observed,
+        unhealthy_running,
+        probe_attempted,
+        steady,
+        |kind| {
+            service_maintenance::judge(scope, kind, &generation, &|| {
+                // When the answer is unknown, assume the host is busy.
+                store.host_busy().unwrap_or(true)
             })
-        }
-        service_maintenance::Verdict::Wait(reason) => {
-            trace.skipped = Some(reason.into());
-            Ok(None)
-        }
-        service_maintenance::Verdict::Restart => Ok(Some(false)),
-        service_maintenance::Verdict::Kill { unavailable } => {
-            if unavailable {
-                trace.force_stuck = Some("probe-unavailable");
-            }
-            Err(failure.unwrap_or_else(|| anyhow!("service observation failed")))
-        }
-    };
+        },
+    );
+    trace.no_reading = decision.no_reading;
+    trace.skipped = decision.skipped.map(str::to_owned).or(trace.skipped.take());
+    trace.steady = decision.steady;
+    trace.healthy = decision.healthy;
+    trace.force_stuck = decision.force_stuck;
+    let observed = decision.observed;
     if matches!(observed, Ok(None)) && !probe_attempted && checked_at.is_none() {
         return Ok(());
     }
@@ -3097,11 +3155,7 @@ fn maintain_service_traced(scope: &service_maintenance::Scope, trace: &mut Trace
         match observed {
             Ok(Some(true) | None) => return Ok(()),
             Err(error) => {
-                trace.stage = if trace.force_stuck.is_some() {
-                    "probe-unavailable"
-                } else {
-                    "observation-failure-cleanup"
-                };
+                trace.stage = "observation-failure-cleanup";
                 commit_backoff(&store, &current, &scope.service)?;
                 advance_service_epoch(&store, &current.installed)?;
                 if cleanup_service(Some(&before), &group).is_err() {
@@ -3233,6 +3287,8 @@ fn maintain_service_traced(scope: &service_maintenance::Scope, trace: &mut Trace
                 &Default::default(),
             )?;
             command.start_in_group(&current.record.id, &monitor)?;
+            // A container was started, whatever follows.
+            trace.restarted = true;
             let after = command
                 .owned_container(
                     &current.record,
@@ -3261,7 +3317,6 @@ fn maintain_service_traced(scope: &service_maintenance::Scope, trace: &mut Trace
             }
             return Err(error);
         }
-        trace.restarted = true;
         service_snapshot(&store, scope, false)?
             .ok_or_else(|| anyhow!("restarted service authority disappeared"))?
             .binding
@@ -3360,6 +3415,7 @@ fn maintain_services(store: &Store) -> Result<()> {
                         eligible: true,
                         epoch: None,
                         restarted: false,
+                        healthy: false,
                         force_stuck: None,
                     },
                     str::to_owned,
@@ -4806,6 +4862,143 @@ mod recovery_tests {
             service_fingerprint(&other, "worker"),
             service_fingerprint(&other, "web")
         );
+    }
+
+    fn world_judge(
+        readings: &std::cell::RefCell<(
+            service_maintenance::Observed,
+            Vec<service_maintenance::Observed>,
+        )>,
+        verdict: service_maintenance::Verdict,
+    ) -> impl FnOnce(service_maintenance::Observed) -> service_maintenance::Verdict + '_ {
+        move |kind| {
+            readings.borrow_mut().1.push(kind);
+            verdict
+        }
+    }
+
+    #[test]
+    fn decisions_map_closure_results_to_readings_and_verdicts_to_actions() {
+        use service_maintenance::{Observed, Verdict};
+        let seen = std::cell::RefCell::new((Observed::Healthy, Vec::new()));
+        let hung = || -> Result<Option<bool>> {
+            Err(anyhow::Error::new(
+                super::super::engine::NoReading::for_test("probe hung"),
+            ))
+        };
+        // A hung probe is no reading; the judge says wait, so nothing happens.
+        let waiting = decide(
+            hung(),
+            false,
+            true,
+            false,
+            world_judge(&seen, Verdict::Wait("engine-unavailable")),
+        );
+        assert!(matches!(waiting.observed, Ok(None)));
+        assert_eq!(waiting.skipped, Some("engine-unavailable"));
+        assert!(waiting.no_reading.unwrap().contains("probe hung"));
+        // Past the bound the action is a graceful restart marked stuck, not an error.
+        let gave_up = decide(
+            hung(),
+            false,
+            true,
+            false,
+            world_judge(&seen, Verdict::GiveUp),
+        );
+        assert!(matches!(gave_up.observed, Ok(Some(false))));
+        assert_eq!(gave_up.force_stuck, Some("probe-unavailable"));
+        // Proof failures keep the immediate cleanup path.
+        let failed = decide(
+            Err(anyhow!("cgroup escaped")),
+            false,
+            true,
+            false,
+            world_judge(&seen, Verdict::Kill),
+        );
+        assert!(
+            failed
+                .observed
+                .unwrap_err()
+                .to_string()
+                .contains("cgroup escaped")
+        );
+        // Unhealthy running carries whether this pass probed; stopped does not.
+        let _ = decide(
+            Ok(Some(false)),
+            true,
+            true,
+            false,
+            world_judge(&seen, Verdict::Restart),
+        );
+        let _ = decide(
+            Ok(Some(false)),
+            false,
+            false,
+            false,
+            world_judge(&seen, Verdict::Restart),
+        );
+        let _ = decide(
+            Ok(None),
+            false,
+            true,
+            false,
+            world_judge(&seen, Verdict::Keep),
+        );
+        let healthy = decide(
+            Ok(Some(true)),
+            false,
+            false,
+            true,
+            world_judge(&seen, Verdict::Keep),
+        );
+        assert!(healthy.steady && healthy.healthy && matches!(healthy.observed, Ok(Some(true))));
+        let unconfirmed = decide(
+            Ok(Some(false)),
+            true,
+            false,
+            false,
+            world_judge(&seen, Verdict::Wait("unhealthy-unconfirmed")),
+        );
+        assert!(matches!(unconfirmed.observed, Ok(None)));
+        assert_eq!(
+            seen.borrow().1,
+            vec![
+                Observed::NoReading,
+                Observed::NoReading,
+                Observed::Failed,
+                Observed::Unhealthy { probed: true },
+                Observed::NotRunning,
+                Observed::Unreadable,
+                Observed::Healthy,
+                Observed::Unhealthy { probed: false },
+            ]
+        );
+        // A healthy reading only counts as steady when the judge kept it.
+        let waited = decide(Ok(Some(true)), false, false, true, |_| Verdict::Wait("x"));
+        assert!(!waited.steady);
+    }
+
+    #[test]
+    fn a_due_unhealthy_sighting_forces_a_probe_without_waiting_for_the_interval() {
+        assert!(probe_wanted(true, || panic!("interval is not consulted")).unwrap());
+        assert!(probe_wanted(false, || Ok(true)).unwrap());
+        assert!(!probe_wanted(false, || Ok(false)).unwrap());
+        assert!(probe_wanted(false, || Err(anyhow!("probe record unreadable"))).is_err());
+    }
+
+    #[test]
+    fn a_started_container_counts_as_a_restart_even_when_a_later_step_fails() {
+        let trace = Trace {
+            stage: "restart-readiness",
+            restarted: true,
+            ..Default::default()
+        };
+        let failed: Result<()> = Err(anyhow!("readiness failed"));
+        let pass = trace.pass(&failed);
+        assert!(pass.restarted);
+        assert_eq!(pass.outcome, "error");
+        assert_eq!(pass.stage.as_deref(), Some("restart-readiness"));
+        assert!(!Trace::default().pass(&Ok(())).restarted);
     }
 
     #[test]

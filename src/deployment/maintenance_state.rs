@@ -41,6 +41,8 @@ const MAX_BYTES: usize = 4096;
 const ERROR_CHARS: usize = 256;
 const KIND: &str = "komizo.service-maintenance";
 /// Backoff waits belong to whatever streak they interrupt.
+/// Stuck reasons that do not come from a timer and end only on a healthy read.
+const FORCED: [&str; 1] = ["probe-unavailable"];
 const NEUTRAL: &str = "skipped:restart-backoff-wait";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,8 +84,10 @@ pub(super) struct Pass {
     pub eligible: bool,
     /// The instance state this pass covered, when it got far enough to know.
     pub epoch: Option<String>,
-    /// The pass started the service.
+    /// The pass started a container, whatever happened afterwards.
     pub restarted: bool,
+    /// The pass read the service as running and healthy.
+    pub healthy: bool,
     /// A condition that is stuck regardless of any timer.
     pub force_stuck: Option<&'static str>,
 }
@@ -138,9 +142,15 @@ pub(super) fn advance(
         restarts.remove(0);
     }
     let first_seen = if same { carry.unwrap().first_seen } else { now };
+    // A forced reason holds until the service reads healthy again.
+    let held = carry
+        .and_then(|p| p.stuck_reason.as_deref())
+        .filter(|reason| FORCED.contains(reason) && !pass.healthy)
+        .map(str::to_owned);
     let stuck_reason = pass
         .force_stuck
         .map(str::to_owned)
+        .or(held)
         .or_else(|| {
             not_running_since
                 .is_some_and(|since| now.saturating_sub(since) > STUCK_SECONDS)
@@ -196,6 +206,7 @@ fn persist_due(
     previous: Option<&Record>,
     last_attempt: Option<i64>,
     failed: bool,
+    dirty: bool,
     next: &Record,
     urgent: bool,
     now: i64,
@@ -210,7 +221,8 @@ fn persist_due(
     if urgent || p.stuck != next.stuck {
         return true;
     }
-    let changed = p.outcome != next.outcome
+    let changed = dirty
+        || p.outcome != next.outcome
         || p.stage != next.stage
         || p.not_running_since.is_some() != next.not_running_since.is_some()
         || p.restarts != next.restarts;
@@ -267,6 +279,7 @@ pub(super) fn read(
     };
     if !expected_running {
         record.stuck = false;
+        record.stuck_reason = None;
         record.not_running_since = None;
     }
     serde_json::to_value(record).unwrap_or(Value::Null)
@@ -276,6 +289,8 @@ struct Cached {
     record: Record,
     last_attempt: Option<i64>,
     failed: bool,
+    /// A change is waiting for its write.
+    dirty: bool,
     /// The newest error text with the key it was produced for.
     error: Option<(String, String)>,
     announced: BTreeMap<String, i64>,
@@ -326,9 +341,20 @@ pub(super) fn record(
     pass: &Pass,
     sanitize: impl FnOnce(&str) -> String,
 ) {
-    let Ok(now) = controller::now() else {
-        return;
-    };
+    if let Ok(now) = controller::now() {
+        record_at(root, application, instance, service, pass, sanitize, now);
+    }
+}
+
+fn record_at(
+    root: &std::path::Path,
+    application: &str,
+    instance: &str,
+    service: &str,
+    pass: &Pass,
+    sanitize: impl FnOnce(&str) -> String,
+    now: i64,
+) {
     let key: Key = (
         root.to_owned(),
         application.to_owned(),
@@ -361,6 +387,7 @@ pub(super) fn record(
                     epoch: None,
                 }),
                 failed: false,
+                dirty: false,
                 error: None,
                 announced: BTreeMap::new(),
             }
@@ -383,7 +410,8 @@ pub(super) fn record(
     );
     if let (Some(key), Some(text)) = (error_key, &next.error) {
         cached.error = Some((key.clone(), text.clone()));
-        if events.error_started && !announce(&mut cached.announced, &key, now) {
+        let stage = next.stage.clone().unwrap_or_default();
+        if events.error_started && !announce(&mut cached.announced, &stage, now) {
             events.error_started = false;
         }
     }
@@ -392,6 +420,7 @@ pub(super) fn record(
         previous.as_ref(),
         cached.last_attempt,
         cached.failed,
+        cached.dirty,
         &next,
         urgent,
         now,
@@ -406,6 +435,11 @@ pub(super) fn record(
         });
         cached.last_attempt = Some(now);
         cached.failed = stored.is_err();
+        cached.dirty = false;
+    } else if previous.as_ref().is_some_and(|p| {
+        p.outcome != next.outcome || p.stage != next.stage || p.restarts != next.restarts
+    }) {
+        cached.dirty = true;
     }
     cached.record = next.clone();
     cache()
@@ -486,6 +520,7 @@ mod tests {
             eligible: true,
             epoch: None,
             restarted: false,
+            healthy: false,
             force_stuck: None,
         }
     }
@@ -755,58 +790,118 @@ mod tests {
     fn writes_are_limited_when_flapping_and_retried_soon_when_they_fail() {
         let (one, _) = advance(None, &pass("ok", Some(true)), plain, 100);
         let (two, _) = advance(Some(&one), &pass("ok", Some(true)), plain, 101);
-        assert!(!persist_due(Some(&one), Some(100), false, &two, false, 101));
-        assert!(persist_due(
-            Some(&one),
-            Some(100),
-            false,
-            &two,
-            false,
-            100 + REWRITE_SECONDS
-        ));
         let (changed, _) = advance(
             Some(&two),
             &pass("skipped:probe-lock-busy", None),
             plain,
             102,
         );
+        let due = |previous: &Record, next: &Record, failed, dirty, urgent, now| {
+            persist_due(Some(previous), Some(100), failed, dirty, next, urgent, now)
+        };
+        assert!(!due(&one, &two, false, false, false, 101));
+        assert!(due(&one, &two, false, false, false, 100 + REWRITE_SECONDS));
         // A change right after a write waits out the flap limit ...
-        assert!(!persist_due(
-            Some(&two),
-            Some(100),
-            false,
+        assert!(!due(&two, &changed, false, false, false, 102));
+        assert!(due(
+            &two,
             &changed,
             false,
-            102
-        ));
-        assert!(persist_due(
-            Some(&two),
-            Some(100),
             false,
-            &changed,
             false,
             100 + CHANGE_WRITE_SECONDS
         ));
-        // ... except when urgent, and the first record is always written.
-        assert!(persist_due(
-            Some(&two),
-            Some(100),
-            false,
+        // ... and stays pending: the next unchanged pass still writes it.
+        assert!(!due(&changed, &changed, false, true, false, 105));
+        assert!(due(
             &changed,
+            &changed,
+            false,
             true,
-            102
+            false,
+            100 + CHANGE_WRITE_SECONDS
         ));
-        assert!(persist_due(None, None, false, &changed, false, 102));
+        // Urgent changes and the first record are written at once.
+        assert!(due(&two, &changed, false, false, true, 102));
+        assert!(persist_due(None, None, false, false, &changed, false, 102));
         // A failed write is retried in seconds, not after a minute.
-        assert!(!persist_due(Some(&one), Some(100), true, &two, false, 101));
-        assert!(persist_due(
-            Some(&one),
-            Some(100),
-            true,
+        assert!(!due(&one, &two, true, false, false, 101));
+        assert!(due(
+            &one,
             &two,
+            true,
+            false,
             false,
             100 + RETRY_WRITE_SECONDS
         ));
+    }
+
+    #[test]
+    fn a_change_inside_the_flap_limit_still_reaches_the_disk_without_another_change() {
+        let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let store = Store::new(directory.path().join("state")).unwrap();
+        let go = |pass: &Pass| record(&store.root, "mailroom", "production", "web", pass, plain);
+        let read = || read(&store, "mailroom", "production", "web", true);
+        go(&pass("ok", Some(true)));
+        go(&pass("skipped:probe-lock-busy", None));
+        // Held back by the flap limit: the file still shows the first outcome.
+        assert_eq!(read()["outcome"], "ok");
+        std::thread::sleep(std::time::Duration::from_secs(
+            CHANGE_WRITE_SECONDS as u64 + 1,
+        ));
+        go(&pass("skipped:probe-lock-busy", None));
+        assert_eq!(read()["outcome"], "skipped:probe-lock-busy");
+    }
+
+    #[test]
+    fn a_forced_stuck_reason_holds_until_the_service_reads_healthy() {
+        let mut forced = pass("ok", Some(false));
+        forced.force_stuck = Some("probe-unavailable");
+        let (first, events) = advance(None, &forced, plain, 100);
+        assert!(first.stuck && events.stuck_started);
+        // Later passes without the force keep it, and log nothing new.
+        let (mid, events) = run(
+            Some(first),
+            &pass("skipped:probe-lock-busy", None),
+            110,
+            400,
+            10,
+        );
+        assert!(mid.stuck && !events.stuck_ended && !events.stuck_started);
+        assert_eq!(mid.stuck_reason.as_deref(), Some("probe-unavailable"));
+        let (running, events) = advance(Some(&mid), &pass("ok", Some(true)), plain, 410);
+        assert!(
+            running.stuck && !events.stuck_ended,
+            "running is not healthy"
+        );
+        let mut healthy = pass("ok", Some(true));
+        healthy.healthy = true;
+        let (healed, events) = advance(Some(&running), &healthy, plain, 420);
+        assert!(!healed.stuck && events.stuck_ended);
+    }
+
+    #[test]
+    fn the_rate_limit_is_keyed_on_the_stage_not_the_varying_text() {
+        let mut announced = BTreeMap::new();
+        assert!(announce(&mut announced, "start-guard", 0));
+        assert!(!announce(&mut announced, "start-guard", 30));
+        assert!(announce(&mut announced, "snapshot", 30));
+    }
+
+    #[test]
+    fn a_stopped_instance_reports_no_stuck_reason() {
+        let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let store = Store::new(directory.path().join("state")).unwrap();
+        let mut forced = pass("ok", Some(false));
+        forced.force_stuck = Some("probe-unavailable");
+        record(&store.root, "mailroom", "production", "web", &forced, plain);
+        let running = read(&store, "mailroom", "production", "web", true);
+        assert_eq!(running["stuck_reason"], "probe-unavailable");
+        let stopped = read(&store, "mailroom", "production", "web", false);
+        assert_eq!(
+            (&stopped["stuck"], &stopped["stuck_reason"]),
+            (&Value::Bool(false), &Value::Null)
+        );
     }
 
     #[test]

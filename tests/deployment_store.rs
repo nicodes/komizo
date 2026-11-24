@@ -326,3 +326,18 @@ fn protected_state_refuses_a_symbolic_ancestor_even_when_its_target_is_private()
     assert!(!direct.join("state").exists());
     assert!(Store::new(direct.join("state")).is_ok());
 }
+
+#[test]
+fn host_busy_while_any_operation_is_in_a_non_terminal_phase() {
+    let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+    let store = Store::new(directory.path().join("state")).unwrap();
+    assert!(!store.host_busy().unwrap());
+    let mut accepted = operation();
+    store.create_operation(&accepted).unwrap();
+    assert!(store.host_busy().unwrap());
+    for phase in ["staging", "failed"] {
+        accepted.transition(phase).unwrap();
+        store.save_operation(&accepted).unwrap();
+        assert_eq!(store.host_busy().unwrap(), phase == "staging");
+    }
+}

@@ -16,10 +16,14 @@ const CONFIRM: Duration = Duration::from_secs(5);
 /// A scope whose worker has been inside one pass this long is reported. It
 /// exceeds any legitimate pass, including a long graceful stop.
 pub(super) const STALLED: Duration = Duration::from_secs(600);
-/// Readings that keep failing for this long no longer retain a running
-/// container; the previous behaviour (clean up and restart) resumes.
-const NO_READING_LIMIT: Duration = Duration::from_secs(120);
-const NO_READING_MINIMUM: u32 = 3;
+/// Back-to-back failed readings for this long, and at least this many, mean
+/// the container itself cannot be read; the service is then restarted
+/// gracefully. The bound exceeds any starvation a neighbour's deployment can
+/// cause, and a host-wide guard suppresses it while the host is busy.
+const NO_READING_LIMIT: Duration = Duration::from_secs(600);
+const NO_READING_MINIMUM: u32 = 10;
+/// Failures further apart than this are not back to back; the streak restarts.
+const NO_READING_GAP: Duration = Duration::from_secs(90);
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Scope {
@@ -119,17 +123,17 @@ fn scheduler() -> &'static Mutex<Option<Scheduler>> {
 }
 
 /// How long a worker has been inside this scope's pass, if one is.
-pub(super) fn in_flight(scope: &Scope) -> Option<Duration> {
-    let scheduler = scheduler().lock().unwrap_or_else(|e| e.into_inner());
-    let pending = scheduler
-        .as_ref()?
-        .pending
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+fn in_flight_in(scheduler: &Scheduler, scope: &Scope) -> Option<Duration> {
+    let pending = scheduler.pending.lock().unwrap_or_else(|e| e.into_inner());
     pending
         .get(scope)
         .and_then(|slot| slot.started)
         .map(|at| at.elapsed())
+}
+
+pub(super) fn in_flight(scope: &Scope) -> Option<Duration> {
+    let scheduler = scheduler().lock().unwrap_or_else(|e| e.into_inner());
+    in_flight_in(scheduler.as_ref()?, scope)
 }
 
 pub(super) fn enqueue(scope: Scope) -> Result<bool> {
@@ -183,6 +187,7 @@ pub(super) fn steady_clear(scope: &Scope) {
 }
 /// Drop entries for scopes that no longer exist.
 pub(super) fn steady_retain(live: &BTreeSet<Scope>) {
+    LIVE.store(live.len(), std::sync::atomic::Ordering::Relaxed);
     let mut cache = steady().lock().unwrap_or_else(|e| e.into_inner());
     cache.0.retain(|scope, _| live.contains(scope));
     unhealthy()
@@ -233,22 +238,47 @@ pub(super) fn unhealthy_due(scope: &Scope, generation: &str) -> bool {
         .due(scope, generation, Instant::now())
 }
 
-/// Consecutive failed or overdue readings per container generation.
+/// Continuous failed or overdue readings per container generation. A streak
+/// only grows from failures at most `NO_READING_GAP` apart; any other
+/// reading removes it.
 #[derive(Default)]
-struct NoReadings(BTreeMap<Scope, (String, Instant, u32)>);
+struct NoReadings(BTreeMap<Scope, Streak>);
+struct Streak {
+    generation: String,
+    first: Instant,
+    last: Instant,
+    count: u32,
+}
 impl NoReadings {
-    /// True once readings have failed past the bound.
+    /// True once back-to-back readings have failed past the bound.
     fn note(&mut self, scope: &Scope, generation: &str, now: Instant) -> bool {
-        let entry = match self.0.get_mut(scope) {
-            Some(entry) if entry.0 == generation => entry,
-            _ => {
-                self.0
-                    .insert(scope.clone(), (generation.to_owned(), now, 0));
-                self.0.get_mut(scope).unwrap()
-            }
-        };
-        entry.2 += 1;
-        entry.2 >= NO_READING_MINIMUM && now.saturating_duration_since(entry.1) >= NO_READING_LIMIT
+        let continues = self.0.get(scope).is_some_and(|streak| {
+            streak.generation == generation
+                && now.saturating_duration_since(streak.last) <= NO_READING_GAP
+        });
+        if !continues {
+            self.0.insert(
+                scope.clone(),
+                Streak {
+                    generation: generation.to_owned(),
+                    first: now,
+                    last: now,
+                    count: 0,
+                },
+            );
+        }
+        let streak = self.0.get_mut(scope).unwrap();
+        streak.last = now;
+        streak.count += 1;
+        streak.count >= NO_READING_MINIMUM
+            && now.saturating_duration_since(streak.first) >= NO_READING_LIMIT
+    }
+    /// Scopes whose readings are failing right now.
+    fn failing(&self, now: Instant) -> usize {
+        self.0
+            .values()
+            .filter(|streak| now.saturating_duration_since(streak.last) <= NO_READING_GAP)
+            .count()
     }
 }
 fn no_readings() -> &'static Mutex<NoReadings> {
@@ -281,9 +311,20 @@ pub(super) enum Verdict {
     Wait(&'static str),
     /// Stop (if running) and restart it.
     Restart,
-    /// Clean up the service exactly as a failed observation always did.
-    /// `unavailable` is set when readings kept failing past their bound.
-    Kill { unavailable: bool },
+    /// Clean up the service exactly as a failed observation always did. Only
+    /// confinement, ownership and identity failures end here.
+    Kill,
+    /// Readings failed back to back past their bound with no host-wide cause:
+    /// restart through the normal graceful stop path.
+    GiveUp,
+}
+
+/// What is known about the host beyond this one service.
+pub(super) struct Host<'a> {
+    /// Any deploy, start, restart or backup is in a non-terminal phase.
+    pub busy: &'a dyn Fn() -> bool,
+    /// Scopes under maintenance.
+    pub live: usize,
 }
 
 fn judge_with(
@@ -293,6 +334,7 @@ fn judge_with(
     observed: Observed,
     generation: &str,
     now: Instant,
+    host: &Host,
 ) -> Verdict {
     match observed {
         Observed::Healthy => {
@@ -313,18 +355,33 @@ fn judge_with(
                 Verdict::Wait("unhealthy-unconfirmed")
             }
         }
-        Observed::Unreadable => Verdict::Keep,
+        Observed::Unreadable => {
+            readings.0.remove(scope);
+            Verdict::Keep
+        }
         Observed::NoReading => {
-            if readings.note(scope, generation, now) {
-                Verdict::Kill { unavailable: true }
-            } else {
+            if !readings.note(scope, generation, now) {
                 Verdict::Wait("engine-unavailable")
+            } else if readings.failing(now) >= 2 && readings.failing(now) * 2 > host.live
+                || (host.busy)()
+            {
+                // The host is starved or busy; this container is not shown
+                // to be the broken one.
+                Verdict::Wait("probe-unavailable-suppressed")
+            } else {
+                readings.0.remove(scope);
+                Verdict::GiveUp
             }
         }
-        Observed::Failed => Verdict::Kill { unavailable: false },
+        Observed::Failed => Verdict::Kill,
     }
 }
-pub(super) fn judge(scope: &Scope, observed: Observed, generation: &str) -> Verdict {
+pub(super) fn judge(
+    scope: &Scope,
+    observed: Observed,
+    generation: &str,
+    busy: &dyn Fn() -> bool,
+) -> Verdict {
     judge_with(
         &mut unhealthy().lock().unwrap_or_else(|e| e.into_inner()),
         &mut no_readings().lock().unwrap_or_else(|e| e.into_inner()),
@@ -332,8 +389,13 @@ pub(super) fn judge(scope: &Scope, observed: Observed, generation: &str) -> Verd
         observed,
         generation,
         Instant::now(),
+        &Host {
+            busy,
+            live: LIVE.load(std::sync::atomic::Ordering::Relaxed),
+        },
     )
 }
+static LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(test)]
 mod tests {
@@ -429,113 +491,183 @@ mod tests {
         assert!(!cache.skip(&service, "b", start + Duration::from_secs(1)));
     }
 
-    fn judged(state: &mut (Unhealthy, NoReadings), observed: Observed, at: Instant) -> Verdict {
-        judge_with(&mut state.0, &mut state.1, &scope(1), observed, "g1", at)
+    struct World {
+        unhealthy: Unhealthy,
+        readings: NoReadings,
+        busy: bool,
+        live: usize,
+        generation: &'static str,
+        scope: Scope,
+    }
+    impl World {
+        fn new() -> Self {
+            World {
+                unhealthy: Unhealthy::default(),
+                readings: NoReadings::default(),
+                busy: false,
+                live: 1,
+                generation: "g1",
+                scope: scope(1),
+            }
+        }
+        fn judge(&mut self, observed: Observed, at: Instant) -> Verdict {
+            let busy = self.busy;
+            judge_with(
+                &mut self.unhealthy,
+                &mut self.readings,
+                &self.scope,
+                observed,
+                self.generation,
+                at,
+                &Host {
+                    busy: &move || busy,
+                    live: self.live,
+                },
+            )
+        }
     }
 
     #[test]
     fn unhealthy_needs_a_later_reading_with_a_probe_and_is_not_delayed_by_the_interval() {
-        let mut state = (Unhealthy::default(), NoReadings::default());
+        let mut world = World::new();
         let t0 = Instant::now();
         let at = |seconds| t0 + Duration::from_secs(seconds);
         let unhealthy = |probed| Observed::Unhealthy { probed };
-        assert_eq!(
-            judged(&mut state, unhealthy(false), at(0)),
-            Verdict::Wait("unhealthy-unconfirmed")
-        );
-        // Too early, with or without a probe.
-        assert_eq!(
-            judged(&mut state, unhealthy(true), at(2)),
-            Verdict::Wait("unhealthy-unconfirmed")
-        );
-        assert!(!state.0.due(&scope(1), "g1", at(4)));
+        let wait = Verdict::Wait("unhealthy-unconfirmed");
+        assert_eq!(world.judge(unhealthy(false), at(0)), wait);
+        assert_eq!(world.judge(unhealthy(true), at(2)), wait);
+        assert!(!world.unhealthy.due(&scope(1), "g1", at(4)));
         // Five seconds after the first sighting a probe is due, whatever the
         // health interval, and an attempted probe (even exit 125) confirms.
-        assert!(state.0.due(&scope(1), "g1", at(5)));
-        assert_eq!(
-            judged(&mut state, unhealthy(false), at(5)),
-            Verdict::Wait("unhealthy-unconfirmed")
-        );
-        assert_eq!(judged(&mut state, unhealthy(true), at(5)), Verdict::Restart);
-        // A healthy reading forgets the sighting; a new generation starts over.
-        judged(&mut state, Observed::Healthy, at(6));
-        assert_eq!(
-            judged(&mut state, unhealthy(true), at(7)),
-            Verdict::Wait("unhealthy-unconfirmed")
-        );
-        assert_eq!(
-            judge_with(
-                &mut state.0,
-                &mut state.1,
-                &scope(1),
-                unhealthy(true),
-                "g2",
-                at(20)
-            ),
-            Verdict::Wait("unhealthy-unconfirmed")
-        );
+        assert!(world.unhealthy.due(&scope(1), "g1", at(5)));
+        assert_eq!(world.judge(unhealthy(false), at(5)), wait);
+        assert_eq!(world.judge(unhealthy(true), at(5)), Verdict::Restart);
+        world.judge(Observed::Healthy, at(6));
+        assert_eq!(world.judge(unhealthy(true), at(7)), wait);
+        world.generation = "g2";
+        assert_eq!(world.judge(unhealthy(true), at(20)), wait);
     }
 
     #[test]
-    fn a_probe_that_keeps_failing_is_retained_only_until_the_bound_then_restarted() {
-        let mut state = (Unhealthy::default(), NoReadings::default());
+    fn scattered_failures_never_add_up() {
+        let mut world = World::new();
         let t0 = Instant::now();
         let at = |seconds| t0 + Duration::from_secs(seconds);
-        for second in [0, 30, 60, 90] {
+        let wait = Verdict::Wait("engine-unavailable");
+        // One failure, a long gap, two more: nothing happens.
+        assert_eq!(world.judge(Observed::NoReading, at(0)), wait);
+        assert_eq!(world.judge(Observed::NoReading, at(5_000)), wait);
+        assert_eq!(world.judge(Observed::NoReading, at(5_010)), wait);
+        assert_eq!(world.readings.0[&scope(1)].count, 2);
+        // Even many sparse failures spanning hours stay below the bound.
+        for number in 0..40 {
             assert_eq!(
-                judged(&mut state, Observed::NoReading, at(second)),
+                world.judge(Observed::NoReading, at(10_000 + number * 200)),
+                wait
+            );
+        }
+    }
+
+    #[test]
+    fn a_neighbours_deployment_starving_the_host_for_minutes_takes_no_action() {
+        let mut world = World::new();
+        let t0 = Instant::now();
+        // 3.5 minutes of back-to-back failures.
+        for second in (0..=210).step_by(20) {
+            assert_eq!(
+                world.judge(Observed::NoReading, t0 + Duration::from_secs(second)),
                 Verdict::Wait("engine-unavailable")
             );
         }
-        assert_eq!(
-            judged(&mut state, Observed::NoReading, at(120)),
-            Verdict::Kill { unavailable: true }
-        );
     }
 
     #[test]
-    fn a_reading_or_a_new_generation_resets_the_failed_reading_streak() {
-        let mut state = (Unhealthy::default(), NoReadings::default());
+    fn ten_continuous_minutes_of_failures_restart_gracefully_only_when_the_host_is_quiet() {
         let t0 = Instant::now();
         let at = |seconds| t0 + Duration::from_secs(seconds);
-        for second in [0, 50, 100] {
-            judged(&mut state, Observed::NoReading, at(second));
+        let mut quiet = World::new();
+        for second in (0..600).step_by(30) {
+            assert_eq!(
+                quiet.judge(Observed::NoReading, at(second)),
+                Verdict::Wait("engine-unavailable")
+            );
         }
-        judged(&mut state, Observed::Healthy, at(110));
-        assert_eq!(
-            judged(&mut state, Observed::NoReading, at(200)),
-            Verdict::Wait("engine-unavailable")
-        );
-        for second in [210, 260] {
-            judged(&mut state, Observed::NoReading, at(second));
+        // Not a kill: a graceful restart, and the streak starts over.
+        assert_eq!(quiet.judge(Observed::NoReading, at(600)), Verdict::GiveUp);
+        assert!(quiet.readings.0.is_empty());
+        // The same failures while an operation runs are suppressed, visibly.
+        let mut busy = World::new();
+        busy.busy = true;
+        for second in (0..600).step_by(30) {
+            busy.judge(Observed::NoReading, at(second));
         }
-        // The same count and age under another generation does not trip.
         assert_eq!(
-            judge_with(
-                &mut state.0,
-                &mut state.1,
-                &scope(1),
-                Observed::NoReading,
-                "g2",
-                at(330)
-            ),
-            Verdict::Wait("engine-unavailable")
+            busy.judge(Observed::NoReading, at(600)),
+            Verdict::Wait("probe-unavailable-suppressed")
         );
+        // When the operation ends, the still-failing container is restarted.
+        busy.busy = false;
+        assert_eq!(busy.judge(Observed::NoReading, at(630)), Verdict::GiveUp);
+    }
+
+    #[test]
+    fn most_scopes_failing_together_is_a_host_problem_not_a_broken_container() {
+        let t0 = Instant::now();
+        let at = |seconds| t0 + Duration::from_secs(seconds);
+        let mut world = World::new();
+        world.live = 3;
+        let neighbour = |world: &mut World, second| {
+            let other = scope(2);
+            world.readings.note(&other, "g9", at(second));
+        };
+        for second in (0..600).step_by(30) {
+            world.judge(Observed::NoReading, at(second));
+            neighbour(&mut world, second);
+        }
+        // Two of three scopes are failing right now.
+        assert_eq!(
+            world.judge(Observed::NoReading, at(600)),
+            Verdict::Wait("probe-unavailable-suppressed")
+        );
+        // A lone failing scope among many healthy ones is the broken one.
+        let mut lone = World::new();
+        lone.live = 5;
+        for second in (0..600).step_by(30) {
+            lone.judge(Observed::NoReading, at(second));
+        }
+        assert_eq!(lone.judge(Observed::NoReading, at(600)), Verdict::GiveUp);
+    }
+
+    #[test]
+    fn any_successful_reading_resets_the_streak() {
+        let t0 = Instant::now();
+        let at = |seconds| t0 + Duration::from_secs(seconds);
+        for reading in [
+            Observed::Healthy,
+            Observed::Unreadable,
+            Observed::NotRunning,
+            Observed::Unhealthy { probed: true },
+        ] {
+            let mut world = World::new();
+            for second in (0..580).step_by(30) {
+                world.judge(Observed::NoReading, at(second));
+            }
+            world.judge(reading, at(590));
+            assert!(world.readings.0.is_empty(), "{reading:?}");
+            assert_eq!(
+                world.judge(Observed::NoReading, at(620)),
+                Verdict::Wait("engine-unavailable")
+            );
+        }
     }
 
     #[test]
     fn proof_failures_kill_at_once_and_stopped_containers_restart_promptly() {
-        let mut state = (Unhealthy::default(), NoReadings::default());
+        let mut world = World::new();
         let now = Instant::now();
-        assert_eq!(
-            judged(&mut state, Observed::Failed, now),
-            Verdict::Kill { unavailable: false }
-        );
-        assert_eq!(
-            judged(&mut state, Observed::NotRunning, now),
-            Verdict::Restart
-        );
-        assert_eq!(judged(&mut state, Observed::Unreadable, now), Verdict::Keep);
+        assert_eq!(world.judge(Observed::Failed, now), Verdict::Kill);
+        assert_eq!(world.judge(Observed::NotRunning, now), Verdict::Restart);
+        assert_eq!(world.judge(Observed::Unreadable, now), Verdict::Keep);
     }
 
     #[test]
@@ -551,36 +683,24 @@ mod tests {
             }) as Work
         };
         let scheduler = Scheduler::new(work).unwrap();
-        let queued = scope(9);
-        let queued_only = scope(10);
-        let held = |scope: &Scope| {
-            let mut guard = scheduler_slot(&scheduler, scope);
-            guard.take()
-        };
-        assert!(scheduler.enqueue(queued.clone()).unwrap());
-        until(|| scheduler_slot(&scheduler, &queued).is_some());
+        let running = scope(9);
+        assert_eq!(in_flight_in(&scheduler, &running), None);
+        assert!(scheduler.enqueue(running.clone()).unwrap());
+        until(|| in_flight_in(&scheduler, &running).is_some());
         std::thread::sleep(Duration::from_millis(5));
-        assert!(held(&queued).is_some_and(|age| age >= Duration::from_millis(5)));
-        // A scope that no worker has begun reports nothing, however long queued.
+        assert!(in_flight_in(&scheduler, &running).unwrap() >= Duration::from_millis(5));
+        // A scope no worker has begun reports nothing, however long queued.
+        let queued = scope(10);
         scheduler
             .pending
             .lock()
             .unwrap()
-            .insert(queued_only.clone(), Slot { started: None });
-        assert!(scheduler_slot(&scheduler, &queued_only).is_none());
-        scheduler.pending.lock().unwrap().remove(&queued_only);
+            .insert(queued.clone(), Slot { started: None });
+        assert_eq!(in_flight_in(&scheduler, &queued), None);
+        scheduler.pending.lock().unwrap().remove(&queued);
         *gate.0.lock().unwrap() = true;
         gate.1.notify_all();
         until(|| scheduler.pending.lock().unwrap().is_empty());
-    }
-
-    fn scheduler_slot(scheduler: &Scheduler, scope: &Scope) -> Option<Duration> {
-        scheduler
-            .pending
-            .lock()
-            .unwrap()
-            .get(scope)
-            .and_then(|slot| slot.started)
-            .map(|at| at.elapsed())
+        assert_eq!(in_flight_in(&scheduler, &running), None);
     }
 }
