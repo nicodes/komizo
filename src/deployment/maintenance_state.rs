@@ -40,9 +40,9 @@ const ANNOUNCE_SECONDS: i64 = 600;
 const MAX_BYTES: usize = 4096;
 const ERROR_CHARS: usize = 256;
 const KIND: &str = "komizo.service-maintenance";
-/// Backoff waits belong to whatever streak they interrupt.
 /// Stuck reasons that do not come from a timer and end only on a healthy read.
-const FORCED: [&str; 1] = ["probe-unavailable"];
+const FORCED: [&str; 2] = ["probe-unavailable", "probe-unavailable-suppressed"];
+/// Backoff waits belong to whatever streak they interrupt.
 const NEUTRAL: &str = "skipped:restart-backoff-wait";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -840,16 +840,26 @@ mod tests {
     fn a_change_inside_the_flap_limit_still_reaches_the_disk_without_another_change() {
         let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let store = Store::new(directory.path().join("state")).unwrap();
-        let go = |pass: &Pass| record(&store.root, "mailroom", "production", "web", pass, plain);
+        let go = |pass: &Pass, now| {
+            record_at(
+                &store.root,
+                "mailroom",
+                "production",
+                "web",
+                pass,
+                plain,
+                now,
+            )
+        };
         let read = || read(&store, "mailroom", "production", "web", true);
-        go(&pass("ok", Some(true)));
-        go(&pass("skipped:probe-lock-busy", None));
+        let busy = pass("skipped:probe-lock-busy", None);
+        go(&pass("ok", Some(true)), 1000);
+        go(&busy, 1002);
         // Held back by the flap limit: the file still shows the first outcome.
         assert_eq!(read()["outcome"], "ok");
-        std::thread::sleep(std::time::Duration::from_secs(
-            CHANGE_WRITE_SECONDS as u64 + 1,
-        ));
-        go(&pass("skipped:probe-lock-busy", None));
+        go(&busy, 1004);
+        assert_eq!(read()["outcome"], "ok");
+        go(&busy, 1000 + CHANGE_WRITE_SECONDS);
         assert_eq!(read()["outcome"], "skipped:probe-lock-busy");
     }
 
@@ -877,6 +887,25 @@ mod tests {
         let mut healthy = pass("ok", Some(true));
         healthy.healthy = true;
         let (healed, events) = advance(Some(&running), &healthy, plain, 420);
+        assert!(!healed.stuck && events.stuck_ended);
+    }
+
+    #[test]
+    fn long_suppression_is_stuck_for_visibility_with_its_own_reason_until_healthy() {
+        let mut suppressed = pass("skipped:probe-unavailable-suppressed", None);
+        suppressed.force_stuck = Some("probe-unavailable-suppressed");
+        let (first, events) = advance(None, &suppressed, plain, 100);
+        assert!(first.stuck && events.stuck_started);
+        assert_eq!(
+            first.stuck_reason.as_deref(),
+            Some("probe-unavailable-suppressed")
+        );
+        // Continued suppression passes keep it without another log line.
+        let (next, events) = advance(Some(&first), &suppressed, plain, 130);
+        assert!(next.stuck && !events.stuck_started);
+        let mut healthy = pass("ok", Some(true));
+        healthy.healthy = true;
+        let (healed, events) = advance(Some(&next), &healthy, plain, 140);
         assert!(!healed.stuck && events.stuck_ended);
     }
 
