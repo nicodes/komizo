@@ -4,7 +4,7 @@ use super::{
     controller::{self, Backend, Job, advance},
     data,
     engine::{Engine, volume_identity},
-    jobs,
+    jobs, maintenance_state,
     model::*,
     observation, proxy,
     registry::Registry,
@@ -14,7 +14,7 @@ use super::{
     units,
     validation::*,
 };
-use anyhow::{Result, anyhow, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use serde_json::json;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -2427,30 +2427,49 @@ fn service_snapshot(
     scope: &service_maintenance::Scope,
     prepare: bool,
 ) -> Result<Option<ServiceSnapshot>> {
-    let Some(installed) = store.installed(&scope.application, &scope.instance)? else {
-        return Ok(None);
+    Ok(snapshot_or_reason(store, scope, prepare)?.ok())
+}
+
+// The same closure, but a missing authority names which fact was missing and
+// every failing read names its step, so a silent early return can be found.
+fn snapshot_or_reason(
+    store: &Store,
+    scope: &service_maintenance::Scope,
+    prepare: bool,
+) -> Result<std::result::Result<ServiceSnapshot, &'static str>> {
+    let Some(installed) = store
+        .installed(&scope.application, &scope.instance)
+        .context("snapshot: read installed instance")?
+    else {
+        return Ok(Err("no-instance"));
     };
-    let operation = store.operation(&installed.operation_id)?;
+    let operation = store
+        .operation(&installed.operation_id)
+        .context("snapshot: read operation")?;
     if !maintenance_eligible(
         &installed,
         &operation,
         !store
-            .unresolved(&scope.application, &scope.instance)?
+            .unresolved(&scope.application, &scope.instance)
+            .context("snapshot: read unresolved operations")?
             .is_empty(),
         controller::now()?,
     ) {
-        return Ok(None);
+        return Ok(Err("not-eligible"));
     }
-    let document = store.release(&installed.release_digest)?;
+    let document = store
+        .release(&installed.release_digest)
+        .context("snapshot: read release")?;
     let Some(record) = installed.resources.containers.get(&scope.service).cloned() else {
-        return Ok(None);
+        return Ok(Err("no-service-record"));
     };
     ensure!(
         hex(&record.id, 64),
         "automatic restart cannot adopt an unrecorded native identity"
     );
     let (policy, policy_digest) =
-        controller::policy(Path::new(observation::POLICIES), &scope.application)?;
+        controller::policy(Path::new(observation::POLICIES), &scope.application)
+            .context("snapshot: read policy")?;
     let admission = store::read_protected(
         &store
             .root
@@ -2458,7 +2477,8 @@ fn service_snapshot(
             .join(&installed.operation_id)
             .join("admission.json"),
         MAX_DOCUMENT_BYTES,
-    )?;
+    )
+    .context("snapshot: read admission")?;
     let authority = crate::strict::value(&admission, MAX_DOCUMENT_BYTES)?;
     ensure!(
         authority["kind"] == "komizo.admission"
@@ -2467,7 +2487,8 @@ fn service_snapshot(
             && authority["policy_digest"] == policy_digest,
         "automatic service maintenance requires its unchanged admitted policy"
     );
-    let config = verified_service_configuration(store, &installed, &document, &scope.service)?;
+    let config = verified_service_configuration(store, &installed, &document, &scope.service)
+        .context("snapshot: verify service configuration")?;
     ensure!(config.wanted, "desired service configuration is disabled");
     let data =
         if installed.instance == "production" && !document.release.workload.volumes.is_empty() {
@@ -2484,8 +2505,10 @@ fn service_snapshot(
     let mut completed = BTreeMap::new();
     for (dependency, condition) in &document.release.workload.services[&scope.service].needs {
         if *condition == Condition::Completed {
-            let identity = jobs::identity(&document, dependency, &installed)?;
-            let receipt = jobs::read(store, &scope.application, &scope.instance, &identity)?;
+            let identity = jobs::identity(&document, dependency, &installed)
+                .context("snapshot: job identity")?;
+            let receipt = jobs::read(store, &scope.application, &scope.instance, &identity)
+                .context("snapshot: job receipt")?;
             completed.insert(
                 dependency.clone(),
                 document_digest(&canonical(&serde_json::to_value(receipt)?)?),
@@ -2496,32 +2519,37 @@ fn service_snapshot(
         &json!({"installed":installed,"operation":operation,
         "policy_digest":policy_digest,"admission":document_digest(&admission),
         "configuration":document_digest(&config.bytes()?),"data_admission":data,"completed":completed,
-        "runtime_epoch":service_epoch(store,&installed)?}),
+        "runtime_epoch":service_epoch(store,&installed).context("snapshot: read service epoch")?}),
     )?);
     if prepare {
         let system = System {
             deadline: Instant::now() + Duration::from_secs(5),
         };
-        system::restore_instance_allocation(store, &system, &policy, &scope.instance)?;
+        system::restore_instance_allocation(store, &system, &policy, &scope.instance)
+            .context("snapshot: restore instance allocation")?;
         let group = service_group(&installed, &scope.service, &record.ownership)?;
-        system.prepare_group(
-            &group,
-            instance_limits(&policy, &scope.instance)?,
-            &Default::default(),
-        )?;
+        system
+            .prepare_group(
+                &group,
+                instance_limits(&policy, &scope.instance)?,
+                &Default::default(),
+            )
+            .context("snapshot: prepare service group")?;
         let probe = super::cgroups::service_probe_group(
             &scope.application,
             &scope.instance,
             &scope.service,
             &record.ownership,
         )?;
-        system.prepare_group(
-            &probe,
-            instance_limits(&policy, &scope.instance)?,
-            &Default::default(),
-        )?;
+        system
+            .prepare_group(
+                &probe,
+                instance_limits(&policy, &scope.instance)?,
+                &Default::default(),
+            )
+            .context("snapshot: prepare probe group")?;
     }
-    Ok(Some(ServiceSnapshot {
+    Ok(Ok(ServiceSnapshot {
         installed,
         document,
         policy,
@@ -2653,38 +2681,153 @@ fn maintenance_commit_required(
     probe_attempted || checked_at.is_some() || !matches!(observed, Ok(Some(true)))
 }
 
+/// What one maintenance pass did, so that no early return is silent.
+#[derive(Default)]
+struct Trace {
+    /// The step in progress; names the failing step of an `Err`.
+    stage: &'static str,
+    skipped: Option<String>,
+    no_reading: Option<String>,
+    running: Option<bool>,
+    ineligible: bool,
+    steady: bool,
+    unhealthy: Option<bool>,
+    fingerprint: Option<String>,
+}
+
+impl Trace {
+    fn skip(&mut self, reason: &str) -> Result<()> {
+        self.skipped = Some(reason.to_owned());
+        Ok(())
+    }
+    fn absent(&mut self, reason: &'static str) -> Result<()> {
+        self.ineligible = matches!(reason, "no-instance" | "not-eligible");
+        self.skip(reason)
+    }
+    fn absent_at(&mut self, reason: &'static str, site: &str) -> Result<()> {
+        self.ineligible = matches!(reason, "no-instance" | "not-eligible");
+        self.skip(&format!("{reason}-{site}"))
+    }
+    fn conclude(&self, scope: &service_maintenance::Scope, result: &Result<()>) {
+        let (outcome, stage, error) = match result {
+            Ok(()) => (
+                self.skipped
+                    .as_ref()
+                    .map_or_else(|| "ok".to_owned(), |reason| format!("skipped:{reason}")),
+                None,
+                None,
+            ),
+            Err(error) if super::engine::no_reading(error) => {
+                ("skipped:engine-unavailable".to_owned(), None, None)
+            }
+            Err(error) => (
+                "error".to_owned(),
+                Some(self.stage.to_owned()),
+                Some(format!("{error:#}")),
+            ),
+        };
+        if self.steady && result.is_ok() && self.skipped.is_none() {
+            if let Some(fingerprint) = &self.fingerprint {
+                service_maintenance::steady_mark(scope, fingerprint.clone());
+            }
+        } else {
+            service_maintenance::steady_clear(scope);
+        }
+        if self.unhealthy == Some(false) {
+            service_maintenance::unhealthy_clear(scope);
+        }
+        let pass = maintenance_state::Pass {
+            outcome,
+            stage,
+            error,
+            running: self.running,
+            eligible: !self.ineligible,
+        };
+        maintenance_state::record(
+            &scope.root,
+            &scope.application,
+            &scope.instance,
+            &scope.service,
+            &pass,
+            |raw| redacted_diagnostic(scope, raw),
+        );
+    }
+}
+
+fn redacted_diagnostic(scope: &service_maintenance::Scope, raw: &str) -> String {
+    Store::new(scope.root.clone())
+        .and_then(|store| {
+            let installed = store
+                .installed(&scope.application, &scope.instance)?
+                .ok_or_else(|| anyhow!("instance missing"))?;
+            let document = store.release(&installed.release_digest)?;
+            observation::redact(&installed, &document, raw)
+        })
+        .unwrap_or_else(|_| "protected diagnostic unavailable".into())
+}
+
+/// Cheap identity of what a healthy observation covered; any change to the
+/// instance, its release or the service's container record forces a new look.
+fn service_fingerprint(installed: &Installed, service: &str) -> String {
+    format!(
+        "{}|{}|{}|{}",
+        installed.operation_id,
+        installed.release_digest,
+        installed.desired_running,
+        installed
+            .resources
+            .containers
+            .get(service)
+            .map_or("", |record| record.id.as_str())
+    )
+}
+
 // Each queued scope owns its dedupe slot until every observation/commit ends.
 // Probe and authority CLIs run outside the application mutation lease.
 fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
+    let mut trace = Trace::default();
+    let result = maintain_service_traced(scope, &mut trace);
+    trace.conclude(scope, &result);
+    result
+}
+
+fn maintain_service_traced(scope: &service_maintenance::Scope, trace: &mut Trace) -> Result<()> {
+    trace.stage = "open-store";
     let store = Store::new(scope.root.clone())?;
     let frozen = {
+        trace.stage = "instance-lease";
         let Some(_lease) =
             controller::maintenance_lease(&store, &scope.application, &scope.instance)?
         else {
-            return Ok(());
+            return trace.skip("instance-lease-busy");
         };
-        let Some(snapshot) = service_snapshot(&store, scope, true)? else {
-            return Ok(());
-        };
-        snapshot
+        trace.stage = "snapshot";
+        match snapshot_or_reason(&store, scope, true)? {
+            Ok(snapshot) => snapshot,
+            Err(reason) => return trace.absent(reason),
+        }
     };
+    trace.fingerprint = Some(service_fingerprint(&frozen.installed, &scope.service));
+    trace.stage = "probe-lock";
     let (probe_application, probe_instance) = probe_lock_scope(&frozen.installed, &scope.service)?;
     let Some(probe_lock) = store.try_lock(&probe_application, &probe_instance)? else {
-        return Ok(());
+        return trace.skip("probe-lock-busy");
     };
     // If admission acquired the instance while we were taking the probe lock,
     // discard immediately instead of starting a long stale health command.
     {
+        trace.stage = "recheck-after-probe-lock";
         let Some(_lease) =
             controller::maintenance_lease(&store, &scope.application, &scope.instance)?
         else {
-            return Ok(());
+            return trace.skip("instance-lease-busy-after-probe-lock");
         };
-        let Some(current) = service_snapshot(&store, scope, false)? else {
-            return Ok(());
+        let current = match snapshot_or_reason(&store, scope, false)? {
+            Ok(current) => current,
+            Err(reason) => return trace.absent_at(reason, "after-probe-lock"),
         };
         if current.binding != frozen.binding {
-            return Ok(());
+            return trace.skip("binding-changed-after-probe-lock");
         }
     }
     let deadline =
@@ -2693,6 +2836,7 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
         deadline: deadline.min(Instant::now() + Duration::from_secs(20)),
     };
     let group = service_group(&frozen.installed, &scope.service, &frozen.record.ownership)?;
+    trace.stage = "inspect-container";
     let before = engine
         .container_metadata(
             &frozen.record,
@@ -2703,13 +2847,18 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
         .ok_or_else(|| {
             anyhow!("desired native CID missing; explicit owner reconciliation required")
         })?;
+    trace.stage = "verify-mounts";
     super::engine::service_mounts(
         &before,
         &frozen.record,
         &frozen.document.release.workload.services[&scope.service],
     )?;
+    trace.running = Some(before["State"]["Running"] == true);
+    trace.stage = "observe-health";
     let mut checked_at = None;
     let mut probe_attempted = false;
+    let mut unhealthy_running = false;
+    let mut steady = false;
     let observed = (|| -> Result<Option<bool>> {
         super::engine::workload_limits(
             &before,
@@ -2767,10 +2916,11 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
             if !probe_attempted {
                 // workload_limits above already verified the live payload,
                 // monitor, AppArmor, exact cgroups and kernel hard limits.
-                return health_observation(
-                    before["State"]["Health"]["Status"].as_str().unwrap_or(""),
-                    false,
-                );
+                let status = before["State"]["Health"]["Status"].as_str().unwrap_or("");
+                steady = status == "healthy";
+                let reading = health_observation(status, false)?;
+                unhealthy_running = reading == Some(false);
+                return Ok(reading);
             }
             let after = Engine {
                 deadline: deadline.min(Instant::now() + Duration::from_secs(20)),
@@ -2811,27 +2961,74 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
                 )?;
             }
             let status = after["State"]["Health"]["Status"].as_str().unwrap_or("");
-            health_observation(status, unavailable)
+            let reading = health_observation(status, unavailable)?;
+            unhealthy_running = reading == Some(false);
+            Ok(reading)
         } else {
+            steady = true;
             Ok(Some(true))
         }
     })();
+    // A native command that failed or hit its own deadline says nothing about
+    // the workload. It is no reading, never unhealthy and never a kill.
+    let observed = match observed {
+        Err(error) if super::engine::no_reading(&error) => {
+            trace.no_reading = Some(format!("{error:#}"));
+            Ok(None)
+        }
+        other => other,
+    };
+    trace.steady = steady && matches!(observed, Ok(Some(true)));
+    trace.unhealthy = match &observed {
+        Ok(Some(false)) => Some(unhealthy_running),
+        Ok(Some(true)) => Some(false),
+        _ => None,
+    };
+    // A running service is stopped for being unhealthy only on a second
+    // reading, a few seconds after the first and backed by a fresh probe.
+    // A container that is not running is restarted promptly as before.
+    let observed = if unhealthy_running
+        && matches!(observed, Ok(Some(false)))
+        && !service_maintenance::unhealthy_confirm(
+            scope,
+            &format!(
+                "{}/{}",
+                frozen.record.id,
+                before["State"]["StartedAt"].as_str().unwrap_or("")
+            ),
+            controller::now()?,
+            checked_at.is_some(),
+        ) {
+        trace.skipped = Some("unhealthy-unconfirmed".into());
+        Ok(None)
+    } else {
+        observed
+    };
+    if trace.no_reading.is_some() {
+        trace.skipped = Some("engine-unavailable".into());
+    }
+    if matches!(observed, Ok(None)) && !probe_attempted && checked_at.is_none() {
+        return Ok(());
+    }
     if !maintenance_commit_required(&observed, probe_attempted, checked_at) {
         return Ok(());
     }
     let restart = matches!(observed, Ok(Some(false)));
     let stopped = {
+        trace.stage = "commit-lease";
         let Some(_lease) =
             controller::maintenance_lease(&store, &scope.application, &scope.instance)?
         else {
-            return Ok(());
+            return trace.skip("instance-lease-busy-before-commit");
         };
-        let Some(current) = service_snapshot(&store, scope, false)? else {
-            return Ok(());
+        let current = match snapshot_or_reason(&store, scope, false)? {
+            Ok(current) => current,
+            Err(reason) => return trace.absent_at(reason, "before-commit"),
         };
         if current.binding != frozen.binding {
-            return Ok(());
+            return trace.skip("binding-changed-before-commit");
         }
+        trace.stage = "commit-inspect";
         let live = Engine {
             deadline: deadline.min(Instant::now() + Duration::from_secs(5)),
         }
@@ -2843,8 +3040,9 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
         )?
         .ok_or_else(|| anyhow!("service disappeared before observation commit"))?;
         if !same_service_generation(&before, &live) {
-            return Ok(());
+            return trace.skip("generation-changed-before-commit");
         }
+        trace.stage = "commit-probe";
         if let Some(checked) = checked_at {
             commit_probe(
                 &store,
@@ -2860,6 +3058,7 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
         match observed {
             Ok(Some(true) | None) => return Ok(()),
             Err(error) => {
+                trace.stage = "observation-failure-cleanup";
                 commit_backoff(&store, &current, &scope.service)?;
                 advance_service_epoch(&store, &current.installed)?;
                 if cleanup_service(Some(&before), &group).is_err() {
@@ -2870,11 +3069,13 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
                 return Err(error);
             }
             Ok(Some(false)) => {
+                trace.stage = "restart-backoff";
                 if !service_backoff(&store, &current, &scope.service)? {
-                    return Ok(());
+                    return trace.skip("restart-backoff-wait");
                 }
                 commit_backoff(&store, &current, &scope.service)?;
                 let was_running = live["State"]["Running"] == true;
+                trace.stage = "stop-service";
                 if was_running {
                     advance_service_epoch(&store, &current.installed)?;
                 }
@@ -2922,19 +3123,23 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
     }
     // The full pre-start source/data/job/dependency guard observes outside the
     // mutation lease. Its entire frozen authority closure is rechecked below.
+    trace.stage = "start-guard";
     observation::guard(&scope.application, &scope.instance, &scope.service)?;
     let after_start_binding = {
+        trace.stage = "restart-lease";
         let Some(_lease) =
             controller::maintenance_lease(&store, &scope.application, &scope.instance)?
         else {
-            return Ok(());
+            return trace.skip("instance-lease-busy-before-restart");
         };
-        let Some(current) = service_snapshot(&store, scope, false)? else {
-            return Ok(());
+        let current = match snapshot_or_reason(&store, scope, false)? {
+            Ok(current) => current,
+            Err(reason) => return trace.absent_at(reason, "before-restart"),
         };
         if current.binding != frozen.binding {
-            return Ok(());
+            return trace.skip("binding-changed-before-restart");
         }
+        trace.stage = "restart-inspect";
         let command = Engine {
             deadline: deadline.min(Instant::now() + Duration::from_secs(5)),
         };
@@ -2947,8 +3152,9 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
             )?
             .ok_or_else(|| anyhow!("service disappeared before restart"))?;
         if !same_service_generation(&stopped, &live) {
-            return Ok(());
+            return trace.skip("generation-changed-before-restart");
         }
+        trace.stage = "restart-start";
         stopped_service(&live)?;
         let system = System {
             deadline: command.deadline,
@@ -3016,6 +3222,7 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
             .ok_or_else(|| anyhow!("restarted service authority disappeared"))?
             .binding
     };
+    trace.stage = "restart-readiness";
     // Route generation reads current protected state itself. HTTP readiness is
     // pure observation and must not hold the application mutation lease.
     proxy::refresh(
@@ -3030,15 +3237,17 @@ fn maintain_service(scope: &service_maintenance::Scope) -> Result<()> {
     )?;
     // No operational metadata or source acceptance is inferred from this old
     // observation if admission changed the instance while readiness ran.
+    trace.stage = "restart-final-check";
     let Some(_lease) = controller::maintenance_lease(&store, &scope.application, &scope.instance)?
     else {
-        return Ok(());
+        return trace.skip("instance-lease-busy-after-restart");
     };
-    let Some(current) = service_snapshot(&store, scope, false)? else {
-        return Ok(());
+    let current = match snapshot_or_reason(&store, scope, false)? {
+        Ok(current) => current,
+        Err(reason) => return trace.absent_at(reason, "after-restart"),
     };
     if current.binding != after_start_binding {
-        return Ok(());
+        return trace.skip("binding-changed-after-restart");
     }
     Ok(())
 }
@@ -3063,6 +3272,7 @@ fn maintenance_eligible(
 }
 
 fn maintain_services(store: &Store) -> Result<()> {
+    let mut live = BTreeSet::new();
     for installed in proxy::instances(store)? {
         if installed.removed || !installed.desired_running {
             continue;
@@ -3072,14 +3282,45 @@ fn maintain_services(store: &Store) -> Result<()> {
             if !document.release.workload.services.contains_key(&service) {
                 continue;
             }
-            service_maintenance::enqueue(service_maintenance::Scope {
+            let scope = service_maintenance::Scope {
                 root: store.root.clone(),
                 application: installed.application.clone(),
                 instance: installed.instance.clone(),
                 service,
-            })?;
+            };
+            live.insert(scope.clone());
+            // A healthy, unchanged service is inspected every few seconds;
+            // anything else keeps the one-second reaction.
+            if service_maintenance::steady_skip(
+                &scope,
+                &service_fingerprint(&installed, &scope.service),
+            ) {
+                continue;
+            }
+            if !service_maintenance::enqueue(scope.clone())?
+                && service_maintenance::in_flight(&scope)
+                    .is_some_and(|age| age >= service_maintenance::STALLED)
+            {
+                // The observation owns its slot and no new one can start, so
+                // the pass itself can never report why.
+                maintenance_state::record(
+                    &scope.root,
+                    &scope.application,
+                    &scope.instance,
+                    &scope.service,
+                    &maintenance_state::Pass {
+                        outcome: "error".into(),
+                        stage: Some("worker-stalled".into()),
+                        error: Some("a maintenance observation has not finished".into()),
+                        running: None,
+                        eligible: true,
+                    },
+                    str::to_owned,
+                );
+            }
         }
     }
+    service_maintenance::steady_retain(&live);
     Ok(())
 }
 
@@ -4384,6 +4625,68 @@ mod recovery_tests {
         assert!(probe_due(Some(&foreign), &id, started, epoch + 1, 3600).is_err());
         assert!(probe_due(None, &id, "invalid", epoch, 3600).is_err());
         assert!(probe_due(None, "foreign", started, epoch, 3600).is_err());
+    }
+
+    fn maintenance_scope() -> service_maintenance::Scope {
+        service_maintenance::Scope {
+            root: "/synthetic-maintenance-trace".into(),
+            application: "mailroom".into(),
+            instance: "production".into(),
+            service: "web".into(),
+        }
+    }
+
+    #[test]
+    fn every_early_return_names_a_distinct_reason_and_errors_name_their_stage() {
+        let scope = maintenance_scope();
+        let mut seen = BTreeSet::new();
+        for reason in [
+            "instance-lease-busy",
+            "probe-lock-busy",
+            "binding-changed-before-commit",
+        ] {
+            let mut trace = Trace::default();
+            trace.skip(reason).unwrap();
+            assert_eq!(trace.skipped.as_deref(), Some(reason));
+            assert!(seen.insert(reason));
+        }
+        let mut trace = Trace::default();
+        trace.absent_at("not-eligible", "before-restart").unwrap();
+        assert!(trace.ineligible);
+        assert_eq!(
+            trace.skipped.as_deref(),
+            Some("not-eligible-before-restart")
+        );
+        let mut trace = Trace::default();
+        trace.absent("no-service-record").unwrap();
+        assert!(!trace.ineligible);
+        // Steady state is only ever marked from an unskipped, successful pass.
+        service_maintenance::steady_clear(&scope);
+        assert!(!service_maintenance::steady_skip(&scope, "x"));
+    }
+
+    #[test]
+    fn service_fingerprint_changes_with_the_instance_release_and_container() {
+        let mut installed = Installed {
+            kind: "komizo.installed".into(),
+            version: 1,
+            application: "mailroom".into(),
+            instance: "production".into(),
+            release_digest: format!("sha256:{}", "a".repeat(64)),
+            operation_id: "a".repeat(32),
+            desired_running: true,
+            removed: false,
+            expires_at: None,
+            resources: Resources::default(),
+            secret_snapshots: BTreeMap::new(),
+        };
+        let base = service_fingerprint(&installed, "web");
+        assert_eq!(base, service_fingerprint(&installed, "web"));
+        installed.operation_id = "b".repeat(32);
+        assert_ne!(base, service_fingerprint(&installed, "web"));
+        installed.operation_id = "a".repeat(32);
+        installed.desired_running = false;
+        assert_ne!(base, service_fingerprint(&installed, "web"));
     }
 
     #[test]

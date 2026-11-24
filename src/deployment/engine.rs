@@ -16,11 +16,29 @@ pub(super) enum HealthProbe {
     Unavailable125,
 }
 
+/// A native command that failed to run or hit its own deadline. It says
+/// nothing about the workload, so observers treat it as "no reading" and never
+/// as evidence of an unhealthy or missing service.
+#[derive(Debug)]
+pub(super) struct NoReading(String);
+impl std::fmt::Display for NoReading {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+impl std::error::Error for NoReading {}
+pub(super) fn no_reading(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<NoReading>())
+}
+fn unavailable(message: &str) -> anyhow::Error {
+    anyhow::Error::new(NoReading(message.into()))
+}
+
 fn health_probe_status(code: Option<i32>) -> Result<HealthProbe> {
     match code {
         Some(0 | 1) => Ok(HealthProbe::Completed),
         Some(125) => Ok(HealthProbe::Unavailable125),
-        _ => Err(anyhow!("native health probe could not complete")),
+        _ => Err(unavailable("native health probe could not complete")),
     }
 }
 pub fn workload_group(value: &Value, group: &super::cgroups::Group) -> Result<()> {
@@ -299,7 +317,9 @@ impl Engine {
     }
     fn command(&self, arguments: &[&str]) -> Result<Command> {
         let remaining = self.deadline.saturating_duration_since(Instant::now());
-        ensure!(!remaining.is_zero(), "native engine deadline expired");
+        if remaining.is_zero() {
+            return Err(unavailable("native engine deadline expired"));
+        }
         // The independent watchdog also survives controller death. Otherwise
         // an interrupted import could outlive the worker's userspace deadline.
         let mut command = Command::new("/usr/bin/timeout");
@@ -322,7 +342,7 @@ impl Engine {
     fn capture(&self, arguments: &[&str]) -> Result<crate::process::Captured> {
         let mut command = self.command(arguments)?;
         crate::process::capture(&mut command, None, 4 << 20, self.deadline, || false)
-            .map_err(|_| anyhow!("native engine process failed or exceeded its deadline"))
+            .map_err(|_| unavailable("native engine process failed or exceeded its deadline"))
     }
     /// Bind this owned child and every forked monitor before either timeout or
     /// Podman executes. No existing process is selected or moved by PID.
@@ -345,6 +365,7 @@ impl Engine {
                 });
             }
             crate::process::capture(&mut command, None, 4 << 20, self.deadline, || false)
+                .map_err(|_| unavailable("native engine process failed or exceeded its deadline"))
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -552,7 +573,17 @@ impl Engine {
             ["container", "network", "volume", "image", "secret"].contains(&kind),
             "invalid inspection kind"
         );
-        let value = self.json(&[kind, "inspect", name])?;
+        let output = self.capture(&[kind, "inspect", name])?;
+        if !output.status.success() {
+            return Err(unavailable(&format!(
+                "native engine inspection refused: {}",
+                String::from_utf8_lossy(&output.stderr)
+                    .chars()
+                    .take(512)
+                    .collect::<String>()
+            )));
+        }
+        let value: Value = crate::strict::value(&output.stdout, 4 << 20)?;
         let array = value
             .as_array()
             .ok_or_else(|| anyhow!("native engine returned ambiguous inspection"))?;
@@ -792,16 +823,22 @@ fn container_metadata_from(
     inspect: impl FnOnce() -> Result<Value>,
     exists: impl FnOnce() -> Result<bool>,
 ) -> Result<Option<Value>> {
-    ensure!(Instant::now() < deadline, "native engine deadline expired");
+    if Instant::now() >= deadline {
+        return Err(unavailable("native engine deadline expired"));
+    }
     let inspected = inspect();
-    ensure!(Instant::now() < deadline, "native engine deadline expired");
+    if Instant::now() >= deadline {
+        return Err(unavailable("native engine deadline expired"));
+    }
     let value = match inspected {
         Ok(value) => value,
         Err(original) => {
             // Missing objects and failed inspection are distinct facts. Most
             // observations need one CLI; only an error needs classification.
             let present = exists()?;
-            ensure!(Instant::now() < deadline, "native engine deadline expired");
+            if Instant::now() >= deadline {
+                return Err(unavailable("native engine deadline expired"));
+            }
             if !present {
                 return Ok(None);
             }
@@ -861,6 +898,20 @@ fn container_metadata_from(
 #[cfg(test)]
 mod host_tests {
     use super::*;
+    #[test]
+    fn failed_or_overdue_commands_are_no_reading_but_refusals_of_proof_are_not() {
+        assert!(no_reading(&unavailable("native engine deadline expired")));
+        assert!(no_reading(
+            &unavailable("probe").context("service observation")
+        ));
+        assert!(no_reading(&health_probe_status(Some(137)).unwrap_err()));
+        assert!(no_reading(&health_probe_status(None).unwrap_err()));
+        assert!(!no_reading(&anyhow!("service generation changed")));
+        assert_eq!(
+            health_probe_status(Some(125)).unwrap(),
+            HealthProbe::Unavailable125
+        );
+    }
     fn metadata_fixture() -> (ContainerRecord, Value) {
         use serde_json::json;
         let record = ContainerRecord {

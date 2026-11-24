@@ -355,6 +355,17 @@ fn storage_resources() -> Result<Value> {
     )
 }
 
+// The latest maintenance outcome is advisory and never fails an inventory.
+fn maintenance(store: &store::Store, installed: &store::Installed, service: &str) -> Value {
+    super::maintenance_state::read(
+        store,
+        &installed.application,
+        &installed.instance,
+        service,
+        installed.desired_running && !installed.removed,
+    )
+}
+
 pub fn status() -> Result<Value> {
     ensure!(
         unsafe { libc::geteuid() } == 0,
@@ -395,7 +406,7 @@ pub fn status() -> Result<Value> {
                 );
                 services.insert(
                     name,
-                    json!({"container_id":null,"state":"absent","health":null,"resources":null}),
+                    json!({"container_id":null,"state":"absent","health":null,"resources":null,"maintenance":maintenance(&store,&installed,name)}),
                 );
                 continue;
             };
@@ -442,7 +453,7 @@ pub fn status() -> Result<Value> {
                 );
                 service_resources = Some(cgroup_resources(&path));
             }
-            services.insert(name,json!({"container_id":value.as_ref().map(|v|&v["Id"]),"state":value.as_ref().map(|v|&v["State"]["Status"]),"health":value.as_ref().and_then(|v|v["State"]["Health"]["Status"].as_str()),"resources":service_resources}));
+            services.insert(name,json!({"container_id":value.as_ref().map(|v|&v["Id"]),"state":value.as_ref().map(|v|&v["State"]["Status"]),"health":value.as_ref().and_then(|v|v["State"]["Health"]["Status"].as_str()),"resources":service_resources,"maintenance":maintenance(&store,&installed,name)}));
         }
         for record in installed.resources.networks.values() {
             engine.owned_object("network", record)?;
