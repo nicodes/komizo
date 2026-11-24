@@ -27,11 +27,26 @@ impl std::fmt::Display for NoReading {
     }
 }
 impl std::error::Error for NoReading {}
+#[cfg(test)]
+impl NoReading {
+    pub(super) fn for_test(message: &str) -> Self {
+        NoReading(message.into())
+    }
+}
 pub(super) fn no_reading(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| cause.is::<NoReading>())
 }
 fn unavailable(message: &str) -> anyhow::Error {
     anyhow::Error::new(NoReading(message.into()))
+}
+
+fn existence(code: Option<i32>) -> Result<bool> {
+    match code {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        // The command failed to answer; that is no reading, not a verdict.
+        _ => Err(unavailable("native engine object existence is uncertain")),
+    }
 }
 
 fn health_probe_status(code: Option<i32>) -> Result<HealthProbe> {
@@ -511,11 +526,7 @@ impl Engine {
             "invalid engine object kind"
         );
         let output = self.capture(&[kind, "exists", name_value])?;
-        match output.status.code() {
-            Some(0) => Ok(true),
-            Some(1) => Ok(false),
-            _ => Err(anyhow!("native engine object existence is uncertain")),
-        }
+        existence(output.status.code())
     }
     pub fn preflight(&self) -> Result<()> {
         ensure!(
@@ -898,6 +909,25 @@ fn container_metadata_from(
 #[cfg(test)]
 mod host_tests {
     use super::*;
+    #[test]
+    fn a_failed_inspection_followed_by_an_uncertain_existence_is_no_reading() {
+        let (record, _) = metadata_fixture();
+        let error = container_metadata_from(
+            &record,
+            "mailroom",
+            "production",
+            "api",
+            Instant::now() + Duration::from_secs(5),
+            || Err(unavailable("native engine inspection refused")),
+            || existence(Some(2)),
+        )
+        .unwrap_err();
+        assert!(no_reading(&error));
+        assert!(!existence(Some(1)).unwrap());
+        assert!(existence(Some(0)).unwrap());
+        assert!(no_reading(&existence(None).unwrap_err()));
+    }
+
     #[test]
     fn failed_or_overdue_commands_are_no_reading_but_refusals_of_proof_are_not() {
         assert!(no_reading(&unavailable("native engine deadline expired")));

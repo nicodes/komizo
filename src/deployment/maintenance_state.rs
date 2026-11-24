@@ -22,11 +22,26 @@ use std::{
 
 /// A desired, eligible service that has not been running this long is stuck.
 pub(super) const STUCK_SECONDS: i64 = 120;
+/// A record not refreshed for this long is stale: whatever it was timing no
+/// longer describes an unbroken period (controller down, instance stopped).
+const STALE_SECONDS: i64 = 120;
+/// Starts within the window that make a crash loop.
+const CRASH_WINDOW_SECONDS: i64 = 600;
+const CRASH_STARTS: usize = 5;
+const MAX_RESTARTS: usize = 8;
 /// An unchanged outcome is persisted at most this often.
 const REWRITE_SECONDS: i64 = 60;
+/// A changed outcome is persisted at once unless it flaps faster than this.
+const CHANGE_WRITE_SECONDS: i64 = 10;
+/// A failed write is retried this soon.
+const RETRY_WRITE_SECONDS: i64 = 5;
+/// The same error is announced to syslog at most this often.
+const ANNOUNCE_SECONDS: i64 = 600;
 const MAX_BYTES: usize = 4096;
 const ERROR_CHARS: usize = 256;
 const KIND: &str = "komizo.service-maintenance";
+/// Backoff waits belong to whatever streak they interrupt.
+const NEUTRAL: &str = "skipped:restart-backoff-wait";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Record {
@@ -36,7 +51,7 @@ pub(super) struct Record {
     pub outcome: String,
     /// The maintenance step that failed; only present for `error`.
     pub stage: Option<String>,
-    /// Sanitized and bounded; only present for `error`.
+    /// Sanitized and bounded; present for `error` and for a no-reading skip.
     pub error: Option<String>,
     pub first_seen: i64,
     pub last_seen: i64,
@@ -44,6 +59,15 @@ pub(super) struct Record {
     pub count: u64,
     pub not_running_since: Option<i64>,
     pub stuck: bool,
+    /// Why: `not-running`, `crash-loop`, `persistent-error` or a forced reason.
+    #[serde(default)]
+    pub stuck_reason: Option<String>,
+    /// Recent service starts by maintenance, oldest first and bounded.
+    #[serde(default)]
+    pub restarts: Vec<i64>,
+    /// Identity of the instance state last observed; a change restarts timers.
+    #[serde(default)]
+    pub epoch: Option<String>,
 }
 
 /// What one maintenance pass concluded.
@@ -56,6 +80,12 @@ pub(super) struct Pass {
     /// False when the instance is not eligible for maintenance; this clears
     /// the not-running timer because nothing is expected to run.
     pub eligible: bool,
+    /// The instance state this pass covered, when it got far enough to know.
+    pub epoch: Option<String>,
+    /// The pass started the service.
+    pub restarted: bool,
+    /// A condition that is stuck regardless of any timer.
+    pub force_stuck: Option<&'static str>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -72,64 +102,122 @@ pub(super) fn advance(
     sanitized: impl FnOnce(&str) -> String,
     now: i64,
 ) -> (Record, Events) {
-    let same = previous.is_some_and(|p| p.outcome == pass.outcome && p.stage == pass.stage);
+    let stale = previous.is_some_and(|p| now.saturating_sub(p.last_seen) > STALE_SECONDS);
+    let changed = match (&pass.epoch, previous.and_then(|p| p.epoch.as_ref())) {
+        (Some(new), Some(old)) => new != old,
+        _ => false,
+    };
+    // A restart of the clock: a long stop, a controller outage or a new
+    // deployment must not be counted as one unbroken failure.
+    let carry = if stale || changed { None } else { previous };
+    let neutral = pass.outcome == NEUTRAL && carry.is_some_and(|p| p.outcome == "error");
+    let (outcome, stage) = match (neutral, carry) {
+        (true, Some(p)) => (p.outcome.clone(), p.stage.clone()),
+        _ => (pass.outcome.clone(), pass.stage.clone()),
+    };
+    let same = carry.is_some_and(|p| p.outcome == outcome && p.stage == stage);
     let not_running_since = if !pass.eligible {
         None
     } else {
         match pass.running {
-            Some(false) => previous.and_then(|p| p.not_running_since).or(Some(now)),
+            Some(false) => carry.and_then(|p| p.not_running_since).or(Some(now)),
             Some(true) => None,
-            None => previous.and_then(|p| p.not_running_since),
+            None => carry.and_then(|p| p.not_running_since),
         }
     };
-    let stuck = not_running_since.is_some_and(|since| now.saturating_sub(since) > STUCK_SECONDS);
-    let error = match (&pass.error, same, previous) {
-        (None, _, _) => None,
-        (Some(_), true, Some(p)) if p.error.is_some() => p.error.clone(),
-        (Some(raw), _, _) => Some(sanitized(raw)),
+    let mut restarts: Vec<i64> = carry
+        .map(|p| p.restarts.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|at| now.saturating_sub(*at) <= CRASH_WINDOW_SECONDS)
+        .collect();
+    if pass.restarted {
+        restarts.push(now);
+    }
+    while restarts.len() > MAX_RESTARTS {
+        restarts.remove(0);
+    }
+    let first_seen = if same { carry.unwrap().first_seen } else { now };
+    let stuck_reason = pass
+        .force_stuck
+        .map(str::to_owned)
+        .or_else(|| {
+            not_running_since
+                .is_some_and(|since| now.saturating_sub(since) > STUCK_SECONDS)
+                .then(|| "not-running".to_owned())
+        })
+        .or_else(|| (restarts.len() >= CRASH_STARTS).then(|| "crash-loop".to_owned()))
+        .or_else(|| {
+            (outcome == "error" && now.saturating_sub(first_seen) > STUCK_SECONDS)
+                .then(|| "persistent-error".to_owned())
+        });
+    let stuck = stuck_reason.is_some();
+    let error = if neutral {
+        carry.and_then(|p| p.error.clone())
+    } else {
+        match (&pass.error, same, carry) {
+            (None, _, _) => None,
+            (Some(_), true, Some(p)) if p.error.is_some() => p.error.clone(),
+            (Some(raw), _, _) => Some(sanitized(raw)),
+        }
     };
     let events = Events {
-        error_started: pass.outcome == "error" && !same,
-        stuck_started: stuck && !previous.is_some_and(|p| p.stuck),
+        error_started: outcome == "error" && !same,
+        stuck_started: stuck && !previous.is_some_and(|p| p.stuck && !stale),
         stuck_ended: !stuck && previous.is_some_and(|p| p.stuck),
     };
     (
         Record {
             kind: KIND.into(),
             version: 1,
-            outcome: pass.outcome.clone(),
-            stage: pass.stage.clone(),
+            outcome,
+            stage,
             error,
-            first_seen: if same {
-                previous.unwrap().first_seen
-            } else {
-                now
-            },
+            first_seen,
             last_seen: now,
-            count: if same { previous.unwrap().count + 1 } else { 1 },
+            count: if same { carry.unwrap().count + 1 } else { 1 },
             not_running_since,
             stuck,
+            stuck_reason,
+            restarts,
+            epoch: pass
+                .epoch
+                .clone()
+                .or_else(|| previous.and_then(|p| p.epoch.clone())),
         },
         events,
     )
 }
 
-/// Persist on a change, a stuck transition, or once per `REWRITE_SECONDS`.
+/// Whether to write now. A change is written at once unless it flaps faster
+/// than `CHANGE_WRITE_SECONDS`; an unchanged record is rewritten once a
+/// minute; a failed write is retried after `RETRY_WRITE_SECONDS`.
 fn persist_due(
     previous: Option<&Record>,
-    written_at: Option<i64>,
+    last_attempt: Option<i64>,
+    failed: bool,
     next: &Record,
+    urgent: bool,
     now: i64,
 ) -> bool {
-    match (previous, written_at) {
-        (Some(p), Some(at)) => {
-            p.outcome != next.outcome
-                || p.stage != next.stage
-                || p.stuck != next.stuck
-                || p.not_running_since.is_some() != next.not_running_since.is_some()
-                || now.saturating_sub(at) >= REWRITE_SECONDS
-        }
-        _ => true,
+    let (Some(p), Some(at)) = (previous, last_attempt) else {
+        return true;
+    };
+    let since = now.saturating_sub(at);
+    if failed {
+        return since >= RETRY_WRITE_SECONDS;
+    }
+    if urgent || p.stuck != next.stuck {
+        return true;
+    }
+    let changed = p.outcome != next.outcome
+        || p.stage != next.stage
+        || p.not_running_since.is_some() != next.not_running_since.is_some()
+        || p.restarts != next.restarts;
+    if changed {
+        since >= CHANGE_WRITE_SECONDS
+    } else {
+        since >= REWRITE_SECONDS
     }
 }
 
@@ -186,7 +274,11 @@ pub(super) fn read(
 
 struct Cached {
     record: Record,
-    written_at: Option<i64>,
+    last_attempt: Option<i64>,
+    failed: bool,
+    /// The newest error text with the key it was produced for.
+    error: Option<(String, String)>,
+    announced: BTreeMap<String, i64>,
 }
 type Key = (PathBuf, String, String, String);
 fn cache() -> &'static Mutex<BTreeMap<Key, Cached>> {
@@ -194,7 +286,7 @@ fn cache() -> &'static Mutex<BTreeMap<Key, Cached>> {
     CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
-/// Bound the generic text: first line of the cause chain, printable only.
+/// Bound the generic text: printable only.
 pub(super) fn bounded(text: &str) -> String {
     text.chars()
         .map(|c| if c.is_control() { ' ' } else { c })
@@ -202,8 +294,30 @@ pub(super) fn bounded(text: &str) -> String {
         .collect()
 }
 
+/// Whether the same announcement was made recently; records it otherwise.
+fn announce(announced: &mut BTreeMap<String, i64>, key: &str, now: i64) -> bool {
+    if announced
+        .get(key)
+        .is_some_and(|at| now.saturating_sub(*at) < ANNOUNCE_SECONDS)
+    {
+        return false;
+    }
+    announced.insert(key.to_owned(), now);
+    while announced.len() > 16 {
+        let oldest = announced
+            .iter()
+            .min_by_key(|(_, at)| **at)
+            .map(|(k, _)| k.clone());
+        match oldest {
+            Some(k) => announced.remove(&k),
+            None => break,
+        };
+    }
+    true
+}
+
 /// Record one pass. `sanitize` redacts secrets from a new error text and runs
-/// only when the outcome changes, never on every second.
+/// only when the text is new, never on every second.
 pub(super) fn record(
     root: &std::path::Path,
     application: &str,
@@ -221,29 +335,68 @@ pub(super) fn record(
         instance.to_owned(),
         service.to_owned(),
     );
-    let (previous, written_at) = {
-        let guard = cache().lock().unwrap_or_else(|e| e.into_inner());
-        match guard.get(&key) {
-            Some(cached) => (Some(cached.record.clone()), cached.written_at),
-            None => (None, None),
-        }
+    let mut cached = cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&key)
+        .unwrap_or_else(|| {
+            // A restarted controller continues the durable record, so a stuck
+            // condition and its start time survive it.
+            let loaded = load(root, application, instance, service);
+            Cached {
+                last_attempt: loaded.as_ref().map(|r| r.last_seen),
+                record: loaded.unwrap_or_else(|| Record {
+                    kind: KIND.into(),
+                    version: 1,
+                    outcome: String::new(),
+                    stage: None,
+                    error: None,
+                    first_seen: now,
+                    last_seen: now,
+                    count: 0,
+                    not_running_since: None,
+                    stuck: false,
+                    stuck_reason: None,
+                    restarts: Vec::new(),
+                    epoch: None,
+                }),
+                failed: false,
+                error: None,
+                announced: BTreeMap::new(),
+            }
+        });
+    let fresh = cached.record.outcome.is_empty();
+    let previous = (!fresh).then(|| cached.record.clone());
+    let error_key = pass
+        .error
+        .as_ref()
+        .map(|raw| format!("{}|{}", pass.stage.as_deref().unwrap_or(""), bounded(raw)));
+    let reuse = match (&error_key, &cached.error) {
+        (Some(key), Some((seen, text))) if key == seen => Some(text.clone()),
+        _ => None,
     };
-    // A restarted controller continues the durable record, so a stuck
-    // condition and its start time survive it.
-    let (previous, written_at) = if previous.is_none() {
-        let loaded = load(root, application, instance, service);
-        (loaded, None)
-    } else {
-        (previous, written_at)
-    };
-    let (next, events) = advance(previous.as_ref(), pass, |raw| bounded(&sanitize(raw)), now);
-    let write = persist_due(
+    let (next, mut events) = advance(
         previous.as_ref(),
-        written_at.or(previous.as_ref().map(|p| p.last_seen)),
-        &next,
+        pass,
+        |raw| reuse.unwrap_or_else(|| bounded(&sanitize(raw))),
         now,
     );
-    let written = if write {
+    if let (Some(key), Some(text)) = (error_key, &next.error) {
+        cached.error = Some((key.clone(), text.clone()));
+        if events.error_started && !announce(&mut cached.announced, &key, now) {
+            events.error_started = false;
+        }
+    }
+    let urgent = events.error_started;
+    let write = persist_due(
+        previous.as_ref(),
+        cached.last_attempt,
+        cached.failed,
+        &next,
+        urgent,
+        now,
+    );
+    if write {
         let stored = path(root, application, instance, service).and_then(|path| {
             store::atomic(
                 &path,
@@ -251,22 +404,19 @@ pub(super) fn record(
                 0o600,
             )
         });
-        stored.is_ok().then_some(now).or(written_at)
-    } else {
-        written_at
-    };
-    cache().lock().unwrap_or_else(|e| e.into_inner()).insert(
-        key,
-        Cached {
-            record: next.clone(),
-            written_at: written,
-        },
-    );
+        cached.last_attempt = Some(now);
+        cached.failed = stored.is_err();
+    }
+    cached.record = next.clone();
+    cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, cached);
     let name = format!("{application}/{instance}/{service}");
     if events.error_started {
         log(
             libc::LOG_WARNING,
-            &format!(
+            format!(
                 "maintenance {name}: error at {}: {}",
                 next.stage.as_deref().unwrap_or("unknown"),
                 next.error.as_deref().unwrap_or("")
@@ -276,9 +426,9 @@ pub(super) fn record(
     if events.stuck_started {
         log(
             libc::LOG_ERR,
-            &format!(
-                "maintenance {name}: stuck, not running since {} (last outcome {})",
-                next.not_running_since.unwrap_or(now),
+            format!(
+                "maintenance {name}: stuck ({}), last outcome {}",
+                next.stuck_reason.as_deref().unwrap_or("unknown"),
                 next.outcome
             ),
         );
@@ -286,22 +436,41 @@ pub(super) fn record(
     if events.stuck_ended {
         log(
             libc::LOG_NOTICE,
-            &format!("maintenance {name}: no longer stuck"),
+            format!("maintenance {name}: no longer stuck"),
         );
     }
 }
 
+/// Best effort and never on the caller's thread: a blocked syslog socket
+/// must not stall maintenance. A full queue drops the line.
 #[cfg(not(test))]
-fn log(priority: libc::c_int, message: &str) {
-    let text = message.replace('\0', " ");
-    if let Ok(text) = std::ffi::CString::new(text) {
-        // Without openlog the identity defaults to the program name. The
-        // constant format keeps the message from ever being interpreted.
-        unsafe { libc::syslog(libc::LOG_DAEMON | priority, c"%s".as_ptr(), text.as_ptr()) };
+fn log(priority: libc::c_int, message: String) {
+    use std::sync::mpsc;
+    static SINK: OnceLock<Option<mpsc::SyncSender<(libc::c_int, String)>>> = OnceLock::new();
+    let sink = SINK.get_or_init(|| {
+        let (sender, receiver) = mpsc::sync_channel::<(libc::c_int, String)>(64);
+        std::thread::Builder::new()
+            .name("komizo-syslog".into())
+            .spawn(move || {
+                for (priority, message) in receiver {
+                    if let Ok(text) = std::ffi::CString::new(message.replace('\0', " ")) {
+                        // Without openlog the identity defaults to the program
+                        // name. The constant format keeps the text inert.
+                        unsafe {
+                            libc::syslog(libc::LOG_DAEMON | priority, c"%s".as_ptr(), text.as_ptr())
+                        };
+                    }
+                }
+            })
+            .ok()
+            .map(|_| sender)
+    });
+    if let Some(sink) = sink {
+        let _ = sink.try_send((priority, message));
     }
 }
 #[cfg(test)]
-fn log(_priority: libc::c_int, _message: &str) {}
+fn log(_priority: libc::c_int, _message: String) {}
 
 #[cfg(test)]
 mod tests {
@@ -315,6 +484,9 @@ mod tests {
             error: None,
             running,
             eligible: true,
+            epoch: None,
+            restarted: false,
+            force_stuck: None,
         }
     }
     fn failure(stage: &str, error: &str) -> Pass {
@@ -322,12 +494,29 @@ mod tests {
             outcome: "error".into(),
             stage: Some(stage.into()),
             error: Some(error.into()),
-            running: None,
-            eligible: true,
+            ..pass("error", None)
         }
     }
     fn plain(text: &str) -> String {
         text.to_owned()
+    }
+    /// Feed the same pass every `step` seconds, as the loop does.
+    fn run(
+        mut record: Option<Record>,
+        pass: &Pass,
+        from: i64,
+        to: i64,
+        step: i64,
+    ) -> (Record, Events) {
+        let mut at = from;
+        loop {
+            let (next, events) = advance(record.as_ref(), pass, plain, at);
+            if at >= to {
+                return (next, events);
+            }
+            record = Some(next);
+            at += step;
+        }
     }
 
     #[test]
@@ -351,19 +540,116 @@ mod tests {
     }
 
     #[test]
+    fn a_no_reading_skip_keeps_its_text_in_the_record() {
+        let mut skip = pass("skipped:engine-unavailable", None);
+        skip.error = Some("native engine deadline expired".into());
+        let (record, events) = advance(None, &skip, plain, 10);
+        assert_eq!(
+            record.error.as_deref(),
+            Some("native engine deadline expired")
+        );
+        assert!(!events.error_started);
+    }
+
+    #[test]
     fn a_service_down_beyond_the_bound_is_stuck_even_when_nothing_is_attempted() {
         let (down, _) = advance(None, &pass("ok", Some(false)), plain, 1000);
         assert!(!down.stuck);
-        let silent = pass("skipped:probe-busy", None);
+        let silent = pass("skipped:probe-lock-busy", None);
         let (waiting, events) = advance(Some(&down), &silent, plain, 1000 + STUCK_SECONDS);
         assert!(!waiting.stuck && events == Events::default());
         let (stuck, events) = advance(Some(&waiting), &silent, plain, 1001 + STUCK_SECONDS);
         assert!(stuck.stuck && events.stuck_started);
         assert_eq!(stuck.not_running_since, Some(1000));
-        let (still, events) = advance(Some(&stuck), &silent, plain, 2000);
+        assert_eq!(stuck.stuck_reason.as_deref(), Some("not-running"));
+        let (still, events) = advance(Some(&stuck), &silent, plain, 1100 + STUCK_SECONDS);
         assert!(still.stuck && !events.stuck_started);
-        let (healed, events) = advance(Some(&still), &pass("ok", Some(true)), plain, 2001);
+        let (healed, events) = advance(
+            Some(&still),
+            &pass("ok", Some(true)),
+            plain,
+            1200 + STUCK_SECONDS,
+        );
         assert!(!healed.stuck && healed.not_running_since.is_none() && events.stuck_ended);
+    }
+
+    #[test]
+    fn a_missing_container_is_down_and_becomes_stuck() {
+        let mut missing = failure("inspect-container", "desired native CID missing");
+        missing.running = Some(false);
+        let (before, _) = run(None, &missing, 0, STUCK_SECONDS, 10);
+        assert!(!before.stuck);
+        let (last, events) = run(
+            Some(before),
+            &missing,
+            STUCK_SECONDS + 10,
+            STUCK_SECONDS + 10,
+            10,
+        );
+        assert!(last.stuck && events.stuck_started);
+    }
+
+    #[test]
+    fn a_persistent_error_is_stuck_even_when_nothing_is_known_about_the_container() {
+        let boom = failure("snapshot", "boom");
+        let (early, _) = run(None, &boom, 0, STUCK_SECONDS, 10);
+        assert!(!early.stuck);
+        let (record, events) = run(
+            Some(early),
+            &boom,
+            STUCK_SECONDS + 10,
+            STUCK_SECONDS + 10,
+            10,
+        );
+        assert!(events.stuck_started && record.stuck);
+        assert_eq!(record.stuck_reason.as_deref(), Some("persistent-error"));
+    }
+
+    fn same_epoch() -> Pass {
+        let mut same = pass("skipped:instance-lease-busy", None);
+        same.epoch = Some("release-1".into());
+        same
+    }
+
+    #[test]
+    fn a_stale_record_or_a_new_instance_state_restarts_the_timer() {
+        let mut down = pass("ok", Some(false));
+        down.epoch = Some("release-1".into());
+        let (record, _) = advance(None, &down, plain, 1000);
+        // Nothing refreshed the record for a long stop: the timer starts over.
+        let mut after_stop = pass("skipped:probe-lock-busy", None);
+        after_stop.epoch = Some("release-1".into());
+        let (resumed, events) = advance(Some(&record), &after_stop, plain, 1000 + 86_400);
+        assert!(!resumed.stuck && resumed.not_running_since.is_none() && !events.stuck_started);
+        // A new deployment while passes kept arriving also starts over.
+        let mut deployed = pass("skipped:instance-lease-busy", None);
+        deployed.epoch = Some("release-2".into());
+        let (progress, _) = run(
+            Some(record.clone()),
+            &same_epoch(),
+            1010,
+            1000 + STUCK_SECONDS,
+            10,
+        );
+        assert!(progress.not_running_since.is_some());
+        let (redeployed, _) = advance(Some(&progress), &deployed, plain, 1000 + STUCK_SECONDS + 5);
+        assert!(!redeployed.stuck && redeployed.not_running_since.is_none());
+        // Without either, the same passes would have been stuck.
+        let mut same = pass("skipped:instance-lease-busy", None);
+        same.epoch = Some("release-1".into());
+        let (stuck, _) = advance(Some(&record), &same, plain, 1000 + STUCK_SECONDS + 5);
+        assert!(
+            !stuck.stuck,
+            "a single late pass after a stale gap is not proof"
+        );
+        let (kept, _) = run(
+            Some(record.clone()),
+            &same,
+            1010,
+            1000 + STUCK_SECONDS + 5,
+            10,
+        );
+        assert!(kept.stuck);
     }
 
     #[test]
@@ -371,24 +657,156 @@ mod tests {
         let (down, _) = advance(None, &pass("ok", Some(false)), plain, 1);
         let mut off = pass("skipped:not-eligible", None);
         off.eligible = false;
-        let (cleared, _) = advance(Some(&down), &off, plain, 5000);
+        let (cleared, _) = advance(Some(&down), &off, plain, 5);
         assert!(!cleared.stuck && cleared.not_running_since.is_none());
     }
 
     #[test]
-    fn unchanged_outcomes_are_written_only_periodically() {
+    fn a_crash_loop_is_reported_though_the_service_is_often_running() {
+        let mut record: Option<Record> = None;
+        let mut reported = None;
+        for round in 0..CRASH_STARTS as i64 {
+            let now = round * 20;
+            let mut started = pass("ok", Some(true));
+            started.restarted = true;
+            let (next, events) = advance(record.as_ref(), &started, plain, now);
+            if events.stuck_started {
+                reported = Some(now);
+            }
+            record = Some(next);
+            // A pass between restarts sees it down, then up again.
+            let (down, _) = advance(record.as_ref(), &pass("ok", Some(false)), plain, now + 5);
+            let (up, _) = advance(Some(&down), &pass("ok", Some(true)), plain, now + 10);
+            record = Some(up);
+        }
+        assert_eq!(reported, Some(80));
+        assert_eq!(record.unwrap().stuck_reason.as_deref(), Some("crash-loop"));
+        // Restarts spread beyond the window never add up.
+        let mut spread: Option<Record> = None;
+        for round in 0..10 {
+            let mut started = pass("ok", Some(true));
+            started.restarted = true;
+            let (next, _) = advance(spread.as_ref(), &started, plain, round * 200);
+            spread = Some(next);
+        }
+        assert!(!spread.unwrap().stuck);
+    }
+
+    #[test]
+    fn a_forced_stuck_reason_is_reported_once() {
+        let mut forced = failure(
+            "probe-unavailable",
+            "native health probe could not complete",
+        );
+        forced.force_stuck = Some("probe-unavailable");
+        let (record, events) = advance(None, &forced, plain, 10);
+        assert!(record.stuck && events.stuck_started && events.error_started);
+        assert_eq!(record.stuck_reason.as_deref(), Some("probe-unavailable"));
+    }
+
+    #[test]
+    fn a_backoff_wait_does_not_break_an_error_streak() {
+        let (error, events) = advance(
+            None,
+            &failure("start-guard", "dependency starting"),
+            plain,
+            100,
+        );
+        assert!(events.error_started);
+        let wait = pass("skipped:restart-backoff-wait", Some(false));
+        let (waited, events) = advance(Some(&error), &wait, plain, 101);
+        assert_eq!(
+            (waited.outcome.as_str(), waited.count, waited.first_seen),
+            ("error", 2, 100)
+        );
+        assert_eq!(waited.error, error.error);
+        assert!(!events.error_started);
+        let (again, events) = advance(
+            Some(&waited),
+            &failure("start-guard", "dependency starting"),
+            plain,
+            104,
+        );
+        assert!(!events.error_started && again.count == 3);
+        // Outside an error streak a backoff wait is an ordinary outcome.
+        let (ok, _) = advance(None, &pass("ok", Some(true)), plain, 1);
+        let (other, _) = advance(Some(&ok), &wait, plain, 2);
+        assert_eq!(other.outcome, "skipped:restart-backoff-wait");
+    }
+
+    #[test]
+    fn announcements_for_the_same_error_are_rate_limited() {
+        let mut announced = BTreeMap::new();
+        assert!(announce(&mut announced, "snapshot|boom", 0));
+        assert!(!announce(
+            &mut announced,
+            "snapshot|boom",
+            ANNOUNCE_SECONDS - 1
+        ));
+        assert!(announce(&mut announced, "snapshot|other", 5));
+        assert!(announce(&mut announced, "snapshot|boom", ANNOUNCE_SECONDS));
+        for number in 0..100 {
+            announce(&mut announced, &format!("k{number}"), 1000 + number);
+        }
+        assert!(announced.len() <= 16);
+    }
+
+    #[test]
+    fn writes_are_limited_when_flapping_and_retried_soon_when_they_fail() {
         let (one, _) = advance(None, &pass("ok", Some(true)), plain, 100);
         let (two, _) = advance(Some(&one), &pass("ok", Some(true)), plain, 101);
-        assert!(!persist_due(Some(&one), Some(100), &two, 101));
+        assert!(!persist_due(Some(&one), Some(100), false, &two, false, 101));
         assert!(persist_due(
             Some(&one),
             Some(100),
+            false,
             &two,
+            false,
             100 + REWRITE_SECONDS
         ));
-        let (changed, _) = advance(Some(&two), &pass("skipped:lease-busy", None), plain, 102);
-        assert!(persist_due(Some(&two), Some(100), &changed, 102));
-        assert!(persist_due(None, None, &changed, 102));
+        let (changed, _) = advance(
+            Some(&two),
+            &pass("skipped:probe-lock-busy", None),
+            plain,
+            102,
+        );
+        // A change right after a write waits out the flap limit ...
+        assert!(!persist_due(
+            Some(&two),
+            Some(100),
+            false,
+            &changed,
+            false,
+            102
+        ));
+        assert!(persist_due(
+            Some(&two),
+            Some(100),
+            false,
+            &changed,
+            false,
+            100 + CHANGE_WRITE_SECONDS
+        ));
+        // ... except when urgent, and the first record is always written.
+        assert!(persist_due(
+            Some(&two),
+            Some(100),
+            false,
+            &changed,
+            true,
+            102
+        ));
+        assert!(persist_due(None, None, false, &changed, false, 102));
+        // A failed write is retried in seconds, not after a minute.
+        assert!(!persist_due(Some(&one), Some(100), true, &two, false, 101));
+        assert!(persist_due(
+            Some(&one),
+            Some(100),
+            true,
+            &two,
+            false,
+            100 + RETRY_WRITE_SECONDS
+        ));
     }
 
     #[test]
@@ -399,7 +817,10 @@ mod tests {
     }
 
     #[test]
-    fn records_round_trip_and_unknown_files_read_as_absent() {
+    fn older_records_without_the_new_fields_still_read() {
+        let old = br#"{"kind":"komizo.service-maintenance","version":1,"outcome":"ok","stage":null,"error":null,"first_seen":1,"last_seen":2,"count":1,"not_running_since":null,"stuck":false}"#;
+        let record: Record = serde_json::from_slice(old).unwrap();
+        assert!(record.restarts.is_empty() && record.epoch.is_none());
         let (record, _) = advance(None, &failure("snapshot", "boom"), plain, 7);
         let body = serde_json::to_vec(&record).unwrap();
         assert!(body.len() < MAX_BYTES);
@@ -408,12 +829,18 @@ mod tests {
     }
 
     #[test]
-    fn the_file_changes_only_on_a_new_outcome_and_a_missing_file_reads_as_null() {
+    fn the_file_changes_rarely_redacts_only_new_text_and_a_missing_file_reads_as_null() {
         let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
         let store = Store::new(directory.path().join("state")).unwrap();
         let read = || read(&store, "mailroom", "production", "web", true);
         assert_eq!(read(), Value::Null);
-        let go = |pass: &Pass| record(&store.root, "mailroom", "production", "web", pass, plain);
+        let redactions = std::cell::Cell::new(0);
+        let go = |pass: &Pass| {
+            record(&store.root, "mailroom", "production", "web", pass, |raw| {
+                redactions.set(redactions.get() + 1);
+                raw.to_owned()
+            })
+        };
         go(&pass("ok", Some(true)));
         go(&pass("ok", Some(true)));
         go(&pass("ok", Some(true)));
@@ -427,6 +854,11 @@ mod tests {
             (Some("error"), Some("snapshot"))
         );
         assert_eq!(value["error"], "boom");
+        assert_eq!(redactions.get(), 1);
+        // Flapping between the error and an ok pass and back reuses the text.
+        go(&pass("ok", Some(true)));
+        go(&failure("snapshot", "boom"));
+        assert_eq!(redactions.get(), 1);
         // A stopped instance is never reported stuck from an older record.
         let stopped = super::read(&store, "mailroom", "production", "web", false);
         assert_eq!(stopped["stuck"], false);

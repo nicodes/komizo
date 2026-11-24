@@ -2691,8 +2691,41 @@ struct Trace {
     running: Option<bool>,
     ineligible: bool,
     steady: bool,
-    unhealthy: Option<bool>,
+    restarted: bool,
+    force_stuck: Option<&'static str>,
     fingerprint: Option<String>,
+}
+
+/// Only a failure to read is benign, and only while reading. A command that
+/// times out during a stop or start has changed or may have changed state.
+fn reading_stage(stage: &str) -> bool {
+    matches!(stage, "inspect-container" | "observe-health")
+}
+
+/// Turn a pass result into the recorded outcome, stage and error text.
+fn classify(
+    result: &Result<()>,
+    stage: &str,
+    skipped: Option<&str>,
+    no_reading: Option<&str>,
+) -> (String, Option<String>, Option<String>) {
+    match result {
+        Ok(()) => (
+            skipped.map_or_else(|| "ok".to_owned(), |reason| format!("skipped:{reason}")),
+            None,
+            no_reading.map(str::to_owned),
+        ),
+        Err(error) if super::engine::no_reading(error) && reading_stage(stage) => (
+            "skipped:engine-unavailable".to_owned(),
+            None,
+            Some(format!("{error:#}")),
+        ),
+        Err(error) => (
+            "error".to_owned(),
+            Some(stage.to_owned()),
+            Some(format!("{error:#}")),
+        ),
+    }
 }
 
 impl Trace {
@@ -2709,23 +2742,12 @@ impl Trace {
         self.skip(&format!("{reason}-{site}"))
     }
     fn conclude(&self, scope: &service_maintenance::Scope, result: &Result<()>) {
-        let (outcome, stage, error) = match result {
-            Ok(()) => (
-                self.skipped
-                    .as_ref()
-                    .map_or_else(|| "ok".to_owned(), |reason| format!("skipped:{reason}")),
-                None,
-                None,
-            ),
-            Err(error) if super::engine::no_reading(error) => {
-                ("skipped:engine-unavailable".to_owned(), None, None)
-            }
-            Err(error) => (
-                "error".to_owned(),
-                Some(self.stage.to_owned()),
-                Some(format!("{error:#}")),
-            ),
-        };
+        let (outcome, stage, error) = classify(
+            result,
+            self.stage,
+            self.skipped.as_deref(),
+            self.no_reading.as_deref(),
+        );
         if self.steady && result.is_ok() && self.skipped.is_none() {
             if let Some(fingerprint) = &self.fingerprint {
                 service_maintenance::steady_mark(scope, fingerprint.clone());
@@ -2733,15 +2755,15 @@ impl Trace {
         } else {
             service_maintenance::steady_clear(scope);
         }
-        if self.unhealthy == Some(false) {
-            service_maintenance::unhealthy_clear(scope);
-        }
         let pass = maintenance_state::Pass {
             outcome,
             stage,
             error,
             running: self.running,
             eligible: !self.ineligible,
+            epoch: self.fingerprint.clone(),
+            restarted: self.restarted && result.is_ok(),
+            force_stuck: self.force_stuck,
         };
         maintenance_state::record(
             &scope.root,
@@ -2837,16 +2859,19 @@ fn maintain_service_traced(scope: &service_maintenance::Scope, trace: &mut Trace
     };
     let group = service_group(&frozen.installed, &scope.service, &frozen.record.ownership)?;
     trace.stage = "inspect-container";
-    let before = engine
-        .container_metadata(
-            &frozen.record,
-            &scope.application,
-            &scope.instance,
-            &scope.service,
-        )?
-        .ok_or_else(|| {
-            anyhow!("desired native CID missing; explicit owner reconciliation required")
-        })?;
+    let Some(before) = engine.container_metadata(
+        &frozen.record,
+        &scope.application,
+        &scope.instance,
+        &scope.service,
+    )?
+    else {
+        // The service is not running, and nothing here can start it.
+        trace.running = Some(false);
+        return Err(anyhow!(
+            "desired native CID missing; explicit owner reconciliation required"
+        ));
+    };
     trace.stage = "verify-mounts";
     super::engine::service_mounts(
         &before,
@@ -2855,6 +2880,11 @@ fn maintain_service_traced(scope: &service_maintenance::Scope, trace: &mut Trace
     )?;
     trace.running = Some(before["State"]["Running"] == true);
     trace.stage = "observe-health";
+    let generation = format!(
+        "{}/{}",
+        frozen.record.id,
+        before["State"]["StartedAt"].as_str().unwrap_or("")
+    );
     let mut checked_at = None;
     let mut probe_attempted = false;
     let mut unhealthy_running = false;
@@ -2888,13 +2918,17 @@ fn maintain_service_traced(scope: &service_maintenance::Scope, trace: &mut Trace
             let started_at = before["State"]["StartedAt"]
                 .as_str()
                 .ok_or_else(|| anyhow!("service probe generation missing"))?;
-            if probe_due(
-                previous.as_ref(),
-                &frozen.record.id,
-                started_at,
-                now,
-                interval,
-            )? {
+            // An unhealthy sighting old enough to confirm needs fresh evidence
+            // now, not after a whole health interval.
+            if service_maintenance::unhealthy_due(scope, &generation)
+                || probe_due(
+                    previous.as_ref(),
+                    &frozen.record.id,
+                    started_at,
+                    now,
+                    interval,
+                )?
+            {
                 probe_attempted = true;
                 let probe = super::cgroups::service_probe_group(
                     &scope.application,
@@ -2970,43 +3004,48 @@ fn maintain_service_traced(scope: &service_maintenance::Scope, trace: &mut Trace
         }
     })();
     // A native command that failed or hit its own deadline says nothing about
-    // the workload. It is no reading, never unhealthy and never a kill.
-    let observed = match observed {
+    // the workload: it is no reading, not an unhealthy verdict, and it keeps
+    // a running service only until the readings have failed past their bound.
+    let (kind, failure) = match observed {
+        Ok(Some(true)) => (service_maintenance::Observed::Healthy, None),
+        Ok(Some(false)) if unhealthy_running => (
+            service_maintenance::Observed::Unhealthy {
+                probed: probe_attempted,
+            },
+            None,
+        ),
+        Ok(Some(false)) => (service_maintenance::Observed::NotRunning, None),
+        Ok(None) => (service_maintenance::Observed::Unreadable, None),
         Err(error) if super::engine::no_reading(&error) => {
             trace.no_reading = Some(format!("{error:#}"));
+            (service_maintenance::Observed::NoReading, Some(error))
+        }
+        Err(error) => (service_maintenance::Observed::Failed, Some(error)),
+    };
+    let verdict = service_maintenance::judge(scope, kind, &generation);
+    trace.steady = steady
+        && verdict == service_maintenance::Verdict::Keep
+        && kind == service_maintenance::Observed::Healthy;
+    let observed: Result<Option<bool>> = match verdict {
+        service_maintenance::Verdict::Keep => {
+            Ok(if kind == service_maintenance::Observed::Healthy {
+                Some(true)
+            } else {
+                None
+            })
+        }
+        service_maintenance::Verdict::Wait(reason) => {
+            trace.skipped = Some(reason.into());
             Ok(None)
         }
-        other => other,
+        service_maintenance::Verdict::Restart => Ok(Some(false)),
+        service_maintenance::Verdict::Kill { unavailable } => {
+            if unavailable {
+                trace.force_stuck = Some("probe-unavailable");
+            }
+            Err(failure.unwrap_or_else(|| anyhow!("service observation failed")))
+        }
     };
-    trace.steady = steady && matches!(observed, Ok(Some(true)));
-    trace.unhealthy = match &observed {
-        Ok(Some(false)) => Some(unhealthy_running),
-        Ok(Some(true)) => Some(false),
-        _ => None,
-    };
-    // A running service is stopped for being unhealthy only on a second
-    // reading, a few seconds after the first and backed by a fresh probe.
-    // A container that is not running is restarted promptly as before.
-    let observed = if unhealthy_running
-        && matches!(observed, Ok(Some(false)))
-        && !service_maintenance::unhealthy_confirm(
-            scope,
-            &format!(
-                "{}/{}",
-                frozen.record.id,
-                before["State"]["StartedAt"].as_str().unwrap_or("")
-            ),
-            controller::now()?,
-            checked_at.is_some(),
-        ) {
-        trace.skipped = Some("unhealthy-unconfirmed".into());
-        Ok(None)
-    } else {
-        observed
-    };
-    if trace.no_reading.is_some() {
-        trace.skipped = Some("engine-unavailable".into());
-    }
     if matches!(observed, Ok(None)) && !probe_attempted && checked_at.is_none() {
         return Ok(());
     }
@@ -3058,7 +3097,11 @@ fn maintain_service_traced(scope: &service_maintenance::Scope, trace: &mut Trace
         match observed {
             Ok(Some(true) | None) => return Ok(()),
             Err(error) => {
-                trace.stage = "observation-failure-cleanup";
+                trace.stage = if trace.force_stuck.is_some() {
+                    "probe-unavailable"
+                } else {
+                    "observation-failure-cleanup"
+                };
                 commit_backoff(&store, &current, &scope.service)?;
                 advance_service_epoch(&store, &current.installed)?;
                 if cleanup_service(Some(&before), &group).is_err() {
@@ -3218,6 +3261,7 @@ fn maintain_service_traced(scope: &service_maintenance::Scope, trace: &mut Trace
             }
             return Err(error);
         }
+        trace.restarted = true;
         service_snapshot(&store, scope, false)?
             .ok_or_else(|| anyhow!("restarted service authority disappeared"))?
             .binding
@@ -3314,6 +3358,9 @@ fn maintain_services(store: &Store) -> Result<()> {
                         error: Some("a maintenance observation has not finished".into()),
                         running: None,
                         eligible: true,
+                        epoch: None,
+                        restarted: false,
+                        force_stuck: None,
                     },
                     str::to_owned,
                 );
@@ -4627,29 +4674,32 @@ mod recovery_tests {
         assert!(probe_due(None, "foreign", started, epoch, 3600).is_err());
     }
 
-    fn maintenance_scope() -> service_maintenance::Scope {
-        service_maintenance::Scope {
-            root: "/synthetic-maintenance-trace".into(),
-            application: "mailroom".into(),
-            instance: "production".into(),
-            service: "web".into(),
+    #[test]
+    fn every_early_return_has_its_own_reason() {
+        // Each silent-return site must name itself uniquely, or the record
+        // cannot tell the next investigation which one fired.
+        let source = include_str!("native.rs");
+        let body = &source[source.find("fn maintain_service_traced").unwrap()..];
+        let body = &body[..body.find("fn maintenance_eligible").unwrap()];
+        let mut reasons = Vec::new();
+        for marker in ["trace.skip(\"", "trace.absent_at(reason, \""] {
+            let mut rest = body;
+            while let Some(at) = rest.find(marker) {
+                rest = &rest[at + marker.len()..];
+                reasons.push(format!("{marker}{}", &rest[..rest.find('"').unwrap()]));
+            }
         }
+        assert!(reasons.len() >= 14, "{reasons:?}");
+        let unique = reasons.iter().collect::<BTreeSet<_>>();
+        assert_eq!(
+            unique.len(),
+            reasons.len(),
+            "duplicate reason in {reasons:?}"
+        );
     }
 
     #[test]
-    fn every_early_return_names_a_distinct_reason_and_errors_name_their_stage() {
-        let scope = maintenance_scope();
-        let mut seen = BTreeSet::new();
-        for reason in [
-            "instance-lease-busy",
-            "probe-lock-busy",
-            "binding-changed-before-commit",
-        ] {
-            let mut trace = Trace::default();
-            trace.skip(reason).unwrap();
-            assert_eq!(trace.skipped.as_deref(), Some(reason));
-            assert!(seen.insert(reason));
-        }
+    fn absent_authority_names_what_was_missing_and_only_ineligibility_clears_timers() {
         let mut trace = Trace::default();
         trace.absent_at("not-eligible", "before-restart").unwrap();
         assert!(trace.ineligible);
@@ -4660,13 +4710,59 @@ mod recovery_tests {
         let mut trace = Trace::default();
         trace.absent("no-service-record").unwrap();
         assert!(!trace.ineligible);
-        // Steady state is only ever marked from an unskipped, successful pass.
-        service_maintenance::steady_clear(&scope);
-        assert!(!service_maintenance::steady_skip(&scope, "x"));
+        assert_eq!(trace.skipped.as_deref(), Some("no-service-record"));
+    }
+
+    #[test]
+    fn pass_results_classify_into_outcomes_and_only_reading_failures_are_benign() {
+        let unavailable = || -> Result<()> {
+            Err(anyhow::Error::new(
+                super::super::engine::NoReading::for_test("podman hung"),
+            ))
+        };
+        // A failed read while reading is a skip that keeps its text.
+        for stage in ["inspect-container", "observe-health"] {
+            let (outcome, stage, error) = classify(&unavailable(), stage, None, None);
+            assert_eq!(outcome, "skipped:engine-unavailable");
+            assert!(stage.is_none() && error.unwrap().contains("podman hung"));
+        }
+        // The same failure while stopping or starting is an error with its stage.
+        for stage in [
+            "restart-start",
+            "stop-service",
+            "commit-inspect",
+            "probe-unavailable",
+        ] {
+            let (outcome, recorded, error) = classify(&unavailable(), stage, None, None);
+            assert_eq!(outcome, "error");
+            assert_eq!(recorded.as_deref(), Some(stage));
+            assert!(error.is_some());
+        }
+        let refused: Result<()> = Err(anyhow!("service start refused"));
+        let (outcome, stage, _) = classify(&refused, "start-guard", None, None);
+        assert_eq!(
+            (outcome.as_str(), stage.as_deref()),
+            ("error", Some("start-guard"))
+        );
+        let (outcome, _, error) =
+            classify(&Ok(()), "x", Some("unhealthy-unconfirmed"), Some("slow"));
+        assert_eq!(outcome, "skipped:unhealthy-unconfirmed");
+        assert_eq!(error.as_deref(), Some("slow"));
+        assert_eq!(classify(&Ok(()), "x", None, None).0, "ok");
     }
 
     #[test]
     fn service_fingerprint_changes_with_the_instance_release_and_container() {
+        let record = |id: &str| store::ContainerRecord {
+            name: "kmz-web".into(),
+            id: id.into(),
+            image: "unused".into(),
+            config_digest: format!("sha256:{}", "b".repeat(64)),
+            release_digest: format!("sha256:{}", "a".repeat(64)),
+            ownership: "c".repeat(32),
+            unit_sha256: format!("sha256:{}", "d".repeat(64)),
+            volumes: BTreeMap::new(),
+        };
         let mut installed = Installed {
             kind: "komizo.installed".into(),
             version: 1,
@@ -4680,13 +4776,36 @@ mod recovery_tests {
             resources: Resources::default(),
             secret_snapshots: BTreeMap::new(),
         };
+        installed
+            .resources
+            .containers
+            .insert("web".into(), record(&"1".repeat(64)));
         let base = service_fingerprint(&installed, "web");
-        assert_eq!(base, service_fingerprint(&installed, "web"));
-        installed.operation_id = "b".repeat(32);
-        assert_ne!(base, service_fingerprint(&installed, "web"));
-        installed.operation_id = "a".repeat(32);
-        installed.desired_running = false;
-        assert_ne!(base, service_fingerprint(&installed, "web"));
+        assert_eq!(base, service_fingerprint(&installed.clone(), "web"));
+        let mut other = installed.clone();
+        other.operation_id = "b".repeat(32);
+        assert_ne!(base, service_fingerprint(&other, "web"));
+        let mut other = installed.clone();
+        other.release_digest = format!("sha256:{}", "e".repeat(64));
+        assert_ne!(base, service_fingerprint(&other, "web"));
+        let mut other = installed.clone();
+        other.desired_running = false;
+        assert_ne!(base, service_fingerprint(&other, "web"));
+        let mut other = installed.clone();
+        other
+            .resources
+            .containers
+            .insert("web".into(), record(&"2".repeat(64)));
+        assert_ne!(base, service_fingerprint(&other, "web"));
+        // Another service's record does not change this service's identity.
+        other
+            .resources
+            .containers
+            .insert("worker".into(), record(&"3".repeat(64)));
+        assert_ne!(
+            service_fingerprint(&other, "worker"),
+            service_fingerprint(&other, "web")
+        );
     }
 
     #[test]
