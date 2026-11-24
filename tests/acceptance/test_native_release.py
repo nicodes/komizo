@@ -106,7 +106,7 @@ class NativeRelease(unittest.TestCase):
         path=self.root/'checksums.txt';saved=path.read_bytes();path.write_bytes(saved+b'0'*64+b'  ../unowned\n')
         with self.assertRaisesRegex(ValueError,'inventory'):release.inventory(self.root,self.source,self.tag)
         path.write_bytes(saved)
-        proxy=self.root/'caddy_Linux_x86_64.json';receipt=json.loads(proxy.read_text());receipt['source_url']=receipt['source_url'].replace('v2.11.6','v2.11.5')
+        proxy=self.root/'caddy_Linux_x86_64.json';receipt=json.loads(proxy.read_text());receipt['source_url']=receipt['source_url'].replace('v2.11.9','v2.11.6')
         proxy.write_text(json.dumps(receipt));self.checksums()
         with self.assertRaisesRegex(ValueError,'proxy receipt'):release.inventory(self.root,self.source,self.tag)
 

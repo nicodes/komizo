@@ -266,7 +266,10 @@ struct ProxyDownload {
     binary_sha256: String,
 }
 
-const PROXY_RELEASE: &str = "https://github.com/caddyserver/caddy/releases/download/v2.11.6/";
+/// Caddy version of the source-build receipts already installed on hosts; never changes.
+const PROXY_BUILD_CADDY_VERSION: &str = "2.11.6";
+/// The single Caddy release the published-binary receipt may name; the next bump edits only this.
+const PROXY_DOWNLOAD_CADDY_VERSION: &str = "2.11.9";
 
 /// Returns the receipt's binary digest after checking the receipt kind it declares.
 /// Hosts installed before the move to published releases keep the source-build receipt.
@@ -288,7 +291,7 @@ fn proxy_build(value: serde_json::Value, platform: &str) -> Result<String> {
             && value.platform == platform
             && ["linux/amd64", "linux/arm64"].contains(&platform)
             && value.go_version == "1.27.4"
-            && value.caddy_version == "2.11.6"
+            && value.caddy_version == PROXY_BUILD_CADDY_VERSION
             && value
                 .source_sha256
                 .keys()
@@ -305,6 +308,13 @@ fn proxy_build(value: serde_json::Value, platform: &str) -> Result<String> {
     Ok(value.binary_sha256)
 }
 
+fn proxy_release_url(architecture: &str) -> String {
+    let version = PROXY_DOWNLOAD_CADDY_VERSION;
+    format!(
+        "https://github.com/caddyserver/caddy/releases/download/v{version}/caddy_{version}_linux_{architecture}.tar.gz"
+    )
+}
+
 fn proxy_download(value: serde_json::Value, platform: &str) -> Result<String> {
     let value: ProxyDownload = serde_json::from_value(value)?;
     let architecture = match platform {
@@ -316,9 +326,8 @@ fn proxy_download(value: serde_json::Value, platform: &str) -> Result<String> {
         value.kind == "komizo.proxy-download"
             && value.version == 1
             && value.platform == platform
-            && value.caddy_version == "2.11.6"
-            && value.source_url
-                == format!("{PROXY_RELEASE}caddy_2.11.6_linux_{architecture}.tar.gz")
+            && value.caddy_version == PROXY_DOWNLOAD_CADDY_VERSION
+            && value.source_url == proxy_release_url(architecture)
             && super::validation::digest(&value.archive_sha256)
             && super::validation::digest(&value.binary_sha256),
         "proxy provenance differs from the reviewed native proxy build or published release"
@@ -1835,8 +1844,8 @@ mod tests {
     fn download_receipt(arch: &str) -> serde_json::Value {
         serde_json::json!({
             "kind":"komizo.proxy-download","version":1,"platform":format!("linux/{arch}"),
-            "caddy_version":"2.11.6",
-            "source_url":format!("https://github.com/caddyserver/caddy/releases/download/v2.11.6/caddy_2.11.6_linux_{arch}.tar.gz"),
+            "caddy_version":"2.11.9",
+            "source_url":format!("https://github.com/caddyserver/caddy/releases/download/v2.11.9/caddy_2.11.9_linux_{arch}.tar.gz"),
             "archive_sha256":format!("sha256:{}","a".repeat(64)),
             "binary_sha256":format!("sha256:{}","b".repeat(64))
         })
@@ -1889,11 +1898,11 @@ mod tests {
             ("caddy_version", serde_json::json!("2.11.5")),
             (
                 "source_url",
-                serde_json::json!("https://example.com/caddy_2.11.6_linux_amd64.tar.gz"),
+                serde_json::json!("https://example.com/caddy_2.11.9_linux_amd64.tar.gz"),
             ),
             (
                 "source_url",
-                serde_json::json!(format!("{release}v2.11.6/caddy_2.11.6_linux_arm64.tar.gz")),
+                serde_json::json!(format!("{release}v2.11.9/caddy_2.11.9_linux_arm64.tar.gz")),
             ),
             (
                 "source_url",
@@ -1902,7 +1911,7 @@ mod tests {
             (
                 "source_url",
                 serde_json::json!(format!(
-                    "{release}v2.11.6/caddy_2.11.6_linux_amd64.tar.gz?x"
+                    "{release}v2.11.9/caddy_2.11.9_linux_amd64.tar.gz?x"
                 )),
             ),
             ("archive_sha256", serde_json::json!("a".repeat(64))),
@@ -1917,6 +1926,11 @@ mod tests {
             changed[field] = replacement;
             assert!(receipt_digest(&changed, "linux/amd64").is_err(), "{field}");
         }
+        let mut superseded = receipt.clone();
+        superseded["caddy_version"] = serde_json::json!("2.11.6");
+        superseded["source_url"] =
+            serde_json::json!(format!("{release}v2.11.6/caddy_2.11.6_linux_amd64.tar.gz"));
+        assert!(receipt_digest(&superseded, "linux/amd64").is_err());
         let mut missing = receipt.clone();
         missing.as_object_mut().unwrap().remove("archive_sha256");
         assert!(receipt_digest(&missing, "linux/amd64").is_err());

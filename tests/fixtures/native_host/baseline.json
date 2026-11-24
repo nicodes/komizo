@@ -1,7 +1,7 @@
 {
   "version": 1,
   "podman_version": "5.8.10",
-  "caddy_version": "2.11.6",
+  "caddy_version": "2.11.9",
   "cloud_image": {
     "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/cloud/alpine-3.24.3-x86_64-cloudinit-r0.qcow2",
     "sha512": "cf1b95fb4b77d32a9e5c3d02290e203f24907550192fe21819e1abaa28541dab3fe025aa2afa1b952773e3d8e6ea5593bc2e6bfcf398bff886fe5c6f2785f308",
@@ -19,14 +19,14 @@
   "tools_revision": "5adf1bf107202360c4afd482c052a37518d8a0a1",
   "proxy_release": {
     "linux/amd64": {
-      "source_url": "https://github.com/caddyserver/caddy/releases/download/v2.11.6/caddy_2.11.6_linux_amd64.tar.gz",
-      "archive_sha256": "sha256:22c84f8d2d4e4e0e2d422f8049fdd0fc1ed8d5665d0fe166f506c7fd863b4555",
-      "binary_sha256": "sha256:9855a8971f1d3cd705b6d606962271f4acec82a349e88d7d280d92d055e7f11d"
+      "source_url": "https://github.com/caddyserver/caddy/releases/download/v2.11.9/caddy_2.11.9_linux_amd64.tar.gz",
+      "archive_sha256": "sha256:5b8cb7faf8726a2028ad96a66e54e6e81e8f361bc6175e5d22bbd997cc5177fb",
+      "binary_sha256": "sha256:a563843e11cbce39c557bd429ebb787d56f49d51d9bbb3292cd9b36b37a60cdf"
     },
     "linux/arm64": {
-      "source_url": "https://github.com/caddyserver/caddy/releases/download/v2.11.6/caddy_2.11.6_linux_arm64.tar.gz",
-      "archive_sha256": "sha256:6a59a88914db644d410c4773286784096a97b59ea74152311442c19e988071ac",
-      "binary_sha256": "sha256:38717b9d12fb46e5c7ac2270968567ba4bf0f5c561c144c857b852e33d67e649"
+      "source_url": "https://github.com/caddyserver/caddy/releases/download/v2.11.9/caddy_2.11.9_linux_arm64.tar.gz",
+      "archive_sha256": "sha256:5e377cff994fc9362a6fcf695c53f226cfca3a3ef85bd3a3687cf252d6310165",
+      "binary_sha256": "sha256:762d7763ed8e303d50bf11fb0274627266907ea8c170720d7d9a6fd0b9bf5c65"
     }
   },
   "alpine_version": "3.24.3",
