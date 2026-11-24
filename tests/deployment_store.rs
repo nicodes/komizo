@@ -341,3 +341,35 @@ fn host_busy_while_any_operation_is_in_a_non_terminal_phase() {
         assert_eq!(store.host_busy().unwrap(), phase == "staging");
     }
 }
+
+#[test]
+fn resolved_or_abandoned_operations_never_make_the_host_busy() {
+    use std::time::{Duration, SystemTime};
+    let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+    let store = Store::new(directory.path().join("state")).unwrap();
+    let stuck = operation();
+    store.create_operation(&stuck).unwrap();
+    assert!(store.host_busy().unwrap());
+    // Long after its last change the record is abandoned, not load.
+    let later = SystemTime::now() + Duration::from_secs(3 * 60 * 60);
+    assert!(!store.host_busy_at(later).unwrap());
+    assert!(
+        store
+            .host_busy_at(SystemTime::now() + Duration::from_secs(60))
+            .unwrap()
+    );
+    // A reconciliation resolved by a successful operation also clears it.
+    let mut resolver = operation();
+    resolver.operation_id = "e".repeat(32);
+    store.create_operation(&resolver).unwrap();
+    resolver.transition("ready").unwrap();
+    store.save_operation(&resolver).unwrap();
+    let reconciliations = store.root.join("reconciliations");
+    fs::create_dir_all(&reconciliations).unwrap();
+    fs::write(
+        reconciliations.join(format!("{}.json", stuck.operation_id)),
+        format!("{{\"resolved_by\":\"{}\"}}", resolver.operation_id),
+    )
+    .unwrap();
+    assert!(!store.host_busy().unwrap());
+}

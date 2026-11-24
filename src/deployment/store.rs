@@ -205,6 +205,9 @@ pub struct ContainerRecord {
     pub volumes: BTreeMap<String, String>,
 }
 
+/// A non-terminal operation record this long unchanged is abandoned work.
+const ABANDONED: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
+
 pub fn identity() -> Result<String> {
     let mut bytes = [0u8; 16];
     getrandom::fill(&mut bytes)
@@ -341,12 +344,42 @@ impl Store {
     /// Whether any deploy, start, restart or backup on the host is still in a
     /// non-terminal phase; the host is then expected to be under load.
     pub fn host_busy(&self) -> Result<bool> {
+        self.host_busy_at(std::time::SystemTime::now())
+    }
+    /// Startup finalises interrupted operations, so a non-terminal record is
+    /// normally live work. A record an owner reconciliation has resolved, or
+    /// one that has not changed phase for `ABANDONED`, is not load.
+    pub fn host_busy_at(&self, now: std::time::SystemTime) -> Result<bool> {
         for id in self.operation_ids()? {
-            if !self.operation(&id)?.terminal() {
-                return Ok(true);
+            let operation = self.operation(&id)?;
+            if operation.terminal() {
+                continue;
             }
+            let record = self.root.join("operations").join(format!("{id}.json"));
+            let idle = now
+                .duration_since(fs::metadata(&record)?.modified()?)
+                .is_ok_and(|age| age > ABANDONED);
+            if idle || self.reconciled(&id, &operation)? {
+                continue;
+            }
+            return Ok(true);
         }
         Ok(false)
+    }
+    fn reconciled(&self, id: &str, operation: &Operation) -> Result<bool> {
+        let path = self.root.join("reconciliations").join(format!("{id}.json"));
+        if !path.try_exists()? {
+            return Ok(false);
+        }
+        let value = super::validation::bounded_value(&read_protected(&path, 4096)?, 4096)?;
+        let resolved = self.operation(
+            value["resolved_by"]
+                .as_str()
+                .ok_or_else(|| anyhow!("invalid reconciliation record"))?,
+        )?;
+        Ok(resolved.application == operation.application
+            && resolved.instance == operation.instance
+            && resolved.ok)
     }
     pub fn history(&self, application: &str, instance: &str) -> Result<Vec<String>> {
         let path = self.root.join("history").join(format!(

@@ -2874,6 +2874,12 @@ fn decide(
             decision.skipped = Some(reason);
             Ok(None)
         }
+        Verdict::Suppressed { long } => {
+            decision.skipped = Some("probe-unavailable-suppressed");
+            // Visibility only: nothing is done about a long suppression.
+            decision.force_stuck = long.then_some("probe-unavailable-suppressed");
+            Ok(None)
+        }
         Verdict::Restart => Ok(Some(false)),
         Verdict::GiveUp => {
             decision.force_stuck = Some("probe-unavailable");
@@ -2960,6 +2966,8 @@ fn maintain_service_traced(scope: &service_maintenance::Scope, trace: &mut Trace
     )?;
     trace.running = Some(before["State"]["Running"] == true);
     trace.stage = "observe-health";
+    // When the answer is unknown, assume the host is busy.
+    let host_busy = || store.host_busy().unwrap_or(true);
     let generation = format!(
         "{}/{}",
         frozen.record.id,
@@ -3001,7 +3009,7 @@ fn maintain_service_traced(scope: &service_maintenance::Scope, trace: &mut Trace
             // An unhealthy sighting old enough to confirm needs fresh evidence
             // now, not after a whole health interval.
             if probe_wanted(
-                service_maintenance::unhealthy_due(scope, &generation),
+                service_maintenance::unhealthy_due(scope, &generation, &host_busy),
                 || {
                     probe_due(
                         previous.as_ref(),
@@ -3092,10 +3100,17 @@ fn maintain_service_traced(scope: &service_maintenance::Scope, trace: &mut Trace
         probe_attempted,
         steady,
         |kind| {
-            service_maintenance::judge(scope, kind, &generation, &|| {
-                // When the answer is unknown, assume the host is busy.
-                store.host_busy().unwrap_or(true)
-            })
+            service_maintenance::judge(
+                scope,
+                kind,
+                &generation,
+                frozen
+                    .config
+                    .health
+                    .as_ref()
+                    .map_or(0, |h| h.timeout_seconds),
+                &host_busy,
+            )
         },
     );
     trace.no_reading = decision.no_reading;
@@ -3372,6 +3387,7 @@ fn maintenance_eligible(
 
 fn maintain_services(store: &Store) -> Result<()> {
     let mut live = BTreeSet::new();
+    let mut checked = 0;
     for installed in proxy::instances(store)? {
         if installed.removed || !installed.desired_running {
             continue;
@@ -3388,6 +3404,11 @@ fn maintain_services(store: &Store) -> Result<()> {
                 service,
             };
             live.insert(scope.clone());
+            checked += usize::from(
+                document.release.workload.services[&scope.service]
+                    .health
+                    .is_some(),
+            );
             // A healthy, unchanged service is inspected every few seconds;
             // anything else keeps the one-second reaction.
             if service_maintenance::steady_skip(
@@ -3423,7 +3444,7 @@ fn maintain_services(store: &Store) -> Result<()> {
             }
         }
     }
-    service_maintenance::steady_retain(&live);
+    service_maintenance::steady_retain(&live, checked);
     Ok(())
 }
 
@@ -4973,6 +4994,24 @@ mod recovery_tests {
                 Observed::Unhealthy { probed: false },
             ]
         );
+        // A suppressed bound is visible, and long suppression is stuck.
+        let short = decide(
+            hung(),
+            false,
+            true,
+            false,
+            world_judge(&seen, Verdict::Suppressed { long: false }),
+        );
+        assert_eq!(short.skipped, Some("probe-unavailable-suppressed"));
+        assert!(short.force_stuck.is_none() && matches!(short.observed, Ok(None)));
+        let long = decide(
+            hung(),
+            false,
+            true,
+            false,
+            world_judge(&seen, Verdict::Suppressed { long: true }),
+        );
+        assert_eq!(long.force_stuck, Some("probe-unavailable-suppressed"));
         // A healthy reading only counts as steady when the judge kept it.
         let waited = decide(Ok(Some(true)), false, false, true, |_| Verdict::Wait("x"));
         assert!(!waited.steady);
