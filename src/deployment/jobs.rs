@@ -996,6 +996,125 @@ fn cleanup_ephemeral_with(
     Ok(())
 }
 
+/// Terminal job receipts of one instance whose release `kept` does not name.
+/// The receipts themselves are never deleted; only their containers are.
+pub fn finished_outside(
+    store: &Store,
+    installed: &Installed,
+    kept: impl Fn(&str) -> bool,
+) -> Result<Vec<Receipt>> {
+    let directory = store.root.join("jobs").join(super::units::namespace(
+        &installed.application,
+        &installed.instance,
+    )?);
+    if !directory.try_exists()? {
+        return Ok(Vec::new());
+    }
+    let mut receipts = Vec::new();
+    let mut count = 0;
+    for entry in std::fs::read_dir(directory)? {
+        count += 1;
+        ensure!(
+            count <= 16384,
+            "job collection exceeds its bounded receipt inventory"
+        );
+        let path = entry?.path();
+        if store::pending(&path, 64 << 10)? {
+            continue;
+        }
+        let id = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(".json"))
+            .filter(|id| hex(id, 64))
+            .ok_or_else(|| anyhow!("unexpected job receipt member"))?;
+        let receipt = read(
+            store,
+            &installed.application,
+            &installed.instance,
+            &format!("sha256:{id}"),
+        )?
+        .ok_or_else(|| anyhow!("job receipt disappeared during collection"))?;
+        if ["completed", "failed"].contains(&receipt.phase.as_str())
+            && !kept(&receipt.release_digest)
+        {
+            receipts.push(receipt);
+        }
+    }
+    receipts.sort_by(|a, b| a.identity.cmp(&b.identity));
+    Ok(receipts)
+}
+
+/// Whether the receipt's exact one-shot container is present on the engine.
+pub fn finished_present(receipt: &Receipt, deadline: std::time::Instant) -> Result<bool> {
+    super::engine::Engine { deadline }.exists("container", &receipt.container_name)
+}
+
+/// Remove one finished job container after proving it is the exact, exited
+/// container the receipt describes. Never forces and never touches a volume.
+pub fn remove_finished(
+    store: &Store,
+    installed: &Installed,
+    receipt: &Receipt,
+    deadline: std::time::Instant,
+) -> Result<()> {
+    remove_finished_with(
+        store,
+        installed,
+        receipt,
+        &super::engine::Engine { deadline },
+    )
+}
+fn remove_finished_with(
+    store: &Store,
+    installed: &Installed,
+    receipt: &Receipt,
+    runtime: &impl Runtime,
+) -> Result<()> {
+    ensure!(
+        ["completed", "failed"].contains(&receipt.phase.as_str())
+            && receipt.application == installed.application
+            && receipt.instance == installed.instance,
+        "job collection requires a terminal receipt of its own instance"
+    );
+    if !runtime.exists("container", &receipt.container_name)? {
+        return Ok(());
+    }
+    let document = store.release(&receipt.release_digest)?;
+    ensure!(
+        document.release.application == installed.application,
+        "job collection source belongs to another application"
+    );
+    let value = document
+        .release
+        .workload
+        .jobs
+        .get(&receipt.job)
+        .ok_or_else(|| anyhow!("job collection source declaration missing"))?;
+    let Artifact::Image { config_digest, .. } = &document.release.artifacts[&value.artifact] else {
+        return Err(anyhow!("job collection has no immutable image authority"));
+    };
+    let actual = owned(runtime, receipt, value, installed, config_digest)?;
+    ensure!(
+        actual["State"]["Running"] == false
+            && actual["State"]["Paused"] == false
+            && actual["State"]["Pid"] == 0
+            && actual["State"]["ExitCode"].as_i64() == receipt.exit_code.map(i64::from)
+            && ["exited", "stopped"].contains(&actual["State"]["Status"].as_str().unwrap_or(""))
+            && actual["State"]["FinishedAt"]
+                .as_str()
+                .is_some_and(|time| !time.is_empty() && !time.starts_with("0001-")),
+        "job collection refuses a container without its proven terminal state"
+    );
+    runtime.retire_group(&job_group(receipt)?, cleanup_deadline())?;
+    runtime.run(&["rm", "--", &receipt.container_id])?;
+    ensure!(
+        !runtime.exists("container", &receipt.container_name)?,
+        "job container removal remains uncertain"
+    );
+    Ok(())
+}
+
 pub fn log_id(
     store: &Store,
     document: &ReleaseDocument,
@@ -1591,6 +1710,17 @@ mod tests {
                     Ok(format!("{}\n", self.exit).into_bytes())
                 }
                 "rm" => {
+                    if args == ["rm", "--", receipt.container_id.as_str()]
+                        && self
+                            .container
+                            .borrow()
+                            .as_ref()
+                            .is_some_and(|c| c["State"]["FinishedAt"] == "2026-01-01T00:00:00Z")
+                    {
+                        // Retention removes an exited, proven job container.
+                        *self.container.borrow_mut() = None;
+                        return Ok(vec![]);
+                    }
                     if args == ["rm", "--", receipt.container_id.as_str()] {
                         let actual = self.container.borrow();
                         assert!(never_started(actual.as_ref().unwrap()));
@@ -1874,6 +2004,49 @@ mod tests {
         *runtime.container.borrow_mut() = None;
         recover(&runtime).unwrap();
         assert_eq!(runtime.calls.borrow().len(), effects);
+    }
+
+    #[test]
+    fn retention_removes_only_exited_proven_job_containers_outside_the_keep_set() {
+        let fixture = Fixture::new();
+        let runtime = Fake::new(&fixture);
+        fixture.run(&runtime).unwrap();
+        let receipt = fixture.receipt().unwrap();
+        let outside = |keep: bool| {
+            finished_outside(&fixture.store, &fixture.installed, |_| keep)
+                .unwrap()
+                .len()
+        };
+        // A kept release has nothing collectable.
+        assert_eq!(outside(true), 0);
+        assert_eq!(outside(false), 1);
+        // A foreign or running container is refused and stays.
+        let owned = runtime.container.borrow().as_ref().unwrap().clone();
+        runtime.container.borrow_mut().as_mut().unwrap()["Config"]["Labels"]["io.komizo.ownership"] =
+            json!("f".repeat(32));
+        assert!(
+            remove_finished_with(&fixture.store, &fixture.installed, &receipt, &runtime).is_err()
+        );
+        *runtime.container.borrow_mut() = Some(owned.clone());
+        runtime.container.borrow_mut().as_mut().unwrap()["State"]["Running"] = json!(true);
+        assert!(
+            remove_finished_with(&fixture.store, &fixture.installed, &receipt, &runtime).is_err()
+        );
+        assert!(runtime.container.borrow().is_some());
+        // The exited container goes, without force, and the receipt remains.
+        *runtime.container.borrow_mut() = Some(owned);
+        remove_finished_with(&fixture.store, &fixture.installed, &receipt, &runtime).unwrap();
+        assert!(runtime.container.borrow().is_none());
+        assert!(runtime.calls.borrow().iter().all(|call| {
+            call[0] != "rm"
+                || call
+                    .iter()
+                    .map(String::as_str)
+                    .eq(["rm", "--", receipt.container_id.as_str()])
+        }));
+        assert_eq!(fixture.receipt().unwrap().phase, "completed");
+        // Absent is already done.
+        remove_finished_with(&fixture.store, &fixture.installed, &receipt, &runtime).unwrap();
     }
 
     #[test]

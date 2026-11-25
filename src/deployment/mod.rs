@@ -24,6 +24,7 @@ pub mod proxy;
 pub mod recovery;
 pub mod registry;
 pub mod render;
+pub mod retention;
 pub mod secrets;
 pub mod store;
 pub mod system;
