@@ -44,17 +44,6 @@ komizo request --host server.example --file request.json
 
 Request files can contain credentials. Keep them private. Requests travel over SSH stdin; secrets and bearer proofs are never command arguments.
 
-### Release retention
-
-Superseded releases leave asset trees, Podman images and exited job containers on the host. Komizo keeps, across all instances and applications, each instance's current release, its previous successful deploy, its newest failed deploy, a prepared release, and any release named by a non-terminal or unresolved operation; it removes the rest. Release and asset records are never removed, so an older release can be deployed again and is staged afresh. Collection runs when the capacity gate would refuse staging (once, then the disk is measured again), after a deploy becomes ready, and from the host as root:
-
-```sh
-komizo-box gc --dry-run
-komizo-box gc
-```
-
-Both print one JSON report with the keep set, the items and their bytes. The command refuses while a deploy is staging or any operation is live, so it cannot race staging. A collection failure is journalled as `retention-*.json` and never fails a deploy.
-
 ## Prepare the host
 
 The supported host baseline is Alpine Linux 3.24, Podman 5.8.10, OpenRC, a unified cgroup v2 hierarchy and enabled AppArmor. Komizo uses Podman's cgroupfs manager and crun, and installs its reviewed enforcing profiles. The executor requires enforced memory, CPU and PID controllers. Capacity policy accounts for measured RAM, CPU, storage, operating-system reserve, application pools, shared helpers and ingress.
