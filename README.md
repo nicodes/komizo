@@ -1,4 +1,4 @@
-<!-- Generated from private documentation source. Do not edit directly. Source SHA256: 1f67c4eaf31a3c027398b483dacfbb6531e8f353933abf2cdd3bc8b7ac29cf77 -->
+<!-- Generated from private documentation source. Do not edit directly. Source SHA256: bb96e9081fc173b04a87de1bf7bf7b6296e8e0e32cc1d8a6e10ff8c2abf1dbd0 -->
 
 # komizo
 
@@ -16,7 +16,7 @@ curl -fsSL https://komizo.dev/install | sh
 
 The installer requires an authenticated GitHub CLI session for release attestation verification. It verifies the selected archive checksum and signing workflow, then atomically installs `komizo` to `~/.local/bin`. It starts no services.
 
-The four owner archives contain the workstation-native client and its embedded local Rust API/UI. Linux host executors and the Caddy project's published release executables, with checksum-pinned download receipts, are separate release assets. Host installation uses verified executable artifacts; it requires no source compiler on the server.
+The four owner archives contain the workstation-native client and its embedded local Rust API/UI. Linux host executors and audited Caddy executables with build receipts are separate release assets. Host installation uses verified executable artifacts; it requires no source compiler on the server.
 
 ## Operate a host
 
@@ -48,7 +48,7 @@ Request files can contain credentials. Keep them private. Requests travel over S
 
 The supported host baseline is Alpine Linux 3.24, Podman 5.8.10, OpenRC, a unified cgroup v2 hierarchy and enabled AppArmor. Komizo uses Podman's cgroupfs manager and crun, and installs its reviewed enforcing profiles. The executor requires enforced memory, CPU and PID controllers. Capacity policy accounts for measured RAM, CPU, storage, operating-system reserve, application pools, shared helpers and ingress.
 
-Install the verified `komizo-box` and native Caddy artifacts at their protected paths, including the matching Caddy receipt. Hosts installed with the earlier source-build receipt keep verifying until their proxy is replaced. Prepare root-owned capacity, proxy and application policies under `/etc/komizo`. Then the owner installs the restricted submission boundary:
+Install the verified `komizo-box` and native Caddy artifacts at their protected paths, including the matching Caddy build receipt. Prepare root-owned capacity, proxy and application policies under `/etc/komizo`. Then the owner installs the restricted submission boundary:
 
 ```sh
 komizo-box install --authorized-keys /absolute/path/submission-public-keys
@@ -72,13 +72,23 @@ komizo-box policy validate policy.json release.json --instance production
 
 Policy validation reads only the explicitly supplied local documents. It checks the workload against host grants and limits without reading secret files or changing the host.
 
-Applications build and test with their own tools. [Cookbook](https://github.com/nicodes/cookbook) can generate contributor workflows and immutable release packets. [komizo-actions](https://github.com/nicodes/komizo-actions) submits bounded requests and fresh audience-bound GitHub proofs. The host independently checks the approved repository, branch, protected environment, source, action and artifact family before accepting effects. Owner-authorized applications use the separately authenticated local owner authority.
+Applications build and test with their own tools. [Cookbook](https://github.com/nicodes/cookbook) can generate contributor workflows and immutable release packets. [komizo-actions](https://github.com/nicodes/komizo-actions) submits bounded requests and fresh audience-bound GitHub proofs. The host independently checks the approved repository, workflow, source, action and artifact family before accepting effects. Owner-authorized applications use the separately authenticated local owner authority.
 
 The release packet contains its exact descriptor and inventory, explicitly inventoried metadata, image archives where required and static archives where required. There is no configuration image. Podman imports the accepted image configuration IDs without retagging unrelated images or pulling a mutable execution target.
 
 ## State, secrets and recovery
 
 The controller manages Podman services directly from protected canonical configurations and journals effects before executing them. It survives submitter disconnects. One-shot job receipts bind code, secrets, retained objects, native lifetime and exit evidence. Execution reserves native startup and independent watchdog time inside the remaining admitted deadline; a short or exhausted budget refuses Start. Failed or uncertain migrations never replay automatically. Native boot uses only installed artifacts and retains deliberate stop intent.
+
+Release retention keeps a host from filling with superseded releases. Per installed instance the host keeps the current release, the previous successfully deployed release, a prepared release, the newest failed deploy, and any release named by an unresolved operation. It collects everything else a superseded release left behind: extracted asset trees, exited one-shot job containers, and images that no kept release names and no container uses. Images are removed by exact ID and nothing is pruned. Volumes, release records and job receipts are never touched. Collection runs automatically after a deploy becomes ready, and once during staging when the disk reserve would otherwise refuse the deploy; the disk is then measured again. A collection failure is journalled and never changes the deploy's outcome. A collected older release can still be deployed again; staging fetches it from the registry.
+
+The owner can also run collection on the host, as root:
+
+```sh
+komizo-box gc [--dry-run]
+```
+
+It prints a `komizo.retention` JSON report with the keep set and its reasons, and the trees, containers and images removed (or, with `--dry-run`, that would be removed), with bytes and per-item errors. It refuses while a deploy is staging or any operation is live, and exits nonzero if any item could not be removed.
 
 Deploying to a stopped instance stages an accepted prepared release without starting databases, jobs or public routes. Start selects that exact prepared release. Restart, Stop and ordinary Backup select the installed release.
 
