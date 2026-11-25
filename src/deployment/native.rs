@@ -8,7 +8,7 @@ use super::{
     model::*,
     observation, proxy,
     registry::Registry,
-    secrets,
+    retention, secrets,
     store::{self, Installed, ObjectRecord, Operation, Resources, Store},
     system::{self, System},
     units,
@@ -1415,11 +1415,64 @@ pub fn retained_topology(previous: &ReleaseDocument, next: &ReleaseDocument) -> 
     Ok(())
 }
 
+/// The capacity gate. When the disk check refuses staging, release collection
+/// runs once, under the staging lock `stage()` already holds, and the disk is
+/// measured again before the refusal stands. A collection that cannot run or
+/// fails is journalled as a non-fatal finding; the deploy then fails or
+/// continues on the second measurement alone.
+struct DiskGate<'a> {
+    store: &'a Store,
+    job: &'a Job,
+    lease: &'a retention::Lease,
+    reserve: u64,
+    reclaimed: std::cell::Cell<bool>,
+}
+
+impl DiskGate<'_> {
+    fn check(&self, staging: u64) -> Result<()> {
+        let measure = || capacity::disk(&self.store.root, self.reserve, staging);
+        let refusal = match measure() {
+            Err(error) if error.to_string() == capacity::DISK_REFUSAL => error,
+            other => return other,
+        };
+        if self.reclaimed.replace(true) {
+            return Err(refusal);
+        }
+        if let Ok(operation) = self.store.operation(&self.job.operation_id) {
+            let result = retention::collect(
+                &retention::Context {
+                    store: self.store,
+                    assets: Path::new(system::ASSETS),
+                    own_operation: Some(&self.job.operation_id),
+                    dry_run: false,
+                },
+                self.lease,
+                &retention::NativeRuntime {
+                    engine: Engine {
+                        deadline: self.job.deadline,
+                    },
+                },
+            );
+            let _ = retention::record(self.store, &operation, "staging", &result);
+        }
+        measure()
+    }
+}
+
 fn stage(store: &Store, policy: &Policy, document: &ReleaseDocument, job: &Job) -> Result<()> {
     let engine = Engine {
         deadline: job.deadline,
     };
     let capacity = capacity::read(Path::new("/etc/komizo/capacity.json"))?;
+    // Excludes the owner collection command for the whole of staging.
+    let lease = retention::staging_lease(store, job.deadline)?;
+    let gate = DiskGate {
+        store,
+        job,
+        lease: &lease,
+        reserve: capacity.disk_reserve_bytes,
+        reclaimed: std::cell::Cell::new(false),
+    };
     let root = store.root.join("staging").join(&job.operation_id);
     store::protected_directory(&root)?;
     let public = proxy::asset_root(document);
@@ -1467,7 +1520,7 @@ fn stage(store: &Store, policy: &Policy, document: &ReleaseDocument, job: &Job) 
             Artifact::Archive { size_bytes, .. } => size_bytes.checked_add(policy.max_asset_bytes),
         }
         .ok_or_else(|| anyhow!("staging bound overflow"))?;
-        capacity::disk(&store.root, capacity.disk_reserve_bytes, staging_bytes)?;
+        gate.check(staging_bytes)?;
         let (mut registry, manifest) = Registry::new(
             artifact.reference(),
             job.request.registry.as_ref(),
@@ -1479,9 +1532,9 @@ fn stage(store: &Store, policy: &Policy, document: &ReleaseDocument, job: &Job) 
                 registry.image_archive(&manifest, artifact, &file, policy)?;
                 // Registry scratch is gone. The archive is still on disk, so
                 // measure available space again before Podman extracts layers.
-                let imported =
-                    capacity::disk(&store.root, capacity.disk_reserve_bytes, staging_bytes)
-                        .and_then(|()| engine.import(&file, config_digest));
+                let imported = gate
+                    .check(staging_bytes)
+                    .and_then(|()| engine.import(&file, config_digest));
                 let cleaned = fs::remove_file(&file);
                 imported?;
                 cleaned?;
@@ -3870,6 +3923,23 @@ impl Backend for Native {
         job: &Job,
         operation: &mut Operation,
     ) -> Result<()> {
+        let outcome = self.run_effect(store, policy, job, operation);
+        // Retention never changes the outcome of an otherwise good deploy.
+        if outcome.is_ok() && job.request.action == "deploy" && operation.phase == "ready" {
+            retention::after_deploy(store, operation, job.deadline);
+        }
+        outcome
+    }
+}
+
+impl Native {
+    fn run_effect(
+        &self,
+        store: &Store,
+        policy: &Policy,
+        job: &Job,
+        operation: &mut Operation,
+    ) -> Result<()> {
         let application = &job.request.application;
         let instance = &job.request.instance;
         let engine = Engine {
@@ -4449,6 +4519,41 @@ pub fn expire() -> Result<()> {
             "preview expiry requires reconciliation"
         );
     }
+    Ok(())
+}
+
+/// `komizo-box gc [--dry-run]`: owner command that collects what superseded
+/// releases left on the host, or with `--dry-run` reports what it would.
+pub fn gc(dry_run: bool, output: &mut dyn std::io::Write) -> Result<()> {
+    ensure!(
+        unsafe { libc::geteuid() } == 0,
+        "release collection requires owner identity"
+    );
+    let store = Store::new(Path::new(observation::STATE).into())?;
+    let lease = retention::try_lease(&store)?.ok_or_else(|| {
+        anyhow!("a deploy is staging or another collection is running; retry when it ends")
+    })?;
+    let report = retention::collect(
+        &retention::Context {
+            store: &store,
+            assets: Path::new(system::ASSETS),
+            own_operation: None,
+            dry_run,
+        },
+        &lease,
+        &retention::NativeRuntime {
+            engine: Engine {
+                deadline: Instant::now() + Duration::from_secs(1200),
+            },
+        },
+    )?;
+    serde_json::to_writer(&mut *output, &report)?;
+    output.write_all(b"\n")?;
+    ensure!(
+        report.errors.is_empty(),
+        "release collection left {} item(s) in place; see the report",
+        report.errors.len()
+    );
     Ok(())
 }
 

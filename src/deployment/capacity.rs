@@ -299,6 +299,9 @@ fn image_disk_allowance_counts_two_live_copies_and_metadata() {
     assert!(image_disk_allowance(u64::MAX / 2).is_none());
 }
 
+/// The exact refusal `disk` returns when the measured free space is too small.
+pub const DISK_REFUSAL: &str = "disk reserve refuses artifact staging";
+
 pub fn disk(path: &Path, reserve: u64, staging: u64) -> Result<()> {
     let encoded = std::ffi::CString::new(path.as_os_str().as_encoded_bytes())?;
     let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
@@ -312,7 +315,7 @@ pub fn disk(path: &Path, reserve: u64, staging: u64) -> Result<()> {
         reserve
             .checked_add(staging)
             .is_some_and(|n| u128::from(n) <= free),
-        "disk reserve refuses artifact staging"
+        DISK_REFUSAL
     );
     Ok(())
 }

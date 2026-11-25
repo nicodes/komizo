@@ -350,6 +350,11 @@ impl Store {
     /// normally live work. A record an owner reconciliation has resolved, or
     /// one that has not changed phase for `ABANDONED`, is not load.
     pub fn host_busy_at(&self, now: std::time::SystemTime) -> Result<bool> {
+        Ok(!self.live_operations_at(now)?.is_empty())
+    }
+    /// The non-terminal operations that `host_busy_at` counts as live work.
+    pub fn live_operations_at(&self, now: std::time::SystemTime) -> Result<Vec<Operation>> {
+        let mut live = Vec::new();
         for id in self.operation_ids()? {
             let operation = self.operation(&id)?;
             if operation.terminal() {
@@ -362,9 +367,47 @@ impl Store {
             if idle || self.reconciled(&id, &operation)? {
                 continue;
             }
-            return Ok(true);
+            live.push(operation);
         }
-        Ok(false)
+        Ok(live)
+    }
+    /// Every operation on the host that is non-terminal or awaits owner
+    /// reconciliation, whatever its instance. `unresolved` for one instance
+    /// is the same selection restricted to that scope.
+    pub fn unresolved_all(&self) -> Result<Vec<Operation>> {
+        let mut result = Vec::new();
+        for id in self.operation_ids()? {
+            let operation = self.operation(&id)?;
+            if !operation.reconciliation_required && operation.terminal() {
+                continue;
+            }
+            if self.reconciled(&id, &operation)? {
+                continue;
+            }
+            result.push(operation);
+        }
+        Ok(result)
+    }
+    /// Digests of every release document the host has stored.
+    pub fn release_digests(&self) -> Result<Vec<String>> {
+        let mut digests = Vec::new();
+        for entry in fs::read_dir(self.root.join("releases"))? {
+            let path = entry?.path();
+            if pending(&path, MAX_DOCUMENT_BYTES as u64)? {
+                continue;
+            }
+            let Some(id) = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_suffix(".json"))
+                .filter(|id| hex(id, 64))
+            else {
+                continue;
+            };
+            digests.push(format!("sha256:{id}"));
+        }
+        digests.sort();
+        Ok(digests)
     }
     fn reconciled(&self, id: &str, operation: &Operation) -> Result<bool> {
         let path = self.root.join("reconciliations").join(format!("{id}.json"));

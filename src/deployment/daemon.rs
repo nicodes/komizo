@@ -15,7 +15,7 @@ use std::{
     sync::Arc,
 };
 
-pub const USAGE: &str = "komizo-box -- native Komizo host\n\n  komizo-box install --authorized-keys /absolute/owner/public-keys\n  komizo-box daemon\n  komizo-box submit\n  komizo-box status\n  komizo-box proxy-guard\n  komizo-box guard|health|resource --application APP --instance INST --service SVC\n  komizo-box expire\n  komizo-box release validate|render FILE [render flags]\n  komizo-box application validate FILE\n  komizo-box policy validate POLICY RELEASE [--instance INST]\n  komizo-box version\n";
+pub const USAGE: &str = "komizo-box -- native Komizo host\n\n  komizo-box install --authorized-keys /absolute/owner/public-keys\n  komizo-box daemon\n  komizo-box submit\n  komizo-box status\n  komizo-box proxy-guard\n  komizo-box guard|health|resource --application APP --instance INST --service SVC\n  komizo-box expire\n  komizo-box gc [--dry-run]\n  komizo-box release validate|render FILE [render flags]\n  komizo-box application validate FILE\n  komizo-box policy validate POLICY RELEASE [--instance INST]\n  komizo-box version\n";
 
 fn scope(args: &[String]) -> Result<(&str, &str, &str)> {
     ensure!(
@@ -177,6 +177,13 @@ pub fn run(args: &[String], input: &mut dyn Read, output: &mut dyn Write) -> Res
                     Ok(())
                 }
             }
+        }
+        "gc" => {
+            ensure!(
+                flags.is_empty() || flags == ["--dry-run"],
+                "gc accepts only --dry-run"
+            );
+            native::gc(!flags.is_empty(), output)
         }
         "daemon" | "submit" | "expire" | "version" | "status" | "proxy-guard" => {
             ensure!(
