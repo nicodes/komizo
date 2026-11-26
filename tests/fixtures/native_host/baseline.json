@@ -16,7 +16,7 @@
     "url": "https://dl-3.alpinelinux.org/alpine/v3.24/releases/cloud/alpine-3.24.3-x86_64-cloudinit-r0.qcow2",
     "signature_url": "https://dl-3.alpinelinux.org/alpine/v3.24/releases/cloud/alpine-3.24.3-x86_64-cloudinit-r0.qcow2.asc"
   },
-  "tools_revision": "2a0b4a158ecfcfbacd0abcf72e3b98300aaa5bae",
+  "tools_revision": "6a651cc9c59c0cec127f987bcbac0074352e88b5",
   "proxy_release": {
     "linux/amd64": {
       "source_url": "https://github.com/caddyserver/caddy/releases/download/v2.11.9/caddy_2.11.9_linux_amd64.tar.gz",
